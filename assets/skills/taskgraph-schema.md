@@ -22,6 +22,7 @@
 
 ```json
 {"acceptance_tests": ["tests/acceptance/test_users_api.py"],
+ "protected_support": ["tests/acceptance/conftest.py"],
  "acceptance_commands": ["pytest -q tests/acceptance"],
  "integration_commands": ["pytest -q"],
  "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…"}],
@@ -43,4 +44,7 @@ re-affirms the surface, so pin what defines the real interface, not files the ta
 Rules the controller enforces: every REQ covered and every task traced (G-P3); ≥1 verification
 command and acceptance criterion per task (G-P4); tasks that may run in parallel (no dependency
 path) must have disjoint `files_modified` (G-P6); nothing in `files_modified` may touch the
-acceptance tests (G-P7). Acceptance tests are written by the oracle task, not implementers.
+acceptance tests or `protected_support` files (G-P7). Acceptance tests are written by the oracle
+task, not implementers, and must be **black-box and out of process**: they run the system as a
+separate process and check its outputs, so code under test cannot fake a passing exit code. List
+any runner configuration the acceptance commands depend on in `protected_support`.

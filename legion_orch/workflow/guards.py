@@ -268,7 +268,8 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
                     v.append(f"G-P6: parallel tasks {a['id']} and {b['id']} both modify "
                              f"{clash}; add a dependency")
     # G-P7
-    protected = list(oracle.get("acceptance_tests", [])) + list(protected_cfg)
+    protected = list(oracle.get("acceptance_tests", [])) + list(oracle.get("protected_support", [])) \
+        + list(protected_cfg)
     for t in tasks:
         for p in t["files_modified"]:
             for prot in protected:

@@ -184,7 +184,8 @@ class ReportsMixin:
         if not self.change.oracle_sha:
             return v
         approved = governance.all_approved_protected(self)
-        for p in (self.change.oracle or {}).get("acceptance_tests", []):
+        orc = self.change.oracle or {}
+        for p in orc.get("acceptance_tests", []) + orc.get("protected_support", []):
             if p in approved:
                 continue
             if await self.git.blob(head, p) != await self.git.blob(self.change.oracle_sha, p):

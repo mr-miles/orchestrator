@@ -166,7 +166,9 @@ def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> di
 
 
 def protected_paths(e: ChangeView) -> list[str]:
-    return list((e.change.oracle or {}).get("acceptance_tests", [])) + list(e.cfg.protected_paths)
+    orc = e.change.oracle or {}
+    return list(orc.get("acceptance_tests", [])) + list(orc.get("protected_support", [])) \
+        + list(e.cfg.protected_paths)
 
 
 def approved_protected_for(e: ChangeView, task_id: str, before: str) -> list[str]:

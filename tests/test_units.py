@@ -573,3 +573,16 @@ def test_transition_rollback_keeps_identity():
     assert ce.nodes["plan"] is node and ce.runs["r0001"] is run       # same objects
     assert (run.status, node.status, node.feedback) == ("ACTIVE", "PENDING", [])
     assert ce.change.tier is None and "build:T1" not in ce.nodes
+
+
+def test_protected_support_files_are_protected():
+    support = dict(ORACLE, protected_support=["tests/acc/conftest.py"])
+    touches = check([_task("T1", ["tests/acc/conftest.py"])], oracle=support)
+    assert "G-P7" in {x.split(":")[0] for x in touches}
+    assert check([_task("T1", ["src/a.py"])], oracle=support) == []
+    import types
+
+    from legion_orch.workflow import governance
+    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=support), cfg=types.SimpleNamespace(
+        protected_paths=[".github/"]))
+    assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]

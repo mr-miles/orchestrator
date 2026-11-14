@@ -161,10 +161,11 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
     # ---- oracle / surfaces
     async def protected() -> dict:
         tests = (ch.oracle or {}).get("acceptance_tests", [])
+        support = (ch.oracle or {}).get("protected_support", [])
         if not ch.oracle_sha or not tests:
             return _g(UNEVAL, "no oracle commit")
         approved = governance.all_approved_protected(e)
-        changed = [p for p in tests
+        changed = [p for p in tests + support
                    if await e.git.blob(head, p) != await e.git.blob(ch.oracle_sha, p)]
         unapproved = [p for p in changed if p not in approved]
         if unapproved:

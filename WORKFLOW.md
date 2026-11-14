@@ -288,7 +288,7 @@ Universal guards apply to every task and are listed once.
 | G-P4 | Every task has ≥1 `verification` command and ≥1 `acceptance` criterion. |
 | G-P5 | Every task's `soul` is an implementer soul. |
 | G-P6 | `files_modified` non-empty, relative, no `..`; tasks with no dependency path between them have disjoint `files_modified` (parallel safety). |
-| G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, config `protected_paths`). |
+| G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`). |
 | G-P8 | R2+: `oracle.json` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
 | G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
@@ -312,7 +312,7 @@ Universal guards apply to every task and are listed once.
 
 | ID | Rule |
 | --- | --- |
-| G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests`. |
+| G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`. |
 | G-O2 | Every acceptance test path exists at the commit. |
 
 The oracle commit is merged to the integration branch before any build task starts. From then on
@@ -359,6 +359,13 @@ Results are written by the controller to `tasks/{{task_id}}/verification.json` (
 | --- | --- |
 | G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
 
+Exit codes are only as trustworthy as the code a command runs: a test process that imports the
+code under test can be made to exit 0. So the protected acceptance tests must be **black-box and
+out of process** (they run the system as a separate process and check its outputs), and runner
+configuration they depend on is listed in `oracle.protected_support` and protected like the tests
+(G-P7, G-O1, G-INT2). The test-engineer soul requires this, the critic checks it, and humans
+approve it at H-2. Per-task verification commands are a faster, weaker check backed by review.
+
 ### 5.8 `review` – independent panel
 
 Panel: R1 `code-reviewer`; R2 `code-reviewer` (+ `security-reviewer` if security/authorization ≥ 2,
@@ -397,7 +404,7 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 | ID | Rule |
 | --- | --- |
 | G-INT1 | Attested head equals the integration head; `data.verdict ∈ {PASS, FAIL}`; `data.results` covers every acceptance and integration command. The controller also re-runs the oracle commands deterministically at the head (G-V1 semantics). FAIL ⇒ escalate. |
-| G-INT2 | Protected acceptance test blobs at head equal those at the oracle commit. |
+| G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
 | G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha. |
 | H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. |
 

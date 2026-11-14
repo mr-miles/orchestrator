@@ -17,7 +17,8 @@ class Oracle(RoleHandler):
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         orc = e.json_doc("plan/oracle.json")
         changed = await e.git.changed_paths(r.run.base_sha, r.sha)
-        v = guards.scoped_diff(changed, orc.get("acceptance_tests", []), [], e.cfg.protected_paths, "G-O1")
+        allowed = orc.get("acceptance_tests", []) + orc.get("protected_support", [])
+        v = guards.scoped_diff(changed, allowed, [], e.cfg.protected_paths, "G-O1")
         for p in orc.get("acceptance_tests", []):
             if not await e.git.has_object(r.sha, p):
                 v.append(f"G-O2: acceptance test {p} missing at {r.sha[:12]}")

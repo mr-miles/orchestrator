@@ -109,6 +109,18 @@
         "additionalProperties": false
       },
       "maxItems": 20
+    },
+    "protected_support": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))(?!.*\\\\)\\S.*$"
+      },
+      "maxItems": 50,
+      "uniqueItems": true,
+      "description": "Test-runner support files (conftest.py, pytest.ini, fixtures) protected like acceptance tests"
     }
   },
   "additionalProperties": false
