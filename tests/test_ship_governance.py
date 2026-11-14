@@ -1,0 +1,267 @@
+"""Ship readiness and change-level governance against a real change: gates that fail (and why),
+overrides, waivers, human attestations, protected-path approvals and surface drift."""
+from __future__ import annotations
+
+import pytest
+from engine_harness import REPO, TASKS, Flow, scenario
+
+from legion_orch.workflow.engine import WorkflowError
+from legion_orch.workflow.model import ACCEPTED, ChangeStatus, GateStatus
+from legion_orch.workflow.ship import evaluate
+
+SAT, UNSAT, UNEVAL = GateStatus.SATISFIED, GateStatus.UNSATISFIED, GateStatus.UNEVALUABLE
+REASON = "reviewed by hand against the production incident log"
+
+
+async def ready_r1(f: Flow) -> None:
+    await f.to_build()
+    await f.implement()
+    await f.review()
+    assert f.ce.change.status == ChangeStatus.READY
+
+
+# ====================================================================== gates
+@scenario()
+async def test_gates_are_unevaluable_until_the_work_exists(f: Flow):
+    await f.to_build()
+    r = await evaluate(f.ce)
+    assert r.verdict == "NOT_READY"
+    g = r.gates
+    assert g["task_contract"].status == SAT
+    # builds exist but none is accepted yet: verification reports unsatisfied, the rest unevaluable
+    assert g["deterministic_verification"].status == UNSAT
+    for gate in ("evidence_bundle_or_log", "scoped_implementer_run",
+                 "lightweight_independent_review"):
+        assert g[gate].status == UNEVAL, (gate, g[gate])
+
+
+@scenario()
+async def test_a_changed_task_graph_makes_the_contract_stale(f: Flow):
+    await ready_r1(f)
+    f.ce.write_record("plan/taskgraph.json", {"tasks": TASKS + [TASKS[0] | {"id": "T9"}]})
+    await f.human("ship", "recheck")
+    g = f.ce.change.ship.gates["task_contract"]
+    assert g.status == UNSAT and "stale" in g.detail
+    assert f.ce.change.status == ChangeStatus.NOT_READY
+
+
+@scenario()
+async def test_a_review_doc_that_no_longer_matches_fails_the_review_gate(f: Flow):
+    await ready_r1(f)
+    node = f.ce.nodes["build:T1"]
+    key = next(iter(node.reviews))
+    node.reviews[key] = node.reviews[key].model_copy(update={"sha": "0" * 40})
+    r = await evaluate(f.ce)
+    assert r.gates["lightweight_independent_review"].status == UNSAT
+    assert r.verdict == "NOT_READY"
+
+
+@scenario()
+async def test_an_overridden_build_is_human_judgement(f: Flow):
+    await f.to_build()
+    await f.implement()
+    await f.review(verdict="FAIL")
+    await f.implement()
+    await f.review(verdict="FAIL")
+    await f.human("build:T1", "override_accept", reason=REASON)
+    g = f.ce.change.ship.gates["lightweight_independent_review"]
+    assert g.status == SAT and g.human_judgement and "override" in g.detail
+    assert "lightweight_independent_review" in f.ce.change.ship.human_judgement_gates
+
+
+# ====================================================================== overrides
+@scenario()
+async def test_added_gate_must_be_satisfied(f: Flow):
+    await f.to_build()
+    await f.change_action("override", kind="add_gate", gate="security_or_e2e_evaluator", reason=REASON)
+    await f.implement()
+    await f.review()
+    g = f.ce.change.ship.gates["security_or_e2e_evaluator"]
+    assert g.added and g.status == UNEVAL and f.ce.change.status == ChangeStatus.NOT_READY
+    src = f.ce.latest_att("tasks/T1/evidence/cycle-1.md")
+    await f.change_action("attest", kind="security-evaluation", verdict="fail", sources=[src])
+    await f.human("ship", "recheck")
+    assert f.ce.change.ship.gates["security_or_e2e_evaluator"].status == UNSAT
+    res = await f.change_action("attest", approver="ana", kind="security-evaluation", verdict="pass",
+                                sources=[src])
+    assert any("superseded" in w for w in res.warnings)
+    await f.human("ship", "recheck")
+    assert f.ce.change.status == ChangeStatus.READY
+
+
+@scenario()
+async def test_waived_gate_holds_only_while_its_evidence_resolves(f: Flow):
+    await f.to_build()
+    await f.implement()
+    await f.review(verdict="FAIL")                    # review gate cannot be met ...
+    await f.implement()
+    await f.review(verdict="FAIL")
+    evidence = f.ce.write_record("control/notes/manual-review.md", "reviewed by hand").attestation
+    await f.change_action("override", kind="waive_gate", gate="lightweight_independent_review",
+                          reason=REASON, evidence=evidence)  # ... so a human waives it
+    await f.human("build:T1", "override_accept", reason=REASON)
+    ship = f.ce.change.ship
+    assert ship.verdict == "READY" and "lightweight_independent_review" in ship.waived_gates
+    assert ship.gates["lightweight_independent_review"].detail.startswith("waived by miles")
+
+
+@scenario()
+async def test_override_validation(f: Flow):
+    for payload, msg in [({"kind": "lower_tier", "gate": "task_contract"}, "kind must be"),
+                         ({"kind": "add_gate", "gate": "vibes"}, "unknown gate"),
+                         ({"kind": "add_gate", "gate": "task_contract", "reason": "short"}, "reason"),
+                         ({"kind": "waive_gate", "gate": "deterministic_verification", "reason": REASON},
+                          "cannot be waived"),
+                         ({"kind": "waive_gate", "gate": "task_contract", "reason": REASON,
+                           "evidence": "file:control/nope.md@1"}, "replacement evidence")]:
+        payload.setdefault("reason", REASON)
+        with pytest.raises(WorkflowError, match=msg):
+            await f.change_action("override", **payload)
+    assert f.ce.change.overrides == []
+
+
+# ====================================================================== attestations
+@scenario()
+async def test_attestation_validation(f: Flow):
+    await f.to_h2()                                     # build tasks exist, none started
+    src = f.ce.latest_att("plan/spec.md")
+    for payload, msg in [({"kind": "vibes", "verdict": "pass"}, "unknown attestation kind"),
+                         ({"kind": "security-evaluation", "verdict": "maybe"}, "verdict must be"),
+                         ({"kind": "release-observation", "verdict": "pass"}, "cannot be attested as pass"),
+                         ({"kind": "security-evaluation", "verdict": "not_applicable"}, "waiver_reason"),
+                         ({"kind": "security-evaluation", "verdict": "pass", "waiver_reason": REASON},
+                          "only accepted with verdict not_applicable"),
+                         ({"kind": "security-evaluation", "verdict": "pass"}, "at least one source"),
+                         ({"kind": "security-evaluation", "verdict": "pass",
+                           "sources": ["file:plan/missing.md@3"]}, "source"),
+                         ({"kind": "security-evaluation", "verdict": "pass", "sources": [src],
+                           "covers": ["T9"]}, "covers unknown task")]:
+        with pytest.raises(WorkflowError, match=msg):
+            await f.change_action("attest", **payload)
+    res = await f.change_action("attest", kind="independent-baseline", verdict="pass", sources=[src],
+                                covers=["T1"])
+    assert res.attestation and res.warnings == []
+
+
+@scenario()
+async def test_attestation_warnings(f: Flow):
+    tasks = [TASKS[0], TASKS[0] | {"id": "T2", "files_modified": ["src/bye.txt"]}]
+    await f.to_build(tasks=tasks)
+    src = f.ce.latest_att("plan/spec.md")
+    res = await f.change_action("attest", kind="independent-baseline", verdict="pass", sources=[src],
+                                covers=["T1"])
+    warnings = " ".join(res.warnings)
+    assert "partial_coverage" in warnings and "after_execution" in warnings
+
+
+# ====================================================================== protected paths (R2)
+PROTECTED = "tests/acceptance/test_greet.sh"
+
+
+@scenario()
+async def test_protected_acceptance_tests_need_a_human_approval(f: Flow):
+    await f.to_h2(tier="R2")              # G-P7: a task may not plan to modify protected paths
+    assert f.ce.nodes["oracle"].status == ACCEPTED and f.ce.change.oracle_sha
+    await f.human("H-2", "approve")
+    out = await f.implement(files={"src/greet.txt": "hello\n", PROTECTED: "true\n"})
+    assert any(f"{PROTECTED} is a protected path" in v for v in out.violations)
+
+
+@scenario()
+async def test_approved_protected_path_change_ships_as_human_judgement(f: Flow):
+    await f.to_h2(tier="R2")
+    with pytest.raises(WorkflowError, match="must be protected acceptance paths"):
+        await f.change_action("approve_protected_paths", task="T1", paths=["src/greet.txt"], reason=REASON)
+    with pytest.raises(WorkflowError, match="reason"):
+        await f.change_action("approve_protected_paths", task="T1", paths=[PROTECTED], reason="x")
+    res = await f.change_action("approve_protected_paths", task="T1", paths=[PROTECTED], reason=REASON)
+    assert res.attestation and "after now" in res.note
+    await f.human("H-2", "approve")
+    out = await f.implement(files={"src/greet.txt": "hello\n",
+                                   PROTECTED: "grep -q hello src/greet.txt && echo ok\n"})
+    assert out.accepted, out
+    await f.review()
+    await f.integration()                               # G-INT2 accepts the approved change
+    assert f.status("integration") == ACCEPTED
+    await f.human("H-3", "accept")
+    g = f.ce.change.ship.gates["protected_oracle"]
+    assert g.status == SAT and g.human_judgement and PROTECTED in g.detail
+    assert f.ce.change.status == ChangeStatus.READY
+
+
+# ====================================================================== surfaces (R2)
+@scenario()
+async def test_surface_drift_blocks_ship_until_reaffirmed(f: Flow):
+    await f.to_build(tier="R2", tasks=[TASKS[0] | {"files_modified": ["src/greet.txt", "README.md"]}])
+    assert "files" in f.ce.change.surface_pins                     # pinned at oracle approval
+    await f.implement(files={"src/greet.txt": "hello\n", "README.md": "demo v2\n"})
+    await f.review()
+    await f.integration()
+    await f.human("H-3", "accept")
+    g = f.ce.change.ship.gates["integration_or_real_interface_checks"]
+    assert g.status == UNSAT and "G-SF1" in g.detail and f.ce.change.status == ChangeStatus.NOT_READY
+    with pytest.raises(WorkflowError, match="unknown surface"):
+        await f.change_action("approve_surface", surface="nope", reason=REASON)
+    res = await f.change_action("approve_surface", surface="files", reason=REASON)
+    assert res.surfaces == ["files"]
+    await f.human("ship", "recheck")
+    assert f.ce.change.status == ChangeStatus.READY, f.ce.change.ship.gates
+
+
+@scenario()
+async def test_integration_fail_verdict_and_failing_oracle_commands(f: Flow):
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    out = await f.integration(verdict="FAIL")
+    assert not out.accepted and any("G-RV3" in v or "G-INT1" in v for v in out.violations), out
+    f.runner.commands["sh tests/acceptance/test_greet.sh"] = (1, "FAIL\n")
+    await f.integration(verdict="PASS")                 # the agent says PASS; the controller re-runs
+    node = f.ce.nodes["integration"]
+    assert node.status == "ESCALATED" and node.escalation.kind == "integration_failed"
+    assert f"git:{REPO}@" not in node.escalation.reason
+
+
+@scenario()
+async def test_higher_tier_gates_added_to_an_r1_change(f: Flow):
+    """R2/R3 gates added by override evaluate (unevaluable / unsatisfied / satisfied) on R1."""
+    await f.to_build()
+    for gate in ("independent_baseline", "architecture_or_security_review", "release_observation_plan",
+                 "rollback_or_forward_fix_evidence", "protected_oracle", "protected_acceptance_tests",
+                 "integration_or_real_interface_checks", "approved_delta_spec", "approved_spec_and_oracle",
+                 "explicit_human_approval"):
+        await f.change_action("override", kind="add_gate", gate=gate, reason=REASON)
+    await f.implement()
+    await f.review()
+    g = f.ce.change.ship.gates
+    assert f.ce.change.status == ChangeStatus.NOT_READY
+    for gate in ("independent_baseline", "release_observation_plan", "rollback_or_forward_fix_evidence",
+                 "protected_oracle", "protected_acceptance_tests", "integration_or_real_interface_checks",
+                 "explicit_human_approval"):
+        assert g[gate].status == UNEVAL, (gate, g[gate])
+    assert g["architecture_or_security_review"].status == UNSAT
+    assert g["approved_delta_spec"].status == SAT and g["approved_spec_and_oracle"].status == SAT
+
+    src = f.ce.latest_att("tasks/T1/evidence/cycle-1.md")
+    attest = lambda kind, verdict, **kw: f.change_action("attest", kind=kind, verdict=verdict,
+                                                         sources=[src], **kw)
+    await attest("independent-baseline", "pass")             # too late: build already started
+    await attest("release-observation", "not_applicable", waiver_reason=REASON)
+    with pytest.raises(WorkflowError, match="covers must list at least one task"):
+        await attest("rollback-evidence", "pass", covers=[])  # not "everything"
+    await attest("architecture-review", "fail")
+    await f.human("ship", "recheck")
+    g = f.ce.change.ship.gates
+    assert g["independent_baseline"].status == UNSAT and "after execution" in g["independent_baseline"].detail
+    assert g["release_observation_plan"].status == SAT and "waived" in g["release_observation_plan"].detail
+    assert "release_observation_plan" in f.ce.change.ship.waived_gates
+    assert g["rollback_or_forward_fix_evidence"].status == UNEVAL
+    arch = g["architecture_or_security_review"]
+    assert arch.status == UNSAT and "attested fail" in arch.detail
+    await attest("rollback-evidence", "pass")
+    await attest("architecture-review", "pass")
+    await f.human("ship", "recheck")
+    g = f.ce.change.ship.gates
+    rollback = g["rollback_or_forward_fix_evidence"]
+    assert rollback.status == SAT and rollback.human_judgement
+    assert g["architecture_or_security_review"].status == SAT

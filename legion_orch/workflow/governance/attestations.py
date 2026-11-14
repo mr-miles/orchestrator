@@ -40,9 +40,12 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
                               "names the bytes it is about)")
     for s in sources:
         await resolve_or_raise(e, s, "G-AT1: source")
-    covers = payload.get("covers") or None
+    covers = payload.get("covers")      # None: the whole change; otherwise the task ids covered
     tasks = {b.task.id for b in e.build_nodes()}
     if covers is not None:
+        if not isinstance(covers, list) or not covers or not all(isinstance(c, str) for c in covers):
+            raise GovernanceError("G-AT1: covers must list at least one task id (omit it to cover "
+                                  "the whole change)")
         unknown = set(covers) - tasks
         if unknown:
             raise GovernanceError(f"G-AT1: covers unknown task(s) {sorted(unknown)}")

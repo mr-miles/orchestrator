@@ -1,3 +1,4 @@
+import importlib
 import re
 import sqlite3
 import threading
@@ -667,3 +668,61 @@ def test_every_human_gate_action_has_a_handler():
     from legion_orch.workflow.model import H_CHANGE, H_REQUIREMENTS, H_SPEC
     assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_SPEC, H_CHANGE}
     assert all(callable(getattr(HumanGates, m)) for m in HumanGates.GATE_ACTIONS.values())
+
+
+def test_plan_guard_branches():
+    """Each plan rule, failing on its own (the schema's G-P1 is checked separately above)."""
+    ids = lambda v: {x.split(":")[0] for x in v}
+    msgs = lambda v: " | ".join(v)
+    t = _task
+    assert "duplicate task ids ['T1']" in msgs(check([t("T1", ["a"]), t("T1", ["b"])]))
+    assert "depends on unknown task T9" in msgs(check([t("T1", ["a"], ["T9"])]))
+    assert "cites unknown requirement REQ-9" in msgs(check([t("T1", ["a"], reqs=("REQ-1", "REQ-9"))]))
+    blank = t("T1", ["a"]) | {"verification": ["  "]}       # schema-valid, but no real command
+    assert {"G-P4"} == ids(check([blank]))
+    # path shape is the schema's (G-P1); paths_valid re-checks it in case the schema loosens
+    plan_guards = importlib.import_module("legion_orch.workflow.guards.plan")  # (shadowed by plan())
+    assert plan_guards.paths_valid([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]) == [
+        "G-P6: task T1 has empty files_modified", "G-P6: task T1 has invalid path '/etc/passwd'",
+        "G-P6: task T1 has invalid path 'a/../b'"]
+    crit = dict(ORACLE, criteria=[{"id": "AC-1", "requirement": "REQ-7", "text": "t"}])
+    assert "must reference an accepted requirement" in msgs(check([t("T1", ["a"])], oracle=crit))
+    # parallel overlap: exact/exact, pattern/exact, exact/pattern, glob/glob
+    for a, b in ((["x.py"], ["x.py"]), (["src/"], ["src/a.py"]), (["src/a.py"], ["src/"]),
+                 (["src/*.py"], ["src/*.py"])):
+        assert "G-P6" in ids(check([t("T1", a), t("T2", b)])), (a, b)
+    assert check([t("T1", ["src/a.py"]), t("T2", ["docs/"])]) == []
+    # waves: 1 + deepest dependency, on a long chain without recursion
+    chain = [t(f"T{i}", [f"f{i}"], [f"T{i - 1}"] if i else []) for i in range(3000)]
+    assert guards.waves(chain)["T2999"] == 3000
+
+
+def test_report_and_work_guard_branches(tmp_path):
+    from legion_orch.workflow import attest
+    from legion_orch.workflow.assets import GitMode
+    docs = _store()
+    v1 = docs.write("changes/c1/plan/a.md", "one", author="r0001", role="planner")
+    docs.write("changes/c1/plan/a.md", "two", author="r0001", role="planner", base_version=1)
+    docs.write("changes/c1/plan/b.md", "x", author="r0002", role="planner")
+    parse = lambda *refs: [attest.parse(r, ["app"]) for r in refs]
+    _, v = guards.required_docs("r0001", ["changes/c1/plan/a.md", "changes/c1/plan/b.md"],
+                                parse(v1.attestation, "file:changes/c1/plan/b.md@1"), docs)
+    assert "is not the latest version (latest 2)" in v[0] and "was not written by this run" in v[1]
+    sha, v = guards.required_git(GitMode.COMMIT, parse(f"git:app@{SHA}", f"git:app@{'b' * 40}"), "app", None)
+    assert sha is None and v[0].startswith("G-R5: attest exactly one commit")
+    sha, v = guards.required_git(GitMode.CANDIDATE, parse(f"git:app@{'b' * 40}"), "app", SHA)
+    assert v[0].startswith("G-RV1")
+    assert guards.required_git(GitMode.HEAD, parse(f"git:app@{SHA}"), "app", SHA) == (SHA, [])
+    assert guards.load_json(docs, None, "G-X")[1] == ["G-X: document not attested"]
+    assert "not valid JSON" in guards.load_json(docs, parse(v1.attestation)[0], "G-X")[1][0]
+    assert guards.scoped_diff([], ["src/"], [], [], "G-B3") == ["G-B3: commit changes no files"]
+    assert guards.scoped_diff(["src/k.pem"], ["src/"], ["*.pem"], [], "G-B3") == \
+        ["G-B3: src/k.pem is forbidden for this task"]
+    assert len(guards.release_docs("# plan\n", "revert", SHA)) == 2
+    ok_plan = "## Health criteria\n## Rollback criteria\n"
+    assert guards.release_docs(ok_plan, f"git revert to {SHA}", SHA) == []
+    assert guards.intake("- REQ-1: a\n- REQ-1: b\n", _signals(), None, "DONE")[0] == \
+        "G-I1: duplicate requirement ids ['REQ-1']"
+    many = "".join(f"- REQ-{i}: r\n" for i in range(101))
+    assert "at most 100 per change" in guards.intake(many, _signals(), None, "DONE")[0]
+    assert "G-I1" in guards.intake("no ids here", _signals(), None, "DONE")[0]

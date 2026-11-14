@@ -36,6 +36,11 @@ description = "Unit, git access-control and end-to-end workflow tests"
 depends = ["install"]
 run = "pytest -q"
 
+[tasks.cov]
+description = "Tests with branch coverage (term report with missed lines)"
+depends = ["install"]
+run = "pytest -q --cov=legion_orch --cov-branch --cov-report=term-missing:skip-covered"
+
 [tasks.build]
 description = "Build sdist and wheel into dist/"
 depends = ["install"]
