@@ -3,6 +3,9 @@
 Mixin of :class:`ChangeEngine`; relies on its state and helpers."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import copy
 from typing import Any
 
 from ...store import DocVersion
@@ -22,7 +25,7 @@ from ..model import (
     Run,
 )
 from ..roles import Report, handler_for
-from .common import WorkflowError
+from .common import WorkflowError, log
 
 
 class ReportsMixin:
@@ -46,54 +49,111 @@ class ReportsMixin:
             run.status = R_ACTIVE
         self.ctl.version += 1
 
+    def _run_lock(self, run_id: str) -> asyncio.Lock:
+        locks = self.__dict__.setdefault("_report_locks", {})
+        return locks.setdefault(run_id, asyncio.Lock())
+
+    def _checkpoint(self) -> tuple:
+        """Snapshot of the change, node and run state (object identity is kept on restore, so
+        coroutines holding references keep seeing the live objects)."""
+        objs = [self.st.change, *self.st.nodes.values(), *self.st.runs.values()]
+        return (self.st.change, dict(self.st.nodes), dict(self.st.runs),
+                {id(o): copy.deepcopy(o.__dict__) for o in objs})
+
+    def _restore(self, cp: tuple) -> None:
+        change, nodes, runs, states = cp
+        self.st.change = change
+        self.st.nodes.clear()
+        self.st.nodes.update(nodes)
+        self.st.runs.clear()
+        self.st.runs.update(runs)
+        for o in [change, *nodes.values(), *runs.values()]:
+            o.__dict__.clear()
+            o.__dict__.update(states[id(o)])
+
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
                             missing_decision: str | None) -> dict:
-        async with self.lock:
-            run = self.runs[run_id]
-            if run.status not in LIVE_RUN:
-                return {"accepted": False, "violations": [f"run is {run.status}"]}
-            node = self.nodes[run.node_id]
-            run.attempts += 1
-            data = data or {}
-            attestations = [attest.normalize(a, self.cid) for a in attestations]
-            for f in data.get("findings") or []:
-                if isinstance(f, dict) and isinstance(f.get("attestations"), list):
-                    f["attestations"] = [attest.normalize(a, self.cid) for a in f["attestations"]
-                                         if isinstance(a, str)]
-            v = guards.report_shape(status, blocked_reason, missing_decision)
-            if status == "DONE":   # G-R7: structured data matches the role's report schema
-                schema = self.assets.roles[run.role].report_schema
-                v += [f"G-R7: data does not match schema {schema!r}: {x}"
-                      for x in self.assets.schemas.validate_data(schema, data)]
-            parsed, v3 = await attest.check_all(attestations, [self.cfg.repo.name], self.docs, self.git)
-            v += v3
-            ctx: dict[str, Any] = {}
-            if not v and status == "DONE":
-                v += await self._role_guards(run, node, parsed, data, ctx)
-            if v:
-                run.violations.append(v)
-                left = self.cfg.limits.max_report_attempts - run.attempts
-                self.event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
-                            node.id, run.id, data=v)
-                if left <= 0:
-                    self._fail_run(run, "G-R6: too many rejected reports")
+        """Three phases. (1) Under the controller lock: bookkeeping and cheap checks. (2) Without
+        it: attestation resolution, git checks and role guards, which can be slow – reports of
+        the same run are serialised by a per-run lock and the checks are time-limited. (3) Under
+        the lock again: re-check the run is unchanged, then apply the transition transactionally
+        (any exception restores the state and escalates)."""
+        async with self._run_lock(run_id):
+            async with self.lock:
+                run = self.runs[run_id]
+                if run.status not in LIVE_RUN:
+                    return {"accepted": False, "violations": [f"run is {run.status}"]}
+                node = self.nodes[run.node_id]
+                run.attempts += 1
+                attempt = run.attempts
+                data = data or {}
+                v = guards.report_limits(summary, attestations, data, blocked_reason, missing_decision)
+                if not v:
+                    attestations = [attest.normalize(a, self.cid) for a in attestations]
+                    for f in data.get("findings") or []:
+                        if isinstance(f, dict) and isinstance(f.get("attestations"), list):
+                            f["attestations"] = [attest.normalize(a, self.cid)
+                                                 for a in f["attestations"] if isinstance(a, str)]
+                    v = guards.report_shape(status, blocked_reason, missing_decision)
+                    if status == "DONE":   # G-R7: structured data matches the role's report schema
+                        schema = self.assets.roles[run.role].report_schema
+                        v += [f"G-R7: data does not match schema {schema!r}: {x}"
+                              for x in self.assets.schemas.validate_data(schema, data)]
                 self._save()
-                return {"accepted": False, "violations": v, "attempts_left": max(left, 0)}
-            run.status = R_REPORTED
-            run.ended_at = now_iso()
-            run.report = {"status": status, "summary": summary, "attestations": attestations,
-                          "data": data, "blocked_reason": blocked_reason,
-                          "missing_decision": missing_decision, "at": run.ended_at}
-            self.event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
-            if status == "BLOCKED":
-                self.escalate(node, "blocked", blocked_reason or "",
-                               resume=REWORK if node.kind == BUILD else READY,
-                               run=run.id, missing_decision=missing_decision)
-            else:
-                await self._on_done(run, node, data, ctx)
-            self._save()
-            return {"accepted": True, "next": node.status}
+
+            ctx: dict[str, Any] = {}
+            if not v:
+                try:
+                    async with asyncio.timeout(self.cfg.limits.report_check_timeout_s):
+                        parsed, v3 = await attest.check_all(attestations, [self.cfg.repo.name],
+                                                            self.docs, self.git)
+                        v += v3
+                        if not v and status == "DONE":
+                            v += await self._role_guards(run, node, parsed, data, ctx)
+                except TimeoutError:
+                    v.append(f"G-R8: report checks exceeded {self.cfg.limits.report_check_timeout_s}s")
+
+            async with self.lock:
+                if run.status not in LIVE_RUN or run.attempts != attempt:
+                    return {"accepted": False, "violations": [f"run changed during checks ({run.status})"]}
+                if v:
+                    return self._reject_report(run, node, v)
+                checkpoint = self._checkpoint()
+                try:
+                    run.status = R_REPORTED
+                    run.ended_at = now_iso()
+                    run.report = {"status": status, "summary": summary, "attestations": attestations,
+                                  "data": data, "blocked_reason": blocked_reason,
+                                  "missing_decision": missing_decision, "at": run.ended_at}
+                    self.event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
+                    if status == "BLOCKED":
+                        self.escalate(node, "blocked", blocked_reason or "",
+                                      resume=REWORK if node.kind == BUILD else READY,
+                                      run=run.id, missing_decision=missing_decision)
+                    else:
+                        await self._on_done(run, node, data, ctx)
+                    self._save()
+                except Exception as e:      # never leave a half-applied transition behind
+                    log.exception("applying report of %s failed", run.id)
+                    self._restore(checkpoint)
+                    self._fail_run(run, f"controller error while applying the report: {e!r} "
+                                        "(external effects such as git merges may already exist)")
+                    with contextlib.suppress(Exception):
+                        self._save()
+                    return {"accepted": False,
+                            "violations": ["controller error while applying the report; escalated"]}
+                return {"accepted": True, "next": node.status}
+
+    def _reject_report(self, run: Run, node: Node, v: list[str]) -> dict:
+        run.violations.append(v)
+        left = self.cfg.limits.max_report_attempts - run.attempts
+        self.event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
+                   node.id, run.id, data=v[:50])
+        if left <= 0:
+            self._fail_run(run, "G-R6: too many rejected reports")
+        self._save()
+        return {"accepted": False, "violations": v, "attempts_left": max(left, 0)}
 
     async def _role_guards(self, run: Run, node: Node, parsed: list[attest.Attestation],
                            data: dict, ctx: dict) -> list[str]:
@@ -148,7 +208,7 @@ class ReportsMixin:
         node.finding_history.append(fps)
         docs = [r["doc"] for r in results]
         fb = [{"cycle": node.cycle, "source": "review",
-               "text": f"{f['severity']} ({f.get('dimension', '?')}): {f['title']} – fix: {f['fix']}",
+               "text": f"{f['severity']} ({f.get('dimension', '?')}): {f['title']} – fix: {f['fix'][:500]}",
                "attestations": f.get("attestations", [])} for f in high]
         fb.append({"cycle": node.cycle, "source": "review", "text": "full review documents",
                    "attestations": docs})

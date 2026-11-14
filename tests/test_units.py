@@ -541,3 +541,35 @@ def test_plan_limits_and_scale():
     assert "G-P6" in {x.split(":")[0] for x in check(clash)}
     many_reqs = "\n".join(f"- REQ-{i}: x" for i in range(1, 102))
     assert any("at most 100" in x for x in guards.intake(many_reqs, _signals(), None, "DONE"))
+
+
+def test_report_limits():
+    ok = guards.report_limits("done", [f"git:app@{SHA}"], {"verdict": "PASS"}, None, None)
+    assert ok == []
+    assert guards.report_limits("x" * 2001, [], {}, None, None)[0].startswith("G-R8: summary")
+    assert guards.report_limits("s", ["a"] * 101, {}, None, None)[0].startswith("G-R8: attestations")
+    assert guards.report_limits("s", [], {"x": "y" * 300_000}, None, None)[0].startswith("G-R8: data")
+    assert guards.report_limits("s", [], {}, "r" * 3000, None)[0].startswith("G-R8: blocked_reason")
+
+
+def test_transition_rollback_keeps_identity():
+    import types
+
+    from legion_orch.workflow.engine import ChangeEngine
+    from legion_orch.workflow.model import Change, Node, Run
+    ctl = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None, lock=None,
+                                procs={}, read_tokens={}, version=0)
+    ce = ChangeEngine(ctl, "c1")
+    ce.st.change = Change(id="c1", goal="g", base_sha="a" * 40)
+    node = Node("plan", "plan", "Plan")
+    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
+    ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
+    cp = ce._checkpoint()
+    run.status, node.status, node.feedback = "REPORTED", "ACCEPTED", [{"x": 1}]
+    ce.st.change.tier = "R3"
+    ce.st.nodes["build:T1"] = Node("build:T1", "build", "T1")      # e.g. materialized builds
+    del ce.st.nodes["plan"]
+    ce._restore(cp)
+    assert ce.nodes["plan"] is node and ce.runs["r0001"] is run       # same objects
+    assert (run.status, node.status, node.feedback) == ("ACTIVE", "PENDING", [])
+    assert ce.change.tier is None and "build:T1" not in ce.nodes

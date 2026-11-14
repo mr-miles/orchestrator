@@ -62,6 +62,16 @@ class RoleHandler:
         e.accept_runs(r.node)
 
 
+def brief_findings(findings: list[dict]) -> list[dict]:
+    """Compact copy for node records (the run record and the review document keep the full text),
+    so repeated review cycles cannot grow a node record without bound."""
+    keep = ("severity", "confidence", "dimension", "title")
+    return [{**{k: f.get(k) for k in keep if k in f},
+             "observation": str(f.get("observation", ""))[:500], "impact": str(f.get("impact", ""))[:300],
+             "fix": str(f.get("fix", ""))[:500], "attestations": list(f.get("attestations", []))[:5]}
+            for f in findings[:30] if isinstance(f, dict)]
+
+
 def build_context(e: RoleContext, node: Node) -> list[str]:
     """Context of a build task: its declared context and its accepted dependencies' commits."""
     refs = [c for c in (node.task or {}).get("context", []) if isinstance(c, str)]

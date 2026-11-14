@@ -27,6 +27,7 @@ GUARDS: dict[str, str] = {
     "G-W2": "docs_write: base_version equals latest",
     "G-W3": "store write: content matches the schema bound to the path",
     "G-R7": "report: data matches the role's report schema",
+    "G-R8": "report: size limits (summary, reasons, attestations, data) and check time limit",
     # intake
     "G-I1": "requirements contain unique REQ ids",
     "G-I2": "risk.json has all 12 signals with scores and rationale",
@@ -89,6 +90,31 @@ def load_json(docs: DocStore, att: Attestation | None, gid: str) -> tuple[Any, l
 
 
 # ---------------------------------------------------------------- universal
+MAX_TEXT = 2000
+MAX_ATTESTATIONS = 100
+MAX_DATA_BYTES = 256 * 1024
+
+
+def report_limits(summary: Any, attestations: Any, data: Any, blocked_reason: Any,
+                  missing_decision: Any) -> list[str]:
+    """Guard G-R8: bound everything a report can make the controller store or process."""
+    v = []
+    for name, val in (("summary", summary), ("blocked_reason", blocked_reason),
+                      ("missing_decision", missing_decision)):
+        if val is not None and (not isinstance(val, str) or len(val) > MAX_TEXT):
+            v.append(f"G-R8: {name} must be a string of at most {MAX_TEXT} characters")
+    if not isinstance(attestations, list) or len(attestations) > MAX_ATTESTATIONS \
+            or not all(isinstance(a, str) and len(a) <= 600 for a in attestations):
+        v.append(f"G-R8: attestations must be a list of at most {MAX_ATTESTATIONS} strings")
+    try:
+        size = len(json.dumps(data))
+    except (TypeError, ValueError):
+        return v + ["G-R8: data must be JSON"]
+    if size > MAX_DATA_BYTES:
+        v.append(f"G-R8: data is {size} bytes; at most {MAX_DATA_BYTES}")
+    return v
+
+
 def report_shape(status: str, blocked_reason: str | None, missing_decision: str | None) -> list[str]:
     v = []
     if status not in ("DONE", "BLOCKED"):

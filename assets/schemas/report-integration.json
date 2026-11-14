@@ -25,28 +25,34 @@
         "properties": {
           "command": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 2000
           },
           "exit_code": {
             "type": "integer"
           },
           "output": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 4000
           }
         }
-      }
+      },
+      "maxItems": 100
     },
     "findings": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/finding"
-      }
+      },
+      "maxItems": 30
     },
     "checked": {
       "type": "array",
       "items": {
-        "type": "string"
-      }
+        "type": "string",
+        "maxLength": 300
+      },
+      "maxItems": 50
     }
   },
   "additionalProperties": false,
@@ -95,22 +101,27 @@
           "maxLength": 200
         },
         "observation": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 2000
         },
         "impact": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 2000
         },
         "fix": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "maxLength": 2000
         },
         "attestations": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "string",
-            "minLength": 1
-          }
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "maxItems": 20
         }
       }
     }

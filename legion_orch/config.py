@@ -60,6 +60,8 @@ class LimitsConfig:
     # git transport: largest accepted request (push) and concurrent git-http-backend processes
     git_max_push_bytes: int = 256 * 1024 * 1024
     git_max_concurrency: int = 8
+    # time limit for checking one report (attestations, git checks, role guards)
+    report_check_timeout_s: int = 120
 
 
 @dataclass

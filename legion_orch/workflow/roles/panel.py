@@ -5,7 +5,7 @@ from __future__ import annotations
 from .. import guards
 from ..model import R_ACCEPTED
 from ..view import RoleContext
-from .base import Report, RoleHandler, build_context, evidence_of, register
+from .base import Report, RoleHandler, brief_findings, build_context, evidence_of, register
 
 
 @register
@@ -29,7 +29,7 @@ class Panel(RoleHandler):
         run, node, data = r.run, r.node, r.data
         node.reviews[f"{run.cycle}:{run.role}"] = {
             "verdict": data["verdict"], "sha": run.judged_sha, "run": run.id,
-            "findings": data.get("findings", []), "checked": data.get("checked", []),
+            "findings": brief_findings(data.get("findings", [])), "checked": data.get("checked", [])[:50],
             "doc": str(r.docs[run.required_docs[0]])}
         run.status = R_ACCEPTED
         e.delete_sandbox_later(run.sandbox)

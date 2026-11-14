@@ -257,6 +257,7 @@ Universal guards apply to every task and are listed once.
 | G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
 | G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. |
 | G-R7 | report | `data` matches the role's `report_schema` (`roles.yaml`): verdicts, findings, results. |
+| G-R8 | report | Size limits: summary and reasons ≤ 2,000 characters, ≤ 100 attestations, `data` ≤ 256 KiB (report schemas also cap item counts and text lengths); the checks of one report are time-limited (`limits.report_check_timeout_s`). Applying an accepted report is transactional: any controller error restores the state and escalates. |
 | G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). |
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
