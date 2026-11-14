@@ -13,3 +13,5 @@ label:
   legion.task: ${TASK_ID}
   legion.role: ${ROLE}
   legion.run: ${RUN_ID}
+annotation:                       # exact ids (labels are sanitised: build:T1 -> build.T1)
+  legion.task: ${TASK_ID}

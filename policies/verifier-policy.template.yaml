@@ -17,13 +17,13 @@ network_policies:
     endpoints:
       - host: ${CONTROLLER_HOST}
         port: ${CONTROLLER_PORT}
-        path: ${GIT_PATH_GLOB}
+        path: /git/*.git/**
         protocol: rest
         tls: ${CONTROLLER_TLS}
         enforcement: enforce
         rules:
-          - allow: { method: GET, path: ${GIT_INFO_REFS} }
-          - allow: { method: POST, path: ${GIT_UPLOAD_PACK} }
+          - allow: { method: GET, path: /git/*.git/info/refs }
+          - allow: { method: POST, path: /git/*.git/git-upload-pack }
         deny_rules:
-          - { method: POST, path: ${GIT_RECEIVE_PACK} }
+          - { method: POST, path: /git/*.git/git-receive-pack }
     binaries: ${GIT_BINARIES}

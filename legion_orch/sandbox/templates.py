@@ -44,10 +44,6 @@ VOCABULARY: dict[str, str] = {
     "MCP_TLS": '"none" for a plain HTTP MCP endpoint, "" for TLS',
     "MCP_VERSIONS": "MCP protocol revisions the gateway accepts",
     "MCP_TOOLS": "tool names the controller's MCP server registers (the tools/call allowlist)",
-    "GIT_PATH_GLOB": "git endpoint path pattern, /git/<repo>.git/**",
-    "GIT_INFO_REFS": "git ref advertisement path, /git/<repo>.git/info/refs",
-    "GIT_UPLOAD_PACK": "git fetch path, /git/<repo>.git/git-upload-pack",
-    "GIT_RECEIVE_PACK": "git push path, /git/<repo>.git/git-receive-pack",
     "GIT_PUSH_DENY_RULES": "deny rules for git-receive-pack: [] for roles that push, else a POST deny",
     "TOKEN_ENDPOINT": "the controller's OAuth token endpoint (<public_url>/oauth/token)",
     # identity (from identity.*)
@@ -72,7 +68,7 @@ VOCABULARY: dict[str, str] = {
     "CHANGE_ID": "change id the sandbox works for",
     "RUN_ID": "run id that created the sandbox (verifiers: the verifier name)",
     "ROLE": "role the sandbox serves (implementer, reviewer, ..., verifier)",
-    "TASK_ID": "node / task id the sandbox serves",
+    "TASK_ID": "node / task id the sandbox serves (sanitised automatically in labels)",
 }
 
 GIT_BINARIES = ["/usr/bin/git", "/usr/lib/git-core/git-remote-http",
@@ -100,10 +96,6 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
         "CONTROLLER_HOST": ch, "CONTROLLER_PORT": cp, "CONTROLLER_TLS": ctls,
         "MCP_HOST": mh, "MCP_PORT": mp, "MCP_PATH": mpath, "MCP_TLS": mtls,
         "MCP_VERSIONS": MCP_VERSIONS,
-        "GIT_PATH_GLOB": f"/git/{cfg.repo.name}.git/**",
-        "GIT_INFO_REFS": f"/git/{cfg.repo.name}.git/info/refs",
-        "GIT_UPLOAD_PACK": f"/git/{cfg.repo.name}.git/git-upload-pack",
-        "GIT_RECEIVE_PACK": f"/git/{cfg.repo.name}.git/git-receive-pack",
         "TOKEN_ENDPOINT": f"{cfg.server.public_url.rstrip('/')}/oauth/token",
         "TOKEN_AUDIENCE": ic.token_audience, "SVID_AUDIENCE": ic.svid_audience, "SCOPE": ic.scope,
         "TOKEN_CACHE_TTL": max(30, min(ic.access_ttl_s // 2, 120)),
@@ -119,10 +111,16 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
     return v
 
 
+def label_value(value: str) -> str:
+    """OpenShell label values: ≤63 chars of alphanumerics, '-', '_', '.', alphanumeric at both ends."""
+    v = re.sub(r"[^A-Za-z0-9._-]", ".", value)[:63]
+    return re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", v)
+
+
 def git_push_deny_rules(cfg: Config, push: bool) -> list[dict]:
     """Deny rules take precedence over allows in OpenShell, so the templates always allow
     git-receive-pack and roles that may not push get this deny."""
-    return [] if push else [{"method": "POST", "path": f"/git/{cfg.repo.name}.git/git-receive-pack"}]
+    return [] if push else [{"method": "POST", "path": "/git/*.git/git-receive-pack"}]
 
 
 def template_path(cfg: Config, key: str) -> Path:
@@ -165,7 +163,8 @@ def render(cfg: Config, key: str, values: dict[str, Any]) -> dict[str, Any]:
 
 def spec_to_args(spec: dict[str, Any]) -> list[str]:
     """``{name: x, provider: [a, b], label: {k: v}, detach: true, from: null}`` →
-    ``--name x --provider a --provider b --label k=v --detach``."""
+    ``--name x --provider a --provider b --label k=v --detach``. Label values are sanitised
+    with :func:`label_value`; annotations keep exact values."""
     args: list[str] = []
     for key, val in spec.items():
         flag = "--" + key.replace("_", "-")
@@ -179,6 +178,8 @@ def spec_to_args(spec: dict[str, Any]) -> list[str]:
                     args += [flag, str(item)]
         elif isinstance(val, dict):
             for k, item in val.items():
+                if key == "label":          # OpenShell label values have a restricted alphabet
+                    item = label_value(str(item))
                 args += [flag, f"{k}={item}"]
         else:
             args += [flag, str(val)]

@@ -16,8 +16,8 @@ controller only fills in placeholders.
 ## Rendering rules
 
 * Placeholders are `${NAME}` from the vocabulary below – the same names in every template.
-  A placeholder is always a **complete value** (never part of a string such as
-  `${GIT_PATH}/x`); the vocabulary provides whole values instead, e.g. `${GIT_INFO_REFS}`.
+  A placeholder is always a **complete value**, never part of a string. Fixed values are written
+  literally instead (e.g. git paths use the wildcard `/git/*.git/git-upload-pack`).
 * Every value is inserted **JSON-encoded**, which is always valid YAML: strings are quoted,
   numbers bare, lists `[...]`, maps `{...}`, `null` when unset. Write `host: ${MCP_HOST}`, not
   `host: "${MCP_HOST}"`.
@@ -28,6 +28,8 @@ controller only fills in placeholders.
   `--workspace ${WORKSPACE}` (and `-g <gateway>` when `sandbox.gateway` is set).
 * OpenShell gives deny rules precedence over allows, so the git endpoint always allows
   `git-receive-pack` and `${GIT_PUSH_DENY_RULES}` removes it for roles that do not push.
+* `label` values are sanitised to OpenShell's rules (≤63 chars of `[A-Za-z0-9._-]`, e.g.
+  `build:T1` → `build.T1`); put exact values in `annotation` if they matter.
 * Do not put credentials in templates: controller access is injected by the gateway (SPIFFE token
   grant in the provider profile), model access by the model providers.
 
@@ -44,10 +46,6 @@ controller only fills in placeholders.
 | `${MCP_TLS}` | "none" for a plain HTTP MCP endpoint, "" for TLS |
 | `${MCP_VERSIONS}` | MCP protocol revisions the gateway accepts |
 | `${MCP_TOOLS}` | tool names the controller's MCP server registers (the tools/call allowlist) |
-| `${GIT_PATH_GLOB}` | git endpoint path pattern, /git/<repo>.git/** |
-| `${GIT_INFO_REFS}` | git ref advertisement path, /git/<repo>.git/info/refs |
-| `${GIT_UPLOAD_PACK}` | git fetch path, /git/<repo>.git/git-upload-pack |
-| `${GIT_RECEIVE_PACK}` | git push path, /git/<repo>.git/git-receive-pack |
 | `${GIT_PUSH_DENY_RULES}` | deny rules for git-receive-pack: [] for roles that push, else a POST deny |
 | `${TOKEN_ENDPOINT}` | the controller's OAuth token endpoint (<public_url>/oauth/token) |
 | `${TOKEN_AUDIENCE}` | audience requested for controller access tokens |
@@ -69,4 +67,4 @@ controller only fills in placeholders.
 | `${CHANGE_ID}` | change id the sandbox works for |
 | `${RUN_ID}` | run id that created the sandbox (verifiers: the verifier name) |
 | `${ROLE}` | role the sandbox serves (implementer, reviewer, ..., verifier) |
-| `${TASK_ID}` | node / task id the sandbox serves |
+| `${TASK_ID}` | node / task id the sandbox serves (sanitised automatically in labels) |

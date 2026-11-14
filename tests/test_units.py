@@ -362,18 +362,27 @@ def test_templates_render(tmp_path):
     create = calls[0]
     assert create[:2] == ["sandbox", "create"]
     for flag in (["--name", "lg-c1-r0001"], ["--from", "reg/agent:1"], ["--provider", "legion-controller"],
-                 ["--provider", "claude-code"], ["--label", "legion.task=build:T1"],
+                 ["--provider", "claude-code"], ["--label", "legion.task=build.T1"],
                  ["--upload", f"{tmp_path / 'payload'}:/sandbox"]):
         assert any(create[i:i + 2] == flag for i in range(len(create))), flag
     assert "--detach" in create and "--no-tty" in create
+    assert ["--annotation", "legion.task=build:T1"] == create[create.index("--annotation"):][:2]
+    import re as _re
+    labels = [create[i + 1] for i, a in enumerate(create) if a == "--label"]
+    assert len(labels) == 4
+    for kv in labels:                         # OpenShell label key/value validation rules
+        key, _, val = kv.partition("=")
+        assert _re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?", key.split("/")[-1]), kv
+        assert _re.fullmatch(r"([A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?)?", val), kv
     assert r.cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
     cmds = setup_commands(cfg, "p.yaml")
     assert cmds[1][5:] == ["provider", "create", "--name", "legion-controller",
                            "--type", "legion-controller", "--runtime-credentials"]
-    assert spec_to_args({"a_b": None, "c": False, "d": True, "e": [1, 2], "f": {"k": "v"}}) == \
-        ["--d", "--e", "1", "--e", "2", "--f", "k=v"]
+    assert spec_to_args({"a_b": None, "c": False, "d": True, "e": [1, 2], "f": {"k": "v:1"}}) == \
+        ["--d", "--e", "1", "--e", "2", "--f", "k=v:1"]
+    assert spec_to_args({"label": {"k": ":build:T1/x:"}}) == ["--label", "k=build.T1.x"]
     with pytest.raises(TemplateError, match="whole values"):
-        render_text("path: ${GIT_INFO_REFS}/x", {"GIT_INFO_REFS": "/a"})
+        render_text("path: ${MCP_PATH}/x", {"MCP_PATH": "/a"})
     with pytest.raises(TemplateError, match="unknown"):
         render_text("x: ${NOT_A_THING}", {})
     with pytest.raises(TemplateError, match="no value"):
@@ -399,7 +408,7 @@ def test_generated_policy_and_provider_profile(tmp_path):
     judge = _y.safe_load(render_policy(cfg, agent=True, push=False, **kw))
     jgit = judge["network_policies"]["legion_git"]["endpoints"][0]
     assert git["deny_rules"] == []                                       # pushing role
-    assert jgit["deny_rules"] == [{"method": "POST", "path": "/git/app.git/git-receive-pack"}]
+    assert jgit["deny_rules"] == [{"method": "POST", "path": "/git/*.git/git-receive-pack"}]
     ver = _y.safe_load(render_policy(cfg, agent=False, push=False, **kw))
     assert set(ver["network_policies"]) == {"legion_git"}
     prof = provider_profile(cfg, list(MCP_TOOLS))

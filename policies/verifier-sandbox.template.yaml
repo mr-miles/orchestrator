@@ -11,3 +11,5 @@ label:
   legion.change: ${CHANGE_ID}
   legion.task: ${TASK_ID}
   legion.role: ${ROLE}
+annotation:                       # exact ids (labels are sanitised: build:T1 -> build.T1)
+  legion.task: ${TASK_ID}
