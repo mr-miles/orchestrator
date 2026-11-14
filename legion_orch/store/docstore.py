@@ -10,7 +10,7 @@ import hashlib
 import re
 import sqlite3
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 
 from .schemas import SchemaError, SchemaRegistry
@@ -18,8 +18,9 @@ from .schemas import SchemaError, SchemaRegistry
 PATH_RE = re.compile(r"^(?!/)(?!.*//)(?!.*(?:^|/)\.\.?(?:/|$))"
                      r"[A-Za-z0-9._@+=:,~-]+(?:/[A-Za-z0-9._@+=:,~-]+)*$")
 MAX_DOC_BYTES = 2 * 1024 * 1024
-COLS = "path, version, content, sha256, author, role, created_at, schema, schema_sha"
-DCOLS = ", ".join("d." + c.strip() for c in COLS.split(","))
+META_COLS = "path, version, sha256, author, role, created_at, schema, schema_sha"
+COLS = META_COLS + ", content"
+DMETA_COLS = ", ".join("d." + c.strip() for c in META_COLS.split(","))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
@@ -53,11 +54,11 @@ class SchemaViolation(DocStoreError):
     pass
 
 
-@dataclass
-class DocVersion:
+@dataclass(frozen=True)
+class DocMeta:
+    """One immutable document version, without its content."""
     path: str
     version: int
-    content: str
     sha256: str
     author: str
     role: str
@@ -69,11 +70,17 @@ class DocVersion:
     def attestation(self) -> str:
         return f"file:{self.path}@{self.version}"
 
-    def meta(self) -> dict:
-        d = asdict(self)
-        d.pop("content")
-        d["attestation"] = self.attestation
-        return d
+    def to_json(self) -> dict:
+        return asdict(self) | {"attestation": self.attestation}
+
+
+@dataclass(frozen=True)
+class DocVersion(DocMeta):
+    """One immutable document version with its content."""
+    content: str
+
+    def meta(self) -> DocMeta:
+        return DocMeta(**{f.name: getattr(self, f.name) for f in fields(DocMeta)})
 
 
 def now_iso() -> str:
@@ -155,18 +162,19 @@ class DocStore:
         row = self.conn.execute("SELECT MAX(version) FROM documents WHERE path=?", (path,)).fetchone()
         return row[0]
 
-    def history(self, path: str) -> list[dict]:
+    def history(self, path: str) -> list[DocMeta]:
         with self.lock:
             rows = self.conn.execute(
-                f"SELECT {COLS} FROM documents WHERE path=? ORDER BY version", (path,)).fetchall()
-        return [DocVersion(*r).meta() for r in rows]
+                f"SELECT {META_COLS} FROM documents WHERE path=? ORDER BY version", (path,)).fetchall()
+        return [DocMeta(*r) for r in rows]
 
-    def list(self, prefix: str = "") -> list[dict]:
+    def list(self, prefix: str = "") -> list[DocMeta]:
+        """The latest version of every document under ``prefix``."""
         with self.lock:
             rows = self.conn.execute(
-                f"SELECT {DCOLS} FROM documents d JOIN (SELECT path, MAX(version) v FROM documents "
+                f"SELECT {DMETA_COLS} FROM documents d JOIN (SELECT path, MAX(version) v FROM documents "
                 "WHERE path LIKE ? ESCAPE '\\' GROUP BY path) m ON d.path=m.path AND d.version=m.v "
                 "ORDER BY d.path",
                 (prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
             ).fetchall()
-        return [DocVersion(*r).meta() for r in rows]
+        return [DocMeta(*r) for r in rows]

@@ -328,7 +328,8 @@ def test_svid_verification_and_access_tokens():
     svc = IdentityService(v, AccessTokens("legion-controller", 60), "legion")
     form = {"grant_type": "client_credentials", "client_assertion_type": JWT_SPIFFE,
             "client_assertion": spire.mint("sb-1", "legion-controller"), "scope": "legion"}
-    binding = {"sandbox": "sb-1", "change": "c1", "task": "build:T1", "role": "implementer"}
+    from legion_orch.identity import WorkloadBinding
+    binding = WorkloadBinding(sandbox="sb-1", change="c1", task="build:T1", role="implementer")
     tok = run(svc.token_request(form, lambda ref: binding if ref == "sb-1" else None))["access_token"]
     assert svc.tokens.verify(tok) == binding                       # task-scoped claims
     assert AccessTokens("legion-controller", 60).verify(tok) is None   # other key

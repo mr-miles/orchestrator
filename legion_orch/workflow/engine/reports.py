@@ -31,6 +31,7 @@ from ..model import (
     RunReport,
     Verdict,
 )
+from ..results import ReportOutcome
 from ..roles import Report, handler_for
 from .common import WorkflowError, log
 
@@ -99,7 +100,7 @@ class ReportsMixin:
 
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
-                            missing_decision: str | None) -> dict:
+                            missing_decision: str | None) -> ReportOutcome:
         """Three phases. (1) Under the controller lock: bookkeeping and cheap checks. (2) Without
         it: attestation resolution, git checks and role guards, which can be slow – reports of
         the same run are serialised by a per-run lock and the checks are time-limited. (3) Under
@@ -109,7 +110,7 @@ class ReportsMixin:
             async with self.lock:
                 run = self.runs[run_id]
                 if run.status not in LIVE_RUN:
-                    return {"accepted": False, "violations": [f"run is {run.status}"]}
+                    return ReportOutcome.reject(f"run is {run.status}")
                 node = self.nodes[run.node_id]
                 run.attempts += 1
                 attempt = run.attempts
@@ -142,7 +143,7 @@ class ReportsMixin:
 
             async with self.lock:
                 if run.status not in LIVE_RUN or run.attempts != attempt:
-                    return {"accepted": False, "violations": [f"run changed during checks ({run.status})"]}
+                    return ReportOutcome.reject(f"run changed during checks ({run.status})")
                 if v:
                     return self._reject_report(run, node, v)
                 checkpoint = self._checkpoint()
@@ -167,19 +168,18 @@ class ReportsMixin:
                                         "(external effects such as git merges may already exist)")
                     with contextlib.suppress(Exception):
                         self._save()
-                    return {"accepted": False,
-                            "violations": ["controller error while applying the report; escalated"]}
-                return {"accepted": True, "next": node.status}
+                    return ReportOutcome.reject("controller error while applying the report; escalated")
+                return ReportOutcome(accepted=True, next=node.status)
 
-    def _reject_report(self, run: Run, node: Node, v: list[str]) -> dict:
+    def _reject_report(self, run: Run, node: Node, v: list[str]) -> ReportOutcome:
         run.violations.append(v)
         left = self.cfg.limits.max_report_attempts - run.attempts
         self.event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
-                   node.id, run.id, data=v[:50])
+                   node.id, run.id)
         if left <= 0:
             self._fail_run(run, "G-R6: too many rejected reports")
         self._save()
-        return {"accepted": False, "violations": v, "attempts_left": max(left, 0)}
+        return ReportOutcome.reject(*v, attempts_left=max(left, 0))
 
     async def _role_guards(self, run: Run, node: Node, parsed: list[attest.Attestation],
                            data: dict, ctx: dict) -> list[str]:

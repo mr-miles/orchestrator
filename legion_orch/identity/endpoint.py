@@ -8,9 +8,10 @@ from starlette.responses import JSONResponse
 
 from .service import IdentityService
 from .spiffe import IdentityError
+from .tokens import WorkloadBinding
 
 
-def make_token_endpoint(identity: IdentityService, binding_for: Callable[[str], dict | None]):
+def make_token_endpoint(identity: IdentityService, binding_for: Callable[[str], WorkloadBinding | None]):
     async def oauth_token(request: Request):
         """JWT-SVID client assertion -> task-scoped access token."""
         form = dict(await request.form())

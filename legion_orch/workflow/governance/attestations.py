@@ -18,7 +18,7 @@ def coverage_ok(rec: AttestationRecord, task_ids: set[str]) -> bool:
     return rec.covers is None or task_ids <= set(rec.covers)
 
 
-async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> dict:
+async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> AttestationRecord:
     """Guard G-AT1."""
     kind, verdict = payload.get("kind"), payload.get("verdict")
     if kind not in ATTESTATION_KINDS:
@@ -60,4 +60,4 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
                             supersedes=prev.attestation if prev else None, warnings=warnings)
     rec.attestation = e.write_record(f"control/attestations/{kind}.json", rec).attestation
     e.change.attestations[kind] = rec
-    return {"ok": True, "attestation": rec.attestation, "warnings": warnings}
+    return rec

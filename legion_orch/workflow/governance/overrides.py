@@ -14,7 +14,7 @@ NON_WAIVABLE = {"deterministic_verification", "explicit_human_approval",
                 "whole_change_acceptance_evidence"}
 ALL_GATES = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
 
-async def record_override(e: ChangeView, approver: str, payload: dict) -> dict:
+async def record_override(e: ChangeView, approver: str, payload: dict) -> GateOverride:
     """Guard G-OV1."""
     kind, gate, reason = payload.get("kind"), payload.get("gate"), payload.get("reason")
     if kind not in tuple(OverrideKind):
@@ -33,7 +33,7 @@ async def record_override(e: ChangeView, approver: str, payload: dict) -> dict:
     n = len(e.change.overrides) + 1
     rec.attestation = e.write_record(f"control/overrides/{n}.json", rec).attestation
     e.change.overrides.append(rec)
-    return {"ok": True, "attestation": rec.attestation}
+    return rec
 
 
 def gate_set(e: ChangeView) -> list[str]:

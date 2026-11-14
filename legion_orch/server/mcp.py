@@ -28,6 +28,7 @@ from ..util import bearer
 from ..workflow import attest
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Run
+from ..workflow.results import ReportOutcome
 from ..workflow.roles import handler_for
 
 INSTRUCTIONS = """Legion orchestrator tools. Start with get_assignment(). Documents are immutable,
@@ -124,11 +125,14 @@ def build_mcp(ctl: Controller) -> MCPServer:
             try:
                 data = json.loads(data) if data.strip() else None
             except json.JSONDecodeError as e:
-                return {"accepted": False, "violations": [f"data is not valid JSON: {e}"]}
+                return ReportOutcome.reject(f"data is not valid JSON: {e}").model_dump(
+                    mode="json", exclude_none=True)
         if data is not None and not isinstance(data, dict):
-            return {"accepted": False, "violations": ["data must be a JSON object"]}
-        return await ce.handle_report(r.id, status, summary, attestations, data,
-                                      blocked_reason, missing_decision)
+            return ReportOutcome.reject("data must be a JSON object").model_dump(
+                mode="json", exclude_none=True)
+        outcome = await ce.handle_report(r.id, status, summary, attestations, data,
+                                         blocked_reason, missing_decision)
+        return outcome.model_dump(mode="json", exclude_none=True)
 
     registered = {t.name for t in server._tool_manager.list_tools()}
     if registered != set(MCP_TOOLS):   # the gateway's MCP allowlist must match exactly

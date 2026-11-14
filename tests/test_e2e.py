@@ -1,5 +1,6 @@
 """End-to-end: real HTTP server (MCP + git smart-HTTP + API), LocalRunner, scripted agents."""
 import asyncio
+import dataclasses
 import json
 import socket
 import sqlite3
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from legion_orch.config import load_config
+from legion_orch.identity import WorkloadBinding
 from legion_orch.server import build_servers
 from legion_orch.server.views import change_state
 from legion_orch.workflow.engine import Controller, WorkflowError
@@ -90,7 +92,7 @@ async def _full_workflow(tmp_path):
         assert a.cid != b.cid
         await asyncio.gather(_drive(a), _drive(b))
         old_token = ctl.auth.identity.tokens.issue(
-            {"sandbox": "s", "change": a.cid, "task": "intake", "role": "intake"}, "x")
+            WorkloadBinding(sandbox="s", change=a.cid, task="intake", role="intake"), "x")
         await _identity_checks(ctl, cfg)
     finally:
         for srv in servers:
@@ -134,9 +136,9 @@ async def _drive(ce):
     with pytest.raises(WorkflowError, match="not a decision owner"):
         await ce.human_action("H-2", "approve", "mallory")
     r = await ce.human_action("H-2", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
-    assert sorted(r["pending"]) == ["REQ-2", "oracle"] and n["H-2"].status == "AWAITING_HUMAN"
+    assert sorted(r.pending) == ["REQ-2", "oracle"] and n["H-2"].status == "AWAITING_HUMAN"
     r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["REQ-2", "oracle"]})
-    assert r["pending"] == [] and n["H-2"].status == "ACCEPTED"
+    assert r.pending == [] and n["H-2"].status == "ACCEPTED"
     assert ce.change.surface_pins["files"].pins["README.md"]
 
     await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
@@ -193,13 +195,13 @@ async def _r3_workflow(tmp_path):
         await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
         assert n["baseline"].status == "ACCEPTED"
         r = await ce.human_action("H-2", "approve", "miles")
-        assert r["pending"] == ["independent-baseline"]        # R3: baseline attested before build
+        assert r.pending == ["independent-baseline"]        # R3: baseline attested before build
         with pytest.raises(Exception, match="G-AT1"):
             await ce.change_action("attest", "miles", {"kind": "independent-baseline",
                                                        "verdict": "pass", "sources": []})
         r = await ce.change_action("attest", "miles", {
             "kind": "independent-baseline", "verdict": "pass", "sources": ["file:baseline/report.md@1"]})
-        assert r["warnings"] == []
+        assert r.warnings == []
         await ce.human_action("H-2", "approve", "miles")
         assert n["H-2"].status == "ACCEPTED"
 
@@ -308,11 +310,12 @@ async def _identity_checks(ctl, cfg):
     ce.runs["r9999"] = Run(id="r9999", node_id="build:T1", role="implementer", soul="s", cycle=9,
                            status="ACTIVE", sandbox="lg-x", sandbox_ref="lg-x")
     try:
-        good = {"sandbox": "lg-x", "change": ce.cid, "task": "build:T1", "role": "implementer"}
+        good = WorkloadBinding(sandbox="lg-x", change=ce.cid, task="build:T1", role="implementer")
         assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(good, "x"))[1].id == "r9999"
         for wrong in ({"task": "build:T2"}, {"role": "reviewer"}, {"change": "c-other"},
                       {"sandbox": "lg-y"}):
-            assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(good | wrong, "x")) is None, wrong
+            bad = dataclasses.replace(good, **wrong)
+            assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(bad, "x")) is None, wrong
         assert ctl.auth.sandbox_binding("lg-x") == good
     finally:
         del ce.runs["r9999"]

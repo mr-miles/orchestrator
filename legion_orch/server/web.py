@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import uvicorn
+from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import (
@@ -127,7 +128,11 @@ def build_app(ctl: Controller) -> Starlette:
                     return JSONResponse({"error": str(e)}, status_code=400)
                 except DocStoreError as e:
                     return JSONResponse({"error": str(e)}, status_code=404)
-                return data if isinstance(data, Response) else JSONResponse(data)
+                if isinstance(data, Response):
+                    return data
+                if isinstance(data, BaseModel):
+                    data = data.model_dump(mode="json", exclude_none=True)
+                return JSONResponse(data)
             return endpoint
         return deco
 
@@ -171,8 +176,8 @@ def build_app(ctl: Controller) -> Starlette:
     async def docs(request: Request):
         items = ctl.docs.list(request.query_params.get("prefix", ""))
         if request.query_params.get("all") != "1":
-            items = [d for d in items if not any(n in "/" + d["path"] for n in NOISY)]
-        return items
+            items = [d for d in items if not any(n in "/" + d.path for n in NOISY)]
+        return [d.to_json() for d in items]
 
     @api()
     async def doc(request: Request):
@@ -180,7 +185,7 @@ def build_app(ctl: Controller) -> Starlette:
         if not path:
             raise BadRequest("path is required")
         d = ctl.docs.read(path, int_param(request, "version", None))
-        return d.meta() | {"content": d.content, "history": ctl.docs.history(path)}
+        return d.to_json() | {"history": [m.to_json() for m in ctl.docs.history(path)]}
 
     @api()
     async def run_log(request: Request):
@@ -202,7 +207,7 @@ def build_app(ctl: Controller) -> Starlette:
     @api(write=True)
     async def start_change(_: Request, body: dict):
         ce = await ctl.start_change(str(body.get("goal", "")))
-        return {"ok": True, "change": ce.cid}
+        return {"change": ce.cid}
 
     @api(write=True)
     async def node_action(request: Request, body: dict):

@@ -44,7 +44,7 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
                              "Relative prefixes resolve inside your namespace.")
     async def docs_list(ctx: Context, prefix: str = "") -> list[dict]:
         s = session(ctx)
-        return [d for d in s.docs.list(s.resolve(prefix)) if s.readable(d["path"])]
+        return [d.to_json() for d in s.docs.list(s.resolve(prefix)) if s.readable(d.path)]
 
     @server.tool(description="Read a document version (latest if version omitted).")
     async def docs_read(ctx: Context, path: str, version: int | None = None) -> dict:
@@ -53,12 +53,12 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
             d = s.docs.read(readable_path(s, path), version)
         except DocStoreError as e:
             raise ToolError(str(e)) from None
-        return d.meta() | {"content": d.content}
+        return d.to_json()
 
     @server.tool(description="All versions of a document with author, role, sha256 and schema.")
     async def docs_history(ctx: Context, path: str) -> list[dict]:
         s = session(ctx)
-        return s.docs.history(readable_path(s, path))
+        return [m.to_json() for m in s.docs.history(readable_path(s, path))]
 
     @server.tool(description="Write a new immutable version of a document. base_version must equal "
                              "the current latest version (omit for a new document). The content "
@@ -70,7 +70,7 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
             v = await s.write(s.resolve(path), content, base_version)
         except DocStoreError as e:
             raise ToolError(str(e)) from None
-        return v.meta()
+        return v.meta().to_json()
 
     @server.tool(description="The schema a document path is bound to (name, format, definition). "
                              "Every write is validated against it; check before writing.")

@@ -104,7 +104,7 @@ class Controller:
     def load(self) -> None:
         """Rebuild every change from the store."""
         for m in self.docs.list("changes/"):
-            parts = m["path"].split("/")
+            parts = m.path.split("/")
             if len(parts) == 4 and parts[2:] == ["control", "change.json"]:
                 ce = ChangeEngine(self.svc, self, parts[1])
                 ce.load()

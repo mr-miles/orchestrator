@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import traceback
 from typing import Any
 
 from pydantic import BaseModel
@@ -88,16 +87,16 @@ class ChangeEngine(GraphMixin, DispatchMixin, RunsMixin, ReportsMixin, VerifyMix
         self.st.save()
         self.host.changed()
 
-    def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
-               data: Any = None) -> None:
+    def event(self, kind: str, message: str, node: str | None = None,
+              run: str | None = None) -> None:
         """Log a notable step. Not persisted: the store's records (node and run versions,
         control documents) are the history."""
         log.info("[%s %s] %s%s", self.cid, kind, f"{node}: " if node else "", message)
         self.host.touch()
 
     def _spawn(self, coro) -> None:
-        self.host.spawn(coro, on_error=lambda e: self.event(
-            "error", f"internal error: {e}", data=traceback.format_exc()[-3000:]))
+        # the controller logs the traceback; the event marks the change it belongs to
+        self.host.spawn(coro, on_error=lambda e: self.event("error", f"internal error: {e}"))
 
     def write_record(self, rel: str, content: str | dict | BaseModel) -> DocVersion:
         path = self.p(rel)

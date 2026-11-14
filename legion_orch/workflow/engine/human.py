@@ -39,6 +39,7 @@ from ..model import (
     Resume,
     TierOverride,
 )
+from ..results import ActionResult
 from .common import WorkflowError, _slug
 
 
@@ -49,7 +50,7 @@ class HumanMixin:
                                 f"({', '.join(self.cfg.decision_owners)})")
 
     async def human_action(self, node_id: str, action: str, approver: str,
-                           payload: dict | None = None) -> dict:
+                           payload: dict | None = None) -> ActionResult:
         payload = payload or {}
         async with self.lock:
             self._check_approver(approver)
@@ -63,11 +64,12 @@ class HumanMixin:
             elif node.kind == SHIP and action == "recheck" and node.status == ACCEPTED:
                 node.status = RUNNING
                 self._spawn(self._ship())
-                res = {"ok": True}
+                res = ActionResult()
             else:
                 raise WorkflowError(f"action {action!r} not available for {node_id} in {node.status}")
-            self.event("human_action", f"{approver}: {action}", node_id, data=payload)
+            self.event("human_action", f"{approver}: {action}", node_id)
             self._save()
+            res.status = node.status
             return res
 
     def _feedback_doc(self, node: Node, approver: str, text: str, kind: str) -> str:
@@ -77,7 +79,7 @@ class HumanMixin:
         return self.write_record(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
 
     # ------------------------------------------------------------------ human gates
-    async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> dict:
+    async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
         handler = self.GATE_ACTIONS.get((node.id, action))
         if handler is None:
             valid = [a for g, a in self.GATE_ACTIONS if g == node.id]
@@ -105,7 +107,7 @@ class HumanMixin:
                                         attestations=[att]))
         target.status = REWORK
 
-    async def _accept_requirements(self, node: Node, approver: str, payload: dict) -> dict:
+    async def _accept_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-1: accept requirements and the risk tier (raising it is free; lowering needs a
         reason). Fixes the change's requirements and review panel and creates the stage nodes."""
         ch = self.change
@@ -127,14 +129,14 @@ class HumanMixin:
         ch.approvals[H_REQUIREMENTS] = rec
         node.status = ACCEPTED
         self._create_stage_nodes()
-        return {"ok": True, "tier": tier, "panel": ch.panel}
+        return ActionResult(tier=tier, panel=ch.panel)
 
-    async def _revise_requirements(self, node: Node, approver: str, payload: dict) -> dict:
+    async def _revise_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
         self._send_back(self.nodes[INTAKE], approver, payload)
         node.status = PENDING
-        return {"ok": True}
+        return ActionResult()
 
-    async def _approve_spec(self, node: Node, approver: str, payload: dict) -> dict:
+    async def _approve_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-2: each delta spec, the plan and the oracle are separate decisions (possibly by
         different approvers); the gate completes once every subject is approved and fresh (and,
         at R3, the independent baseline is attested)."""
@@ -144,17 +146,17 @@ class HumanMixin:
             raise WorkflowError(str(e)) from None
         pending = [x.subject for x in governance.h2_status(self) if x.status != ApprovalState.APPROVED]
         if pending:
-            return {"ok": True, "approved": done, "pending": pending}
+            return ActionResult(approved=done, pending=pending)
         if risk.rank(self.change.tier) >= 3:
             b = self.change.attestations.get("independent-baseline")
             if not b or b.verdict != AttestationVerdict.PASS:
-                return {"ok": True, "approved": done, "pending": ["independent-baseline"],
-                        "note": "R3: attest independent-baseline (pass) before build starts, "
-                                "then approve again to release the build"}
+                return ActionResult(approved=done, pending=["independent-baseline"],
+                                    note="R3: attest independent-baseline (pass) before build "
+                                         "starts, then approve again to release the build")
         node.status = ACCEPTED
-        return {"ok": True, "approved": done, "pending": []}
+        return ActionResult(approved=done, pending=[])
 
-    async def _revise_spec(self, node: Node, approver: str, payload: dict) -> dict:
+    async def _revise_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-2 revise: the plan is reworked; everything derived from it starts over (critique,
         oracle, baseline, build nodes, the integration branch and surface pins)."""
         ch = self.change
@@ -169,9 +171,9 @@ class HumanMixin:
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
         ch.surface_pins = {}
         node.status = PENDING
-        return {"ok": True}
+        return ActionResult()
 
-    async def _accept_change(self, node: Node, approver: str, payload: dict) -> dict:
+    async def _accept_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-3: accept the whole change at the current integration head."""
         ch = self.change
         head = await self.git.integration_head(ch.id)
@@ -182,19 +184,19 @@ class HumanMixin:
         rec.attestation = self.write_record("control/approvals/change.json", rec).attestation
         ch.approvals[H_CHANGE] = rec
         node.status = ACCEPTED
-        return {"ok": True}
+        return ActionResult()
 
-    async def _reject_change(self, node: Node, approver: str, payload: dict) -> dict:
+    async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
         self.change.status = ChangeStatus.ABANDONED
         node.status = FAILED
-        return {"ok": True}
+        return ActionResult()
 
     # ------------------------------------------------------------------ escalations
-    def _resolve_escalation(self, node: Node, action: str, approver: str, payload: dict) -> dict:
+    def _resolve_escalation(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
         if action == "abandon":
             node.status = FAILED
             self.change.status = ChangeStatus.ABANDONED
-            return {"ok": True}
+            return ActionResult()
         if action == "override_accept":
             return self._override_accept(node, approver, payload)
         if action not in ("retry", "answer"):
@@ -210,9 +212,9 @@ class HumanMixin:
                                             text=f"human decision: {text}", attestations=[att]))
         node.escalation = None
         self._resume(node, resume)
-        return {"ok": True, "status": node.status}
+        return ActionResult(status=node.status)
 
-    def _override_accept(self, node: Node, approver: str, payload: dict) -> dict:
+    def _override_accept(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """Accept a build task without a full panel PASS. Deterministic verification at the
         candidate is still required (it is not waivable); the gate reports human judgement."""
         if node.kind != BUILD:
@@ -227,7 +229,7 @@ class HumanMixin:
         node.escalation = None
         node.status = MERGING
         self._spawn(self._merge_node(node.id))
-        return {"ok": True}
+        return ActionResult()
 
     def _resume(self, node: Node, resume: Resume) -> None:
         """Continue the workflow where the resolved escalation said it should."""
@@ -257,28 +259,32 @@ class HumanMixin:
         else:
             node.status = READY
 
-    async def change_action(self, action: str, approver: str, payload: dict | None = None) -> dict:
+    async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface."""
         payload = payload or {}
         async with self.lock:
             self._check_approver(approver)
             try:
                 if action == "attest":
-                    res = await governance.record_attestation(self, approver, payload)
+                    a = await governance.record_attestation(self, approver, payload)
+                    res = ActionResult(attestation=a.attestation, warnings=a.warnings)
                 elif action == "override":
-                    res = await governance.record_override(self, approver, payload)
+                    o = await governance.record_override(self, approver, payload)
+                    res = ActionResult(attestation=o.attestation)
                 elif action == "approve_protected_paths":
-                    res = governance.record_protected_approval(self, approver, payload)
+                    p = governance.record_protected_approval(self, approver, payload)
+                    res = ActionResult(attestation=p.attestation,
+                                       note="applies only to runs of this task that start after now")
                 elif action == "approve_surface":
                     if not risk.valid_reason(payload.get("reason")):
                         raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")
-                    res = {"ok": True, "surfaces": await governance.pin_surfaces(
-                        self, approver, payload.get("surface"), payload["reason"])}
+                    res = ActionResult(surfaces=await governance.pin_surfaces(
+                        self, approver, payload.get("surface"), payload["reason"]))
                 else:
                     raise WorkflowError(f"unknown change action {action!r}")
             except governance.GovernanceError as e:
                 raise WorkflowError(str(e)) from None
-            self.event("human_action", f"{approver}: {action}", data=payload)
+            self.event("human_action", f"{approver}: {action}")
             self._save()
             return res
 

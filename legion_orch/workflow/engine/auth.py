@@ -18,7 +18,14 @@ import httpx
 
 from ...config import Config
 from ...git import GitGrant
-from ...identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
+from ...identity import (
+    JWT_SPIFFE,
+    AccessTokens,
+    DevSpire,
+    IdentityService,
+    SvidVerifier,
+    WorkloadBinding,
+)
 from ..model import LIVE_RUN, Run
 from ..roles import handler_for
 from .common import log
@@ -57,39 +64,39 @@ class WorkloadAuth:
         self._verifiers.pop(sandbox_ref, None)
 
     # ---- bindings
-    def sandbox_binding(self, ref: str) -> dict[str, str] | None:
+    def sandbox_binding(self, ref: str) -> WorkloadBinding | None:
         """The one task (and role) a live, managed sandbox serves – None if unknown or deleted.
         A sandbox serves exactly one task for its whole life (an implementer sandbox is reused
         across that task's rework cycles; judges and verifiers always get their own)."""
         if ref in self._verifiers:
             v = self._verifiers[ref]
-            return {"sandbox": ref, "change": v.change, "task": v.task, "role": "verifier"}
+            return WorkloadBinding(sandbox=ref, change=v.change, task=v.task, role="verifier")
         for cid, r in self._runs():
             if r.sandbox_ref == ref and not r.sandbox_deleted:
-                return {"sandbox": ref, "change": cid, "task": r.node_id, "role": r.role}
+                return WorkloadBinding(sandbox=ref, change=cid, task=r.node_id, role=r.role)
         return None
 
     def live_run(self, token: str | None) -> tuple[str, Run] | None:
         """Bind a gateway-injected, task-scoped token to the sandbox's live run, per request.
         The run must match the token's change, task and role exactly."""
-        claims = self.identity.tokens.verify(token) if token else None
-        if not claims:
+        b = self.identity.tokens.verify(token) if token else None
+        if b is None:
             return None
         for cid, r in self._runs():
-            if r.sandbox_ref == claims["sandbox"] and r.status in LIVE_RUN:
-                if (cid, r.node_id, r.role) == (claims["change"], claims["task"], claims["role"]):
+            if r.sandbox_ref == b.sandbox and r.status in LIVE_RUN:
+                if (cid, r.node_id, r.role) == (b.change, b.task, b.role):
                     return cid, r
-                log.warning("token for %s does not match live run %s", claims, r.id)
+                log.warning("token for %s does not match live run %s", b, r.id)
                 return None
         return None
 
     def git_grant(self, token: str | None) -> GitGrant | None:
-        claims = self.identity.tokens.verify(token) if token else None
-        if not claims:
+        b = self.identity.tokens.verify(token) if token else None
+        if b is None:
             return None
-        if claims["role"] == "verifier":
-            v = self._verifiers.get(claims["sandbox"])
-            if v and (v.change, v.task) == (claims["change"], claims["task"]):
+        if b.role == "verifier":
+            v = self._verifiers.get(b.sandbox)
+            if v and (v.change, v.task) == (b.change, b.task):
                 return GitGrant(v.id, None)          # read-only
             return None
         found = self.live_run(token)

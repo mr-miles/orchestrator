@@ -528,9 +528,9 @@ class StateStore:
             if not data.get("removed"):
                 self.nodes[nid] = Node.model_validate(data)
         self._known_nodes = set(graph["order"]) | {
-            m["path"][len(self.root + "nodes/"):-5] for m in self.docs.list(self.root + "nodes/")}
+            m.path[len(self.root + "nodes/"):-5] for m in self.docs.list(self.root + "nodes/")}
         for m in self.docs.list(self.root + "runs/"):
-            run = Run.model_validate(self._read(m["path"]))
+            run = Run.model_validate(self._read(m.path))
             self.runs[run.id] = run
 
     def save(self) -> None:

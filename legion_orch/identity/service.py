@@ -1,8 +1,10 @@
 """Token endpoint logic: OAuth2 client_credentials with a jwt-spiffe client assertion."""
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .spiffe import JWT_SPIFFE, DevSpire, IdentityError, SvidVerifier
-from .tokens import AccessTokens
+from .tokens import AccessTokens, WorkloadBinding
 
 
 class IdentityService:
@@ -10,10 +12,11 @@ class IdentityService:
                  dev: DevSpire | None = None):
         self.verifier, self.tokens, self.scope, self.dev = verifier, tokens, scope, dev
 
-    async def token_request(self, form: dict[str, str], binding_for) -> dict:
-        """``binding_for(sandbox_ref)`` returns the sandbox's {sandbox, change, task, role}, or
-        None for a sandbox this controller does not manage (or has deleted)."""
-        """OAuth2 client_credentials with a jwt-spiffe client assertion (RFC 7523 style)."""
+    async def token_request(self, form: dict[str, str],
+                            binding_for: Callable[[str], WorkloadBinding | None]) -> dict:
+        """OAuth2 client_credentials with a jwt-spiffe client assertion (RFC 7523 style).
+        ``binding_for(sandbox_ref)`` is the sandbox's binding, or None for a sandbox this
+        controller does not manage (or has deleted). Returns the OAuth token response."""
         if form.get("grant_type") != "client_credentials":
             raise IdentityError("unsupported_grant_type", "only client_credentials is supported")
         if form.get("client_assertion_type") != JWT_SPIFFE:

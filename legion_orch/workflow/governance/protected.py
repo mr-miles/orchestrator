@@ -12,7 +12,7 @@ from ..view import ChangeView
 from .common import GovernanceError
 
 
-def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> dict:
+def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> ProtectedPathApproval:
     task, paths, reason = payload.get("task"), payload.get("paths") or [], payload.get("reason")
     builds = {b.task.id: b for b in e.build_nodes()}
     if task not in builds:
@@ -27,8 +27,7 @@ def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> di
     n = len(e.change.protected_approvals) + 1
     rec.attestation = e.write_record(f"control/approvals/protected-paths/{n}.json", rec).attestation
     e.change.protected_approvals.append(rec)
-    return {"ok": True, "attestation": rec.attestation,
-            "note": "applies only to runs of this task that start after now"}
+    return rec
 
 
 def protected_paths(e: ChangeView) -> list[str]:

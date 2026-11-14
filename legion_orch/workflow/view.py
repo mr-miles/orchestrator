@@ -53,8 +53,8 @@ class RoleContext(ChangeView, Protocol):
 
     assets: Any        # workflow.assets.Assets (roles, schemas)
 
-    def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
-              data: Any = None) -> None: ...
+    def event(self, kind: str, message: str, node: str | None = None,
+              run: str | None = None) -> None: ...
 
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
                  run: str | None = None, missing_decision: str | None = None,
