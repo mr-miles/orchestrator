@@ -37,17 +37,17 @@ controller only fills in placeholders.
 
 | Placeholder | Value |
 | --- | --- |
-| `${CONTROLLER_HOST}` | controller host as seen from sandboxes (server.public_url) |
-| `${CONTROLLER_PORT}` | controller port for git and /oauth/token (server.public_url) |
-| `${CONTROLLER_TLS}` | "none" for plain HTTP endpoints, "" for TLS |
-| `${MCP_HOST}` | MCP endpoint host (server.mcp_url) |
-| `${MCP_PORT}` | MCP endpoint port (server.mcp_port / server.mcp_url) |
+| `${GIT_HOST}` | git listener host as seen from sandboxes (server.public_host) |
+| `${GIT_PORT}` | git listener port (server.git_port) |
+| `${GIT_TLS}` | "none" for a plain HTTP git listener, "" for TLS |
+| `${MCP_HOST}` | MCP listener host as seen from sandboxes (server.public_host) |
+| `${MCP_PORT}` | MCP listener port (server.mcp_port) |
 | `${MCP_PATH}` | MCP endpoint path, e.g. /mcp |
 | `${MCP_TLS}` | "none" for a plain HTTP MCP endpoint, "" for TLS |
 | `${MCP_VERSIONS}` | MCP protocol revisions the gateway accepts |
 | `${MCP_TOOLS}` | tool names the controller's MCP server registers (the tools/call allowlist) |
 | `${GIT_PUSH_DENY_RULES}` | deny rules for git-receive-pack: [] for roles that push, else a POST deny |
-| `${TOKEN_ENDPOINT}` | the controller's OAuth token endpoint (<public_url>/oauth/token) |
+| `${TOKEN_ENDPOINT}` | the controller's OAuth token endpoint (server.token_port, /oauth/token) |
 | `${TOKEN_AUDIENCE}` | audience requested for controller access tokens |
 | `${SVID_AUDIENCE}` | audience of the sandbox JWT-SVID presented to the token endpoint |
 | `${SCOPE}` | OAuth scope requested for controller access tokens |

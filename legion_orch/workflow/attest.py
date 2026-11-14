@@ -12,8 +12,11 @@ from dataclasses import dataclass
 from ..git import GitRemote
 from ..store import DocStore
 
-FILE_RE = re.compile(r"^file:(?P<path>[^@\s]+)@(?P<version>[1-9][0-9]*)$")
-GIT_RE = re.compile(r"^git:(?P<body>[^@\s]+)@(?P<sha>[0-9a-f]{40})$")
+# Attestations are shown to humans and stored in records: restrict them to a safe character set
+# (the store's path alphabet), so agent-chosen file names cannot smuggle markup or script.
+_SAFE = r"[A-Za-z0-9._+=:,~/-]+"
+FILE_RE = re.compile(rf"^file:(?P<path>{_SAFE})@(?P<version>[1-9][0-9]*)$")
+GIT_RE = re.compile(rf"^git:(?P<body>{_SAFE})@(?P<sha>[0-9a-f]{{40}})$")
 
 
 class AttestationError(ValueError):

@@ -18,23 +18,33 @@ class RepoConfig:
 
 @dataclass
 class ServerConfig:
+    # Operator listener: web UI + JSON API (human gates). Keep it off the sandbox network.
     host: str = "127.0.0.1"
     port: int = 8765
-    # MCP gets its own port: OpenShell does not allow an MCP endpoint to share a host and port
-    # with another protocol (git is REST).
+    # Agent-facing listeners, one protocol per port so the gateway policy can be exact:
+    # MCP (/mcp, vetted as protocol: mcp), git smart-HTTP (/git/), token endpoint (/oauth/token).
+    agent_host: str = "0.0.0.0"
     mcp_port: int = 8766
-    # URLs sandboxes use: git at <public_url>/git/<repo>.git, token endpoint <public_url>/oauth/token
-    public_url: str = "http://host.openshell.internal:8765"
-    # MCP endpoint as seen from sandboxes; default: public_url host with mcp_port, path /mcp
-    public_mcp_url: str | None = None
+    git_port: int = 8767
+    token_port: int = 8768
+    # How sandboxes reach the agent-facing listeners.
+    public_host: str = "host.openshell.internal"
+    public_scheme: str = "http"
+
+    def _public(self, port: int) -> str:
+        return f"{self.public_scheme}://{self.public_host}:{port}"
 
     @property
     def mcp_url(self) -> str:
-        if self.public_mcp_url:
-            return self.public_mcp_url
-        from urllib.parse import urlparse
-        u = urlparse(self.public_url)
-        return f"{u.scheme}://{u.hostname}:{self.mcp_port}/mcp"
+        return self._public(self.mcp_port) + "/mcp"
+
+    @property
+    def git_base_url(self) -> str:
+        return self._public(self.git_port) + "/git"
+
+    @property
+    def token_url(self) -> str:
+        return self._public(self.token_port) + "/oauth/token"
     # Optional token required for human actions in the web UI (header X-Operator-Token).
     operator_token: str | None = None
 
@@ -47,6 +57,9 @@ class LimitsConfig:
     max_report_attempts: int = 3
     run_timeout_s: int = 3600
     verify_timeout_s: int = 1800
+    # git transport: largest accepted request (push) and concurrent git-http-backend processes
+    git_max_push_bytes: int = 256 * 1024 * 1024
+    git_max_concurrency: int = 8
 
 
 @dataclass
@@ -145,6 +158,9 @@ def load_config(path: str | Path) -> Config:
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )
+    ports = [cfg.server.port, cfg.server.mcp_port, cfg.server.git_port, cfg.server.token_port]
+    if len(set(ports)) != len(ports):
+        raise ValueError(f"server ports must be distinct (operator, mcp, git, token): {ports}")
     if not (cfg.sandbox.workspace or "").strip():
         raise ValueError("sandbox.workspace must name an OpenShell workspace")
     if cfg.identity.dev_spire is None:

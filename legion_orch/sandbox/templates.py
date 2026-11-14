@@ -35,17 +35,17 @@ TEMPLATES = {
 # name -> description. Keep policies/README.md in sync (tests check both directions).
 VOCABULARY: dict[str, str] = {
     # controller endpoints (from server.*)
-    "CONTROLLER_HOST": "controller host as seen from sandboxes (server.public_url)",
-    "CONTROLLER_PORT": "controller port for git and /oauth/token (server.public_url)",
-    "CONTROLLER_TLS": '"none" for plain HTTP endpoints, "" for TLS',
-    "MCP_HOST": "MCP endpoint host (server.mcp_url)",
-    "MCP_PORT": "MCP endpoint port (server.mcp_port / server.mcp_url)",
+    "GIT_HOST": "git listener host as seen from sandboxes (server.public_host)",
+    "GIT_PORT": "git listener port (server.git_port)",
+    "GIT_TLS": '"none" for a plain HTTP git listener, "" for TLS',
+    "MCP_HOST": "MCP listener host as seen from sandboxes (server.public_host)",
+    "MCP_PORT": "MCP listener port (server.mcp_port)",
     "MCP_PATH": "MCP endpoint path, e.g. /mcp",
     "MCP_TLS": '"none" for a plain HTTP MCP endpoint, "" for TLS',
     "MCP_VERSIONS": "MCP protocol revisions the gateway accepts",
     "MCP_TOOLS": "tool names the controller's MCP server registers (the tools/call allowlist)",
     "GIT_PUSH_DENY_RULES": "deny rules for git-receive-pack: [] for roles that push, else a POST deny",
-    "TOKEN_ENDPOINT": "the controller's OAuth token endpoint (<public_url>/oauth/token)",
+    "TOKEN_ENDPOINT": "the controller's OAuth token endpoint (server.token_port, /oauth/token)",
     # identity (from identity.*)
     "TOKEN_AUDIENCE": "audience requested for controller access tokens",
     "SVID_AUDIENCE": "audience of the sandbox JWT-SVID presented to the token endpoint",
@@ -89,14 +89,14 @@ def _host_port(url: str) -> tuple[str, int, str, str]:
 
 def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str, Any]:
     """Vocabulary values derived from configuration (no per-sandbox values)."""
-    ch, cp, _, ctls = _host_port(cfg.server.public_url)
+    gh, gp, _, gtls = _host_port(cfg.server.git_base_url)
     mh, mp, mpath, mtls = _host_port(cfg.server.mcp_url)
     ic, sc = cfg.identity, cfg.sandbox
     v: dict[str, Any] = {
-        "CONTROLLER_HOST": ch, "CONTROLLER_PORT": cp, "CONTROLLER_TLS": ctls,
+        "GIT_HOST": gh, "GIT_PORT": gp, "GIT_TLS": gtls,
         "MCP_HOST": mh, "MCP_PORT": mp, "MCP_PATH": mpath, "MCP_TLS": mtls,
         "MCP_VERSIONS": MCP_VERSIONS,
-        "TOKEN_ENDPOINT": f"{cfg.server.public_url.rstrip('/')}/oauth/token",
+        "TOKEN_ENDPOINT": cfg.server.token_url,
         "TOKEN_AUDIENCE": ic.token_audience, "SVID_AUDIENCE": ic.svid_audience, "SCOPE": ic.scope,
         "TOKEN_CACHE_TTL": max(30, min(ic.access_ttl_s // 2, 120)),
         "PROVIDER": ic.provider, "PROFILE_ID": PROFILE_ID, "WORKSPACE": sc.workspace,

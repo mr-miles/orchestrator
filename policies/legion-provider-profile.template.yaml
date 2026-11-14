@@ -36,11 +36,11 @@ endpoints:
       - allow: { method: tools/list }
       - allow: { method: server/discover }
       - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
-  - host: ${CONTROLLER_HOST}
-    port: ${CONTROLLER_PORT}
+  - host: ${GIT_HOST}
+    port: ${GIT_PORT}
     path: /git/*.git/**
     protocol: rest
-    tls: ${CONTROLLER_TLS}
+    tls: ${GIT_TLS}
     enforcement: enforce
     rules:
       - allow: { method: GET, path: /git/*.git/info/refs }

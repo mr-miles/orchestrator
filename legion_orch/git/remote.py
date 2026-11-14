@@ -75,8 +75,10 @@ def paths_overlap(a: str, b: str) -> bool:
 class GitRemote:
     """Bare hub repository + controller-private integration worktree."""
 
-    def __init__(self, root: Path, repo_name: str, source: str, base_branch: str):
+    def __init__(self, root: Path, repo_name: str, source: str, base_branch: str,
+                 max_push_bytes: int = 256 * 1024 * 1024):
         self.root = Path(root)
+        self.max_push_bytes = max_push_bytes
         self.repo_name = repo_name
         self.project_root = self.root / "served"           # GIT_PROJECT_ROOT for http-backend
         self.repo = self.project_root / f"{repo_name}.git"  # bare hub
@@ -93,8 +95,14 @@ class GitRemote:
             self.repo.parent.mkdir(parents=True, exist_ok=True)
             await run("git", "clone", "--bare", "--quiet", self.source, str(self.repo))
             await self.git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+        # Pushes come from untrusted agents: verify every received object, cap the pack size,
+        # never delete refs, and serve only objects reachable from advertised refs.
         for k, v in (("http.receivepack", "true"), ("http.uploadpack", "true"),
-                     ("receive.denyDeletes", "true"), ("uploadpack.allowAnySHA1InWant", "true"),
+                     ("receive.denyDeletes", "true"), ("receive.denyNonFastForwards", "false"),
+                     ("receive.fsckObjects", "true"),
+                     ("receive.maxInputSize", str(self.max_push_bytes)),
+                     ("uploadpack.allowAnySHA1InWant", "false"),
+                     ("uploadpack.allowReachableSHA1InWant", "true"),
                      ("user.name", "legion-controller"),
                      ("user.email", "legion-controller@localhost")):
             await self.git("config", k, v)

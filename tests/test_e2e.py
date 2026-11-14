@@ -55,7 +55,8 @@ def _config(tmp_path, port):
         state_dir: state
         assets_dir: {ROOT / 'assets'}
         workflow_doc: {ROOT / 'WORKFLOW.md'}
-        server: {{host: 127.0.0.1, port: {port}, mcp_port: {_free_port()}, public_url: "http://127.0.0.1:{port}"}}
+        server: {{host: 127.0.0.1, port: {port}, agent_host: 127.0.0.1, public_host: 127.0.0.1,
+                  mcp_port: {_free_port()}, git_port: {_free_port()}, token_port: {_free_port()}}}
         limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
         sandbox:
           runner: local
@@ -248,27 +249,39 @@ async def _identity_checks(ctl, cfg):
     import httpx
 
     from legion_orch.identity import JWT_SPIFFE
-    url = cfg.server.public_url
+    token_url, git = cfg.server.token_url, cfg.server.git_base_url
+    operator = f"http://127.0.0.1:{cfg.server.port}"
     ic = cfg.identity
     form = lambda svid, **kw: {"grant_type": "client_credentials", "client_assertion_type": JWT_SPIFFE,
                                "client_assertion": svid, "audience": ic.token_audience,
                                "scope": ic.scope} | kw
     async with httpx.AsyncClient() as c:
+        # each listener serves only its own purpose: no git or token endpoint on the operator port,
+        # no operator API on the agent-facing ports
+        assert (await c.post(f"{operator}/oauth/token")).status_code == 404
+        assert (await c.get(f"{operator}/git/app.git/info/refs")).status_code == 404
+        for base in (git, token_url):
+            assert (await c.get(base.rsplit("/", 1)[0] + "/api/changes")).status_code == 404
+        ui = await c.get(f"{operator}/")
+        csp = ui.headers["content-security-policy"]
+        assert "script-src 'self'" in csp and "unsafe-inline" not in csp.split("script-src")[1].split(";")[0]
+        assert "<script>" not in ui.text and " onclick=" not in ui.text
+        assert (await c.get(f"{operator}/app.js")).headers["content-type"].startswith("text/javascript")
         unknown = ctl.dev_spire.mint("not-a-managed-sandbox", ic.svid_audience)
-        r = await c.post(f"{url}/oauth/token", data=form(unknown))
+        r = await c.post(token_url, data=form(unknown))
         assert r.status_code == 401 and r.json()["error"] == "invalid_client"
         deleted = next(r.sandbox_ref for _, r in ctl.all_runs())
-        r = await c.post(f"{url}/oauth/token", data=form(ctl.dev_spire.mint(deleted, ic.svid_audience)))
+        r = await c.post(token_url, data=form(ctl.dev_spire.mint(deleted, ic.svid_audience)))
         assert r.status_code == 401                               # deleted sandboxes get nothing
         known = "lg-test-verifier"
         ctl.verifier_refs[known] = {"id": "verifier:test", "change": "c", "task": "build:T1"}
-        r = await c.post(f"{url}/oauth/token", data=form(ctl.dev_spire.mint(known, "wrong-aud")))
+        r = await c.post(token_url, data=form(ctl.dev_spire.mint(known, "wrong-aud")))
         assert r.status_code == 401
         from legion_orch.identity import DevSpire
         forged = DevSpire(ic.trust_prefix, kid=ctl.dev_spire.kid).mint(known, ic.svid_audience)
-        r = await c.post(f"{url}/oauth/token", data=form(forged))
+        r = await c.post(token_url, data=form(forged))
         assert r.status_code == 401                               # signed by the wrong key
-        r = await c.post(f"{url}/oauth/token", data=form(ctl.dev_spire.mint(known, ic.svid_audience)))
+        r = await c.post(token_url, data=form(ctl.dev_spire.mint(known, ic.svid_audience)))
         assert r.status_code == 200 and r.json()["token_type"] == "Bearer"
         tok = r.json()["access_token"]
         # valid identity but no live run (all runs finished) -> MCP refuses, with a visible reason
@@ -279,12 +292,12 @@ async def _identity_checks(ctl, cfg):
             res = (await c.post(cfg.server.mcp_url, json=body, headers=hdr | h)).json()["result"]
             assert res["isError"] and "no live run" in res["content"][0]["text"]
         auth = {"Authorization": f"Bearer {tok}"}
-        r = await c.get(f"{url}/git/app.git/info/refs?service=git-upload-pack", headers=auth)
+        r = await c.get(f"{git}/app.git/info/refs?service=git-upload-pack", headers=auth)
         assert r.status_code == 200                               # verifier: read-only fetch
-        r = await c.get(f"{url}/git/app.git/info/refs?service=git-receive-pack", headers=auth)
+        r = await c.get(f"{git}/app.git/info/refs?service=git-receive-pack", headers=auth)
         assert r.status_code == 403                               # ...but never push
         del ctl.verifier_refs[known]
-        r = await c.get(f"{url}/git/app.git/info/refs?service=git-upload-pack", headers=auth)
+        r = await c.get(f"{git}/app.git/info/refs?service=git-upload-pack", headers=auth)
         assert r.status_code == 401                               # grant ends with the sandbox
 
     # task-scoped: a token only works for the live run of the task (and role) it names

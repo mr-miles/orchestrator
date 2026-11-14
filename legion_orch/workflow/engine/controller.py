@@ -55,7 +55,7 @@ class Controller:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
         self.docs = DocStore(self.conn, self.dblock, self.assets.schemas)
         self.git = GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path,
-                             cfg.repo.base_branch)
+                             cfg.repo.base_branch, max_push_bytes=cfg.limits.git_max_push_bytes)
         self.runner = runner or make_runner(cfg)
         self.lock = asyncio.Lock()
         self.procs: dict[str, asyncio.subprocess.Process] = {}
@@ -89,13 +89,13 @@ class Controller:
                 "client_assertion": self.dev_spire.mint(sandbox_ref, ic.svid_audience),
                 "audience": ic.token_audience, "scope": ic.scope}
         async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(f"{self.cfg.server.public_url.rstrip('/')}/oauth/token", data=form)
+            r = await c.post(self.cfg.server.token_url, data=form)
             r.raise_for_status()
             return r.json()["access_token"]
 
     @property
     def git_url(self) -> str:
-        return f"{self.cfg.server.public_url.rstrip('/')}/git/{self.cfg.repo.name}.git"
+        return f"{self.cfg.server.git_base_url}/{self.cfg.repo.name}.git"
 
     @property
     def mcp_url(self) -> str:

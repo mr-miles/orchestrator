@@ -9,10 +9,13 @@ assets_dir: assets               # roles.yaml, souls/, skills/, prompts/
 workflow_doc: WORKFLOW.md        # shown in the UI only
 protected_paths: [".github/", "WORKFLOW.md"]
 server:
-  host: 0.0.0.0                  # sandboxes must reach this
-  port: 8765                     # UI, API, git, /oauth/token
-  mcp_port: 8766                 # agents' MCP endpoint (own port: vetted as protocol: mcp)
-  public_url: http://host.openshell.internal:8765
+  host: 127.0.0.1                # operator UI/API (human gates) – never expose to sandboxes
+  port: 8765
+  agent_host: 0.0.0.0            # agent-facing listeners (sandboxes must reach these)
+  mcp_port: 8766                 # /mcp – vetted by the gateway as protocol: mcp
+  git_port: 8767                 # /git/<repo>.git only
+  token_port: 8768               # /oauth/token only (gateway supervisor)
+  public_host: host.openshell.internal   # how sandboxes reach the agent-facing listeners
   # operator_token: set LEGION_OPERATOR_TOKEN instead of committing it
 limits:
   max_parallel: 4
@@ -21,6 +24,8 @@ limits:
   max_report_attempts: 3
   run_timeout_s: 3600
   verify_timeout_s: 1800
+  git_max_push_bytes: 268435456   # largest accepted push (HTTP body and unpacked pack)
+  git_max_concurrency: 8
 sandbox:
   runner: openshell              # or `local` for development (NO isolation)
   openshell_bin: openshell

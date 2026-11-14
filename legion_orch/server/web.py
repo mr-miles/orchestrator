@@ -1,8 +1,12 @@
-"""HTTP surface, two listeners:
+"""HTTP surface: four listeners, one purpose each.
 
-* ``server.port``     – web UI + JSON API, git smart-HTTP (``/git/``), token endpoint (``/oauth/token``)
-* ``server.mcp_port`` – the agents' MCP endpoint (``/mcp``) on its own port, so the OpenShell
-  gateway can vet it as ``protocol: mcp`` (an MCP endpoint may not share host:port with REST).
+* ``server.host:port``          – operator: web UI + JSON API (human gates). Keep it off the
+  sandbox network; nothing an agent needs is served here.
+* ``server.agent_host:mcp_port``   – agents' MCP endpoint (``/mcp``), vetted by the gateway as
+  ``protocol: mcp`` (an MCP endpoint may not share host:port with another protocol).
+* ``server.agent_host:git_port``   – git smart-HTTP only (``/git/<repo>.git``).
+* ``server.agent_host:token_port`` – ``/oauth/token`` only (SPIFFE JWT-SVID → access token), for
+  the OpenShell gateway supervisor.
 """
 from __future__ import annotations
 
@@ -27,6 +31,16 @@ from ..workflow.engine import Controller, WorkflowError
 from .mcp import build_mcp
 
 STATIC = Path(__file__).parent / "static"
+# The UI renders agent-authored text. Scripts may only come from this origin (no inline script or
+# inline event handlers), so injected markup cannot execute; responses are never sniffed or framed.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; connect-src 'self'; "
+                               "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                               "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
 # Bulky controller records hidden from the default document listing (still readable).
 NOISY = ("/control/events/", "/control/nodes/", "/control/runs/")
 
@@ -34,15 +48,32 @@ NOISY = ("/control/events/", "/control/nodes/", "/control/runs/")
 def build_mcp_app(ctl: Controller) -> Starlette:
     path = urlparse(ctl.cfg.server.mcp_url).path or "/mcp"
     return build_mcp(ctl).streamable_http_app(
-        streamable_http_path=path, stateless_http=True, json_response=True, host=ctl.cfg.server.host)
+        streamable_http_path=path, stateless_http=True, json_response=True,
+        host=ctl.cfg.server.agent_host)
+
+
+def build_git_app(ctl: Controller) -> Starlette:
+    endpoint = make_git_endpoint(
+        ctl.git, lambda request: ctl.git_grant(bearer(request.headers.get("authorization", ""))),
+        max_request_bytes=ctl.cfg.limits.git_max_push_bytes,
+        max_concurrency=ctl.cfg.limits.git_max_concurrency)
+    return Starlette(routes=[Route("/git/{path:path}", endpoint, methods=["GET", "POST"])])
+
+
+def build_token_app(ctl: Controller) -> Starlette:
+    return Starlette(routes=[Route("/oauth/token", make_token_endpoint(ctl.identity, ctl.sandbox_binding),
+                                   methods=["POST"])])
 
 
 def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
-    """Both listeners; run them together (see :func:`serve`)."""
+    """All listeners; run them together (see :func:`serve`). The operator app starts the controller."""
     s = ctl.cfg.server
-    return [uvicorn.Server(uvicorn.Config(build_app(ctl), host=s.host, port=s.port, log_level=log_level)),
-            uvicorn.Server(uvicorn.Config(build_mcp_app(ctl), host=s.host, port=s.mcp_port,
-                                          log_level=log_level))]
+    cfg = lambda app, host, port: uvicorn.Server(uvicorn.Config(app, host=host, port=port,
+                                                                log_level=log_level))
+    return [cfg(build_app(ctl), s.host, s.port),
+            cfg(build_mcp_app(ctl), s.agent_host, s.mcp_port),
+            cfg(build_git_app(ctl), s.agent_host, s.git_port),
+            cfg(build_token_app(ctl), s.agent_host, s.token_port)]
 
 
 async def serve(ctl: Controller) -> None:
@@ -50,9 +81,7 @@ async def serve(ctl: Controller) -> None:
 
 
 def build_app(ctl: Controller) -> Starlette:
-    git_endpoint = make_git_endpoint(
-        ctl.git, lambda request: ctl.git_grant(bearer(request.headers.get("authorization", ""))))
-    oauth_token = make_token_endpoint(ctl.identity, ctl.sandbox_binding)
+    """The operator app: UI and JSON API only."""
     op_token = ctl.cfg.server.operator_token
 
     def operator(request: Request) -> None:
@@ -70,7 +99,10 @@ def build_app(ctl: Controller) -> Starlette:
         return wrapper
 
     async def index(_: Request):
-        return FileResponse(STATIC / "index.html")
+        return FileResponse(STATIC / "index.html", headers=SECURITY_HEADERS)
+
+    async def app_js(_: Request):
+        return FileResponse(STATIC / "app.js", media_type="text/javascript", headers=SECURITY_HEADERS)
 
     async def meta(_: Request):
         return JSONResponse({"project": ctl.cfg.project, "repo": ctl.cfg.repo.name,
@@ -161,6 +193,7 @@ def build_app(ctl: Controller) -> Starlette:
 
     return Starlette(routes=[
         Route("/", index),
+        Route("/app.js", app_js),
         Route("/api/meta", meta),
         Route("/api/changes", changes, methods=["GET", "POST"]),
         Route("/api/changes/{cid}/state", state),
@@ -172,6 +205,4 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/doc", doc),
         Route("/api/runs/{run_id}/log", run_log),
         Route("/api/workflow", workflow),
-        Route("/git/{path:path}", git_endpoint, methods=["GET", "POST"]),
-        Route("/oauth/token", oauth_token, methods=["POST"]),
     ], lifespan=lifespan)

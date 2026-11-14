@@ -90,8 +90,12 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
     controller's own tools (exactly the table below); anything else is denied before it reaches
     the controller. (MCP has its own port because OpenShell does not allow an MCP endpoint to
     share a host and port with another protocol.)
-  * `legion_git` – `protocol: rest` for `/git/<repo>.git`: fetch, and `git-receive-pack` only for
-    roles that push (implementer, oracle); other roles have push in `deny_rules`.
+  * `legion_git` – `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port:
+    fetch, and `git-receive-pack` only for roles that push (implementer, oracle); other roles
+    have push in `deny_rules`.
+
+  The operator UI/API listens on a separate port that is never exposed to sandboxes; the token
+  endpoint has its own port for the gateway supervisor.
 
   Verifier sandboxes get `legion_git` (fetch only) and nothing else.
 * **Agents push; the controller hosts the remote.** The controller serves its bare hub repository

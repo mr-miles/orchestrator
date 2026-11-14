@@ -71,3 +71,74 @@ async def _push_rules(tmp_path: Path):
     finally:
         server.should_exit = True
         await task
+
+
+def test_transport_limits(tmp_path: Path):
+    asyncio.run(_transport_limits(tmp_path))
+
+
+async def _transport_limits(tmp_path: Path):
+    import os
+
+    import httpx
+    src = tmp_path / "src"
+    src.mkdir()
+    _git("init", "-q", "-b", "main", cwd=src)
+    (src / "f").write_text("1")
+    _git("add", "f", cwd=src)
+    _git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=src)
+    # git itself refuses packs over 64 KiB; the HTTP layer refuses bodies over 1 MiB
+    remote = GitRemote(tmp_path / "git", "app", str(src), "main", max_push_bytes=64 * 1024)
+    await remote.ensure()
+    for key, want in (("receive.fsckObjects", "true"), ("receive.maxInputSize", "65536"),
+                      ("uploadpack.allowAnySHA1InWant", "false"), ("receive.denyDeletes", "true")):
+        assert (await remote.git("config", key)).strip() == want, key
+    grant = GitGrant("r1", "refs/heads/legion/c1/build-t1")
+    endpoint = make_git_endpoint(remote, lambda req: grant, max_request_bytes=1024 * 1024,
+                                 max_concurrency=2)
+    app = Starlette(routes=[Route("/git/{path:path}", endpoint, methods=["GET", "POST"])])
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, port=port, log_level="warning"))
+    task = asyncio.create_task(server.serve())
+    while not server.started:
+        await asyncio.sleep(0.05)
+    base = f"http://127.0.0.1:{port}/git"
+    ctype = {"Content-Type": "application/x-git-receive-pack-request"}
+    try:
+        async def refused(content) -> bool:
+            """413, or the server closing the connection while the client is still sending
+            (normal when an upload is refused without being read)."""
+            try:
+                async with httpx.AsyncClient() as c1:
+                    r = await c1.post(f"{base}/app.git/git-receive-pack", content=content, headers=ctype)
+                return r.status_code == 413
+            except (httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError):
+                return True
+
+        async def chunks():                          # chunked (no Content-Length), 2 MiB
+            for _ in range(32):
+                yield b"x" * 65536
+        assert await refused(b"x" * (1024 * 1024 + 1))   # declared too large: refused up front
+        assert await refused(chunks())                    # streamed past the cap
+        async with httpx.AsyncClient() as c:
+            for path in ("other.git/info/refs", "app.git/%2e%2e/served/app.git/info/refs",
+                         "app.git//info/refs"):
+                assert (await c.get(f"{base}/{path}?service=git-upload-pack")).status_code == 404, path
+            r = await c.get(f"{base}/app.git/info/refs?service=git-upload-pack")
+            assert r.status_code == 200 and b"git-upload-pack" in r.content   # streamed response
+
+        def push_big():                              # within HTTP cap, over git's maxInputSize
+            work = tmp_path / "work"
+            _git("clone", "-q", f"{base}/app.git", str(work))
+            (work / "big.bin").write_bytes(os.urandom(200 * 1024))
+            _git("add", "big.bin", cwd=work)
+            _git("-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qm", "big", cwd=work)
+            return _git("push", "origin", "HEAD:refs/heads/legion/c1/build-t1", cwd=work, check=False)
+        r = await asyncio.to_thread(push_big)
+        assert r.returncode != 0
+        assert await remote.ref_sha("refs/heads/legion/c1/build-t1") is None
+    finally:
+        server.should_exit = True
+        await task

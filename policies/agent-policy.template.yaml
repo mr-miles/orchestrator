@@ -49,11 +49,11 @@ network_policies:
   legion_git:
     name: legion-git
     endpoints:
-      - host: ${CONTROLLER_HOST}
-        port: ${CONTROLLER_PORT}
+      - host: ${GIT_HOST}
+        port: ${GIT_PORT}
         path: /git/*.git/**
         protocol: rest
-        tls: ${CONTROLLER_TLS}
+        tls: ${GIT_TLS}
         enforcement: enforce
         rules:
           - allow: { method: GET, path: /git/*.git/info/refs }

@@ -328,7 +328,7 @@ def _os_cfg(tmp_path):
 project: p
 repo: {{name: app, path: {tmp_path}}}
 decision_owners: [miles]
-server: {{port: 8765, mcp_port: 8766, public_url: "http://host.openshell.internal:8765"}}
+server: {{port: 8765, mcp_port: 8766, git_port: 8767, token_port: 8768}}
 identity: {{jwks_uri: "https://spire/keys"}}
 sandbox: {{runner: openshell, workspace: team-ml, gateway: prod, image: "reg/agent:1",
           providers: [claude-code], templates_dir: {ROOT / 'policies'}}}
@@ -409,7 +409,7 @@ def test_generated_policy_and_provider_profile(tmp_path):
     git = agent["network_policies"]["legion_git"]["endpoints"][0]
     assert mcp["protocol"] == "mcp" and git["protocol"] == "rest"
     assert (mcp["host"], mcp["port"], mcp["path"]) == ("host.openshell.internal", 8766, "/mcp")
-    assert (git["host"], git["port"]) == ("host.openshell.internal", 8765)   # MCP has its own port
+    assert (git["host"], git["port"]) == ("host.openshell.internal", 8767)   # one port per protocol
     calls = [r["allow"] for r in mcp["rules"] if r["allow"]["method"] == "tools/call"]
     assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
     assert any(r["allow"]["path"].endswith("git-receive-pack") for r in git["rules"])
@@ -420,7 +420,9 @@ def test_generated_policy_and_provider_profile(tmp_path):
     ver = _y.safe_load(render_policy(cfg, agent=False, push=False, **kw))
     assert set(ver["network_policies"]) == {"legion_git"}
     prof = provider_profile(cfg, list(MCP_TOOLS))
-    assert prof["credentials"][0]["token_grant"]["token_endpoint"] == "http://host.openshell.internal:8765/oauth/token"
+    token_endpoint = prof["credentials"][0]["token_grant"]["token_endpoint"]
+    assert token_endpoint == "http://host.openshell.internal:8768/oauth/token"
+    assert all(e["port"] != 8765 for e in prof["endpoints"])          # operator port never exposed
     assert [e["protocol"] for e in prof["endpoints"]] == ["mcp", "rest"]
     assert "Bearer" not in _y.safe_dump(agent) and "token" not in _y.safe_dump(agent).lower()
     # every openshell call targets the configured workspace (and gateway)
@@ -468,3 +470,34 @@ def test_role_handlers_use_only_the_role_context():
     for f in (ROOT / "legion_orch/workflow/roles").glob("*.py"):
         used = set(re.findall(r"\be\.([A-Za-z_]{2,})", f.read_text()))   # ("e.g." is prose)
         assert used <= allowed, f"{f.name} uses {used - allowed} outside RoleContext"
+
+
+
+def test_attestations_cannot_carry_markup():
+    for bad in (f"git:app/x'onmouseover=alert(1)@{SHA}", f'git:app/x"y@{SHA}', f"git:app/<b>@{SHA}",
+                "file:plan/x'.md@1", "file:plan/a b.md@1"):
+        with pytest.raises(AttestationError):
+            parse(bad, ["app"])
+    assert parse(f"git:app/src/a_b-c.d/e+f=g.py@{SHA}", ["app"]).path == "src/a_b-c.d/e+f=g.py"
+
+
+def test_ui_has_no_inline_script():
+    static = ROOT / "legion_orch/server/static"
+    inline = re.compile(r'\son[a-z]+\s*=\s*["\']', re.I)     # HTML attribute form, e.g. onclick="
+    html, js = (static / "index.html").read_text(), (static / "app.js").read_text()
+    assert "<script>" not in html and not inline.findall(html)
+    assert not inline.findall(js), inline.findall(js)          # handlers are data-on + delegation
+    assert "localStorage.optoken" not in js
+
+
+def test_server_ports_must_be_distinct(tmp_path):
+    from legion_orch.config import load_config
+    (tmp_path / "c.yaml").write_text(f"""
+project: p
+repo: {{name: app, path: {tmp_path}}}
+decision_owners: [miles]
+server: {{port: 8765, git_port: 8765}}
+sandbox: {{runner: local}}
+""")
+    with pytest.raises(ValueError, match="distinct"):
+        load_config(tmp_path / "c.yaml")

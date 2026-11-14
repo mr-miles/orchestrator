@@ -1,15 +1,13 @@
-"""Lint helper: syntax-check the web UI's inline JavaScript (no browser or Node needed)."""
-import re
+"""Lint helper: syntax-check the web UI's JavaScript (no browser or Node needed)."""
 import sys
 from pathlib import Path
 
 import esprima
 
-html = Path(__file__).resolve().parent.parent / "legion_orch/server/static/index.html"
-js = re.search(r"<script>(.*)</script>", html.read_text(), re.S).group(1)
+app_js = Path(__file__).resolve().parent.parent / "legion_orch/server/static/app.js"
 # esprima predates ES2020: neutralise ?? and ?. for parsing only.
 try:
-    esprima.parseScript(js.replace("??", "||").replace("?.", "."))
+    esprima.parseScript(app_js.read_text().replace("??", "||").replace("?.", "."))
 except esprima.Error as e:
-    sys.exit(f"{html}: {e}")
-print(f"{html.name}: JavaScript OK")
+    sys.exit(f"{app_js}: {e}")
+print(f"{app_js.name}: JavaScript OK")

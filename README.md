@@ -40,11 +40,20 @@ legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
   --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
 ```
 
-Two listeners:
-- `server.port` (8765): `/` (UI), `/api/*` (UI JSON + SSE), `/git/<repo>.git` (git smart-HTTP; push
-  limited to the run's branch) and `/oauth/token` (SPIFFE JWT-SVID → task-scoped access token).
-- `server.mcp_port` (8766): `/mcp`, the agents' MCP endpoint. It has its own port so the OpenShell
-  gateway can vet it as `protocol: mcp`.
+Four listeners, one purpose each:
+
+| Listener | Default | Serves | Who reaches it |
+| --- | --- | --- | --- |
+| `server.host:port` | `127.0.0.1:8765` | `/` (UI), `/api/*` (JSON + SSE, human gates) | operators only; keep it off the sandbox network |
+| `server.agent_host:mcp_port` | `0.0.0.0:8766` | `/mcp` | agents, vetted by the gateway as `protocol: mcp` |
+| `server.agent_host:git_port` | `0.0.0.0:8767` | `/git/<repo>.git` (push only to the run's branch) | agents and verifiers |
+| `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → task-scoped token) | the OpenShell gateway supervisor |
+
+Sandboxes reach the agent-facing listeners at `server.public_host` (default
+`host.openshell.internal`). The UI is served with a Content Security Policy that forbids inline
+script, because it displays agent-authored text. The git listener streams with a byte cap
+(`limits.git_max_push_bytes`), limits concurrent backends (`limits.git_max_concurrency`), and the hub
+repository verifies every pushed object (`receive.fsckObjects`, `receive.maxInputSize`).
 
 No credential is ever placed in a sandbox. Once per OpenShell workspace, run
 `legion-orch -c orchestrator.yaml setup-openshell --apply`. Every OpenShell object (sandbox
