@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Mount, Route
 
-from .docstore import DocStoreError
+from .store import DocStoreError
 from .engine import Controller, WorkflowError
 from .githttp import make_git_endpoint
 from .mcp_tools import build_mcp

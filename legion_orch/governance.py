@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from . import attest, risk
-from .docstore import now_iso
+from .store import now_iso
 from .gitops import path_matches
 
 if TYPE_CHECKING:

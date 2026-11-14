@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .docstore import DocStore
+from .store import DocStore
 from .gitops import GitRemote
 
 FILE_RE = re.compile(r"^file:(?P<path>[^@\s]+)@(?P<version>[1-9][0-9]*)$")

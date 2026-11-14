@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from . import attest, governance, guards, risk
 from .assets import AssetError, Assets
 from .config import Config
-from .docstore import DocStore, DocVersion, now_iso
+from .store import DocStore, DocVersion, now_iso
 from .githttp import GitGrant
 from .gitops import GitRemote
 from .model import (ACCEPTED, ACTIVE_NODE, AWAITING_HUMAN, BASELINE, BUILD, CRITIQUE, ESCALATED,

@@ -8,7 +8,7 @@ from typing import Any
 
 from . import risk
 from .attest import Attestation
-from .docstore import DocStore
+from .store import DocStore
 from .gitops import path_matches, paths_overlap
 
 GUARDS: dict[str, str] = {

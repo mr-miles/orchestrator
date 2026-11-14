@@ -8,7 +8,7 @@ import pytest
 from legion_orch import guards, risk
 from legion_orch.assets import AssetError, Assets
 from legion_orch.attest import AttestationError, parse
-from legion_orch.docstore import DocStore, DocStoreError, VersionConflict
+from legion_orch.store import DocStore, DocStoreError, VersionConflict
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
@@ -76,7 +76,7 @@ def test_assets_render_and_pin():
 
 # ------------------------------------------------------------------ document store
 def _store():
-    from legion_orch.schemas import SchemaRegistry
+    from legion_orch.store import SchemaRegistry
     return DocStore(sqlite3.connect(":memory:"), threading.RLock(), SchemaRegistry(ROOT / "assets/schemas"))
 
 
@@ -230,7 +230,7 @@ def test_protected_path_approval_timing_and_coverage():
 
 def test_store_enforces_bound_schemas():
     import json as _j
-    from legion_orch.docstore import SchemaViolation
+    from legion_orch.store import SchemaViolation
     d = _store()
     good = {"tasks": [_task("T1", ["src/a.py"])]}
     v = d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner")
@@ -252,7 +252,7 @@ def test_store_enforces_bound_schemas():
 
 
 def test_report_schemas():
-    from legion_orch.schemas import SchemaRegistry
+    from legion_orch.store import SchemaRegistry
     reg = SchemaRegistry(ROOT / "assets/schemas")
     ok = {"verdict": "PASS", "findings": [], "checked": ["diff"]}
     assert reg.validate_data("report-review", ok) == []

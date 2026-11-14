@@ -108,6 +108,17 @@ def main():
              "depends_on": ["T1", "T2"], "files_modified": ["docs/"], "instructions": "document",
              "acceptance": ["docs exist"], "verification": ["test -f docs/README.md"]},
         ]
+        # the store refuses invalid / out-of-scope writes, and the agent sees why
+        assert call("docs_schema", path="plan/taskgraph.json")["schema"] == "taskgraph"
+        for path, body, gid in (("plan/taskgraph.json", json.dumps({"tasks": [{"id": "X"}]}), "G-W3"),
+                                ("intake/requirements.md", "- REQ-9: sneaky", "G-W1")):
+            try:
+                call("docs_write", path=path, content=body,
+                     base_version=(call("docs_read", path=path)["version"]
+                                   if path.startswith("intake") else None))
+                raise AssertionError(f"write to {path} should have been refused")
+            except RuntimeError as e:
+                assert gid in str(e), e
         tg = write("plan/taskgraph.json", json.dumps({"tasks": tasks}))
         print(call("report", status="DONE", summary="plan written",
                    attestations=[spec, oracle, tg] + deltas))
