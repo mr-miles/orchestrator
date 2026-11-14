@@ -14,10 +14,9 @@ from ..model import (
     R_FAILED,
     R_REPORTED,
     R_SUPERSEDED,
-    READY,
-    REVIEWING,
-    REWORK,
+    Escalation,
     Node,
+    Resume,
     Run,
 )
 from ..roles import handler_for
@@ -28,11 +27,13 @@ class RunsMixin:
         """Delete a sandbox in the background (its work has been accepted)."""
         self._spawn(self._delete_sandbox(name))
 
-    def escalate(self, node: Node, kind: str, reason: str, resume: str, **extra) -> None:
+    def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
+                 run: str | None = None, missing_decision: str | None = None,
+                 log_tail: str | None = None) -> None:
         node.status = ESCALATED
-        node.escalation = {"type": kind, "reason": reason, "resume": resume, "at": now_iso(),
-                           **extra}
-        self.event("escalation", f"{kind}: {reason}", node.id, extra.get("run"))
+        node.escalation = Escalation(kind=kind, reason=reason, resume=resume, run=run,
+                                     missing_decision=missing_decision, log_tail=log_tail)
+        self.event("escalation", f"{kind}: {reason}", node.id, run)
 
     def _fail_run(self, run: Run, reason: str) -> None:
         """No automatic retries (principle 5): a failed run escalates to a human."""
@@ -45,9 +46,9 @@ class RunsMixin:
         tail = self.log_tail(run.id, 40)
         if handler_for(run.role).panel:
             self.escalate(node, "run_failed", f"{run.role} run {run.id}: {reason}",
-                           resume=REVIEWING, run=run.id, log_tail=tail)
+                           resume=Resume.REVIEWING, run=run.id, log_tail=tail)
         else:
-            resume = REWORK if node.kind == BUILD else READY
+            resume = Resume.REWORK if node.kind == BUILD else Resume.READY
             self.escalate(node, "run_failed", f"run {run.id}: {reason}", resume=resume,
                            run=run.id, log_tail=tail)
         if not self.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":

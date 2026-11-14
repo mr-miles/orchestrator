@@ -138,7 +138,7 @@ function actionForm(n) {
   const c = S.change;
   if (n.status === 'ESCALATED') {
     const e = n.escalation || {};
-    return `<div class="card" style="border-color:var(--ESCALATED)"><b>Escalation: ${esc(e.type)}</b><div>${esc(e.reason)}</div>
+    return `<div class="card" style="border-color:var(--ESCALATED)"><b>Escalation: ${esc(e.kind)}</b><div>${esc(e.reason)}</div>
       ${e.missing_decision ? `<div><b>Decision needed:</b> ${esc(e.missing_decision)}</div>` : ''}
       ${e.log_tail ? `<pre>${esc(e.log_tail)}</pre>` : ''}
       <textarea id="f_text" placeholder="answer / decision (attested as feedback)"></textarea>

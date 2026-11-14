@@ -1,6 +1,8 @@
 """Risk signals -> tier -> gates (mirrors legion-ascended DEFAULT_RISK_POLICY)."""
 from __future__ import annotations
 
+from .model import RiskAssessment, RiskFloor
+
 SIGNALS = [
     "security", "authorization", "data_migration", "external_side_effect", "public_api", "ui",
     "performance", "infrastructure", "irreversible_action", "scope_breadth",
@@ -53,19 +55,19 @@ def validate_signals(data: dict) -> list[str]:
     return errs
 
 
-def derive_tier(data: dict) -> dict:
+def derive_tier(data: dict) -> RiskAssessment:
     scores = {s["name"]: int(s["score"]) for s in data["signals"]}
     total = sum(scores.values())
     threshold = "R0" if total <= 2 else "R1" if total <= 5 else "R2" if total <= 8 else "R3"
     floors = []
     for name, score in scores.items():
         if score >= 3:
-            floors.append({"signal": name, "tier": "R3"})
+            floors.append(RiskFloor(signal=name, tier="R3"))
         elif score >= 2 and name in R2_FLOOR_AT_2:
-            floors.append({"signal": name, "tier": "R2"})
-    tier = max([threshold] + [f["tier"] for f in floors], key=rank)
-    return {"total": total, "threshold_tier": threshold, "floors": floors, "tier": tier,
-            "scores": scores}
+            floors.append(RiskFloor(signal=name, tier="R2"))
+    tier = max([threshold] + [f.tier for f in floors], key=rank)
+    return RiskAssessment(total=total, threshold_tier=threshold, floors=floors, tier=tier,
+                          scores=scores)
 
 
 def review_panel(tier: str, scores: dict[str, int]) -> list[str]:

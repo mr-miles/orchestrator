@@ -1,5 +1,6 @@
 """End-to-end: real HTTP server (MCP + git smart-HTTP + API), LocalRunner, scripted agents."""
 import asyncio
+import json
 import socket
 import sqlite3
 import subprocess
@@ -105,7 +106,9 @@ async def _full_workflow(tmp_path):
     assert set(ctl2.changes) == {a.cid, b.cid}
     for old in (a, b):
         new = ctl2.changes[old.cid]
-        assert new.change.ship["verdict"] == "READY"
+        assert new.change.ship.verdict == "READY"
+        assert new.change.model_dump() == old.change.model_dump()      # typed records round-trip
+        json.dumps(new.snapshot())                                      # the UI state serialises
         assert list(new.nodes) == list(old.nodes)
         assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
@@ -119,7 +122,7 @@ async def _full_workflow(tmp_path):
 async def _drive(ce):
     n = ce.nodes
     await _wait(ce, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
-    assert ce.change.risk["tier"] == "R2"          # public_api=2 floor
+    assert ce.change.risk.tier == "R2"          # public_api=2 floor
     await ce.human_action("H-1", "accept", "miles")
     assert ce.change.panel == ["reviewer"]
 
@@ -133,7 +136,7 @@ async def _drive(ce):
     assert sorted(r["pending"]) == ["REQ-2", "oracle"] and n["H-2"].status == "AWAITING_HUMAN"
     r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["REQ-2", "oracle"]})
     assert r["pending"] == [] and n["H-2"].status == "ACCEPTED"
-    assert ce.change.surface_pins["files"]["pins"]["README.md"]
+    assert ce.change.surface_pins["files"].pins["README.md"]
 
     await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
     assert n["build:T1"].cycle == 2                 # review FAIL -> rework
@@ -144,8 +147,8 @@ async def _drive(ce):
 
     await _wait(ce, lambda: ce.change.ship is not None, "ship")
     ship = ce.change.ship
-    assert ship["verdict"] == "READY", ship["gates"]
-    assert set(ship["gates"]) == {
+    assert ship.verdict == "READY", ship.gates
+    assert set(ship.gates) == {
         "approved_delta_spec", "protected_oracle", "task_contract", "deterministic_verification",
         "task_level_independent_review", "integration_or_real_interface_checks",
         "whole_change_acceptance_evidence"}
@@ -203,13 +206,13 @@ async def _r3_workflow(tmp_path):
         assert all(f"{b.cycle}:architecture" in b.reviews for b in ce.build_nodes())
         await ce.human_action("H-3", "accept", "miles")
         await _wait(ce, lambda: ce.change.ship is not None, "ship")
-        gates = ce.change.ship["gates"]
-        assert ce.change.ship["verdict"] == "NOT_READY"
-        assert gates["security_or_e2e_evaluator"]["status"] == "unevaluable"
-        assert gates["rollback_or_forward_fix_evidence"]["status"] == "unevaluable"
-        assert gates["independent_baseline"]["status"] == "satisfied"
-        assert gates["architecture_or_security_review"]["status"] == "satisfied"
-        assert gates["release_observation_plan"]["status"] == "satisfied"
+        gates = ce.change.ship.gates
+        assert ce.change.ship.verdict == "NOT_READY"
+        assert gates["security_or_e2e_evaluator"].status == "unevaluable"
+        assert gates["rollback_or_forward_fix_evidence"].status == "unevaluable"
+        assert gates["independent_baseline"].status == "satisfied"
+        assert gates["architecture_or_security_review"].status == "satisfied"
+        assert gates["release_observation_plan"].status == "satisfied"
 
         with pytest.raises(Exception, match="G-AT1"):
             await ce.change_action("attest", "miles", {"kind": "release-observation", "verdict": "pass",
@@ -230,11 +233,11 @@ async def _r3_workflow(tmp_path):
         await ce.human_action("ship", "recheck", "miles")
         await _wait(ce, lambda: ce.change.ship is not first, "ship recheck")
         ship = ce.change.ship
-        unsatisfied = {k: g for k, g in ship["gates"].items() if g["status"] != "satisfied"}
-        assert ship["verdict"] == "READY", unsatisfied
-        assert ship["gates"]["evidence_bundle_or_log"]["added"]
+        unsatisfied = {k: g for k, g in ship.gates.items() if g.status != "satisfied"}
+        assert ship.verdict == "READY", unsatisfied
+        assert ship.gates["evidence_bundle_or_log"].added
         assert {"independent_baseline", "security_or_e2e_evaluator",
-                "rollback_or_forward_fix_evidence"} <= set(ship["human_judgement_gates"])
+                "rollback_or_forward_fix_evidence"} <= set(ship.human_judgement_gates)
     finally:
         for srv in servers:
             srv.should_exit = True

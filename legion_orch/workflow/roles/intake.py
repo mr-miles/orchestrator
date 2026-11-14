@@ -24,6 +24,6 @@ class Intake(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         rj = e.json_doc("intake/risk.json", r.docs[e.p("intake/risk.json")].version)
         e.change.risk = risk.derive_tier(rj)
-        e.event("risk", f"derived tier {e.change.risk['tier']} (score {e.change.risk['total']})",
+        e.event("risk", f"derived tier {e.change.risk.tier} (score {e.change.risk.total})",
                  r.node.id)
         await super().on_done(e, r)

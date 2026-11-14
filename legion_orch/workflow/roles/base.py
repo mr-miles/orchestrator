@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..attest import Attestation
-from ..model import ACCEPTED, Node, Run
+from ..model import ACCEPTED, Finding, Node, Run
 from ..view import RoleContext
 
 
@@ -62,19 +62,14 @@ class RoleHandler:
         e.accept_runs(r.node)
 
 
-def brief_findings(findings: list[dict]) -> list[dict]:
-    """Compact copy for node records (the run record and the review document keep the full text),
-    so repeated review cycles cannot grow a node record without bound."""
-    keep = ("severity", "confidence", "dimension", "title")
-    return [{**{k: f.get(k) for k in keep if k in f},
-             "observation": str(f.get("observation", ""))[:500], "impact": str(f.get("impact", ""))[:300],
-             "fix": str(f.get("fix", ""))[:500], "attestations": list(f.get("attestations", []))[:5]}
-            for f in findings[:30] if isinstance(f, dict)]
+def brief_findings(findings: list[dict]) -> list[Finding]:
+    """The (schema-validated) findings of a report, compacted for the node record."""
+    return [Finding.model_validate(f).brief() for f in findings[:30]]
 
 
 def build_context(e: RoleContext, node: Node) -> list[str]:
     """Context of a build task: its declared context and its accepted dependencies' commits."""
-    refs = [c for c in (node.task or {}).get("context", []) if isinstance(c, str)]
+    refs = list(node.task.context) if node.task else []
     for d in node.depends_on:
         dn = e.nodes.get(d)
         if dn and dn.task and dn.accepted_sha:
@@ -83,7 +78,7 @@ def build_context(e: RoleContext, node: Node) -> list[str]:
 
 
 def evidence_of(e: RoleContext, node: Node) -> str | None:
-    return e.latest_att(f"tasks/{node.task['id']}/evidence/cycle-{node.cycle}.md")
+    return e.latest_att(f"tasks/{node.task.id}/evidence/cycle-{node.cycle}.md")
 
 
 REGISTRY: dict[str, RoleHandler] = {}

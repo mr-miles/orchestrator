@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .. import guards
-from ..model import R_ACCEPTED
+from ..model import R_ACCEPTED, ReviewResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, brief_findings, build_context, evidence_of, register
 
@@ -17,8 +17,8 @@ class Panel(RoleHandler):
     def extra_context(self, e: RoleContext, node) -> list[str]:
         refs = build_context(e, node)
         ev = evidence_of(e, node)
-        ver = node.verification.get(str(node.cycle))
-        return refs + [a for a in (ev, ver and ver.get("attestation")) if a]
+        ver = node.current_verification()
+        return refs + [a for a in (ev, ver and ver.attestation) if a]
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         return guards.findings(r.data, r.repo_atts) + guards.verdict(
@@ -27,10 +27,10 @@ class Panel(RoleHandler):
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
         run, node, data = r.run, r.node, r.data
-        node.reviews[f"{run.cycle}:{run.role}"] = {
-            "verdict": data["verdict"], "sha": run.judged_sha, "run": run.id,
-            "findings": brief_findings(data.get("findings", [])), "checked": data.get("checked", [])[:50],
-            "doc": str(r.docs[run.required_docs[0]])}
+        node.reviews[node.review_key(run.cycle, run.role)] = ReviewResult(
+            verdict=data["verdict"], sha=run.judged_sha, run=run.id,
+            findings=brief_findings(data.get("findings", [])), checked=data.get("checked", [])[:50],
+            doc=str(r.docs[run.required_docs[0]]))
         run.status = R_ACCEPTED
         e.delete_sandbox_later(run.sandbox)
         e.panel_complete(node)

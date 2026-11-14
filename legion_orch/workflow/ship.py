@@ -6,24 +6,32 @@ is satisfied only while its replacement evidence resolves, and is reported as hu
 """
 from __future__ import annotations
 
-from typing import Any
-
 from ..git import path_matches
 from . import attest, governance
-from .model import ACCEPTED, BASELINE, H_CHANGE, INTEGRATION, RELEASE, _parse_ts_safe
+from .model import (
+    ACCEPTED,
+    BASELINE,
+    H_CHANGE,
+    INTEGRATION,
+    RELEASE,
+    GateResult,
+    Oracle,
+    Readiness,
+    _parse_ts_safe,
+)
 from .view import ChangeView
 
 SAT, UNSAT, UNEVAL = "satisfied", "unsatisfied", "unevaluable"
 
 
-def _g(status: str, detail: str, human: bool = False) -> dict:
-    return {"status": status, "detail": detail, "human_judgement": human}
+def _g(status: str, detail: str, human: bool = False) -> GateResult:
+    return GateResult(status=status, detail=detail, human_judgement=human)
 
 
-async def evaluate(e: ChangeView) -> dict[str, Any]:
+async def evaluate(e: ChangeView) -> Readiness:
     ch = e.change
     builds = e.build_nodes()
-    task_ids = {b.task["id"] for b in builds}
+    task_ids = {b.task.id for b in builds}
     head = await e.git.integration_head(ch.id)
     repo = e.cfg.repo.name
 
@@ -35,63 +43,63 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
         except attest.AttestationError:
             return False
 
-    h2 = {s["subject"]: s for s in governance.h2_status(e)}
+    h2 = {s.subject: s for s in governance.h2_status(e)}
     h2_records = [ch.approvals.get(governance.approval_key(s)) for s in h2]
 
     def all_accepted() -> bool:
         return bool(builds) and all(b.status == ACCEPTED for b in builds)
 
-    async def attested(kinds: list[str], *, need_before_build: bool = False) -> dict | None:
+    async def attested(kinds: list[str], *, need_before_build: bool = False) -> GateResult | None:
         """Evaluate human attestations of ``kinds`` (any pass suffices; any fail blocks)."""
         recs = [ch.attestations[k] for k in kinds if k in ch.attestations]
         if not recs:
             return None
         for r in recs:
-            if not await resolves(r["attestation"]) or not all([await resolves(s) for s in r["sources"]]):
-                return _g(UNSAT, f"{r['kind']}: attestation or a source no longer resolves")
-            if r["verdict"] == "fail":
-                return _g(UNSAT, f"{r['kind']} attested fail by {r['attested_by']}")
+            if not await resolves(r.attestation) or not all([await resolves(s) for s in r.sources]):
+                return _g(UNSAT, f"{r.kind}: attestation or a source no longer resolves")
+            if r.verdict == "fail":
+                return _g(UNSAT, f"{r.kind} attested fail by {r.attested_by}")
         for r in recs:
-            if r["verdict"] in ("pass", "not_applicable"):
+            if r.verdict in ("pass", "not_applicable"):
                 if not governance.coverage_ok(r, task_ids):
-                    return _g(UNSAT, f"{r['kind']}: covers {r['covers']}, not every task")
+                    return _g(UNSAT, f"{r.kind}: covers {r.covers}, not every task")
                 if need_before_build and ch.first_build_at and \
-                        _parse_ts_safe(r["at"]) >= _parse_ts_safe(ch.first_build_at):
-                    return _g(UNSAT, f"{r['kind']} recorded after execution started")
-                how = "waived (not_applicable)" if r["verdict"] == "not_applicable" else "pass"
-                return _g(SAT, f"{r['kind']} {how} by {r['attested_by']}: {', '.join(r['sources'])}", True)
+                        _parse_ts_safe(r.at) >= _parse_ts_safe(ch.first_build_at):
+                    return _g(UNSAT, f"{r.kind} recorded after execution started")
+                how = "waived (not_applicable)" if r.verdict == "not_applicable" else "pass"
+                return _g(SAT, f"{r.kind} {how} by {r.attested_by}: {', '.join(r.sources)}", True)
         return _g(UNSAT, "attested verdict is unknown")
 
     # ---- contracts / specs
-    async def contract() -> dict:
+    async def contract() -> GateResult:
         plan = h2.get("plan")
-        if not plan or plan["status"] == "pending":
+        if not plan or plan.status == "pending":
             return _g(UNEVAL, "task graph not approved (H-2 plan)")
-        if plan["status"] != "approved":
+        if plan.status != "approved":
             return _g(UNSAT, "approved task graph is stale")
         rec = ch.approvals["spec:plan"]
-        tg = e.json_doc("plan/taskgraph.json", rec["pins"][e.p("plan/taskgraph.json")])
+        tg = e.json_doc("plan/taskgraph.json", rec.pins[e.p("plan/taskgraph.json")])
         ids = {t["id"] for t in tg["tasks"]}
         if ids != task_ids:
             return _g(UNSAT, f"build tasks {sorted(task_ids)} != contract {sorted(ids)}")
-        return _g(SAT, f"{len(ids)} task contract(s) at {rec['attestation']}")
+        return _g(SAT, f"{len(ids)} task contract(s) at {rec.attestation}")
 
-    async def delta_specs() -> dict:
+    async def delta_specs() -> GateResult:
         reqs = [s for s in h2 if s not in ("plan", "oracle")]
         if not reqs:
             return _g(UNEVAL, "no delta specs")
-        bad = [f"{s}: {h2[s]['status']}" for s in reqs if h2[s]["status"] != "approved"]
+        bad = [f"{s}: {h2[s].status}" for s in reqs if h2[s].status != "approved"]
         if bad:
             return _g(UNSAT if any("stale" in b for b in bad) else UNEVAL, "; ".join(bad))
         for s in reqs:
-            if not await resolves(ch.approvals[governance.approval_key(s)]["attestation"]):
+            if not await resolves(ch.approvals[governance.approval_key(s)].attestation):
                 return _g(UNSAT, f"{s}: approval record does not resolve")
         return _g(SAT, f"{len(reqs)} delta spec(s) approved against current bytes")
 
-    async def spec_and_oracle_before() -> dict:
+    async def spec_and_oracle_before() -> GateResult:
         if any(r is None for r in h2_records):
             return _g(UNEVAL, "spec/oracle not fully approved")
-        if any(s["status"] != "approved" for s in h2.values()):
+        if any(s.status != "approved" for s in h2.values()):
             return _g(UNSAT, "a spec/oracle approval is stale")
         last = governance.last_h2_approval_at(e)
         if ch.first_build_at and _parse_ts_safe(last) >= _parse_ts_safe(ch.first_build_at):
@@ -99,40 +107,40 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
         return _g(SAT, f"last approval {last} before first build {ch.first_build_at}")
 
     # ---- execution evidence
-    async def deterministic() -> dict:
+    async def deterministic() -> GateResult:
         if not all_accepted():
             return _g(UNEVAL if not builds else UNSAT, "not every build task is accepted")
         for b in builds:
-            ver = b.verification.get(str(b.cycle))
-            if not ver or not ver["ok"] or ver["sha"] != b.accepted_sha \
-                    or not await resolves(ver.get("attestation")):
+            ver = b.current_verification()
+            if not ver or not ver.ok or ver.sha != b.accepted_sha \
+                    or not await resolves(ver.attestation):
                 return _g(UNSAT, f"{b.id}: no passing verification at accepted sha")
         iv = e.nodes.get(INTEGRATION)
         if iv is not None:
             ver = iv.verification.get("integration")
-            if not ver or not ver["ok"] or ver["sha"] != head:
+            if not ver or not ver.ok or ver.sha != head:
                 return _g(UNSAT, "no passing oracle verification at the integration head")
         return _g(SAT, "all verification commands passed at accepted commits")
 
-    async def evidence() -> dict:
+    async def evidence() -> GateResult:
         if not all_accepted():
             return _g(UNEVAL, "not every build task is accepted")
         for b in builds:
             run = e.runs.get(b.current_run)
-            atts = (run.report or {}).get("attestations", []) if run else []
-            ev = [a for a in atts if a.startswith(f"file:{e.p('tasks/' + b.task['id'] + '/evidence')}/")]
+            atts = run.report.attestations if run and run.report else []
+            ev = [a for a in atts if a.startswith(f"file:{e.p('tasks/' + b.task.id + '/evidence')}/")]
             if not ev or not all([await resolves(a) for a in ev]):
                 return _g(UNSAT, f"{b.id}: no resolvable evidence document")
         return _g(SAT, "every task has an attested evidence document")
 
-    async def scoped() -> dict:
+    async def scoped() -> GateResult:
         if not all_accepted():
             return _g(UNEVAL, "not every build task is accepted")
         for b in builds:
             run = e.runs.get(b.current_run)
-            approved = governance.approved_protected_for(e, b.task["id"], run.created_at if run else "")
+            approved = governance.approved_protected_for(e, b.task.id, run.created_at if run else "")
             prot = [p for p in governance.protected_paths(e) if p not in approved]
-            allowed = b.task["files_modified"] + approved
+            allowed = b.task.files_modified + approved
             changed = await e.git.changed_paths(b.base_sha, b.accepted_sha)
             bad = [p for p in changed if not any(path_matches(p, a) for a in allowed)
                    or any(path_matches(p, x) for x in prot)]
@@ -140,18 +148,18 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
                 return _g(UNSAT, f"{b.id} changed out-of-scope paths {bad[:5]}")
         return _g(SAT, "every accepted diff stays inside files_modified (+ approved protected paths)")
 
-    async def review(roles: list[str], label: str) -> dict:
+    async def review(roles: list[str], label: str) -> GateResult:
         if not all_accepted():
             return _g(UNEVAL, "not every build task is accepted")
         human = False
         for b in builds:
-            if (b.human or {}).get("override"):
+            if b.override:
                 human = True
                 continue
             ok = False
             for role in roles:
-                r = b.reviews.get(f"{b.cycle}:{role}")
-                if r and r["verdict"] == "PASS" and r["sha"] == b.accepted_sha and await resolves(r["doc"]):
+                r = b.review(b.cycle, role)
+                if r and r.verdict == "PASS" and r.sha == b.accepted_sha and await resolves(r.doc):
                     ok = True
             if not ok:
                 return _g(UNSAT, f"{b.id}: no independent {label} PASS at accepted sha")
@@ -159,9 +167,9 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
                   (" (some by human override)" if human else ""), human)
 
     # ---- oracle / surfaces
-    async def protected() -> dict:
-        tests = (ch.oracle or {}).get("acceptance_tests", [])
-        support = (ch.oracle or {}).get("protected_support", [])
+    async def protected() -> GateResult:
+        tests = (ch.oracle or Oracle()).acceptance_tests
+        support = (ch.oracle or Oracle()).protected_support
         if not ch.oracle_sha or not tests:
             return _g(UNEVAL, "no oracle commit")
         approved = governance.all_approved_protected(e)
@@ -174,51 +182,51 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
             return _g(SAT, f"changed only with prior human approval: {changed}", True)
         return _g(SAT, f"{len(tests)} acceptance test(s) unchanged since {ch.oracle_sha[:12]}")
 
-    async def protected_tests_ran() -> dict:
+    async def protected_tests_ran() -> GateResult:
         g = await protected()
-        if g["status"] != SAT:
+        if g.status != SAT:
             return g
         iv = e.nodes.get(INTEGRATION)
         ver = iv.verification.get("integration") if iv else None
-        cmds = (ch.oracle or {}).get("acceptance_commands", [])
-        if not ver or ver["sha"] != head:
+        cmds = (ch.oracle or Oracle()).acceptance_commands
+        if not ver or ver.sha != head:
             return _g(UNEVAL, "acceptance commands not run at head")
-        ran = {r["command"]: r["exit_code"] for r in ver["results"]}
+        ran = {r.command: r.exit_code for r in ver.results}
         if any(ran.get(c) != 0 for c in cmds):
             return _g(UNSAT, "acceptance commands did not all pass at head")
-        return _g(SAT, "protected acceptance tests pass at head", g["human_judgement"])
+        return _g(SAT, "protected acceptance tests pass at head", g.human_judgement)
 
-    async def integration() -> dict:
+    async def integration() -> GateResult:
         iv = e.nodes.get(INTEGRATION)
         if not iv:
             return _g(UNEVAL, "no integration node")
         r = iv.reviews.get("integration")
         ver = iv.verification.get("integration")
-        if iv.status != ACCEPTED or not r or r["verdict"] != "PASS" or r["sha"] != head \
-                or not ver or not ver["ok"] or ver["sha"] != head:
+        if iv.status != ACCEPTED or not r or r.verdict != "PASS" or r.sha != head \
+                or not ver or not ver.ok or ver.sha != head:
             return _g(UNSAT, "integration verification not passed at current head")
         if not governance.surfaces(e):
             return _g(UNEVAL, "no verification surface declared")
         drift = await governance.surface_drift(e, head)
         if drift:
             return _g(UNSAT, "; ".join(drift))
-        ran = {x["command"]: x["exit_code"] for x in ver["results"]}
+        ran = {x.command: x.exit_code for x in ver.results}
         missing = [c for c in governance.surface_commands(e) if ran.get(c) != 0]
         if missing:
             return _g(UNSAT, f"surface commands not passing at head: {missing}")
         return _g(SAT, f"integration PASS; {len(governance.surfaces(e))} surface(s) pinned and exercised")
 
     # ---- human decisions
-    async def human_change() -> dict:
+    async def human_change() -> GateResult:
         a = ch.approvals.get(H_CHANGE)
         if not a:
             return _g(UNEVAL, "change not accepted by a human (H-3)")
-        if a["approver"] not in e.cfg.decision_owners or a["head"] != head \
-                or not await resolves(a["attestation"]):
+        if a.approver not in e.cfg.decision_owners or a.head != head \
+                or not await resolves(a.attestation):
             return _g(UNSAT, "acceptance stale or approver not a decision owner")
-        return _g(SAT, f"accepted by {a['approver']} at {head[:12]}", True)
+        return _g(SAT, f"accepted by {a.approver} at {head[:12]}", True)
 
-    async def baseline() -> dict:
+    async def baseline() -> GateResult:
         g = await attested(["independent-baseline"], need_before_build=True)
         if g:
             return g
@@ -226,22 +234,22 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
         return _g(UNEVAL, "no independent-baseline attestation" +
                   (" (baseline report exists; a human must attest it)" if n and n.status == ACCEPTED else ""))
 
-    async def security_or_e2e() -> dict:
+    async def security_or_e2e() -> GateResult:
         return await attested(["security-evaluation", "e2e-evaluation"]) or \
             _g(UNEVAL, "no security-evaluation or e2e-evaluation attestation")
 
-    async def arch_or_security() -> dict:
+    async def arch_or_security() -> GateResult:
         a = await attested(["architecture-review"])
-        if a and a["status"] == UNSAT:
+        if a and a.status == UNSAT:
             return a
         r = await review(["architecture", "security"], "architecture/security review")
-        if r["status"] == SAT:
+        if r.status == SAT:
             return r
         return a or r
 
-    async def release_plan() -> dict:
+    async def release_plan() -> GateResult:
         w = ch.attestations.get("release-observation")
-        if w and w["verdict"] == "not_applicable":
+        if w and w.verdict == "not_applicable":
             return await attested(["release-observation"])
         n = e.nodes.get(RELEASE)
         if not n or n.status != ACCEPTED:
@@ -249,7 +257,7 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
         return _g(SAT, "release/plan.md attested") if await resolves(e.latest_att("release/plan.md")) \
             else _g(UNSAT, "release plan missing")
 
-    async def rollback() -> dict:
+    async def rollback() -> GateResult:
         return await attested(["rollback-evidence", "forward-fix-evidence"]) or \
             _g(UNEVAL, "no rollback-evidence or forward-fix-evidence attestation")
 
@@ -275,26 +283,22 @@ async def evaluate(e: ChangeView) -> dict[str, Any]:
         "release_observation_plan": release_plan,
         "rollback_or_forward_fix_evidence": rollback,
     }
-    gates: dict[str, dict] = {}
+    gates: dict[str, GateResult] = {}
     waived = []
     for gate in governance.gate_set(e):
         w = governance.waiver_for(e, gate)
         if w:
-            ok = await resolves(w["evidence"]) and await resolves(w["attestation"])
+            ok = await resolves(w.evidence) and await resolves(w.attestation)
             gates[gate] = _g(SAT if ok else UNSAT,
-                             f"waived by {w['approver']}: {w['reason']} (evidence {w['evidence']})", True)
+                             f"waived by {w.approver}: {w.reason} (evidence {w.evidence})", True)
             waived.append(gate)
         else:
             gates[gate] = await checks[gate]()
-        gates[gate]["added"] = any(o["kind"] == "add_gate" and o["gate"] == gate for o in ch.overrides)
-    waived += [g for g, r in gates.items() if "not_applicable" in r["detail"] and g not in waived]
-    ready = all(g["status"] == SAT for g in gates.values())
-    return {
-        "verdict": "READY" if ready else "NOT_READY",
-        "tier": ch.tier, "integration_head": head,
-        "integration_branch": e.git.integration_branch(ch.id),
-        "gates": gates,
-        "waived_gates": sorted(waived),
-        "human_judgement_gates": sorted(k for k, g in gates.items() if g["human_judgement"]),
-        "note": "Readiness verdict only. Nothing was published, deployed or released.",
-    }
+        gates[gate].added = any(o.kind == "add_gate" and o.gate == gate for o in ch.overrides)
+    waived += [g for g, r in gates.items() if "not_applicable" in r.detail and g not in waived]
+    ready = all(g.status == SAT for g in gates.values())
+    return Readiness(
+        verdict="READY" if ready else "NOT_READY", tier=ch.tier, integration_head=head,
+        integration_branch=e.git.integration_branch(ch.id), gates=gates,
+        waived_gates=sorted(waived),
+        human_judgement_gates=sorted(k for k, g in gates.items() if g.human_judgement))

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .. import guards
 from ..engine.common import PLAN_DOCS
-from ..model import ACCEPTED, PENDING, PLAN, REWORK
+from ..model import ACCEPTED, PENDING, PLAN, REWORK, Feedback, Resume
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -30,12 +30,13 @@ class Critic(RoleHandler):
             return
         plan = e.nodes[PLAN]
         limit = e.cfg.limits.critique_max_cycles + node.extra_cycles
-        fb = {"cycle": plan.cycle, "source": "critique", "text": "critique requested rework: "
-              + "; ".join(f"{f.get('severity')}: {f.get('title')}" for f in data.get("findings", [])),
-              "attestations": [str(a) for a in r.docs.values()]}
+        fb = Feedback(cycle=plan.cycle, source="critique", text="critique requested rework: "
+                      + "; ".join(f"{f.get('severity')}: {f.get('title')}"
+                                  for f in data.get("findings", [])),
+                      attestations=[str(a) for a in r.docs.values()])
         if plan.cycle >= limit:
             e.escalate(node, "critique_budget", f"G-C2: {plan.cycle} critique cycles without PASS",
-                        resume="critique_budget")
+                        resume=Resume.CRITIQUE_BUDGET)
             node.feedback.append(fb)
         else:
             plan.cycle += 1

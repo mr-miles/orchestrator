@@ -28,6 +28,8 @@ from ..model import (
     REWORK,
     RUNNING,
     Node,
+    Oracle,
+    Resume,
     Run,
 )
 from ..roles import handler_for
@@ -43,8 +45,8 @@ class DispatchMixin:
         return PLAN_DOCS + [f"plan/specs/{r}.md" for r in self.change.requirements]
 
     def oracle_commands(self) -> list[str]:
-        orc = self.change.oracle or {}
-        cmds = orc.get("acceptance_commands", []) + orc.get("integration_commands", []) \
+        orc = self.change.oracle or Oracle()
+        cmds = orc.acceptance_commands + orc.integration_commands \
             + governance.surface_commands(self)
         return list(dict.fromkeys(cmds))
 
@@ -54,14 +56,14 @@ class DispatchMixin:
         refs: list[str] = []
         appr1 = self.change.approvals.get(H_REQUIREMENTS)
         if appr1 and h.sees_requirements:
-            refs += [f"file:{p}@{v}" for p, v in appr1["pins"].items()]
+            refs += [f"file:{p}@{v}" for p, v in appr1.pins.items()]
         if h.sees_draft_plan or not self.change.approvals.get("oracle"):
             if self.nodes.get(PLAN) and self.nodes[PLAN].status == ACCEPTED:
                 refs += [a for a in (self.latest_att(p) for p in self._plan_docs()) if a]
         else:
             for key, appr in self.change.approvals.items():
                 if key == "oracle" or key.startswith("spec:"):
-                    refs += [f"file:{p}@{v}" for p, v in appr["pins"].items()]
+                    refs += [f"file:{p}@{v}" for p, v in appr.pins.items()]
         refs += h.extra_context(self, node)
         if self.change.oracle_sha and h.sees_oracle_commit:
             refs.append(f"git:{self.cfg.repo.name}@{self.change.oracle_sha}")
@@ -72,8 +74,8 @@ class DispatchMixin:
             return "(none)"
         lines = []
         for f in node.feedback:
-            atts = ", ".join(f.get("attestations") or [])
-            lines.append(f"- cycle {f['cycle']} [{f['source']}] {f['text']}"
+            atts = ", ".join(f.attestations)
+            lines.append(f"- cycle {f.cycle} [{f.source}] {f.text}"
                          + (f" (evidence: {atts})" if atts else ""))
         return "\n".join(lines)
 
@@ -84,7 +86,7 @@ class DispatchMixin:
         if h.needs_fresh_approval:
             stale = self._approval_fresh()
             if stale:
-                self.escalate(node, "approval", "; ".join(stale), resume=REWORK)
+                self.escalate(node, "approval", "; ".join(stale), resume=Resume.REWORK)
                 return None
         if node.kind == BUILD and not node.base_sha:
             node.base_sha = ch.integration_head
@@ -95,15 +97,17 @@ class DispatchMixin:
         run_id = self.ctl.next_run_id()
         branch = f"legion/{ch.id}/{_slug(node.id)}" if h.pushes \
             else f"legion/{ch.id}/{run_id}-{role}"
-        task = node.task or {}
+        task = node.task
+        task_json = task.model_dump(mode="json") if task else {}
         variables = {
             "change_id": ch.id, "goal": ch.goal, "tier": ch.tier or "unassessed",
             "repo_name": self.cfg.repo.name,
             "base_sha": node.base_sha or ch.base_sha, "head_sha": ch.integration_head,
-            "branch": branch, "task_id": task.get("id", node.id), "task_title": task.get("title", node.title),
-            "task_json": json.dumps(task, indent=2) if task else "{}",
+            "branch": branch, "task_id": task.id if task else node.id,
+            "task_title": task.title if task else node.title,
+            "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
-            "workdir": "/sandbox/work", "task_soul": task.get("soul", ""),
+            "workdir": "/sandbox/work", "task_soul": task.soul if task else "",
         }
         write, required = self.assets.role_paths(role, variables)
         write, required = [self.p(w) for w in write], [self.p(d) for d in required]
@@ -117,18 +121,19 @@ class DispatchMixin:
         try:
             rendered = self.assets.render_role(role, variables)
         except AssetError as e:
-            self.escalate(node, "assets", str(e), resume=node.status)
+            self.escalate(node, "assets", str(e),
+                          resume=Resume.REWORK if node.status == REWORK else Resume.READY)
             return None
         run = Run(id=run_id, node_id=node.id, role=role,
-                  soul=self.assets.roles[role].soul if role != "implementer" else task.get("soul"),
+                  soul=task.soul if task and role == "implementer" else self.assets.roles[role].soul,
                   cycle=node.cycle,
                   base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
                   prompt_pin=rendered.pin, assets_sha=self.assets.sha,
                   write_scope=write, required_docs=required, context_refs=context,
                   assignment={k: v for k, v in variables.items()
-                              if k not in ("context_refs",)} | {"task": task,
-                                                                "context": context,
-                                                                "feedback_items": node.feedback})
+                              if k != "context_refs"} | {
+                      "task": task_json, "context": context,
+                      "feedback_items": [f.model_dump(mode="json") for f in node.feedback]})
         # G-D4: judges always get a fresh sandbox; only roles that reuse theirs keep it per node.
         if h.reuses_sandbox and node.sandbox:
             run.sandbox = node.sandbox

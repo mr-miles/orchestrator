@@ -2,24 +2,24 @@
 from __future__ import annotations
 
 from .. import guards
-from ..model import READY
+from ..model import Oracle, Resume
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
 
 @register
-class Oracle(RoleHandler):
+class OracleAuthor(RoleHandler):
     roles = ("oracle",)
     pushes = True
     sees_draft_plan = True
     sees_oracle_commit = False
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
-        orc = e.json_doc("plan/oracle.json")
+        orc = Oracle.model_validate(e.json_doc("plan/oracle.json"))
         changed = await e.git.changed_paths(r.run.base_sha, r.sha)
-        allowed = orc.get("acceptance_tests", []) + orc.get("protected_support", [])
+        allowed = orc.acceptance_tests + orc.protected_support
         v = guards.scoped_diff(changed, allowed, [], e.cfg.protected_paths, "G-O1")
-        for p in orc.get("acceptance_tests", []):
+        for p in orc.acceptance_tests:
             if not await e.git.has_object(r.sha, p):
                 v.append(f"G-O2: acceptance test {p} missing at {r.sha[:12]}")
         return v
@@ -30,9 +30,9 @@ class Oracle(RoleHandler):
         await e.git.pin(r.run.id, r.sha)
         ok, head = await e.git.merge(ch.id, r.sha, f"legion {ch.id}: oracle (protected acceptance tests)")
         if not ok:
-            e.escalate(node, "merge", f"oracle merge failed: {head[:400]}", resume=READY)
+            e.escalate(node, "merge", f"oracle merge failed: {head[:400]}", resume=Resume.READY)
             return
         ch.oracle_sha, ch.integration_head = r.sha, head
-        ch.oracle = e.json_doc("plan/oracle.json")
+        ch.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
         node.accepted_sha = r.sha
         await super().on_done(e, r)

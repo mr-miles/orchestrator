@@ -3,11 +3,19 @@ verification-surface pins and gate overrides. Mirrors legion-ascended `approve`,
 risk-override model. Every record is a versioned document under changes/<id>/control/."""
 from __future__ import annotations
 
-from typing import Any
+from pydantic import BaseModel
 
 from ..git import path_matches
-from ..util import now_iso
 from . import attest, risk
+from .model import (
+    Approval,
+    AttestationRecord,
+    GateOverride,
+    Oracle,
+    ProtectedPathApproval,
+    Surface,
+    SurfacePin,
+)
 from .view import ChangeView
 
 ATTESTATION_KINDS = {
@@ -40,21 +48,29 @@ def approval_key(subject: str) -> str:
     return "oracle" if subject == "oracle" else f"spec:{subject}"
 
 
-def h2_status(e: ChangeView) -> list[dict]:
+class SubjectStatus(BaseModel):
+    subject: str
+    paths: list[str]
+    status: str                      # approved | stale | pending
+    approver: str | None = None
+    at: str | None = None
+
+
+def h2_status(e: ChangeView) -> list[SubjectStatus]:
     out = []
     for subj, pins in h2_subjects(e).items():
         a = e.change.approvals.get(approval_key(subj))
-        fresh = bool(a) and a["pins"] == pins and (
-            subj != "oracle" or a.get("oracle_sha") == e.change.oracle_sha)
-        out.append({"subject": subj, "paths": list(pins), "status":
-                    "approved" if fresh else ("stale" if a else "pending"),
-                    "approver": a["approver"] if a else None, "at": a["at"] if a else None})
+        fresh = a is not None and a.pins == pins and (
+            subj != "oracle" or a.oracle_sha == e.change.oracle_sha)
+        out.append(SubjectStatus(subject=subj, paths=list(pins),
+                                 status="approved" if fresh else ("stale" if a else "pending"),
+                                 approver=a.approver if a else None, at=a.at if a else None))
     return out
 
 
 def stale_approvals(e: ChangeView) -> list[str]:
     """Guard G-B1: every H-2 subject approved against the current bytes."""
-    return [f"G-B1: {s['subject']} {s['status']}" for s in h2_status(e) if s["status"] != "approved"]
+    return [f"G-B1: {s.subject} {s.status}" for s in h2_status(e) if s.status != "approved"]
 
 
 async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: str) -> list[str]:
@@ -70,29 +86,27 @@ async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: s
         missing = [p for p, v in pins.items() if v is None]
         if missing:
             raise GovernanceError(f"{subj}: nothing to approve, missing {missing}")
-        rec: dict[str, Any] = {"gate": "H-2", "subject": subj, "approver": approver, "at": now_iso(),
-                               "pins": pins}
-        if subj == "oracle":
-            rec["oracle_sha"] = e.change.oracle_sha
-        rec["attestation"] = e.write_record(f"control/approvals/{approval_key(subj).replace(':', '/')}.json",
-                                       rec).attestation
+        rec = Approval(gate="H-2", subject=subj, approver=approver, pins=pins,
+                       oracle_sha=e.change.oracle_sha if subj == "oracle" else None)
+        rec.attestation = e.write_record(
+            f"control/approvals/{approval_key(subj).replace(':', '/')}.json", rec).attestation
         e.change.approvals[approval_key(subj)] = rec
         if subj == "oracle":
-            e.change.oracle = e.json_doc("plan/oracle.json")
+            e.change.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
             await pin_surfaces(e, approver, None, reason="initial pin at oracle approval")
         done.append(subj)
     return done
 
 
 def last_h2_approval_at(e: ChangeView) -> str | None:
-    ats = [e.change.approvals[approval_key(s)]["at"] for s in h2_subjects(e)
+    ats = [e.change.approvals[approval_key(s)].at for s in h2_subjects(e)
            if approval_key(s) in e.change.approvals]
     return max(ats) if ats else None
 
 
 # ------------------------------------------------------------------ attestations
-def coverage_ok(rec: dict, task_ids: set[str]) -> bool:
-    return rec.get("covers") is None or task_ids <= set(rec["covers"])
+def coverage_ok(rec: AttestationRecord, task_ids: set[str]) -> bool:
+    return rec.covers is None or task_ids <= set(rec.covers)
 
 
 async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> dict:
@@ -123,32 +137,32 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
         if not ok:
             raise GovernanceError(f"G-AT1: source does not resolve: {s}")
     covers = payload.get("covers") or None
-    tasks = {b.task["id"] for b in e.build_nodes()}
+    tasks = {b.task.id for b in e.build_nodes()}
     if covers is not None:
         unknown = set(covers) - tasks
         if unknown:
             raise GovernanceError(f"G-AT1: covers unknown task(s) {sorted(unknown)}")
     warnings = []
     prev = e.change.attestations.get(kind)
-    if prev and prev["verdict"] != verdict:
-        warnings.append(f"attestation_verdict_superseded: {prev['verdict']} -> {verdict}")
+    if prev and prev.verdict != verdict:
+        warnings.append(f"attestation_verdict_superseded: {prev.verdict} -> {verdict}")
     if covers is not None and tasks - set(covers):
         warnings.append(f"attestation_partial_coverage: missing {sorted(tasks - set(covers))}")
     if kind == "independent-baseline" and e.change.first_build_at:
         warnings.append("attestation_after_execution: a task run already started, so "
                         "independent_baseline can no longer be satisfied for this change")
-    rec = {"kind": kind, "verdict": verdict, "attested_by": attested_by, "at": now_iso(),
-           "sources": sources, "covers": covers, "waiver_reason": reason,
-           "supersedes": prev["attestation"] if prev else None, "warnings": warnings}
-    rec["attestation"] = e.write_record(f"control/attestations/{kind}.json", rec).attestation
+    rec = AttestationRecord(kind=kind, verdict=verdict, attested_by=attested_by, sources=sources,
+                            covers=covers, waiver_reason=reason,
+                            supersedes=prev.attestation if prev else None, warnings=warnings)
+    rec.attestation = e.write_record(f"control/attestations/{kind}.json", rec).attestation
     e.change.attestations[kind] = rec
-    return {"ok": True, "attestation": rec["attestation"], "warnings": warnings}
+    return {"ok": True, "attestation": rec.attestation, "warnings": warnings}
 
 
 # ------------------------------------------------------------------ protected paths
 def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> dict:
     task, paths, reason = payload.get("task"), payload.get("paths") or [], payload.get("reason")
-    builds = {b.task["id"]: b for b in e.build_nodes()}
+    builds = {b.task.id: b for b in e.build_nodes()}
     if task not in builds:
         raise GovernanceError(f"unknown task {task!r}")
     protected = protected_paths(e)
@@ -157,67 +171,66 @@ def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> di
         raise GovernanceError(f"paths must be protected acceptance paths {protected}; got {bad or paths}")
     if not risk.valid_reason(reason):
         raise GovernanceError("a reason of ≥24 chars and more than one word is required")
-    rec = {"task": task, "paths": paths, "approver": approver, "at": now_iso(), "reason": reason}
+    rec = ProtectedPathApproval(task=task, paths=paths, approver=approver, reason=reason)
     n = len(e.change.protected_approvals) + 1
-    rec["attestation"] = e.write_record(f"control/approvals/protected-paths/{n}.json", rec).attestation
+    rec.attestation = e.write_record(f"control/approvals/protected-paths/{n}.json", rec).attestation
     e.change.protected_approvals.append(rec)
-    return {"ok": True, "attestation": rec["attestation"],
+    return {"ok": True, "attestation": rec.attestation,
             "note": "applies only to runs of this task that start after now"}
 
 
 def protected_paths(e: ChangeView) -> list[str]:
-    orc = e.change.oracle or {}
-    return list(orc.get("acceptance_tests", [])) + list(orc.get("protected_support", [])) \
+    orc = e.change.oracle or Oracle()
+    return list(orc.acceptance_tests) + list(orc.protected_support) \
         + list(e.cfg.protected_paths)
 
 
 def approved_protected_for(e: ChangeView, task_id: str, before: str) -> list[str]:
     """Guard G-PP1: protected paths this task may touch in a run created at ``before``."""
-    return [p for a in e.change.protected_approvals if a["task"] == task_id and a["at"] < before
-            for p in a["paths"]]
+    return [p for a in e.change.protected_approvals if a.task == task_id and a.at < before
+            for p in a.paths]
 
 
 def all_approved_protected(e: ChangeView) -> list[str]:
-    return [p for a in e.change.protected_approvals for p in a["paths"]]
+    return [p for a in e.change.protected_approvals for p in a.paths]
 
 
 # ------------------------------------------------------------------ verification surfaces
-def surfaces(e: ChangeView) -> list[dict]:
-    return list((e.change.oracle or {}).get("surfaces", []))
+def surfaces(e: ChangeView) -> list[Surface]:
+    return list((e.change.oracle or Oracle()).surfaces)
 
 
 async def pin_surfaces(e: ChangeView, approver: str, surface_id: str | None, reason: str) -> list[str]:
     """Pin (or re-affirm) the files a verification surface relies on at the integration head."""
     head = e.change.integration_head
-    chosen = [s for s in surfaces(e) if surface_id in (None, s["id"])]
+    chosen = [s for s in surfaces(e) if surface_id in (None, s.id)]
     if surface_id and not chosen:
         raise GovernanceError(f"unknown surface {surface_id!r}")
     for s in chosen:
-        pins = {p: await e.git.blob(head, p) for p in s.get("pins", [])}
-        rec = {"surface": s["id"], "pins": pins, "head": head, "approver": approver,
-               "at": now_iso(), "reason": reason}
-        rec["attestation"] = e.write_record(f"control/surfaces/{s['id']}.json", rec).attestation
-        e.change.surface_pins[s["id"]] = rec
-    return [s["id"] for s in chosen]
+        pins = {p: await e.git.blob(head, p) for p in s.pins}
+        rec = SurfacePin(surface=s.id, pins=pins, head=head, approver=approver, reason=reason)
+        rec.attestation = e.write_record(f"control/surfaces/{s.id}.json", rec).attestation
+        e.change.surface_pins[s.id] = rec
+    return [s.id for s in chosen]
 
 
 async def surface_drift(e: ChangeView, head: str) -> list[str]:
     """Guard G-SF1: pinned files unchanged at ``head`` (or re-affirmed)."""
     v = []
     for s in surfaces(e):
-        rec = e.change.surface_pins.get(s["id"])
+        rec = e.change.surface_pins.get(s.id)
         if not rec:
-            v.append(f"G-SF1: surface {s['id']} was never pinned")
+            v.append(f"G-SF1: surface {s.id} was never pinned")
             continue
-        for path, blob in rec["pins"].items():
+        for path, blob in rec.pins.items():
             if await e.git.blob(head, path) != blob:
-                v.append(f"G-SF1: surface {s['id']} pinned file {path} changed since it was pinned; "
+                v.append(f"G-SF1: surface {s.id} pinned file {path} changed since it was pinned; "
                          "a human must re-affirm the surface")
     return v
 
 
 def surface_commands(e: ChangeView) -> list[str]:
-    return [c for s in surfaces(e) for c in s.get("commands", [])]
+    return [c for s in surfaces(e) for c in s.commands]
 
 
 # ------------------------------------------------------------------ overrides
@@ -230,8 +243,7 @@ async def record_override(e: ChangeView, approver: str, payload: dict) -> dict:
         raise GovernanceError(f"G-OV1: unknown gate {gate!r}")
     if not risk.valid_reason(reason):
         raise GovernanceError("G-OV1: a reason of ≥24 chars and more than one word is required")
-    rec: dict[str, Any] = {"kind": kind, "gate": gate, "reason": reason, "approver": approver,
-                           "at": now_iso()}
+    evidence = None
     if kind == "waive_gate":
         if gate in NON_WAIVABLE:
             raise GovernanceError(f"G-OV1: {gate} cannot be waived")
@@ -242,21 +254,21 @@ async def record_override(e: ChangeView, approver: str, payload: dict) -> dict:
             raise GovernanceError(f"G-OV1: replacement evidence: {ex}") from None
         if not ok:
             raise GovernanceError(f"G-OV1: replacement evidence does not resolve: {evidence}")
-        rec["evidence"] = evidence
+    rec = GateOverride(kind=kind, gate=gate, reason=reason, approver=approver, evidence=evidence)
     n = len(e.change.overrides) + 1
-    rec["attestation"] = e.write_record(f"control/overrides/{n}.json", rec).attestation
+    rec.attestation = e.write_record(f"control/overrides/{n}.json", rec).attestation
     e.change.overrides.append(rec)
-    return {"ok": True, "attestation": rec["attestation"]}
+    return {"ok": True, "attestation": rec.attestation}
 
 
 def gate_set(e: ChangeView) -> list[str]:
     gates = list(risk.GATES_BY_TIER[e.change.tier])
     for o in e.change.overrides:
-        if o["kind"] == "add_gate" and o["gate"] not in gates:
-            gates.append(o["gate"])
+        if o.kind == "add_gate" and o.gate not in gates:
+            gates.append(o.gate)
     return gates
 
 
-def waiver_for(e: ChangeView, gate: str) -> dict | None:
-    ws = [o for o in e.change.overrides if o["kind"] == "waive_gate" and o["gate"] == gate]
+def waiver_for(e: ChangeView, gate: str) -> GateOverride | None:
+    ws = [o for o in e.change.overrides if o.kind == "waive_gate" and o.gate == gate]
     return ws[-1] if ws else None

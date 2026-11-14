@@ -20,12 +20,12 @@ class Implementer(RoleHandler):
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         run, t = r.run, r.node.task
         changed = await e.git.changed_paths(run.base_sha, r.sha)
-        approved = governance.approved_protected_for(e, t["id"], run.created_at)  # G-PP1
+        approved = governance.approved_protected_for(e, t.id, run.created_at)  # G-PP1
         protected = [p for p in governance.protected_paths(e) if p not in approved]
-        v = guards.scoped_diff(changed, t["files_modified"] + approved, t.get("files_forbidden", []),
+        v = guards.scoped_diff(changed, t.files_modified + approved, t.files_forbidden,
                                protected, "G-B3")
         ev = e.docs.read(run.required_docs[0], r.docs[run.required_docs[0]].version).content
-        return v + guards.evidence_mentions(ev, t["verification"])
+        return v + guards.evidence_mentions(ev, t.verification)
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
         r.node.candidate_sha = r.sha

@@ -381,12 +381,6 @@ def high_findings(data: dict) -> list[dict]:
             and f.get("confidence") == "HIGH" and f.get("severity") in ("BLOCKER", "WARNING")]
 
 
-def fingerprint(f: dict) -> str:
-    first = (f.get("attestations") or [""])[0]
-    path = first.split("@")[0]
-    return f"{f.get('severity')}|{str(f.get('title', '')).strip().lower()}|{path}"
-
-
 def verdict(data: dict, *, pass_word: str, fail_word: str, gid: str, cycle: int,
             require_checked: bool) -> list[str]:
     v = []

@@ -19,10 +19,14 @@ from ..model import (
     R_REPORTED,
     R_STARTING,
     R_SUPERSEDED,
-    READY,
     REWORK,
+    Feedback,
     Node,
+    Oracle,
+    Progress,
+    Resume,
     Run,
+    RunReport,
 )
 from ..roles import Report, handler_for
 from .common import WorkflowError, log
@@ -53,7 +57,7 @@ class ReportsMixin:
         return v
 
     def progress(self, run: Run, message: str, percent: float | None) -> None:
-        run.progress.append({"at": now_iso(), "message": message[:500], "percent": percent})
+        run.progress.append(Progress(message=message[:500], percent=percent))
         run.progress = run.progress[-50:]
         if run.status == R_STARTING:
             run.status = R_ACTIVE
@@ -133,13 +137,13 @@ class ReportsMixin:
                 try:
                     run.status = R_REPORTED
                     run.ended_at = now_iso()
-                    run.report = {"status": status, "summary": summary, "attestations": attestations,
-                                  "data": data, "blocked_reason": blocked_reason,
-                                  "missing_decision": missing_decision, "at": run.ended_at}
+                    run.report = RunReport(status=status, summary=summary, attestations=attestations,
+                                           data=data, blocked_reason=blocked_reason,
+                                           missing_decision=missing_decision, at=run.ended_at)
                     self.event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
                     if status == "BLOCKED":
                         self.escalate(node, "blocked", blocked_reason or "",
-                                      resume=REWORK if node.kind == BUILD else READY,
+                                      resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
                                       run=run.id, missing_decision=missing_decision)
                     else:
                         await self._on_done(run, node, data, ctx)
@@ -194,8 +198,8 @@ class ReportsMixin:
         if not self.change.oracle_sha:
             return v
         approved = governance.all_approved_protected(self)
-        orc = self.change.oracle or {}
-        for p in orc.get("acceptance_tests", []) + orc.get("protected_support", []):
+        orc = self.change.oracle or Oracle()
+        for p in orc.acceptance_tests + orc.protected_support:
             if p in approved:
                 continue
             if await self.git.blob(head, p) != await self.git.blob(self.change.oracle_sha, p):
@@ -207,30 +211,29 @@ class ReportsMixin:
         await handler_for(run.role).on_done(self, ctx["report"])
 
     def panel_complete(self, node: Node) -> None:
-        results = [node.reviews.get(f"{node.cycle}:{r}") for r in self.change.panel]
+        results = [node.review(node.cycle, r) for r in self.change.panel]
         if any(r is None for r in results):
             return
-        if all(r["verdict"] == "PASS" and r["sha"] == node.candidate_sha for r in results):
+        if all(r.verdict == "PASS" and r.sha == node.candidate_sha for r in results):
             node.status = MERGING
             self._spawn(self._merge_node(node.id))
             return
-        high = [f for r in results for f in guards.high_findings(r)]
-        fps = sorted({guards.fingerprint(f) for f in high})
+        high = [f for r in results for f in r.findings if f.high]
+        fps = sorted({f.fingerprint for f in high})
         node.finding_history.append(fps)
-        docs = [r["doc"] for r in results]
-        fb = [{"cycle": node.cycle, "source": "review",
-               "text": f"{f['severity']} ({f.get('dimension', '?')}): {f['title']} – fix: {f['fix'][:500]}",
-               "attestations": f.get("attestations", [])} for f in high]
-        fb.append({"cycle": node.cycle, "source": "review", "text": "full review documents",
-                   "attestations": docs})
+        fb = [Feedback(cycle=node.cycle, source="review",
+                       text=f"{f.severity} ({f.dimension or '?'}): {f.title} – fix: {f.fix[:500]}",
+                       attestations=f.attestations) for f in high]
+        fb.append(Feedback(cycle=node.cycle, source="review", text="full review documents",
+                           attestations=[r.doc for r in results if r.doc]))
         if len(node.finding_history) >= 2 and fps and node.finding_history[-1] == node.finding_history[-2]:
             node.feedback += fb
             self.escalate(node, "stale_loop", "G-RV5: identical HIGH findings in two consecutive "
-                           "review cycles", resume="rework_cycle")
+                           "review cycles", resume=Resume.REWORK_CYCLE)
             return
         self._rework(node, fb, "review")
 
-    def _rework(self, node: Node, feedback: list[dict], source: str) -> None:
+    def _rework(self, node: Node, feedback: list[Feedback], source: str) -> None:
         """Evidence-driven rework within the cycle budget (G-RV5)."""
         node.feedback += feedback
         limit = self.cfg.limits.review_max_cycles + node.extra_cycles
@@ -240,7 +243,7 @@ class ReportsMixin:
         if node.cycle >= limit:
             self.escalate(node, "cycle_budget",
                            f"G-RV5: {node.cycle} cycle(s) used without acceptance ({source})",
-                           resume="rework_cycle")
+                           resume=Resume.REWORK_CYCLE)
             return
         node.cycle += 1
         node.candidate_sha = None

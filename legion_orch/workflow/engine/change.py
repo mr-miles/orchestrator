@@ -5,6 +5,8 @@ import json
 import traceback
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 from ...store import DocVersion
 from .. import attest, governance
 from ..model import (
@@ -80,8 +82,10 @@ class ChangeEngine(GraphMixin, DispatchMixin, RunsMixin, ReportsMixin, VerifyMix
         self.ctl.spawn(coro, on_error=lambda e: self.event(
             "error", f"internal error: {e}", data=traceback.format_exc()[-3000:]))
 
-    def write_record(self, rel: str, content: str | dict) -> DocVersion:
+    def write_record(self, rel: str, content: str | dict | BaseModel) -> DocVersion:
         path = self.p(rel)
+        if isinstance(content, BaseModel):
+            content = content.model_dump(mode="json", exclude_none=True)
         if not isinstance(content, str):
             content = json.dumps(content, indent=2, sort_keys=True)
         return self.docs.write(path, content, author="controller", role="controller",
@@ -116,23 +120,15 @@ class ChangeEngine(GraphMixin, DispatchMixin, RunsMixin, ReportsMixin, VerifyMix
         self._save()
 
     def snapshot(self) -> dict:
-        from dataclasses import asdict
         ch = self.change
-        nodes = []
-        for n in self.nodes.values():
-            d = asdict(n)
-            d["feedback_count"] = len(n.feedback)
-            nodes.append(d)
-        runs = []
-        for r in self.runs.values():
-            d = asdict(r)
-            d.pop("assignment")
-            runs.append(d)
+        nodes = [n.model_dump(mode="json") | {"feedback_count": len(n.feedback)}
+                 for n in self.nodes.values()]
+        runs = [r.model_dump(mode="json", exclude={"assignment"}) for r in self.runs.values()]
         return {"project": self.cfg.project, "repo": self.cfg.repo.name,
                 "decision_owners": self.cfg.decision_owners, "version": self.ctl.version,
                 "assets_sha": self.assets.sha, "limits": self.cfg.limits.__dict__,
-                "change": asdict(ch) if ch else None, "nodes": nodes, "runs": runs,
+                "change": ch.model_dump(mode="json") if ch else None, "nodes": nodes, "runs": runs,
                 "gates": governance.gate_set(self) if ch and ch.tier else [],
-                "h2": governance.h2_status(self) if ch and ch.requirements else [],
-                "surfaces": governance.surfaces(self) if ch else [],
+                "h2": [s.model_dump() for s in governance.h2_status(self)] if ch and ch.requirements else [],
+                "surfaces": [s.model_dump() for s in governance.surfaces(self)] if ch else [],
                 "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}

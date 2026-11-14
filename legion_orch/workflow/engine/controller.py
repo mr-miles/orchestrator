@@ -174,8 +174,9 @@ class Controller:
             ce.st.change = Change(id=cid, goal=goal, base_sha=base, integration_head=base)
             self.changes[cid] = ce
             ce.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
-            ce._add(Node(INTAKE, INTAKE, "Intake: requirements & risk"))
-            ce._add(Node(H_REQUIREMENTS, HUMAN, "Accept requirements & tier", depends_on=[INTAKE]))
+            ce._add(Node(id=INTAKE, kind=INTAKE, title="Intake: requirements & risk"))
+            ce._add(Node(id=H_REQUIREMENTS, kind=HUMAN, title="Accept requirements & tier",
+                         depends_on=[INTAKE]))
             ce.event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
             ce._save()
             return ce

@@ -117,11 +117,11 @@ def _signals(**scores):
 
 
 def test_risk_tiers_and_floors():
-    assert risk.derive_tier(_signals())["tier"] == "R0"
-    assert risk.derive_tier(_signals(ui=1, performance=1, scope_breadth=1))["tier"] == "R1"
-    assert risk.derive_tier(_signals(public_api=2))["tier"] == "R2"            # hard floor
-    assert risk.derive_tier(_signals(novelty_uncertainty=2))["tier"] == "R0"   # no floor at 2
-    assert risk.derive_tier(_signals(security=3))["tier"] == "R3"
+    assert risk.derive_tier(_signals()).tier == "R0"
+    assert risk.derive_tier(_signals(ui=1, performance=1, scope_breadth=1)).tier == "R1"
+    assert risk.derive_tier(_signals(public_api=2)).tier == "R2"            # hard floor
+    assert risk.derive_tier(_signals(novelty_uncertainty=2)).tier == "R0"   # no floor at 2
+    assert risk.derive_tier(_signals(security=3)).tier == "R3"
     assert risk.validate_signals({"signals": []})
     assert risk.review_panel("R2", {"security": 2}) == ["reviewer", "security"]
     assert not risk.valid_reason("short") and risk.valid_reason("this change deploys nothing at all")
@@ -239,14 +239,16 @@ def test_protected_path_approval_timing_and_coverage():
     import types
 
     from legion_orch.workflow import governance
+    from legion_orch.workflow.model import ProtectedPathApproval
     e = types.SimpleNamespace(change=types.SimpleNamespace(protected_approvals=[
-        {"task": "T1", "paths": ["tests/acc/test_a.py"], "at": "2026-01-02T00:00:00.000Z"}]))
+        ProtectedPathApproval(task="T1", paths=["tests/acc/test_a.py"], approver="miles",
+                              reason="r", at="2026-01-02T00:00:00.000Z")]))
     assert governance.approved_protected_for(e, "T1", "2026-01-03T00:00:00.000Z") == ["tests/acc/test_a.py"]
     # a run that predates the approval may not touch the path
     assert governance.approved_protected_for(e, "T1", "2026-01-01T00:00:00.000Z") == []
     assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
-    assert governance.coverage_ok({"covers": None}, {"T1", "T2"})
-    assert not governance.coverage_ok({"covers": ["T1"]}, {"T1", "T2"})
+    assert governance.coverage_ok(types.SimpleNamespace(covers=None), {"T1", "T2"})
+    assert not governance.coverage_ok(types.SimpleNamespace(covers=["T1"]), {"T1", "T2"})
 
 
 def test_store_enforces_bound_schemas():
@@ -569,13 +571,13 @@ def test_transition_rollback_keeps_identity():
                                 procs={}, read_tokens={}, version=0)
     ce = ChangeEngine(ctl, "c1")
     ce.st.change = Change(id="c1", goal="g", base_sha="a" * 40)
-    node = Node("plan", "plan", "Plan")
+    node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
     ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
     cp = ce._checkpoint()
     run.status, node.status, node.feedback = "REPORTED", "ACCEPTED", [{"x": 1}]
     ce.st.change.tier = "R3"
-    ce.st.nodes["build:T1"] = Node("build:T1", "build", "T1")      # e.g. materialized builds
+    ce.st.nodes["build:T1"] = Node(id="build:T1", kind="build", title="T1")      # e.g. materialized builds
     del ce.st.nodes["plan"]
     ce._restore(cp)
     assert ce.nodes["plan"] is node and ce.runs["r0001"] is run       # same objects
@@ -591,6 +593,8 @@ def test_protected_support_files_are_protected():
     import types
 
     from legion_orch.workflow import governance
-    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=support), cfg=types.SimpleNamespace(
+    from legion_orch.workflow.model import Oracle
+    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support)),
+                              cfg=types.SimpleNamespace(
         protected_paths=[".github/"]))
     assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]

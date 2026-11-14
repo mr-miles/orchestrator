@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
 from ..config import Config
 from ..git import GitRemote
 from ..store import DocStore, DocVersion
-from .model import Change, Node, Run
+from .model import Change, Node, Resume, Run
 
 
 class ChangeView(Protocol):
@@ -39,7 +41,7 @@ class ChangeView(Protocol):
 
     def json_doc(self, rel: str, version: int | None = None) -> Any: ...
 
-    def write_record(self, rel: str, content: str | dict) -> DocVersion:
+    def write_record(self, rel: str, content: str | dict | BaseModel) -> DocVersion:
         """Write a controller-owned document (author 'controller') as a new version."""
 
     def build_nodes(self) -> list[Node]: ...
@@ -54,7 +56,9 @@ class RoleContext(ChangeView, Protocol):
     def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
               data: Any = None) -> None: ...
 
-    def escalate(self, node: Node, kind: str, reason: str, resume: str, **extra: Any) -> None: ...
+    def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
+                 run: str | None = None, missing_decision: str | None = None,
+                 log_tail: str | None = None) -> None: ...
 
     def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
         """Mark the node's reported runs accepted and delete their sandboxes."""
