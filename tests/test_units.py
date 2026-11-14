@@ -24,10 +24,8 @@ def test_workflow_doc_guard_ids_match_code():
 
 
 def test_every_guard_is_referenced_outside_the_registry():
-    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py")
-                  if p.name != "guards.py")
-    guards_src = (ROOT / "legion_orch/workflow/guards.py").read_text()
-    src += re.sub(r"GUARDS: dict.*?\n}\n", "", guards_src, flags=re.S)
+    catalog = ROOT / "legion_orch/workflow/guards/catalog.py"
+    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py") if p != catalog)
     missing = [g for g in guards.GUARDS if g not in src and not g.startswith("H-")]
     assert not missing, missing
 
@@ -446,9 +444,19 @@ def test_governance_and_ship_use_only_the_change_view():
     """They depend on the ChangeView protocol, never on engine internals."""
     from legion_orch.workflow.view import ChangeView
     allowed = {n for n in dir(ChangeView) if not n.startswith("__")} | set(ChangeView.__annotations__)
-    for f in ("governance.py", "ship.py"):
-        used = set(re.findall(r"\be\.([A-Za-z_]+)", (ROOT / "legion_orch/workflow" / f).read_text()))
-        assert used <= allowed, f"{f} uses {used - allowed} outside ChangeView"
+    wf = ROOT / "legion_orch/workflow"
+    for f in [*sorted((wf / "governance").glob("*.py")), wf / "ship.py"]:
+        used = set(re.findall(r"\b(?:self\.)?e\.([A-Za-z_]+)", f.read_text()))
+        assert used <= allowed, f"{f.name} uses {used - allowed} outside ChangeView"
+        assert "engine" not in f.read_text(), f"{f.name} imports the engine"
+
+
+def test_every_gate_has_exactly_one_check():
+    from legion_orch.workflow import risk
+    from legion_orch.workflow.ship import GATE_CHECKS, GateEvaluator
+    all_gates = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
+    assert set(GATE_CHECKS) == all_gates
+    assert all(callable(getattr(GateEvaluator, m)) for m in GATE_CHECKS.values())
 
 
 def test_every_role_has_exactly_one_handler():

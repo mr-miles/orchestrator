@@ -1,6 +1,6 @@
 """The narrow view of one change that governance and ship evaluation work against.
 
-``ChangeEngine`` implements it; governance.py and ship.py depend only on this Protocol, so they
+``ChangeEngine`` implements it; governance/ and ship.py depend only on this Protocol, so they
 can be read, reasoned about and tested without the engine's dispatch, sandbox or scheduling code.
 """
 from __future__ import annotations
