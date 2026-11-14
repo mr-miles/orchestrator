@@ -1,6 +1,4 @@
-"""Human actions: gates, escalations, change-level governance, ship.
-
-Mixin of :class:`ChangeEngine`; relies on its state and helpers."""
+"""Human actions: the H-1/H-2/H-3 gates, escalation resolution, change-level governance."""
 from __future__ import annotations
 
 from .. import governance, guards, risk
@@ -40,21 +38,29 @@ from ..model import (
     TierOverride,
 )
 from ..results import ActionResult
+from .acceptance import Acceptance
 from .common import WorkflowError, _slug
+from .core import ChangeCore
+from .graph import StageGraph
 
 
-class HumanMixin:
+class HumanGates:
+    """What a decision owner may do to a change, checked and applied under the lock."""
+
+    def __init__(self, core: ChangeCore, graph: StageGraph, acceptance: Acceptance):
+        self.c, self.graph, self.acceptance = core, graph, acceptance
+
     def _check_approver(self, approver: str) -> None:
-        if approver not in self.cfg.decision_owners:
+        if approver not in self.c.cfg.decision_owners:
             raise WorkflowError(f"approver {approver!r} is not a decision owner "
-                                f"({', '.join(self.cfg.decision_owners)})")
+                                f"({', '.join(self.c.cfg.decision_owners)})")
 
     async def human_action(self, node_id: str, action: str, approver: str,
                            payload: dict | None = None) -> ActionResult:
         payload = payload or {}
-        async with self.lock:
+        async with self.c.lock:
             self._check_approver(approver)
-            node = self.nodes.get(node_id)
+            node = self.c.nodes.get(node_id)
             if node is None:
                 raise WorkflowError(f"unknown node {node_id}")
             if node.status == ESCALATED:
@@ -63,12 +69,12 @@ class HumanMixin:
                 res = await self._human_gate(node, action, approver, payload)
             elif node.kind == SHIP and action == "recheck" and node.status == ACCEPTED:
                 node.status = RUNNING
-                self._spawn(self._ship())
+                self.c.spawn(self.acceptance.ship())
                 res = ActionResult()
             else:
                 raise WorkflowError(f"action {action!r} not available for {node_id} in {node.status}")
-            self.event("human_action", f"{approver}: {action}", node_id)
-            self._save()
+            self.c.event("human_action", f"{approver}: {action}", node_id)
+            self.c.save()
             res.status = node.status
             return res
 
@@ -76,7 +82,7 @@ class HumanMixin:
         n = len([f for f in node.feedback if f.source == kind]) + 1
         path = f"tasks/{node.task.id}/{kind}/{n}.md" if node.kind == BUILD \
             else f"control/{kind}/{_slug(node.id)}-{n}.md"
-        return self.write_record(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
+        return self.c.write_record(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
 
     # ------------------------------------------------------------------ human gates
     async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
@@ -110,8 +116,8 @@ class HumanMixin:
     async def _accept_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-1: accept requirements and the risk tier (raising it is free; lowering needs a
         reason). Fixes the change's requirements and review panel and creates the stage nodes."""
-        ch = self.change
-        pins = {self.p(p): self.latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
+        ch = self.c.change
+        pins = {self.c.p(p): self.c.latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
         derived = ch.risk.tier
         tier = payload.get("tier") or derived
         if tier not in risk.TIERS:
@@ -122,17 +128,17 @@ class HumanMixin:
             ch.tier_override = TierOverride(from_tier=derived, to_tier=tier,
                                             reason=payload.get("reason"), approver=approver)
         ch.tier = tier
-        ch.requirements = guards.requirements_ids(self.doc("intake/requirements.md").content)
+        ch.requirements = guards.requirements_ids(self.c.doc("intake/requirements.md").content)
         ch.panel = risk.review_panel(tier, ch.risk.scores)
         rec = Approval(gate=H_REQUIREMENTS, approver=approver, pins=pins, tier=tier)
-        rec.attestation = self.write_record("control/approvals/requirements.json", rec).attestation
+        rec.attestation = self.c.write_record("control/approvals/requirements.json", rec).attestation
         ch.approvals[H_REQUIREMENTS] = rec
         node.status = ACCEPTED
-        self._create_stage_nodes()
+        self.graph.create_stage_nodes()
         return ActionResult(tier=tier, panel=ch.panel)
 
     async def _revise_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        self._send_back(self.nodes[INTAKE], approver, payload)
+        self._send_back(self.c.nodes[INTAKE], approver, payload)
         node.status = PENDING
         return ActionResult()
 
@@ -141,14 +147,14 @@ class HumanMixin:
         different approvers); the gate completes once every subject is approved and fresh (and,
         at R3, the independent baseline is attested)."""
         try:
-            done = await governance.approve_subjects(self, payload.get("subjects") or "all", approver)
+            done = await governance.approve_subjects(self.c, payload.get("subjects") or "all", approver)
         except governance.GovernanceError as e:
             raise WorkflowError(str(e)) from None
-        pending = [x.subject for x in governance.h2_status(self) if x.status != ApprovalState.APPROVED]
+        pending = [x.subject for x in governance.h2_status(self.c) if x.status != ApprovalState.APPROVED]
         if pending:
             return ActionResult(approved=done, pending=pending)
-        if risk.rank(self.change.tier) >= 3:
-            b = self.change.attestations.get("independent-baseline")
+        if risk.rank(self.c.change.tier) >= 3:
+            b = self.c.change.attestations.get("independent-baseline")
             if not b or b.verdict != AttestationVerdict.PASS:
                 return ActionResult(approved=done, pending=["independent-baseline"],
                                     note="R3: attest independent-baseline (pass) before build "
@@ -159,15 +165,15 @@ class HumanMixin:
     async def _revise_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-2 revise: the plan is reworked; everything derived from it starts over (critique,
         oracle, baseline, build nodes, the integration branch and surface pins)."""
-        ch = self.change
-        self._send_back(self.nodes[PLAN], approver, payload)
+        ch = self.c.change
+        self._send_back(self.c.nodes[PLAN], approver, payload)
         for nid in (CRITIQUE, ORACLE, BASELINE):
-            if nid in self.nodes:
-                n = self.nodes[nid]
+            if nid in self.c.nodes:
+                n = self.c.nodes[nid]
                 n.status, n.cycle = PENDING, n.cycle + 1
-        for b in self.build_nodes():
-            del self.nodes[b.id]
-        await self.git.init_integration(ch.id, ch.base_sha)
+        for b in self.c.build_nodes():
+            del self.c.nodes[b.id]
+        await self.c.git.init_integration(ch.id, ch.base_sha)
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
         ch.surface_pins = {}
         node.status = PENDING
@@ -175,19 +181,19 @@ class HumanMixin:
 
     async def _accept_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-3: accept the whole change at the current integration head."""
-        ch = self.change
-        head = await self.git.integration_head(ch.id)
+        ch = self.c.change
+        head = await self.c.git.integration_head(ch.id)
         if head != ch.integration_head:
             raise WorkflowError("integration head moved; refresh")
         note = (payload.get("feedback") or "").strip() or None
         rec = Approval(gate=H_CHANGE, approver=approver, head=head, note=note)
-        rec.attestation = self.write_record("control/approvals/change.json", rec).attestation
+        rec.attestation = self.c.write_record("control/approvals/change.json", rec).attestation
         ch.approvals[H_CHANGE] = rec
         node.status = ACCEPTED
         return ActionResult()
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        self.change.status = ChangeStatus.ABANDONED
+        self.c.change.status = ChangeStatus.ABANDONED
         node.status = FAILED
         return ActionResult()
 
@@ -195,7 +201,7 @@ class HumanMixin:
     def _resolve_escalation(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
         if action == "abandon":
             node.status = FAILED
-            self.change.status = ChangeStatus.ABANDONED
+            self.c.change.status = ChangeStatus.ABANDONED
             return ActionResult()
         if action == "override_accept":
             return self._override_accept(node, approver, payload)
@@ -206,7 +212,7 @@ class HumanMixin:
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
                 raise WorkflowError("an answer is required")
-            target = self.nodes[PLAN] if resume == Resume.CRITIQUE_BUDGET else node
+            target = self.c.nodes[PLAN] if resume == Resume.CRITIQUE_BUDGET else node
             att = self._feedback_doc(target, approver, text, "decisions")
             target.feedback.append(Feedback(cycle=target.cycle, source="decisions",
                                             text=f"human decision: {text}", attestations=[att]))
@@ -228,14 +234,14 @@ class HumanMixin:
         node.override = Override(approver=approver, reason=payload["reason"], sha=node.candidate_sha)
         node.escalation = None
         node.status = MERGING
-        self._spawn(self._merge_node(node.id))
+        self.c.spawn(self.acceptance.merge_node(node.id))
         return ActionResult()
 
     def _resume(self, node: Node, resume: Resume) -> None:
         """Continue the workflow where the resolved escalation said it should."""
         if resume == Resume.CRITIQUE_BUDGET:          # one more critique cycle: rework the plan
             node.extra_cycles += 1
-            plan = self.nodes[PLAN]
+            plan = self.c.nodes[PLAN]
             plan.cycle += 1
             plan.feedback += node.feedback[-1:]
             plan.status = REWORK
@@ -243,7 +249,7 @@ class HumanMixin:
             node.status = PENDING
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
             node.extra_cycles += 1
-            cur = self.runs.get(node.current_run) if node.current_run else None
+            cur = self.c.runs.get(node.current_run) if node.current_run else None
             if cur and cur.status == R_REPORTED:
                 cur.status = R_SUPERSEDED
             node.cycle += 1
@@ -251,7 +257,7 @@ class HumanMixin:
             node.status = REWORK
         elif resume == Resume.VERIFYING:
             node.status = VERIFYING
-            self._spawn(self._verify_node(node.id))
+            self.c.spawn(self.acceptance.verify_node(node.id))
         elif resume == Resume.REVIEWING:              # re-dispatch the missing panel member(s)
             node.status = REVIEWING
         elif resume == Resume.REWORK:
@@ -262,39 +268,28 @@ class HumanMixin:
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface."""
         payload = payload or {}
-        async with self.lock:
+        async with self.c.lock:
             self._check_approver(approver)
             try:
                 if action == "attest":
-                    a = await governance.record_attestation(self, approver, payload)
+                    a = await governance.record_attestation(self.c, approver, payload)
                     res = ActionResult(attestation=a.attestation, warnings=a.warnings)
                 elif action == "override":
-                    o = await governance.record_override(self, approver, payload)
+                    o = await governance.record_override(self.c, approver, payload)
                     res = ActionResult(attestation=o.attestation)
                 elif action == "approve_protected_paths":
-                    p = governance.record_protected_approval(self, approver, payload)
+                    p = governance.record_protected_approval(self.c, approver, payload)
                     res = ActionResult(attestation=p.attestation,
                                        note="applies only to runs of this task that start after now")
                 elif action == "approve_surface":
                     if not risk.valid_reason(payload.get("reason")):
                         raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")
                     res = ActionResult(surfaces=await governance.pin_surfaces(
-                        self, approver, payload.get("surface"), payload["reason"]))
+                        self.c, approver, payload.get("surface"), payload["reason"]))
                 else:
                     raise WorkflowError(f"unknown change action {action!r}")
             except governance.GovernanceError as e:
                 raise WorkflowError(str(e)) from None
-            self.event("human_action", f"{approver}: {action}")
-            self._save()
+            self.c.event("human_action", f"{approver}: {action}")
+            self.c.save()
             return res
-
-    async def _ship(self) -> None:
-        from ..ship import evaluate
-        result = await evaluate(self)
-        async with self.lock:
-            result.attestation = self.write_record("control/ship/readiness.json", result).attestation
-            self.change.ship = result
-            self.change.status = ChangeStatus(result.verdict)
-            self.nodes[SHIP].status = ACCEPTED
-            self.event("ship", f"readiness verdict: {result.verdict}", SHIP)
-            self._save()

@@ -2,7 +2,7 @@
 controller re-runs the oracle and surface commands deterministically."""
 from __future__ import annotations
 
-from .. import guards
+from .. import governance, guards
 from ..model import VERIFYING, Resume, ReviewResult, Verdict
 from ..view import RoleContext
 from .base import Report, RoleHandler, brief_findings, evidence_of, register
@@ -21,7 +21,7 @@ class Integration(RoleHandler):
         v = guards.verdict(r.data, cycle=2, require_checked=False)
         v += guards.findings(r.data.findings, r.repo_atts, gid="G-INT1")
         v += guards.results_cover(r.data, e.oracle_commands(), "G-INT1")
-        return v + await e.protected_unchanged(r.sha)
+        return v + await governance.protected_unchanged(e, r.sha)
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
         node, data = r.node, r.data

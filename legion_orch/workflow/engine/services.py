@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from ...config import Config
 from ...git import GitRemote
-from ...sandbox import Runner
+from ...sandbox import Runner, render_policy
 from ...store import DocStore
 from ..assets import Assets
 from .auth import WorkloadAuth
@@ -38,6 +38,15 @@ class Services:
     @property
     def mcp_url(self) -> str:
         return self.cfg.server.mcp_url
+
+    def write_policy(self, dest: Path, *, agent: bool, push: bool) -> Path:
+        """Sandbox policy from policies/{agent,verifier}-policy.template.yaml: MCP vetted by the
+        gateway (protocol: mcp, tool allowlist), git push only if the role may push."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if self.mcp_tools is None:
+            raise RuntimeError("MCP server not built: no tool allowlist for the sandbox policy")
+        dest.write_text(render_policy(self.cfg, agent=agent, push=push, mcp_tools=self.mcp_tools))
+        return dest
 
 
 class EngineHost(Protocol):

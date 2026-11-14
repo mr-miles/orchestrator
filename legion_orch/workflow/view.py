@@ -1,7 +1,8 @@
 """The narrow view of one change that governance and ship evaluation work against.
 
-``ChangeEngine`` implements it; governance/ and ship.py depend only on this Protocol, so they
-can be read, reasoned about and tested without the engine's dispatch, sandbox or scheduling code.
+``engine.ChangeCore`` implements it; governance/ and ship.py depend only on this Protocol, so
+they can be read, reasoned about and tested without the engine's dispatch, sandbox or scheduling
+code.
 """
 from __future__ import annotations
 
@@ -49,7 +50,8 @@ class ChangeView(Protocol):
 
 class RoleContext(ChangeView, Protocol):
     """What a role handler (workflow/roles/) may use: the change view plus the engine operations
-    a role's transition needs. Handlers never touch engine internals."""
+    a role's transition needs (``ChangeEngine`` implements it by delegating to its parts).
+    Handlers never touch engine internals."""
 
     assets: Any        # workflow.assets.Assets (roles, schemas)
 
@@ -74,5 +76,3 @@ class RoleContext(ChangeView, Protocol):
         """Decide the review panel outcome once every member has reported."""
 
     def oracle_commands(self) -> list[str]: ...
-
-    async def protected_unchanged(self, head: str) -> list[str]: ...

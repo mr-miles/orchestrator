@@ -212,17 +212,18 @@ def test_namespacing_and_agent_read_restrictions():
 def test_agents_cannot_write_other_changes_or_control(tmp_path):
     import types
 
-    from legion_orch.workflow.engine import ChangeEngine, WorkflowError
+    from legion_orch.workflow.engine import WorkflowError
+    from legion_orch.workflow.engine.core import ChangeCore
+    from legion_orch.workflow.engine.reports import Reports
     from legion_orch.workflow.model import Run
     docs = _store()
     limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
     svc = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None,
                                 assets=None, runner=None, lock=None, procs={})
     host = types.SimpleNamespace(touch=lambda: None, changed=lambda: None)
-    ce = ChangeEngine(svc, host, "c1")
+    ce = Reports(ChangeCore(svc, host, "c1"), lifecycle=None, roles=None)   # writes need neither
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
-    ce.st.event = lambda *a, **k: 0
     assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
     run.write_scope = ["changes/c1/plan/", "changes/c1/tasks/T1/"]   # even a broad scope can't
     for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md",
@@ -467,6 +468,23 @@ def test_engine_boundaries():
         assert not bad, f"{f.name} uses engine internals {bad}"
 
 
+def test_engine_collaborators_are_acyclic():
+    """Each collaborator gets the parts it uses; only change.py composes them, nothing imports
+    the facade, and the imports between the parts form a DAG."""
+    eng = ROOT / "legion_orch/workflow/engine"
+    parts = {"core", "graph", "runs", "dispatch", "acceptance", "reports", "human", "schedule"}
+    deps = {}
+    for name in parts:
+        src = (eng / f"{name}.py").read_text()
+        assert "ChangeEngine" not in src and "from .change" not in src, f"{name}.py knows the facade"
+        deps[name] = set(re.findall(r"^from \.(\w+) import", src, re.M)) & parts
+    done: set[str] = set()
+    while len(done) < len(parts):
+        ready = {n for n in parts - done if deps[n] <= done}
+        assert ready, f"import cycle among {sorted(parts - done)}"
+        done |= ready
+
+
 def test_governance_and_ship_use_only_the_change_view():
     """They depend on the ChangeView protocol, never on engine internals."""
     from legion_orch.workflow.view import ChangeView
@@ -600,11 +618,11 @@ def test_report_limits():
 def test_transition_rollback_keeps_identity():
     import types
 
-    from legion_orch.workflow.engine import ChangeEngine
+    from legion_orch.workflow.engine.core import ChangeCore
     from legion_orch.workflow.model import Change, Node, Run
     svc = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None,
                                 lock=None, procs={})
-    ce = ChangeEngine(svc, types.SimpleNamespace(), "c1")
+    ce = ChangeCore(svc, types.SimpleNamespace(), "c1")
     ce.st.change = Change(id="c1", goal="g", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
@@ -645,7 +663,7 @@ def test_cgi_head_parsing():
 
 
 def test_every_human_gate_action_has_a_handler():
-    from legion_orch.workflow.engine import ChangeEngine
+    from legion_orch.workflow.engine.human import HumanGates
     from legion_orch.workflow.model import H_CHANGE, H_REQUIREMENTS, H_SPEC
-    assert {g for g, _ in ChangeEngine.GATE_ACTIONS} == {H_REQUIREMENTS, H_SPEC, H_CHANGE}
-    assert all(callable(getattr(ChangeEngine, m)) for m in ChangeEngine.GATE_ACTIONS.values())
+    assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_SPEC, H_CHANGE}
+    assert all(callable(getattr(HumanGates, m)) for m in HumanGates.GATE_ACTIONS.values())

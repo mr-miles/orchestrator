@@ -44,3 +44,15 @@ def approved_protected_for(e: ChangeView, task_id: str, before: str) -> list[str
 
 def all_approved_protected(e: ChangeView) -> list[str]:
     return [p for a in e.change.protected_approvals for p in a.paths]
+
+
+async def protected_unchanged(e: ChangeView, head: str) -> list[str]:
+    """Guard G-INT2: at ``head``, every protected acceptance test and support file is as the
+    oracle committed it, unless a human approved changing it."""
+    if not e.change.oracle_sha:
+        return []
+    approved = all_approved_protected(e)
+    orc = e.change.oracle or Oracle()
+    return [f"G-INT2: protected acceptance test {p} changed since oracle commit"
+            for p in orc.acceptance_tests + orc.protected_support
+            if p not in approved and await e.git.blob(head, p) != await e.git.blob(e.change.oracle_sha, p)]
