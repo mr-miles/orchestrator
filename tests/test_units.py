@@ -444,7 +444,16 @@ def test_generated_policy_and_provider_profile(tmp_path):
     assert set(ver["network_policies"]) == {"legion_git"}
     prof = provider_profile(cfg, list(MCP_TOOLS))
     token_endpoint = prof["credentials"][0]["token_grant"]["token_endpoint"]
-    assert token_endpoint == "http://host.openshell.internal:8768/oauth/token"
+    # OpenShell's profile lint: token_endpoint is https unless the host is loopback (the gateway
+    # makes the exchange host-side) ...
+    assert token_endpoint == "http://127.0.0.1:8768/oauth/token"
+    # ... and an endpoint's tls is omitted (auto-detect + inspect) or "skip"; skip would disable
+    # inspection and the bearer injection, so no endpoint we render sets it
+    def keys(o):
+        if isinstance(o, dict):
+            return set(o) | {k for v in o.values() for k in keys(v)}
+        return {k for v in o for k in keys(v)} if isinstance(o, list) else set()
+    assert all("tls" not in keys(doc) for doc in (prof, agent, judge, ver))
     assert all(e["port"] != 8765 for e in prof["endpoints"])          # operator port never exposed
     assert [e["protocol"] for e in prof["endpoints"]] == ["mcp", "rest"]
     assert "Bearer" not in _y.safe_dump(agent) and "token" not in _y.safe_dump(agent).lower()

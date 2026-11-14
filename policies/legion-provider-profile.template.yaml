@@ -24,7 +24,6 @@ endpoints:
     port: ${MCP_PORT}
     path: ${MCP_PATH}
     protocol: mcp
-    tls: ${MCP_TLS}
     enforcement: enforce
     mcp:
       versions: ${MCP_VERSIONS}
@@ -40,7 +39,6 @@ endpoints:
     port: ${GIT_PORT}
     path: /git/*.git/**
     protocol: rest
-    tls: ${GIT_TLS}
     enforcement: enforce
     rules:
       - allow: { method: GET, path: /git/*.git/info/refs }

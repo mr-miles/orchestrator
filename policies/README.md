@@ -39,11 +39,9 @@ controller only fills in placeholders.
 | --- | --- |
 | `${GIT_HOST}` | git listener host as seen from sandboxes (server.public_host) |
 | `${GIT_PORT}` | git listener port (server.git_port) |
-| `${GIT_TLS}` | "none" for a plain HTTP git listener, "" for TLS |
 | `${MCP_HOST}` | MCP listener host as seen from sandboxes (server.public_host) |
 | `${MCP_PORT}` | MCP listener port (server.mcp_port) |
 | `${MCP_PATH}` | MCP endpoint path, e.g. /mcp |
-| `${MCP_TLS}` | "none" for a plain HTTP MCP endpoint, "" for TLS |
 | `${MCP_VERSIONS}` | MCP protocol revisions the gateway accepts |
 | `${MCP_TOOLS}` | tool names the controller's MCP server registers (the tools/call allowlist) |
 | `${GIT_PUSH_DENY_RULES}` | deny rules for git-receive-pack: [] for roles that push, else a POST deny |

@@ -32,6 +32,11 @@ class ServerConfig:
     # How sandboxes reach the agent-facing listeners.
     public_host: str = "host.openshell.internal"
     public_scheme: str = "http"
+    # How the OpenShell gateway / host supervisor reaches the token endpoint. The exchange is
+    # made host-side, not from the sandbox, and OpenShell requires https for it unless the host
+    # is loopback or an in-cluster service: keep loopback when the gateway runs on this host.
+    token_host: str = "127.0.0.1"
+    token_scheme: str = "http"
 
     def _public(self, port: int) -> str:
         return f"{self.public_scheme}://{self.public_host}:{port}"
@@ -46,7 +51,7 @@ class ServerConfig:
 
     @property
     def token_url(self) -> str:
-        return self._public(self.token_port) + "/oauth/token"
+        return f"{self.token_scheme}://{self.token_host}:{self.token_port}/oauth/token"
     # Optional token required for human actions in the web UI (header X-Operator-Token).
     operator_token: str | None = None
 

@@ -19,7 +19,6 @@ network_policies:
         port: ${GIT_PORT}
         path: /git/*.git/**
         protocol: rest
-        tls: ${GIT_TLS}
         enforcement: enforce
         rules:
           - allow: { method: GET, path: /git/*.git/info/refs }

@@ -17,6 +17,8 @@ server:
   git_port: 8767                 # /git/<repo>.git only
   token_port: 8768               # /oauth/token only (gateway supervisor)
   public_host: host.openshell.internal   # how sandboxes reach the agent-facing listeners
+  token_host: 127.0.0.1          # how the gateway reaches /oauth/token (loopback, an in-cluster
+                                 # service, or set token_scheme: https)
   # operator_token: set LEGION_OPERATOR_TOKEN instead of committing it
 limits:
   max_parallel: 4

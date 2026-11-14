@@ -37,11 +37,9 @@ VOCABULARY: dict[str, str] = {
     # controller endpoints (from server.*)
     "GIT_HOST": "git listener host as seen from sandboxes (server.public_host)",
     "GIT_PORT": "git listener port (server.git_port)",
-    "GIT_TLS": '"none" for a plain HTTP git listener, "" for TLS',
     "MCP_HOST": "MCP listener host as seen from sandboxes (server.public_host)",
     "MCP_PORT": "MCP listener port (server.mcp_port)",
     "MCP_PATH": "MCP endpoint path, e.g. /mcp",
-    "MCP_TLS": '"none" for a plain HTTP MCP endpoint, "" for TLS',
     "MCP_VERSIONS": "MCP protocol revisions the gateway accepts",
     "MCP_TOOLS": "tool names the controller's MCP server registers (the tools/call allowlist)",
     "GIT_PUSH_DENY_RULES": "deny rules for git-receive-pack: [] for roles that push, else a POST deny",
@@ -81,20 +79,23 @@ class TemplateError(ValueError):
     pass
 
 
-def _host_port(url: str) -> tuple[str, int, str, str]:
+def _host_port(url: str) -> tuple[str, int, str]:
+    """Endpoint host, port and path. No ``tls`` field is rendered: OpenShell detects TLS itself
+    and inspects either way (it accepts only an omitted value or ``skip``, which would turn off
+    inspection and the bearer injection)."""
     u = urlparse(url)
     return (u.hostname or "host.openshell.internal", u.port or (443 if u.scheme == "https" else 80),
-            u.path or "/", "none" if u.scheme == "http" else "")
+            u.path or "/")
 
 
 def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str, Any]:
     """Vocabulary values derived from configuration (no per-sandbox values)."""
-    gh, gp, _, gtls = _host_port(cfg.server.git_base_url)
-    mh, mp, mpath, mtls = _host_port(cfg.server.mcp_url)
+    gh, gp, _ = _host_port(cfg.server.git_base_url)
+    mh, mp, mpath = _host_port(cfg.server.mcp_url)
     ic, sc = cfg.identity, cfg.sandbox
     v: dict[str, Any] = {
-        "GIT_HOST": gh, "GIT_PORT": gp, "GIT_TLS": gtls,
-        "MCP_HOST": mh, "MCP_PORT": mp, "MCP_PATH": mpath, "MCP_TLS": mtls,
+        "GIT_HOST": gh, "GIT_PORT": gp,
+        "MCP_HOST": mh, "MCP_PORT": mp, "MCP_PATH": mpath,
         "MCP_VERSIONS": MCP_VERSIONS,
         "TOKEN_ENDPOINT": cfg.server.token_url,
         "TOKEN_AUDIENCE": ic.token_audience, "SVID_AUDIENCE": ic.svid_audience, "SCOPE": ic.scope,
