@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from . import attest, governance
-from .gitops import path_matches
+from .git import path_matches
 from .model import ACCEPTED, BASELINE, H_CHANGE, INTEGRATION, RELEASE, _parse_ts_safe
 
 if TYPE_CHECKING:

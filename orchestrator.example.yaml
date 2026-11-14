@@ -24,6 +24,8 @@ limits:
 sandbox:
   runner: openshell              # or `local` for development (NO isolation)
   openshell_bin: openshell
+  workspace: default             # OpenShell workspace targeted by every openshell call
+  # gateway: my-gateway          # optional OpenShell gateway name (-g); default: active one
   image: registry.example.com/your-org/claude-agent:latest
   verifier_image: registry.example.com/your-org/toolchain:latest
   providers: [claude-code]       # model credentials; legion-controller is added automatically

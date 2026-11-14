@@ -23,18 +23,17 @@ import httpx
 from . import attest, governance, guards, risk
 from .assets import AssetError, Assets
 from .config import Config
-from .store import DocStore, DocVersion, now_iso
-from .githttp import GitGrant
-from .policy import render_policy
+from .git import GitGrant, GitRemote
+from .store import DocStore, DocVersion
+from .util import now_iso
 from .identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
-from .gitops import GitRemote
 from .model import (ACCEPTED, ACTIVE_NODE, AWAITING_HUMAN, BASELINE, BUILD, CRITIQUE, ESCALATED,
                     FAILED, H_CHANGE, H_REQUIREMENTS, H_SPEC, HUMAN, INTAKE, INTEGRATION, LIVE_RUN,
                     MERGING, ORACLE, PENDING, PLAN, R_ACCEPTED, R_ACTIVE, R_FAILED, R_REPORTED,
                     R_STARTING, R_SUPERSEDED, READY, RELEASE, REVIEWING, REWORK, ROLE_FOR_KIND,
                     RUNNING, SHIP, VERIFYING, Change, Node, Run, StateStore)
 from .sandbox import (RUN_AGENT_SH, VERIFY_SETUP_SH, LocalRunner, Runner, SandboxError,
-                      SandboxSpec, make_runner)
+                      SandboxSpec, make_runner, render_policy)
 
 log = logging.getLogger("legion")
 
@@ -82,6 +81,7 @@ class Controller:
             self.runner.gateway = self._dev_gateway
         self.tasks: set[asyncio.Task] = set()
         self.changes: dict[str, ChangeEngine] = {}
+        self.mcp_tools: list[str] | None = None   # set by the MCP server (gateway allowlist)
         self.version = 0
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -421,7 +421,7 @@ class ChangeEngine:
 
     def _overlaps_running(self, node: Node) -> bool:
         """Guard G-D3 (file overlap part)."""
-        from .gitops import paths_overlap
+        from .git import paths_overlap
         mine = node.task["files_modified"]
         for other in self._build_nodes():
             if other.id == node.id or other.status not in ACTIVE_NODE | {REWORK}:
@@ -631,7 +631,10 @@ class ChangeEngine:
         """Sandbox policy = static template + generated controller endpoints (policy.py):
         MCP vetted by the gateway (protocol: mcp, tool allowlist), git push only if allowed."""
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(render_policy(self.cfg, template, agent=agent, push=push))
+        if self.ctl.mcp_tools is None:
+            raise RuntimeError("MCP server not built: no tool allowlist for the sandbox policy")
+        dest.write_text(render_policy(self.cfg, template, agent=agent, push=push,
+                                      mcp_tools=self.ctl.mcp_tools))
         return dest
 
     def _payload(self, run: Run, rendered) -> None:

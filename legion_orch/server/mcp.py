@@ -22,13 +22,12 @@ from typing import Any
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import attest
-from .engine import ChangeEngine, Controller, WorkflowError
-from .identity import bearer
-from .model import Run
-from .policy import MCP_TOOLS
-from .store import DocStoreError, DocVersion
-from .store.mcp import StoreSession, register_store_tools
+from .. import attest
+from ..engine import ChangeEngine, Controller, WorkflowError
+from ..model import Run
+from ..store import DocStoreError, DocVersion
+from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
+from ..util import bearer
 
 INSTRUCTIONS = """Legion orchestrator tools. Start with get_assignment(). Documents are immutable,
 versioned and schema-validated (docs_write creates a new version; pass base_version when revising;
@@ -38,6 +37,9 @@ git:<repo>/<path>@<sha> or git:<repo>@<sha>. Finish with exactly one accepted
 report(status="DONE"|"BLOCKED"). Rejected reports list violated guard ids."""
 
 AGENT_HIDDEN = ("/control/logs/",)
+WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report")
+# The gateway's MCP allowlist (sandbox network policy) is generated from exactly this list.
+MCP_TOOLS = tuple(STORE_TOOLS) + WORKFLOW_TOOLS
 
 
 def _hidden(path: str) -> bool:
@@ -133,4 +135,5 @@ def build_mcp(ctl: Controller) -> MCPServer:
     registered = {t.name for t in server._tool_manager.list_tools()}
     if registered != set(MCP_TOOLS):   # the gateway's MCP allowlist must match exactly
         raise RuntimeError(f"MCP tools {sorted(registered)} != policy allowlist {sorted(MCP_TOOLS)}")
+    ctl.mcp_tools = list(MCP_TOOLS)    # used when rendering sandbox network policies
     return server

@@ -6,8 +6,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from . import attest, risk
-from .store import now_iso
-from .gitops import path_matches
+from .util import now_iso
+from .git import path_matches
 
 if TYPE_CHECKING:
     from .engine import ChangeEngine

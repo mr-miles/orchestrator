@@ -17,10 +17,11 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["legion_orch", "legion_orch.store"]
+packages = ["legion_orch", "legion_orch.store", "legion_orch.git", "legion_orch.identity",
+            "legion_orch.sandbox", "legion_orch.server"]
 
 [tool.setuptools.package-data]
-legion_orch = ["static/*"]
+"legion_orch.server" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

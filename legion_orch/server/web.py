@@ -20,11 +20,12 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
-from .store import DocStoreError
-from .engine import Controller, WorkflowError
-from .githttp import make_git_endpoint
-from .identity import IdentityError
-from .mcp_tools import build_mcp
+from ..engine import Controller, WorkflowError
+from ..git import make_git_endpoint
+from ..identity import make_token_endpoint
+from ..store import DocStoreError
+from ..util import bearer
+from .mcp import build_mcp
 
 STATIC = Path(__file__).parent / "static"
 # Bulky controller records hidden from the default document listing (still readable).
@@ -50,7 +51,9 @@ async def serve(ctl: Controller) -> None:
 
 
 def build_app(ctl: Controller) -> Starlette:
-    git_endpoint = make_git_endpoint(ctl.git, ctl.git_grant)
+    git_endpoint = make_git_endpoint(
+        ctl.git, lambda request: ctl.git_grant(bearer(request.headers.get("authorization", ""))))
+    oauth_token = make_token_endpoint(ctl.identity, ctl.sandbox_binding)
     op_token = ctl.cfg.server.operator_token
 
     def operator(request: Request) -> None:
@@ -111,19 +114,6 @@ def build_app(ctl: Controller) -> Starlette:
         ce = ctl.get(request.path_params["cid"])
         return JSONResponse(await ce.change_action(body.get("action", ""), body.get("approver", ""),
                                                    body.get("payload") or {}))
-
-    async def oauth_token(request: Request):
-        """Token endpoint for the OpenShell gateway: JWT-SVID client assertion → access token."""
-        form = dict(await request.form())
-        try:
-            body = await ctl.identity.token_request(form, ctl.sandbox_binding)
-        except IdentityError as e:
-            return JSONResponse({"error": e.error, "error_description": e.description},
-                                status_code=e.status)
-        except Exception as e:   # e.g. SPIRE JWKS unreachable
-            return JSONResponse({"error": "temporarily_unavailable", "error_description": str(e)},
-                                status_code=503)
-        return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     async def stream(request: Request):
         async def gen():

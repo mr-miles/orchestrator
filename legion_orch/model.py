@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
-from .store import now_iso
+from .util import now_iso
 
 # Node kinds
 INTAKE, PLAN, CRITIQUE, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (

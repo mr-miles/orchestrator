@@ -21,7 +21,6 @@ For development without OpenShell, :class:`DevSpire` stands in for SPIRE + the g
 """
 from __future__ import annotations
 
-import base64
 import json
 import secrets
 import time
@@ -96,36 +95,6 @@ class SvidVerifier:
         return sub[len(self.trust_prefix):]
 
 
-# ---------------------------------------------------------------------------- access tokens
-BINDING_CLAIMS = ("sandbox", "change", "task", "role")
-
-
-class AccessTokens:
-    """Short-lived, task-scoped controller tokens. The key never leaves controller memory."""
-
-    def __init__(self, audience: str, ttl_s: int):
-        self.key = secrets.token_bytes(32)
-        self.audience, self.ttl_s = audience, ttl_s
-
-    def issue(self, binding: dict[str, str], spiffe_id: str) -> str:
-        """``binding`` = {sandbox, change, task, role} of the sandbox's assignment."""
-        now = int(time.time())
-        claims = {k: binding[k] for k in BINDING_CLAIMS}
-        return jwt.encode(claims | {"sub": binding["sandbox"], "spiffe_id": spiffe_id,
-                                    "aud": self.audience, "iat": now, "exp": now + self.ttl_s,
-                                    "jti": secrets.token_hex(8)},
-                          self.key, algorithm="HS256")
-
-    def verify(self, token: str) -> dict[str, str] | None:
-        """Return the binding claims, or None if the token is invalid or expired."""
-        try:
-            c = jwt.decode(token, self.key, algorithms=["HS256"], audience=self.audience,
-                           options={"require": ["exp", *BINDING_CLAIMS]})
-        except jwt.PyJWTError:
-            return None
-        return {k: c[k] for k in BINDING_CLAIMS}
-
-
 # ---------------------------------------------------------------------------- dev SPIRE
 @dataclass
 class DevSpire:
@@ -147,46 +116,3 @@ class DevSpire:
         claims = {"sub": self.trust_prefix + sandbox_ref, "aud": [audience], "iss": self.issuer,
                   "iat": now, "exp": now + ttl_s} | overrides
         return jwt.encode(claims, self._key, algorithm="RS256", headers={"kid": self.kid})
-
-
-# ---------------------------------------------------------------------------- token endpoint
-class IdentityService:
-    def __init__(self, verifier: SvidVerifier, tokens: AccessTokens, scope: str,
-                 dev: DevSpire | None = None):
-        self.verifier, self.tokens, self.scope, self.dev = verifier, tokens, scope, dev
-
-    async def token_request(self, form: dict[str, str], binding_for) -> dict:
-        """``binding_for(sandbox_ref)`` returns the sandbox's {sandbox, change, task, role}, or
-        None for a sandbox this controller does not manage (or has deleted)."""
-        """OAuth2 client_credentials with a jwt-spiffe client assertion (RFC 7523 style)."""
-        if form.get("grant_type") != "client_credentials":
-            raise IdentityError("unsupported_grant_type", "only client_credentials is supported")
-        if form.get("client_assertion_type") != JWT_SPIFFE:
-            raise IdentityError("invalid_client", "client_assertion_type must be jwt-spiffe")
-        assertion = form.get("client_assertion")
-        if not assertion:
-            raise IdentityError("invalid_client", "missing client_assertion")
-        if form.get("audience") and form["audience"] != self.tokens.audience:
-            raise IdentityError("invalid_target", f"audience must be {self.tokens.audience}")
-        scopes = (form.get("scope") or self.scope).split()
-        if self.scope not in scopes:
-            raise IdentityError("invalid_scope", f"scope must include {self.scope}")
-        ref = await self.verifier.verify(assertion)
-        binding = binding_for(ref)
-        if binding is None:
-            raise IdentityError("invalid_client", "sandbox is not managed by this controller", 401)
-        return {"access_token": self.tokens.issue(binding, self.verifier.trust_prefix + ref),
-                "token_type": "Bearer", "expires_in": self.tokens.ttl_s, "scope": self.scope}
-
-
-def bearer(header: str) -> str | None:
-    """Extract a bearer (or Basic password) from an Authorization header."""
-    if header.lower().startswith("bearer "):
-        return header[7:].strip() or None
-    if header.lower().startswith("basic "):
-        try:
-            user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
-            return pw or user or None
-        except Exception:
-            return None
-    return None

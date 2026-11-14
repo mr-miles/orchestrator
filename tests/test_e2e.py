@@ -11,7 +11,7 @@ import uvicorn
 
 from legion_orch.config import load_config
 from legion_orch.engine import Controller
-from legion_orch.web import build_servers
+from legion_orch.server import build_servers
 
 ROOT = Path(__file__).resolve().parent.parent
 

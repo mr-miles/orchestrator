@@ -1,9 +1,8 @@
 """git smart-HTTP endpoint (``git http-backend`` as CGI) with workload-identity authentication.
 
-Requests carry ``Authorization: Bearer <access token>`` injected by the OpenShell gateway for the
-sandbox (see identity.py). Fetch is allowed for a sandbox with a live run or an active verifier;
-push only to the live run's own branch, enforced by the ``pre-receive`` hook via
-``LEGION_ALLOWED_REF``.
+The host decides who may do what: ``authorize(request)`` returns a :class:`GitGrant` (identity and
+the one ref it may push, or ``None`` for read-only) or ``None`` to refuse. Push restrictions are
+enforced by the ``pre-receive`` hook via ``LEGION_ALLOWED_REF``.
 """
 from __future__ import annotations
 
@@ -15,8 +14,7 @@ from typing import Callable
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 
-from .gitops import GitRemote
-from .identity import bearer
+from .remote import GitRemote
 
 MAX_PUSH_BYTES = 512 * 1024 * 1024
 
@@ -27,12 +25,11 @@ class GitGrant:
     allowed_ref: str | None   # None => read-only
 
 
-def make_git_endpoint(remote: GitRemote, authorize: Callable[[str], GitGrant | None]):
+def make_git_endpoint(remote: GitRemote, authorize: Callable[[Request], GitGrant | None]):
     backend = os.path.join(os.popen("git --exec-path").read().strip(), "git-http-backend")
 
     async def endpoint(request: Request) -> Response:
-        token = bearer(request.headers.get("authorization", ""))
-        grant = authorize(token) if token else None
+        grant = authorize(request)
         if grant is None:
             return PlainTextResponse("authentication required", status_code=401,
                                      headers={"WWW-Authenticate": 'Basic realm="legion"'})

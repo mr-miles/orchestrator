@@ -53,6 +53,11 @@ class LimitsConfig:
 class SandboxConfig:
     runner: str = "openshell"  # openshell | local
     openshell_bin: str = "openshell"
+    # OpenShell workspace every sandbox, provider and profile operation targets (passed as the
+    # global --workspace flag on every call; OpenShell's own default is "default").
+    workspace: str = "default"
+    # Optional OpenShell gateway name (global -g flag); None = the CLI's active gateway.
+    gateway: str | None = None
     image: str | None = None  # --from for agent sandboxes
     verifier_image: str | None = None  # --from for deterministic verifier sandboxes
     providers: list[str] = field(default_factory=list)
@@ -140,6 +145,8 @@ def load_config(path: str | Path) -> Config:
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )
+    if not (cfg.sandbox.workspace or "").strip():
+        raise ValueError("sandbox.workspace must name an OpenShell workspace")
     if cfg.identity.dev_spire is None:
         cfg.identity.dev_spire = cfg.sandbox.runner == "local"
     if not cfg.identity.dev_spire and not cfg.identity.jwks_uri:

@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 
 from .store import DocStore
-from .gitops import GitRemote
+from .git import GitRemote
 
 FILE_RE = re.compile(r"^file:(?P<path>[^@\s]+)@(?P<version>[1-9][0-9]*)$")
 GIT_RE = re.compile(r"^git:(?P<body>[^@\s]+)@(?P<sha>[0-9a-f]{40})$")

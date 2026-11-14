@@ -9,7 +9,7 @@ from typing import Any
 from . import risk
 from .attest import Attestation
 from .store import DocStore
-from .gitops import path_matches, paths_overlap
+from .git import path_matches, paths_overlap
 
 GUARDS: dict[str, str] = {
     # universal

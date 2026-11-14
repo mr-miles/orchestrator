@@ -24,7 +24,7 @@ def test_workflow_doc_guard_ids_match_code():
 
 
 def test_every_guard_is_referenced_outside_the_registry():
-    src = "".join(p.read_text() for p in (ROOT / "legion_orch").glob("*.py")
+    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py")
                   if p.name != "guards.py")
     src += re.sub(r"GUARDS: dict.*?\n}\n", "", (ROOT / "legion_orch/guards.py").read_text(), flags=re.S)
     missing = [g for g in guards.GUARDS if g not in src and not g.startswith("H-")]
@@ -181,7 +181,7 @@ def test_review_and_report_guards():
 
 def test_namespacing_and_agent_read_restrictions():
     from legion_orch.attest import normalize, qualify
-    from legion_orch.mcp_tools import _hidden
+    from legion_orch.server.mcp import _hidden
     assert qualify("plan/spec.md", "c1") == "changes/c1/plan/spec.md"
     assert qualify("changes/c2/plan/spec.md", "c1") == "changes/c2/plan/spec.md"
     assert normalize("file:plan/spec.md@2", "c1") == "file:changes/c1/plan/spec.md@2"
@@ -266,7 +266,8 @@ def test_report_schemas():
 def test_svid_verification_and_access_tokens():
     import asyncio, time
     from legion_orch.identity import (AccessTokens, DevSpire, IdentityError, IdentityService,
-                                      JWT_SPIFFE, SvidVerifier, bearer)
+                                      JWT_SPIFFE, SvidVerifier)
+    from legion_orch.util import bearer
     prefix = "spiffe://openshell.local/openshell/sandbox/"
     spire = DevSpire(prefix)
     v = SvidVerifier(issuer=spire.issuer, audience="legion-controller", trust_prefix=prefix,
@@ -300,18 +301,20 @@ def test_svid_verification_and_access_tokens():
 def test_generated_policy_and_provider_profile(tmp_path):
     import yaml as _y
     from legion_orch.config import load_config
-    from legion_orch.policy import MCP_TOOLS, provider_profile, render_policy
+    from legion_orch.sandbox import provider_profile, render_policy, setup_commands
+    from legion_orch.server import MCP_TOOLS
     (tmp_path / "c.yaml").write_text(f"""
 project: p
 repo: {{name: app, path: {tmp_path}}}
 decision_owners: [miles]
 server: {{port: 8765, mcp_port: 8766, public_url: "http://host.openshell.internal:8765"}}
 identity: {{jwks_uri: "https://spire/keys"}}
-sandbox: {{runner: openshell}}
+sandbox: {{runner: openshell, workspace: team-ml, gateway: prod}}
 """)
     cfg = load_config(tmp_path / "c.yaml")
     cfg.base_dir = ROOT
-    agent = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=True))
+    kw = {"mcp_tools": list(MCP_TOOLS)}
+    agent = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=True, **kw))
     mcp = agent["network_policies"]["legion_mcp"]["endpoints"][0]
     git = agent["network_policies"]["legion_git"]["endpoints"][0]
     assert mcp["protocol"] == "mcp" and git["protocol"] == "rest"
@@ -320,13 +323,18 @@ sandbox: {{runner: openshell}}
     calls = [r["allow"] for r in mcp["rules"] if r["allow"]["method"] == "tools/call"]
     assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
     assert any(r["allow"]["path"].endswith("git-receive-pack") for r in git["rules"])
-    judge = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=False))
+    judge = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=False, **kw))
     jgit = judge["network_policies"]["legion_git"]["endpoints"][0]
     assert not any(r["allow"]["path"].endswith("git-receive-pack") for r in jgit["rules"])
     assert jgit["deny_rules"][0]["path"].endswith("git-receive-pack")
-    ver = _y.safe_load(render_policy(cfg, "policies/verifier-policy.template.yaml", agent=False, push=False))
+    ver = _y.safe_load(render_policy(cfg, "policies/verifier-policy.template.yaml", agent=False, push=False, **kw))
     assert set(ver["network_policies"]) == {"legion_git"}
-    prof = provider_profile(cfg)
+    prof = provider_profile(cfg, list(MCP_TOOLS))
     assert prof["credentials"][0]["token_grant"]["token_endpoint"] == "http://host.openshell.internal:8765/oauth/token"
     assert [e["protocol"] for e in prof["endpoints"]] == ["mcp", "rest"]
     assert "Bearer" not in _y.safe_dump(agent) and "token" not in _y.safe_dump(agent).lower()
+    # every openshell call targets the configured workspace (and gateway)
+    from legion_orch.sandbox.runner import OpenShellRunner
+    assert OpenShellRunner(cfg).cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
+    assert all(c[:5] == ["openshell", "--workspace", "team-ml", "-g", "prod"]
+               for c in setup_commands(cfg, "p.yaml"))

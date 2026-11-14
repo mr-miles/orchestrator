@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         import asyncio
         from .engine import Controller
-        from .web import serve
+        from .server import serve
         asyncio.run(serve(Controller(cfg)))
         return 0
     if args.cmd == "setup-openshell":
@@ -84,9 +84,10 @@ def main(argv: list[str] | None = None) -> int:
 def setup_openshell(cfg, args) -> int:
     import subprocess
     import yaml
-    from .policy import provider_profile, setup_commands
+    from .sandbox import provider_profile, setup_commands
+    from .server import MCP_TOOLS
     with open(args.out, "w") as f:
-        yaml.safe_dump(provider_profile(cfg), f, sort_keys=False)
+        yaml.safe_dump(provider_profile(cfg, list(MCP_TOOLS)), f, sort_keys=False)
     print(f"wrote {args.out}")
     for cmd in setup_commands(cfg, args.out):
         print("$", " ".join(cmd))
