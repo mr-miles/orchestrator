@@ -61,7 +61,7 @@ class Engine:
         self.st = StateStore(self.conn, self.dblock)
         self.git = GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path,
                              cfg.repo.base_branch)
-        self.assets = Assets(cfg.workflow_doc)
+        self.assets = Assets(cfg.assets_dir)
         self.runner = runner or make_runner(cfg)
         self.lock = asyncio.Lock()
         self.procs: dict[str, asyncio.subprocess.Process] = {}
@@ -417,7 +417,7 @@ class Engine:
                   soul=self.assets.roles[role].soul if role != "implementer" else task.get("soul"),
                   cycle=node.cycle, token=secrets.token_urlsafe(32),
                   base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
-                  prompt_pin=rendered.pin, workflow_sha=self.assets.doc_sha,
+                  prompt_pin=rendered.pin, workflow_sha=self.assets.sha,
                   write_scope=write, required_docs=required, context_refs=context,
                   assignment={k: v for k, v in variables.items()
                               if k not in ("context_refs",)} | {"task": task,
@@ -1218,6 +1218,6 @@ class Engine:
             runs.append(d)
         return {"project": self.cfg.project, "repo": self.cfg.repo.name,
                 "decision_owners": self.cfg.decision_owners, "version": self.version,
-                "workflow_sha": self.assets.doc_sha, "limits": self.cfg.limits.__dict__,
+                "assets_sha": self.assets.sha, "limits": self.cfg.limits.__dict__,
                 "change": asdict(ch) if ch else None, "nodes": nodes, "runs": runs,
                 "gates": risk.GATES_BY_TIER.get(ch.tier, []) if ch and ch.tier else []}

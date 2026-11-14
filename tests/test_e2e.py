@@ -58,6 +58,7 @@ async def _full_workflow(tmp_path):
         repo: {{name: app, path: {tmp_path / 'src-repo'}, base_branch: main}}
         decision_owners: [miles]
         state_dir: state
+        assets_dir: {ROOT / 'assets'}
         workflow_doc: {ROOT / 'WORKFLOW.md'}
         server: {{host: 127.0.0.1, port: {port}, public_url: "http://127.0.0.1:{port}"}}
         limits: {{max_parallel: 3, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}

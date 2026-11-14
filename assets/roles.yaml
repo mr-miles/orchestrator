@@ -1,0 +1,71 @@
+intake:
+  soul: intake-analyst
+  skills: [harness-contract, docstore-protocol, attestation-format, risk-signals, blocked-protocol]
+  write: ["intake/"]
+  required_docs: ["intake/requirements.md", "intake/risk.json"]
+  git: none
+  repo: true
+planner:
+  soul: architect-planner
+  skills: [harness-contract, docstore-protocol, attestation-format, taskgraph-schema, blocked-protocol]
+  write: ["plan/"]
+  required_docs: ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
+  git: none
+  repo: true
+critic:
+  soul: plan-critic
+  skills: [harness-contract, docstore-protocol, attestation-format, pre-mortem, finding-format]
+  write: ["critique/"]
+  required_docs: ["critique/cycle-{{cycle}}.md"]
+  git: none
+  repo: true
+oracle:
+  soul: test-engineer
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
+  write: ["oracle/"]
+  required_docs: ["oracle/tests.md"]
+  git: commit
+  repo: true
+baseline:
+  soul: baseline-verifier
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol]
+  write: ["baseline/"]
+  required_docs: ["baseline/report.md"]
+  git: head
+  repo: true
+implementer:
+  soul: "{{task_soul}}"
+  souls_allowed: [senior-developer, backend-engineer, frontend-engineer]
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
+  write: ["evidence/{{task_id}}/"]
+  required_docs: ["evidence/{{task_id}}/cycle-{{cycle}}.md"]
+  git: commit
+  repo: true
+reviewer:
+  soul: code-reviewer
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
+  write: ["reviews/{{task_id}}/"]
+  required_docs: ["reviews/{{task_id}}/reviewer-cycle-{{cycle}}.md"]
+  git: candidate
+  repo: true
+security:
+  soul: security-reviewer
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, security-checklist]
+  write: ["reviews/{{task_id}}/"]
+  required_docs: ["reviews/{{task_id}}/security-cycle-{{cycle}}.md"]
+  git: candidate
+  repo: true
+integration:
+  soul: integration-verifier
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
+  write: ["integration/"]
+  required_docs: ["integration/report.md"]
+  git: head
+  repo: true
+release:
+  soul: release-planner
+  skills: [harness-contract, docstore-protocol, attestation-format]
+  write: ["release/"]
+  required_docs: ["release/plan.md", "release/rollback.md"]
+  git: none
+  repo: true

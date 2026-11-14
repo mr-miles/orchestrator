@@ -65,7 +65,8 @@ class Config:
     repo: RepoConfig
     decision_owners: list[str]
     state_dir: Path
-    workflow_doc: Path
+    assets_dir: Path
+    workflow_doc: Path  # displayed in the UI only; never parsed
     server: ServerConfig = field(default_factory=ServerConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
@@ -98,6 +99,7 @@ def load_config(path: str | Path) -> Config:
         repo=_build(RepoConfig, raw["repo"]),
         decision_owners=list(owners),
         state_dir=(base / raw.get("state_dir", ".legion-orch")).resolve(),
+        assets_dir=(base / raw.get("assets_dir", "assets")).resolve(),
         workflow_doc=(base / raw.get("workflow_doc", "WORKFLOW.md")).resolve(),
         server=_build(ServerConfig, raw.get("server")),
         limits=_build(LimitsConfig, raw.get("limits")),

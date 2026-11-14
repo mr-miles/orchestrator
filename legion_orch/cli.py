@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-c", "--config", default="orchestrator.yaml")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="run the controller, MCP endpoint, git remote and web UI")
-    sub.add_parser("check", help="validate config and WORKFLOW.md assets")
+    sub.add_parser("check", help="validate config and the assets folder")
     st = sub.add_parser("start", help="start a change on a running controller")
     st.add_argument("goal")
     act = sub.add_parser("act", help="perform a human action on a running controller")
@@ -31,8 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if args.cmd == "check":
-        a = Assets(cfg.workflow_doc)
-        print(f"WORKFLOW.md {a.doc_sha}: roles={sorted(a.roles)} souls={a.souls()}")
+        a = Assets(cfg.assets_dir)
+        print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
         return 0
     if args.cmd == "serve":
         from .engine import Engine

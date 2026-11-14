@@ -79,7 +79,9 @@ def build_app(engine: Engine) -> Starlette:
                              "pin": engine.runs[rid].prompt_pin})
 
     async def workflow(_: Request):
-        return PlainTextResponse(engine.assets.text, media_type="text/markdown")
+        doc = engine.cfg.workflow_doc
+        text = doc.read_text() if doc.is_file() else "(WORKFLOW.md not found)"
+        return PlainTextResponse(text, media_type="text/markdown")
 
     async def start_change(request: Request):
         try:

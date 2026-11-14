@@ -74,7 +74,7 @@ class Run:
     branch: str | None = None
     judged_sha: str | None = None        # candidate/head under judgement (judge roles)
     prompt_pin: str | None = None
-    workflow_sha: str | None = None
+    workflow_sha: str | None = None   # sha256 of the asset set
     write_scope: list[str] = field(default_factory=list)
     required_docs: list[str] = field(default_factory=list)
     context_refs: list[str] = field(default_factory=list)

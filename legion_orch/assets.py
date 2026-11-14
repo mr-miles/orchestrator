@@ -1,11 +1,12 @@
-"""Load souls, skills, prompts and role bindings from WORKFLOW.md.
+"""Load souls, skills, prompts and role bindings from the assets folder.
 
-WORKFLOW.md is the single source of truth. Tagged blocks look like::
+Layout (naming convention)::
 
-    <!-- asset: soul/senior-developer -->
-    ~~~~markdown
-    ...
-    ~~~~
+    assets/
+      roles.yaml             role -> soul, skills, write scope, required docs, git requirement
+      souls/<soul>.md        agent persona, injected verbatim
+      skills/<skill>.md      instruction module appended to the prompt
+      prompts/<role>.md      task prompt template (file name = role name)
 """
 from __future__ import annotations
 
@@ -17,18 +18,15 @@ from typing import Any
 
 import yaml
 
-ASSET_RE = re.compile(
-    r"<!--\s*asset:\s*([A-Za-z0-9_/-]+)\s*-->\s*\n~~~~[A-Za-z]*\n(.*?)\n~~~~[ \t]*(?:\n|$)",
-    re.DOTALL,
-)
 VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
-GUARD_ID_RE = re.compile(r"\|\s*((?:G|H)-[A-Z]+[0-9]+|H-[0-9]+)\s*\|")
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 TEMPLATE_VARS = {
     "change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "branch", "task_id",
     "task_title", "task_json", "cycle", "role", "context_refs", "feedback", "candidate_sha",
     "write_scope", "required_docs", "workdir", "task_soul",
 }
+ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed"}
 
 
 class AssetError(Exception):
@@ -53,10 +51,6 @@ class RenderedPrompt:
     prompt: str
     pin: str  # sha256 over soul + prompt
 
-    @property
-    def combined(self) -> str:
-        return self.soul + "\n\n" + self.prompt
-
 
 def render(template: str, variables: dict[str, Any]) -> str:
     missing: list[str] = []
@@ -75,61 +69,89 @@ def render(template: str, variables: dict[str, Any]) -> str:
 
 
 class Assets:
-    def __init__(self, path: Path):
-        self.path = Path(path)
-        self.text = self.path.read_text()
-        self.doc_sha = "sha256:" + hashlib.sha256(self.text.encode()).hexdigest()
-        self.blocks: dict[str, str] = {}
-        for m in ASSET_RE.finditer(self.text):
-            key = m.group(1)
-            if key in self.blocks:
-                raise AssetError(f"duplicate asset block {key!r} in {path}")
-            self.blocks[key] = m.group(2)
-        if "roles" not in self.blocks:
-            raise AssetError("WORKFLOW.md has no `roles` asset block")
-        raw = yaml.safe_load(self.blocks["roles"])
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        if not (self.root / "roles.yaml").is_file():
+            raise AssetError(f"{self.root}/roles.yaml not found")
+        self.souls_ = self._load_dir("souls")
+        self.skills_ = self._load_dir("skills")
+        self.prompts_ = self._load_dir("prompts")
+        raw = yaml.safe_load((self.root / "roles.yaml").read_text()) or {}
         self.roles: dict[str, Role] = {}
         for name, r in raw.items():
+            unknown = set(r) - ROLE_KEYS
+            if unknown:
+                raise AssetError(f"roles.yaml: role {name}: unknown keys {sorted(unknown)}")
             self.roles[name] = Role(name=name, **r)
+        self.sha = self._hash()
         self._validate()
+
+    def _load_dir(self, sub: str) -> dict[str, str]:
+        d = self.root / sub
+        if not d.is_dir():
+            raise AssetError(f"missing asset folder {d}")
+        out = {}
+        for p in sorted(d.iterdir()):
+            if p.suffix != ".md" or not NAME_RE.match(p.stem):
+                raise AssetError(f"{p}: asset files must be named <lowercase-name>.md")
+            out[p.stem] = p.read_text()
+        return out
+
+    def _hash(self) -> str:
+        h = hashlib.sha256()
+        files = [self.root / "roles.yaml"] + sorted(
+            p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md"))
+        for p in files:
+            h.update(str(p.relative_to(self.root)).encode() + b"\0" + p.read_bytes() + b"\0")
+        return "sha256:" + h.hexdigest()
 
     # ------------------------------------------------------------------ queries
     def soul(self, name: str) -> str:
-        return self._get(f"soul/{name}")
+        return self._get(self.souls_, "souls", name)
 
     def skill(self, name: str) -> str:
-        return self._get(f"skill/{name}")
+        return self._get(self.skills_, "skills", name)
 
     def prompt(self, role: str) -> str:
-        return self._get(f"prompt/{role}")
+        return self._get(self.prompts_, "prompts", role)
 
     def souls(self) -> list[str]:
-        return sorted(k.split("/", 1)[1] for k in self.blocks if k.startswith("soul/"))
+        return sorted(self.souls_)
 
-    def documented_guard_ids(self) -> set[str]:
-        return set(GUARD_ID_RE.findall(self.text))
-
-    def _get(self, key: str) -> str:
+    def _get(self, table: dict[str, str], sub: str, name: str) -> str:
         try:
-            return self.blocks[key]
+            return table[name]
         except KeyError:
-            raise AssetError(f"G-D2: asset {key!r} not found in {self.path.name}") from None
+            raise AssetError(f"G-D2: asset {sub}/{name}.md not found in {self.root}") from None
 
     def _validate(self) -> None:
+        used_souls, used_skills = set(), set()
         for role in self.roles.values():
-            souls = role.souls_allowed or [role.soul]
-            for s in souls:
+            for s in role.souls_allowed or [role.soul]:
                 if "{{" not in s:
                     self.soul(s)
+                    used_souls.add(s)
             for sk in role.skills:
                 self.skill(sk)
+                used_skills.add(sk)
             self.prompt(role.name)
             if role.git not in {"none", "commit", "candidate", "head"}:
                 raise AssetError(f"role {role.name}: bad git requirement {role.git!r}")
-        for key, body in self.blocks.items():
-            for var in VAR_RE.findall(body):
-                if var not in TEMPLATE_VARS:
-                    raise AssetError(f"asset {key}: unknown template variable {{{{{var}}}}}")
+        orphans = ([f"souls/{s}.md" for s in set(self.souls_) - used_souls]
+                   + [f"skills/{s}.md" for s in set(self.skills_) - used_skills]
+                   + [f"prompts/{p}.md" for p in set(self.prompts_) - set(self.roles)])
+        if orphans:
+            raise AssetError(f"asset files not referenced by roles.yaml: {sorted(orphans)}")
+        for table, sub in ((self.souls_, "souls"), (self.skills_, "skills"), (self.prompts_, "prompts")):
+            for name, body in table.items():
+                for var in VAR_RE.findall(body):
+                    if var not in TEMPLATE_VARS:
+                        raise AssetError(f"{sub}/{name}.md: unknown template variable {{{{{var}}}}}")
+        for name, r in yaml.safe_load((self.root / "roles.yaml").read_text()).items():
+            for w in r.get("write", []) + r.get("required_docs", []):
+                for var in VAR_RE.findall(w):
+                    if var not in TEMPLATE_VARS:
+                        raise AssetError(f"roles.yaml {name}: unknown variable {{{{{var}}}}}")
 
     # ------------------------------------------------------------------ render
     def render_role(self, role_name: str, variables: dict[str, Any]) -> RenderedPrompt:
@@ -140,8 +162,7 @@ class Assets:
             raise AssetError(f"G-D2: soul {soul_name!r} not allowed for role {role_name}")
         soul = self.soul(soul_name)
         parts = [render(self.prompt(role_name), variables)]
-        for sk in role.skills:
-            parts.append(render(self.skill(sk), variables))
+        parts += [render(self.skill(sk), variables) for sk in role.skills]
         prompt = "\n\n---\n\n".join(parts)
         pin = "sha256:" + hashlib.sha256((soul + "\x00" + prompt).encode()).hexdigest()
         return RenderedPrompt(soul=soul, prompt=prompt, pin=pin)

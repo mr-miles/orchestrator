@@ -334,7 +334,7 @@ async function renderTab(force) {
     body.innerHTML = `<table><tr><th>time</th><th>kind</th><th>node</th><th>run</th><th>message</th></tr>${ev.slice().reverse().map(e=>`<tr><td class="muted mono">${esc(e.ts.slice(11,19))}</td><td>${esc(e.kind)}</td><td>${e.node?`<a onclick="select('${e.node}')">${esc(e.node)}</a>`:''}</td><td>${esc(e.run||'')}</td><td>${esc(e.message)}</td></tr>`).join('')}</table>`;
   } else if (tab === 'workflow') {
     if (!tabCache.wf || force) tabCache.wf = await api('/api/workflow');
-    body.innerHTML = `<div class="muted">pin ${esc(S.workflow_sha)}</div><pre style="max-height:600px">${esc(tabCache.wf)}</pre>`;
+    body.innerHTML = `<div class="muted">asset set ${esc(S.assets_sha)}</div><pre style="max-height:600px">${esc(tabCache.wf)}</pre>`;
   }
 }
 function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }

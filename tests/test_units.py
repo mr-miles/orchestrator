@@ -14,10 +14,13 @@ ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
 
 
-# ------------------------------------------------------------------ WORKFLOW.md <-> code
+# ------------------------------------------------------------------ WORKFLOW.md <-> code/assets
+DOC = (ROOT / "WORKFLOW.md").read_text()
+GUARD_ID_RE = re.compile(r"\|\s*((?:G|H)-[A-Z]+[0-9]+|H-[0-9]+)\s*\|")
+
+
 def test_workflow_doc_guard_ids_match_code():
-    a = Assets(ROOT / "WORKFLOW.md")
-    assert a.documented_guard_ids() == set(guards.GUARDS)
+    assert set(GUARD_ID_RE.findall(DOC)) == set(guards.GUARDS)
 
 
 def test_every_guard_is_referenced_outside_the_registry():
@@ -28,8 +31,33 @@ def test_every_guard_is_referenced_outside_the_registry():
     assert not missing, missing
 
 
+def test_workflow_doc_links_every_asset_and_links_resolve():
+    links = set(re.findall(r"\]\((assets/[^)]+)\)", DOC))
+    assert all((ROOT / l).exists() for l in links), [l for l in links if not (ROOT / l).exists()]
+    files = {str(p.relative_to(ROOT)) for p in (ROOT / "assets").rglob("*") if p.is_file()}
+    assert files - links == set(), "assets not documented in WORKFLOW.md"
+    a = Assets(ROOT / "assets")
+    assert all(f"`{r}`" in DOC for r in a.roles)
+
+
+def test_assets_folder_validation(tmp_path):
+    import shutil
+    shutil.copytree(ROOT / "assets", tmp_path / "a")
+    Assets(tmp_path / "a")
+    (tmp_path / "a/souls/orphan.md").write_text("x")
+    with pytest.raises(AssetError, match="not referenced"):
+        Assets(tmp_path / "a")
+    (tmp_path / "a/souls/orphan.md").unlink()
+    (tmp_path / "a/skills/pre-mortem.md").write_text("{{nope}}")
+    with pytest.raises(AssetError, match="unknown template variable"):
+        Assets(tmp_path / "a")
+    (tmp_path / "a/skills/pre-mortem.md").unlink()
+    with pytest.raises(AssetError, match="skills/pre-mortem.md not found"):
+        Assets(tmp_path / "a")
+
+
 def test_assets_render_and_pin():
-    a = Assets(ROOT / "WORKFLOW.md")
+    a = Assets(ROOT / "assets")
     vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
                               "context_refs", "feedback", "candidate_sha", "write_scope",

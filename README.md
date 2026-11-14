@@ -3,9 +3,12 @@
 A Python controller that runs a [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended)-style
 guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandboxes.
 
-* **[WORKFLOW.md](WORKFLOW.md)** is the executable specification: stages, guards, risk tiers and ship
-  gates, and the exact **souls, skills and prompts** for every task. The controller parses it at start-up
-  and pins a hash of the rendered prompt on every run.
+* **[WORKFLOW.md](WORKFLOW.md)** is the specification: stages, guards, risk tiers, ship gates, and
+  which soul, skills and prompt each task uses.
+* **[assets/](assets/)** holds the agent-facing text, one file per asset: `roles.yaml`,
+  `souls/<soul>.md`, `skills/<skill>.md` and `prompts/<role>.md`. The controller loads and validates
+  the folder at start-up, then pins the asset-set hash and the rendered-prompt hash on every run.
+  WORKFLOW.md is documentation only and is never parsed.
 * The controller enforces every rule. Agents can only act through MCP tools (the immutable versioned
   document store, progress, report) and through `git push` to their own branch on the controller's remote.
   Every claim is an attestation (`file:<path>@<version>`, `git:<repo>/<path>@<sha>`) that the controller
@@ -24,7 +27,7 @@ start (intake) -> H-1 -> plan <-> critique -> oracle -> [baseline] -> H-2 -> bui
 ```bash
 pip install -e '.[test]'
 cp orchestrator.example.yaml orchestrator.yaml   # set repo, decision_owners, sandbox image/providers
-legion-orch -c orchestrator.yaml check            # validate WORKFLOW.md assets
+legion-orch -c orchestrator.yaml check            # validate the assets folder
 legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
 legion-orch -c orchestrator.yaml start "Add a /health endpoint"   # or use the UI
 legion-orch -c orchestrator.yaml act H-1 accept --approver miles
