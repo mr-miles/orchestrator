@@ -30,6 +30,7 @@ start (intake) -> H-1 -> plan <-> critique -> oracle -> [baseline] -> H-2 -> bui
 ```bash
 pip install -e '.[test]'
 cp orchestrator.example.yaml orchestrator.yaml   # set repo, decision_owners, sandbox image/providers
+                                                 # (omit repo.path to start from an empty repository)
 legion-orch -c orchestrator.yaml check            # validate the assets folder
 legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
 legion-orch -c orchestrator.yaml start "Add a /health endpoint"   # or use the UI

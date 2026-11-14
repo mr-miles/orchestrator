@@ -12,7 +12,9 @@ import yaml
 @dataclass
 class RepoConfig:
     name: str
-    path: str  # source repository (local path or URL) the mirror is cloned from
+    # Source repository (local path or URL) the hub is cloned from. Omitted or blank: the
+    # controller starts a new, empty repository (one empty commit on base_branch).
+    path: str | None = None
     base_branch: str = "main"
 
 
@@ -174,6 +176,7 @@ def load_config(path: str | Path) -> Config:
         raise ValueError("identity.jwks_uri (SPIRE JWKS) is required unless identity.dev_spire is true")
     if cfg.server.operator_token is None:
         cfg.server.operator_token = os.environ.get("LEGION_OPERATOR_TOKEN")
-    if not Path(cfg.repo.path).is_absolute() and "://" not in cfg.repo.path:
+    cfg.repo.path = (cfg.repo.path or "").strip() or None
+    if cfg.repo.path and not Path(cfg.repo.path).is_absolute() and "://" not in cfg.repo.path:
         cfg.repo.path = str((base / cfg.repo.path).resolve())
     return cfg

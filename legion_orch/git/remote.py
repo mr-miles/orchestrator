@@ -75,7 +75,7 @@ def paths_overlap(a: str, b: str) -> bool:
 class GitRemote:
     """Bare hub repository + controller-private integration worktree."""
 
-    def __init__(self, root: Path, repo_name: str, source: str, base_branch: str,
+    def __init__(self, root: Path, repo_name: str, source: str | None, base_branch: str,
                  max_push_bytes: int = 256 * 1024 * 1024):
         self.root = Path(root)
         self.max_push_bytes = max_push_bytes
@@ -93,8 +93,11 @@ class GitRemote:
     async def ensure(self) -> None:
         if not (self.repo / "HEAD").exists():
             self.repo.parent.mkdir(parents=True, exist_ok=True)
-            await run("git", "clone", "--bare", "--quiet", self.source, str(self.repo))
-            await self.git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+            if self.source is None:
+                await self._init_blank()
+            else:
+                await run("git", "clone", "--bare", "--quiet", self.source, str(self.repo))
+                await self.git("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
         # Pushes come from untrusted agents: verify every received object, cap the pack size,
         # never delete refs, and serve only objects reachable from advertised refs.
         for k, v in (("http.receivepack", "true"), ("http.uploadpack", "true"),
@@ -111,7 +114,18 @@ class GitRemote:
         hook.write_text(PRE_RECEIVE)
         hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
+    async def _init_blank(self) -> None:
+        """No source repository: a new bare hub whose base branch has one empty commit."""
+        await run("git", "init", "--bare", "--quiet", "-b", self.base_branch, str(self.repo))
+        tree = (await self.git("hash-object", "-w", "-t", "tree", "/dev/null")).strip()  # empty tree
+        sha = (await self.git("-c", "user.name=legion-controller",
+                              "-c", "user.email=legion-controller@localhost",
+                              "commit-tree", tree, "-m", "legion: initial empty commit")).strip()
+        await self.git("update-ref", f"refs/heads/{self.base_branch}", sha)
+
     async def resolve_base(self) -> str:
+        if self.source is None:          # a blank repository: the base branch lives in the hub
+            return await self.rev_parse(f"refs/heads/{self.base_branch}")
         if "://" in self.source or Path(self.source).exists():
             await self.git("fetch", "--quiet", "origin")
         return await self.rev_parse(f"refs/remotes/origin/{self.base_branch}")

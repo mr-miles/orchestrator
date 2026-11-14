@@ -101,13 +101,13 @@ def make_source_repo(path: Path) -> None:
     git("commit", "-q", "-m", "init")
 
 
-def make_config(tmp_path: Path, **limits):
+def make_config(tmp_path: Path, *, blank_repo: bool = False, **limits):
     lim = {"max_parallel": 4, "review_max_cycles": 3, "critique_max_cycles": 2,
            "run_timeout_s": 120} | limits
     cfg_path = tmp_path / "orchestrator.yaml"
     cfg_path.write_text(textwrap.dedent(f"""
         project: engine-test
-        repo: {{name: {REPO}, path: {tmp_path / 'src-repo'}, base_branch: main}}
+        repo: {{name: {REPO}{'' if blank_repo else f", path: {tmp_path / 'src-repo'}"}, base_branch: main}}
         decision_owners: [miles, ana]
         state_dir: state
         assets_dir: {ROOT / 'assets'}
@@ -146,19 +146,20 @@ ORACLE = {
 class Flow:
     """One change driven step by step. ``await Flow.create(tmp_path)`` to start."""
 
-    def __init__(self, tmp_path: Path, **limits):
+    def __init__(self, tmp_path: Path, *, blank_repo: bool = False, **limits):
         self.tmp = tmp_path
-        if not (tmp_path / "src-repo").exists():
+        if not blank_repo and not (tmp_path / "src-repo").exists():
             make_source_repo(tmp_path / "src-repo")
-        self.cfg = make_config(tmp_path, **limits)
+        self.cfg = make_config(tmp_path, blank_repo=blank_repo, **limits)
         self.runner = FakeRunner()
         self.ctl = Controller(self.cfg, runner=self.runner)
         self.ctl.set_mcp_tools(list(MCP_TOOLS))
         self.ce: ChangeEngine = None   # type: ignore[assignment]
 
     @classmethod
-    async def create(cls, tmp_path: Path, goal: str = "Say hello", **limits) -> Flow:
-        f = cls(tmp_path, **limits)
+    async def create(cls, tmp_path: Path, goal: str = "Say hello", *, blank_repo: bool = False,
+                     **limits) -> Flow:
+        f = cls(tmp_path, blank_repo=blank_repo, **limits)
         await f.ctl.git.ensure()
         f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
         f.ce = await f.ctl.start_change(goal)

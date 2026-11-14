@@ -646,3 +646,17 @@ def test_signals_helper_derives_r1():
     from legion_orch.workflow import risk
     assert risk.derive_tier(signals()).tier == "R1"
     assert risk.derive_tier(signals(security=3)).tier == "R3"
+
+
+@scenario(blank_repo=True)
+async def test_a_change_on_a_blank_repository(f: Flow):
+    """No repo.path: the hub starts with one empty commit and a change runs to READY on it."""
+    assert f.cfg.repo.path is None
+    base = f.ce.change.base_sha
+    assert await f.ctl.git.changed_paths(base, base) == []
+    await f.to_build()
+    await f.implement(files={"src/greet.txt": "hello\n"})
+    await f.review()
+    assert f.ce.change.status == ChangeStatus.READY
+    assert await f.ctl.git.blob(base, "src/greet.txt") is None                 # nothing at base
+    assert await f.ctl.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged

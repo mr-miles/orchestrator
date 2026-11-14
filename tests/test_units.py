@@ -726,3 +726,14 @@ def test_report_and_work_guard_branches(tmp_path):
     many = "".join(f"- REQ-{i}: r\n" for i in range(101))
     assert "at most 100 per change" in guards.intake(many, _signals(), None, "DONE")[0]
     assert "G-I1" in guards.intake("no ids here", _signals(), None, "DONE")[0]
+
+
+def test_repo_path_is_optional(tmp_path):
+    from legion_orch.config import load_config
+    for repo in ("{name: app}", "{name: app, path: ''}", "{name: app, path: '  '}"):
+        (tmp_path / "c.yaml").write_text(f"project: p\nrepo: {repo}\ndecision_owners: [m]\n"
+                                         "sandbox: {runner: local}\n")
+        assert load_config(tmp_path / "c.yaml").repo.path is None, repo
+    (tmp_path / "c.yaml").write_text("project: p\nrepo: {name: app, path: src}\ndecision_owners: [m]\n"
+                                     "sandbox: {runner: local}\n")
+    assert load_config(tmp_path / "c.yaml").repo.path == str(tmp_path / "src")

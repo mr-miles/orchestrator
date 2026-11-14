@@ -142,3 +142,23 @@ async def _transport_limits(tmp_path: Path):
     finally:
         server.should_exit = True
         await task
+
+
+def test_blank_hub_without_a_source_repository(tmp_path):
+    """repo.path omitted: a new bare hub with one empty commit on the base branch, kept on restart."""
+    async def go():
+        remote = GitRemote(tmp_path / "git", "app", None, "trunk")
+        await remote.ensure()
+        base = await remote.resolve_base()
+        assert len(base) == 40
+        log = subprocess.run(["git", "log", "--format=%s", "trunk"], cwd=remote.repo, check=True,
+                             capture_output=True, text=True).stdout.split("\n")
+        assert log[0] == "legion: initial empty commit"
+        tree = subprocess.run(["git", "ls-tree", "-r", base], cwd=remote.repo, check=True,
+                              capture_output=True, text=True).stdout
+        assert tree == ""
+        await remote.ensure()                                # restart: same repository
+        assert await remote.resolve_base() == base
+        await remote.init_integration("c1", base)
+        assert await remote.integration_head("c1") == base
+    asyncio.run(go())
