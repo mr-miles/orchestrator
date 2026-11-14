@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .. import guards, risk
+from ..model import ReportStatus
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -19,7 +20,7 @@ class Intake(RoleHandler):
         if err:
             return err
         q = e.doc("intake/questions.md").content if e.latest("intake/questions.md") else None
-        return guards.intake(req.content, rj, q, "DONE")
+        return guards.intake(req.content, rj, q, ReportStatus.DONE)
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
         rj = e.json_doc("intake/risk.json", r.docs[e.p("intake/risk.json")].version)

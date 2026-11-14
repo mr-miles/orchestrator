@@ -5,7 +5,9 @@ import json
 from typing import Any
 
 from ...store import DocStore
+from ..assets import GitMode
 from ..attest import Attestation
+from ..model import ReportStatus
 
 MAX_TEXT = 2000
 MAX_ATTESTATIONS = 100
@@ -34,9 +36,10 @@ def report_limits(summary: Any, attestations: Any, data: Any, blocked_reason: An
 
 def report_shape(status: str, blocked_reason: str | None, missing_decision: str | None) -> list[str]:
     v = []
-    if status not in ("DONE", "BLOCKED"):
+    if status not in tuple(ReportStatus):
         v.append(f"G-R1: status must be DONE or BLOCKED (got {status!r}); deferral is not allowed")
-    if status == "BLOCKED" and not ((blocked_reason or "").strip() and (missing_decision or "").strip()):
+    explained = (blocked_reason or "").strip() and (missing_decision or "").strip()
+    if status == ReportStatus.BLOCKED and not explained:
         v.append("G-R2: BLOCKED requires blocked_reason and missing_decision")
     return v
 
@@ -62,17 +65,17 @@ def required_docs(run_id: str, required: list[str], atts: list[Attestation],
     return found, v
 
 
-def required_git(mode: str, atts: list[Attestation], repo: str,
+def required_git(mode: GitMode, atts: list[Attestation], repo: str,
                  judged_sha: str | None) -> tuple[str | None, list[str]]:
-    if mode == "none":
+    if mode == GitMode.NONE:
         return None, []
     commits = [a.sha for a in atts if a.kind == "git" and a.path is None and a.repo == repo]
-    if mode == "commit":
+    if mode == GitMode.COMMIT:
         if len(set(commits)) != 1:
             return None, [f"G-R5: attest exactly one commit as git:{repo}@<sha> (got {len(set(commits))})"]
         return commits[0], []
     # candidate / head: must attest exactly the sha under judgement
     if judged_sha not in commits:
-        gid = "G-RV1" if mode == "candidate" else "G-R5"
+        gid = "G-RV1" if mode == GitMode.CANDIDATE else "G-R5"
         return None, [f"{gid}: must attest git:{repo}@{judged_sha} (the {mode} under judgement)"]
     return judged_sha, []

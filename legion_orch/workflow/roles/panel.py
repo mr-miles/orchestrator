@@ -21,15 +21,14 @@ class Panel(RoleHandler):
         return refs + [a for a in (ev, ver and ver.attestation) if a]
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
-        return guards.findings(r.data, r.repo_atts) + guards.verdict(
-            r.data, pass_word="PASS", fail_word="FAIL", gid="G-RV3", cycle=r.run.cycle,
-            require_checked=True)
+        return guards.findings(r.data.findings, r.repo_atts) + guards.verdict(
+            r.data, cycle=r.run.cycle, require_checked=True)
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
         run, node, data = r.run, r.node, r.data
         node.reviews[node.review_key(run.cycle, run.role)] = ReviewResult(
-            verdict=data["verdict"], sha=run.judged_sha, run=run.id,
-            findings=brief_findings(data.get("findings", [])), checked=data.get("checked", [])[:50],
+            verdict=data.verdict, sha=run.judged_sha, run=run.id,
+            findings=brief_findings(data.findings), checked=data.checked,
             doc=str(r.docs[run.required_docs[0]]))
         run.status = R_ACCEPTED
         e.delete_sandbox_later(run.sandbox)

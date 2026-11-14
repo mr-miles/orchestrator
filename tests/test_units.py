@@ -172,14 +172,25 @@ def test_plan_guards():
 
 def test_review_and_report_guards():
     att = f"git:app@{SHA}"
+    from legion_orch.workflow.report_data import ReviewData, parse
     high = {"severity": "BLOCKER", "confidence": "HIGH", "title": "t", "fix": "f", "attestations": [att]}
-    kw = dict(pass_word="PASS", fail_word="FAIL", gid="G-RV3", cycle=1, require_checked=True)
-    assert guards.verdict({"verdict": "PASS", "findings": [high]}, **kw)[0].startswith("G-RV3")
-    assert guards.verdict({"verdict": "FAIL", "findings": []}, **kw)[0].startswith("G-RV3")
-    assert guards.verdict({"verdict": "PASS", "findings": []}, **kw)[0].startswith("G-RV4")
-    assert guards.verdict({"verdict": "PASS", "findings": [], "checked": ["x"]}, **kw) == []
-    assert guards.findings({"findings": [high]}, {att}) == []
-    assert guards.findings({"findings": [high]}, set())[0].startswith("G-RV2")
+    rd = lambda **d: ReviewData.model_validate(d)
+    kw = dict(cycle=1, require_checked=True)
+    assert guards.verdict(rd(verdict="PASS", findings=[high]), **kw)[0].startswith("G-RV3")
+    assert guards.verdict(rd(verdict="FAIL"), **kw)[0].startswith("G-RV3")
+    assert guards.verdict(rd(verdict="PASS"), **kw)[0].startswith("G-RV4")
+    assert guards.verdict(rd(verdict="PASS", checked=["x"]), **kw) == []
+    found = rd(verdict="FAIL", findings=[high]).findings
+    assert guards.findings(found, {att}) == []
+    assert guards.findings(found, set())[0].startswith("G-RV2")
+    assert guards.findings(found, set(), gid="G-INT1")[0].startswith("G-INT1")
+    # every report schema has a typed model, and schema-valid data parses into it
+    schemas = {p.stem for p in (ROOT / "assets/schemas").glob("report-*.json")}
+    from legion_orch.workflow.report_data import MODEL_FOR_SCHEMA
+    assert set(MODEL_FOR_SCHEMA) == schemas
+    integ = parse("report-integration", {"verdict": "PASS", "findings": [],
+                                         "results": [{"command": "make test", "exit_code": 0}]})
+    assert integ.missing(["make test", "make e2e"]) == ["make e2e"] and integ.high == []
     assert guards.report_shape("PARTIAL", None, None)[0].startswith("G-R1")
     assert guards.report_shape("BLOCKED", "x", "")[0].startswith("G-R2")
     assert guards.scoped_diff(["src/a.py", "tests/acc/t.py"], ["src/"], [], ["tests/acc/"], "G-B3") \

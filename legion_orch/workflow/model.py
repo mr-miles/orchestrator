@@ -59,6 +59,70 @@ class ChangeStatus(StrEnum):
     ABANDONED = "ABANDONED"
 
 
+class Severity(StrEnum):
+    BLOCKER = "BLOCKER"
+    WARNING = "WARNING"
+    SUGGESTION = "SUGGESTION"
+
+
+class Confidence(StrEnum):
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+
+class Verdict(StrEnum):
+    """A judge's verdict: reviewers and integration PASS/FAIL, the critic PASS/REWORK."""
+    PASS = "PASS"
+    FAIL = "FAIL"
+    REWORK = "REWORK"
+
+
+class ReportStatus(StrEnum):
+    DONE = "DONE"
+    BLOCKED = "BLOCKED"
+
+
+class AttestationKind(StrEnum):
+    INDEPENDENT_BASELINE = "independent-baseline"
+    SECURITY_EVALUATION = "security-evaluation"
+    E2E_EVALUATION = "e2e-evaluation"
+    ARCHITECTURE_REVIEW = "architecture-review"
+    ROLLBACK_EVIDENCE = "rollback-evidence"
+    FORWARD_FIX_EVIDENCE = "forward-fix-evidence"
+    RELEASE_OBSERVATION = "release-observation"
+
+
+class AttestationVerdict(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"      # a waiver (needs a reason)
+
+
+class OverrideKind(StrEnum):
+    ADD_GATE = "add_gate"
+    WAIVE_GATE = "waive_gate"
+
+
+class GateStatus(StrEnum):
+    SATISFIED = "satisfied"
+    UNSATISFIED = "unsatisfied"
+    UNEVALUABLE = "unevaluable"            # no evidence to evaluate yet
+
+
+class ReadinessVerdict(StrEnum):
+    READY = "READY"
+    NOT_READY = "NOT_READY"
+
+
+class ApprovalState(StrEnum):
+    """An H-2 subject's approval against the current document versions."""
+    APPROVED = "approved"
+    STALE = "stale"                        # approved, but the documents changed since
+    PENDING = "pending"
+
+
 class Resume(StrEnum):
     """What resolving an escalation (retry/answer) resumes."""
     READY = "READY"                       # dispatch the node again
@@ -132,8 +196,8 @@ class Oracle(Record):
 
 # ---------------------------------------------------------------------------- node records
 class Finding(Record):
-    severity: str
-    confidence: str
+    severity: Severity
+    confidence: Confidence
     dimension: str | None = None
     title: str
     observation: str = ""
@@ -144,7 +208,8 @@ class Finding(Record):
     @property
     def high(self) -> bool:
         """A HIGH-confidence BLOCKER or WARNING: the findings that drive rework."""
-        return self.confidence == "HIGH" and self.severity in ("BLOCKER", "WARNING")
+        return self.confidence == Confidence.HIGH and self.severity in (Severity.BLOCKER,
+                                                                        Severity.WARNING)
 
     @property
     def fingerprint(self) -> str:
@@ -168,7 +233,7 @@ class Feedback(Record):
 
 
 class ReviewResult(Record):
-    verdict: str
+    verdict: Verdict
     sha: str | None = None
     run: str
     findings: list[Finding] = []
@@ -248,7 +313,7 @@ class Node(Record):
 
 # ---------------------------------------------------------------------------- run records
 class RunReport(Record):
-    status: str                       # DONE | BLOCKED
+    status: ReportStatus
     summary: str
     attestations: list[str] = []
     data: dict[str, Any] = {}         # role-specific, validated against the role's report schema
@@ -332,8 +397,8 @@ class Approval(Record):
 
 
 class AttestationRecord(Record):
-    kind: str
-    verdict: str                      # pass | fail | unknown | not_applicable
+    kind: AttestationKind
+    verdict: AttestationVerdict
     attested_by: str
     at: str = Field(default_factory=now_iso)
     sources: list[str]
@@ -345,7 +410,7 @@ class AttestationRecord(Record):
 
 
 class GateOverride(Record):
-    kind: str                         # add_gate | waive_gate
+    kind: OverrideKind
     gate: str
     reason: str
     approver: str
@@ -374,14 +439,14 @@ class SurfacePin(Record):
 
 
 class GateResult(Record):
-    status: str                       # satisfied | unsatisfied | unevaluable
+    status: GateStatus
     detail: str
     human_judgement: bool = False
     added: bool = False
 
 
 class Readiness(Record):
-    verdict: str                      # READY | NOT_READY
+    verdict: ReadinessVerdict
     tier: str
     integration_head: str
     integration_branch: str

@@ -4,16 +4,15 @@ from __future__ import annotations
 
 from .. import attest, risk
 from ..model import (
+    AttestationKind,
     AttestationRecord,
+    AttestationVerdict,
 )
 from ..view import ChangeView
 from .common import GovernanceError, resolve_or_raise
 
-ATTESTATION_KINDS = {
-    "independent-baseline", "security-evaluation", "e2e-evaluation", "architecture-review",
-    "rollback-evidence", "forward-fix-evidence", "release-observation",
-}
-VERDICTS = {"pass", "fail", "unknown", "not_applicable"}
+ATTESTATION_KINDS = {k.value for k in AttestationKind}
+VERDICTS = {v.value for v in AttestationVerdict}
 
 def coverage_ok(rec: AttestationRecord, task_ids: set[str]) -> bool:
     return rec.covers is None or task_ids <= set(rec.covers)
@@ -26,14 +25,14 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
         raise GovernanceError(f"G-AT1: unknown attestation kind {kind!r}; one of {sorted(ATTESTATION_KINDS)}")
     if verdict not in VERDICTS:
         raise GovernanceError(f"G-AT1: verdict must be one of {sorted(VERDICTS)}")
-    if kind == "release-observation" and verdict == "pass":
+    if kind == AttestationKind.RELEASE_OBSERVATION and verdict == AttestationVerdict.PASS:
         raise GovernanceError("G-AT1: release-observation cannot be attested as pass – the release "
                               "plan is the evidence; only not_applicable (a waiver) is accepted")
     reason = payload.get("waiver_reason")
-    if verdict == "not_applicable" and not risk.valid_reason(reason):
+    if verdict == AttestationVerdict.NOT_APPLICABLE and not risk.valid_reason(reason):
         raise GovernanceError("G-AT1: not_applicable needs a waiver_reason of ≥24 chars "
                               "and more than one word")
-    if verdict != "not_applicable" and reason:
+    if verdict != AttestationVerdict.NOT_APPLICABLE and reason:
         raise GovernanceError("G-AT1: waiver_reason is only accepted with verdict not_applicable")
     sources = [attest.normalize(s, e.cid) for s in payload.get("sources") or [] if s]
     if not sources:

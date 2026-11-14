@@ -23,6 +23,7 @@ from ..model import (
     CommandResult,
     Feedback,
     Resume,
+    Verdict,
     Verification,
 )
 from .auth import VerifierGrant
@@ -134,7 +135,7 @@ class VerifyMixin:
             if not node.override:
                 for role in self.change.panel:
                     r = node.review(node.cycle, role)
-                    if not r or r.verdict != "PASS" or r.sha != sha:
+                    if not r or r.verdict != Verdict.PASS or r.sha != sha:
                         v.append(f"G-A1: no {role} PASS at candidate")
             if v:
                 self.escalate(node, "accept_guard", "; ".join(v), resume=Resume.REWORK)

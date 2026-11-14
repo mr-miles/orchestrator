@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from .. import risk
+from ..model import ReportStatus
 
 MAX_REQUIREMENTS = 100
 
@@ -30,7 +31,7 @@ def intake(req_text: str, risk_json: Any, questions_text: str | None, status: st
         v.append(f"G-I1: {len(set(ids))} requirements; at most {MAX_REQUIREMENTS} per change – "
                  "split the goal into several changes")
     v += risk.validate_signals(risk_json)
-    if questions_text and status == "DONE":
+    if questions_text and status == ReportStatus.DONE:
         open_q = [ln.strip() for ln in questions_text.splitlines() if re.match(r"^\s*[-*]\s*\[ \]", ln)]
         if open_q:
             v.append(f"G-I3: {len(open_q)} unanswered question(s) in intake/questions.md – "

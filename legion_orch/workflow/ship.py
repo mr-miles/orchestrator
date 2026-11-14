@@ -14,14 +14,20 @@ from .model import (
     H_CHANGE,
     INTEGRATION,
     RELEASE,
+    ApprovalState,
+    AttestationVerdict,
     GateResult,
+    GateStatus,
     Oracle,
+    OverrideKind,
     Readiness,
+    ReadinessVerdict,
+    Verdict,
     _parse_ts_safe,
 )
 from .view import ChangeView
 
-SAT, UNSAT, UNEVAL = "satisfied", "unsatisfied", "unevaluable"
+SAT, UNSAT, UNEVAL = GateStatus.SATISFIED, GateStatus.UNSATISFIED, GateStatus.UNEVALUABLE
 
 
 # gate name -> GateEvaluator method that evaluates it (filled by @checks)
@@ -78,16 +84,16 @@ class GateEvaluator:
         for r in recs:
             if not await self.resolves(r.attestation) or not all([await self.resolves(s) for s in r.sources]):
                 return _g(UNSAT, f"{r.kind}: attestation or a source no longer resolves")
-            if r.verdict == "fail":
+            if r.verdict == AttestationVerdict.FAIL:
                 return _g(UNSAT, f"{r.kind} attested fail by {r.attested_by}")
         for r in recs:
-            if r.verdict in ("pass", "not_applicable"):
+            if r.verdict in (AttestationVerdict.PASS, AttestationVerdict.NOT_APPLICABLE):
                 if not governance.coverage_ok(r, self.task_ids):
                     return _g(UNSAT, f"{r.kind}: covers {r.covers}, not every task")
                 if need_before_build and self.ch.first_build_at and \
                         _parse_ts_safe(r.at) >= _parse_ts_safe(self.ch.first_build_at):
                     return _g(UNSAT, f"{r.kind} recorded after execution started")
-                how = "waived (not_applicable)" if r.verdict == "not_applicable" else "pass"
+                how = "waived (not_applicable)" if r.verdict == AttestationVerdict.NOT_APPLICABLE else "pass"
                 return _g(SAT, f"{r.kind} {how} by {r.attested_by}: {', '.join(r.sources)}", True)
         return _g(UNSAT, "attested verdict is unknown")
 
@@ -95,9 +101,9 @@ class GateEvaluator:
     @checks("current_task_contract_or_small_change_record", "task_contract")
     async def contract(self) -> GateResult:
         plan = self.h2.get("plan")
-        if not plan or plan.status == "pending":
+        if not plan or plan.status == ApprovalState.PENDING:
             return _g(UNEVAL, "task graph not approved (H-2 plan)")
-        if plan.status != "approved":
+        if plan.status != ApprovalState.APPROVED:
             return _g(UNSAT, "approved task graph is stale")
         rec = self.ch.approvals["spec:plan"]
         tg = self.e.json_doc("plan/taskgraph.json", rec.pins[self.e.p("plan/taskgraph.json")])
@@ -111,7 +117,7 @@ class GateEvaluator:
         reqs = [s for s in self.h2 if s not in ("plan", "oracle")]
         if not reqs:
             return _g(UNEVAL, "no delta specs")
-        bad = [f"{s}: {self.h2[s].status}" for s in reqs if self.h2[s].status != "approved"]
+        bad = [f"{s}: {self.h2[s].status}" for s in reqs if self.h2[s].status != ApprovalState.APPROVED]
         if bad:
             return _g(UNSAT if any("stale" in b for b in bad) else UNEVAL, "; ".join(bad))
         for s in reqs:
@@ -123,7 +129,7 @@ class GateEvaluator:
     async def spec_and_oracle_before(self) -> GateResult:
         if any(r is None for r in self.h2_records):
             return _g(UNEVAL, "spec/oracle not fully approved")
-        if any(s.status != "approved" for s in self.h2.values()):
+        if any(s.status != ApprovalState.APPROVED for s in self.h2.values()):
             return _g(UNSAT, "a spec/oracle approval is stale")
         last = governance.last_h2_approval_at(self.e)
         if self.ch.first_build_at and _parse_ts_safe(last) >= _parse_ts_safe(self.ch.first_build_at):
@@ -186,7 +192,7 @@ class GateEvaluator:
             ok = False
             for role in roles:
                 r = b.review(b.cycle, role)
-                if r and r.verdict == "PASS" and r.sha == b.accepted_sha and await self.resolves(r.doc):
+                if r and r.verdict == Verdict.PASS and r.sha == b.accepted_sha and await self.resolves(r.doc):
                     ok = True
             if not ok:
                 return _g(UNSAT, f"{b.id}: no independent {label} PASS at accepted sha")
@@ -236,7 +242,7 @@ class GateEvaluator:
             return _g(UNEVAL, "no integration node")
         r = iv.reviews.get("integration")
         ver = iv.verification.get("integration")
-        if iv.status != ACCEPTED or not r or r.verdict != "PASS" or r.sha != self.head \
+        if iv.status != ACCEPTED or not r or r.verdict != Verdict.PASS or r.sha != self.head \
                 or not ver or not ver.ok or ver.sha != self.head:
             return _g(UNSAT, "integration verification not passed at current head")
         if not governance.surfaces(self.e):
@@ -289,7 +295,7 @@ class GateEvaluator:
     @checks("release_observation_plan")
     async def release_plan(self) -> GateResult:
         w = self.ch.attestations.get("release-observation")
-        if w and w.verdict == "not_applicable":
+        if w and w.verdict == AttestationVerdict.NOT_APPLICABLE:
             return await self.attested(["release-observation"])
         n = self.e.nodes.get(RELEASE)
         if not n or n.status != ACCEPTED:
@@ -313,7 +319,7 @@ class GateEvaluator:
                      f"waived by {w.approver}: {w.reason} (evidence {w.evidence})", True)
         else:
             res = await getattr(self, GATE_CHECKS[gate])()
-        res.added = any(o.kind == "add_gate" and o.gate == gate for o in self.ch.overrides)
+        res.added = any(o.kind == OverrideKind.ADD_GATE and o.gate == gate for o in self.ch.overrides)
         return res
 
     async def readiness(self) -> Readiness:
@@ -321,7 +327,8 @@ class GateEvaluator:
         waived = sorted(g for g, r in gates.items()
                         if r.detail.startswith("waived by ") or "not_applicable" in r.detail)
         return Readiness(
-            verdict="READY" if all(g.status == SAT for g in gates.values()) else "NOT_READY",
+            verdict=ReadinessVerdict.READY if all(g.status == SAT for g in gates.values())
+            else ReadinessVerdict.NOT_READY,
             tier=self.ch.tier, integration_head=self.head,
             integration_branch=self.e.git.integration_branch(self.ch.id), gates=gates,
             waived_gates=waived,

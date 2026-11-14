@@ -10,7 +10,8 @@ from typing import Any
 
 from ...store import DocVersion
 from ...util import now_iso
-from .. import attest, governance, guards
+from .. import attest, governance, guards, report_data
+from ..assets import GitMode
 from ..model import (
     BUILD,
     LIVE_RUN,
@@ -24,9 +25,11 @@ from ..model import (
     Node,
     Oracle,
     Progress,
+    ReportStatus,
     Resume,
     Run,
     RunReport,
+    Verdict,
 )
 from ..roles import Report, handler_for
 from .common import WorkflowError, log
@@ -119,7 +122,7 @@ class ReportsMixin:
                             f["attestations"] = [attest.normalize(a, self.cid)
                                                  for a in f["attestations"] if isinstance(a, str)]
                     v = guards.report_shape(status, blocked_reason, missing_decision)
-                    if status == "DONE":   # G-R7: structured data matches the role's report schema
+                    if status == ReportStatus.DONE:   # G-R7: structured data matches the role's report schema
                         schema = self.assets.roles[run.role].report_schema
                         v += [f"G-R7: data does not match schema {schema!r}: {x}"
                               for x in self.assets.schemas.validate_data(schema, data)]
@@ -132,7 +135,7 @@ class ReportsMixin:
                         parsed, v3 = await attest.check_all(attestations, [self.cfg.repo.name],
                                                             self.docs, self.git)
                         v += v3
-                        if not v and status == "DONE":
+                        if not v and status == ReportStatus.DONE:
                             v += await self._role_guards(run, node, parsed, data, ctx)
                 except TimeoutError:
                     v.append(f"G-R8: report checks exceeded {self.cfg.limits.report_check_timeout_s}s")
@@ -150,7 +153,7 @@ class ReportsMixin:
                                            data=data, blocked_reason=blocked_reason,
                                            missing_decision=missing_decision, at=run.ended_at)
                     self.event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
-                    if status == "BLOCKED":
+                    if status == ReportStatus.BLOCKED:
                         self.escalate(node, "blocked", blocked_reason or "",
                                       resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
                                       run=run.id, missing_decision=missing_decision)
@@ -187,17 +190,18 @@ class ReportsMixin:
         if v:
             return v
         ctx["docs"], ctx["sha"] = found, sha
-        if role.git == "commit":
+        if role.git == GitMode.COMMIT:
             tip = await self.git.ref_sha(f"refs/heads/{run.branch}")
             if tip != sha:
                 return [f"G-B2: {sha} is not the tip of {run.branch} on the controller remote "
                         f"(tip: {tip or 'branch not pushed'}) – push before reporting"]
             if not await self.git.is_ancestor(run.base_sha, sha):
                 return [f"G-B2: {sha} does not descend from base {run.base_sha}"]
-        if role.git == "head" and sha != self.change.integration_head:
+        if role.git == GitMode.HEAD and sha != self.change.integration_head:
             return [f"G-R5: integration head moved to {self.change.integration_head}"]
 
-        report = Report(run=run, node=node, parsed=parsed, data=data, docs=found, sha=sha)
+        typed = report_data.parse(role.report_schema, data)     # schema-valid (G-R7)
+        report = Report(run=run, node=node, parsed=parsed, data=typed, docs=found, sha=sha)
         ctx["report"] = report
         return v + await handler_for(run.role).guards(self, report)
 
@@ -223,7 +227,7 @@ class ReportsMixin:
         results = [node.review(node.cycle, r) for r in self.change.panel]
         if any(r is None for r in results):
             return
-        if all(r.verdict == "PASS" and r.sha == node.candidate_sha for r in results):
+        if all(r.verdict == Verdict.PASS and r.sha == node.candidate_sha for r in results):
             node.status = MERGING
             self._spawn(self._merge_node(node.id))
             return

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,14 @@ class AssetError(Exception):
     pass
 
 
+class GitMode(StrEnum):
+    """What git result a role's report must attest (G-R5, G-RV1)."""
+    NONE = "none"              # no git result
+    COMMIT = "commit"          # its own pushed commit (G-B2)
+    CANDIDATE = "candidate"    # the candidate under review
+    HEAD = "head"              # the integration head
+
+
 @dataclass
 class Role:
     name: str
@@ -42,7 +51,7 @@ class Role:
     skills: list[str]
     write: list[str]
     required_docs: list[str]
-    git: str  # none | commit | candidate | head
+    git: GitMode
     repo: bool = True
     souls_allowed: list[str] = field(default_factory=list)
     report_schema: str = "report-none"
@@ -85,7 +94,12 @@ class Assets:
             unknown = set(r) - ROLE_KEYS
             if unknown:
                 raise AssetError(f"roles.yaml: role {name}: unknown keys {sorted(unknown)}")
-            self.roles[name] = Role(name=name, **r)
+            try:
+                git = GitMode(r.pop("git", "none"))
+            except ValueError:
+                raise AssetError(f"roles.yaml: role {name}: bad git requirement; one of "
+                                 f"{[m.value for m in GitMode]}") from None
+            self.roles[name] = Role(name=name, git=git, **r)
         self.schemas = SchemaRegistry(self.root / "schemas")
         self.sha = self._hash()
         self._validate()
@@ -140,8 +154,6 @@ class Assets:
                 self.skill(sk)
                 used_skills.add(sk)
             self.prompt(role.name)
-            if role.git not in {"none", "commit", "candidate", "head"}:
-                raise AssetError(f"role {role.name}: bad git requirement {role.git!r}")
         used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
         for r in self.roles.values():
             if r.report_schema not in self.schemas.schemas:

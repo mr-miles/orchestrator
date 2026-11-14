@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..attest import Attestation
-from ..model import ACCEPTED, Finding, Node, Run
+from ..model import ACCEPTED, Finding, Node, Record, Run
 from ..view import RoleContext
 
 
@@ -24,7 +24,7 @@ class Report:
     run: Run
     node: Node
     parsed: list[Attestation]
-    data: dict
+    data: Record                     # typed report data (workflow/report_data.py)
     docs: dict[str, Attestation] = field(default_factory=dict)   # required docs, by full path
     sha: str | None = None                                        # required git result
     extra: dict[str, Any] = field(default_factory=dict)
@@ -62,9 +62,9 @@ class RoleHandler:
         e.accept_runs(r.node)
 
 
-def brief_findings(findings: list[dict]) -> list[Finding]:
-    """The (schema-validated) findings of a report, compacted for the node record."""
-    return [Finding.model_validate(f).brief() for f in findings[:30]]
+def brief_findings(findings: list[Finding]) -> list[Finding]:
+    """A report's findings, compacted for the node record."""
+    return [f.brief() for f in findings[:30]]
 
 
 def build_context(e: RoleContext, node: Node) -> list[str]:

@@ -30,6 +30,8 @@ from ..model import (
     SHIP,
     VERIFYING,
     Approval,
+    ApprovalState,
+    AttestationVerdict,
     ChangeStatus,
     Feedback,
     Node,
@@ -140,12 +142,12 @@ class HumanMixin:
             done = await governance.approve_subjects(self, payload.get("subjects") or "all", approver)
         except governance.GovernanceError as e:
             raise WorkflowError(str(e)) from None
-        pending = [x.subject for x in governance.h2_status(self) if x.status != "approved"]
+        pending = [x.subject for x in governance.h2_status(self) if x.status != ApprovalState.APPROVED]
         if pending:
             return {"ok": True, "approved": done, "pending": pending}
         if risk.rank(self.change.tier) >= 3:
             b = self.change.attestations.get("independent-baseline")
-            if not b or b.verdict != "pass":
+            if not b or b.verdict != AttestationVerdict.PASS:
                 return {"ok": True, "approved": done, "pending": ["independent-baseline"],
                         "note": "R3: attest independent-baseline (pass) before build starts, "
                                 "then approve again to release the build"}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ...git import path_matches
+from ..report_data import ResultsData
 
 
 def scoped_diff(changed: list[str], allowed: list[str], forbidden: list[str],
@@ -24,12 +25,8 @@ def evidence_mentions(text: str, commands: list[str]) -> list[str]:
             for c in commands if c not in text]
 
 
-def results_cover(data: dict, commands: list[str], gid: str) -> list[str]:
-    res = data.get("results")
-    if not isinstance(res, list):
-        return [f"{gid}: data.results must be a list of {{command, exit_code}}"]
-    got = {r.get("command") for r in res if isinstance(r, dict) and isinstance(r.get("exit_code"), int)}
-    return [f"{gid}: no result for command `{c}`" for c in commands if c not in got]
+def results_cover(data: ResultsData, commands: list[str], gid: str) -> list[str]:
+    return [f"{gid}: no result for command `{c}`" for c in data.missing(commands)]
 
 
 def release_docs(plan_text: str, rollback_text: str, base_sha: str) -> list[str]:

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ..model import (
     Approval,
+    ApprovalState,
     Oracle,
 )
 from ..view import ChangeView
@@ -30,7 +31,7 @@ def approval_key(subject: str) -> str:
 class SubjectStatus(BaseModel):
     subject: str
     paths: list[str]
-    status: str                      # approved | stale | pending
+    status: ApprovalState
     approver: str | None = None
     at: str | None = None
 
@@ -42,14 +43,15 @@ def h2_status(e: ChangeView) -> list[SubjectStatus]:
         fresh = a is not None and a.pins == pins and (
             subj != "oracle" or a.oracle_sha == e.change.oracle_sha)
         out.append(SubjectStatus(subject=subj, paths=list(pins),
-                                 status="approved" if fresh else ("stale" if a else "pending"),
+                                 status=ApprovalState.APPROVED if fresh
+                                 else ApprovalState.STALE if a else ApprovalState.PENDING,
                                  approver=a.approver if a else None, at=a.at if a else None))
     return out
 
 
 def stale_approvals(e: ChangeView) -> list[str]:
     """Guard G-B1: every H-2 subject approved against the current bytes."""
-    return [f"G-B1: {s.subject} {s.status}" for s in h2_status(e) if s.status != "approved"]
+    return [f"G-B1: {s.subject} {s.status}" for s in h2_status(e) if s.status != ApprovalState.APPROVED]
 
 
 async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: str) -> list[str]:

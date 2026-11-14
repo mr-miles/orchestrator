@@ -15,11 +15,11 @@ from .common import load_json
 from .intake import intake, requirements_ids
 from .plan import plan, waves
 from .report import report_limits, report_shape, required_docs, required_git
-from .review import critique, findings, high_findings, verdict
+from .review import critique, findings, verdict
 from .work import evidence_mentions, release_docs, results_cover, scoped_diff
 
 __all__ = [
-    "GUARDS", "critique", "evidence_mentions", "findings", "high_findings", "intake", "load_json",
+    "GUARDS", "critique", "evidence_mentions", "findings", "intake", "load_json",
     "plan", "release_docs", "report_limits", "report_shape", "required_docs", "required_git",
     "requirements_ids", "results_cover", "scoped_diff", "verdict", "waves",
 ]

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .. import guards
 from ..engine.common import PLAN_DOCS
-from ..model import ACCEPTED, PENDING, PLAN, REWORK, Feedback, Resume
+from ..model import ACCEPTED, PENDING, PLAN, REWORK, Feedback, Resume, Verdict
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -23,7 +23,7 @@ class Critic(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         node, data = r.node, r.data
         e.accept_runs(node)
-        if data["verdict"] == "PASS":
+        if data.verdict == Verdict.PASS:
             node.status = ACCEPTED
             e.materialize_builds(e.json_doc("plan/taskgraph.json"))
             e.event("plan", f"plan accepted by critic; {len(e.build_nodes())} build task(s)")
@@ -31,8 +31,7 @@ class Critic(RoleHandler):
         plan = e.nodes[PLAN]
         limit = e.cfg.limits.critique_max_cycles + node.extra_cycles
         fb = Feedback(cycle=plan.cycle, source="critique", text="critique requested rework: "
-                      + "; ".join(f"{f.get('severity')}: {f.get('title')}"
-                                  for f in data.get("findings", [])),
+                      + "; ".join(f"{f.severity}: {f.title}" for f in data.findings),
                       attestations=[str(a) for a in r.docs.values()])
         if plan.cycle >= limit:
             e.escalate(node, "critique_budget", f"G-C2: {plan.cycle} critique cycles without PASS",
