@@ -1,11 +1,10 @@
 """Workflow state: the change, its task graph (nodes) and runs, as typed pydantic models.
 
-Every record is persisted as a versioned document in the store (see :class:`StateStore`);
+Every record is persisted as a versioned document in the store (see engine/state.py);
 ``model_dump(mode="json")`` is the stored form and ``model_validate`` rebuilds it on restart.
 """
 from __future__ import annotations
 
-import json
 from datetime import UTC
 from enum import StrEnum
 from typing import Any
@@ -478,75 +477,6 @@ class Change(Record):
     protected_approvals: list[ProtectedPathApproval] = []
     surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
     ship: Readiness | None = None
-
-
-CONTROL = "control/"
-
-
-class StateStore:
-    """Per-change state persisted as versioned documents in the store (no other durable state).
-
-    changes/<cid>/control/change.json          change record
-    changes/<cid>/control/graph.json           task graph structure (node order, kinds, deps, waves)
-    changes/<cid>/control/nodes/<node>.json    node state (one version per transition)
-    changes/<cid>/control/runs/<run>.json      run record (no credentials exist to persist)
-    """
-
-    def __init__(self, docs, cid: str):
-        self.docs = docs
-        self.cid = cid
-        self.root = f"changes/{cid}/{CONTROL}"
-        self.change: Change | None = None
-        self.nodes: dict[str, Node] = {}
-        self.runs: dict[str, Run] = {}
-        self._written: dict[str, str] = {}
-        self._known_nodes: set[str] = set()
-
-    # ------------------------------------------------------------- persistence
-    def _write(self, rel: str, obj: Any) -> None:
-        path = self.root + rel
-        if isinstance(obj, BaseModel):
-            obj = obj.model_dump(mode="json")
-        content = json.dumps(obj, indent=2, sort_keys=True)
-        if self._written.get(path) == content:
-            return
-        self.docs.write(path, content, author="controller", role="controller",
-                        base_version=self.docs.latest_version(path))
-        self._written[path] = content
-
-    def _read(self, path: str) -> Any:
-        d = self.docs.read(path)
-        self._written[path] = d.content
-        return json.loads(d.content)
-
-    def load(self) -> None:
-        self.change = Change.model_validate(self._read(self.root + "change.json"))
-        graph = self._read(self.root + "graph.json") if self.docs.latest_version(
-            self.root + "graph.json") else {"order": []}
-        for nid in graph["order"]:
-            data = self._read(f"{self.root}nodes/{nid}.json")
-            if not data.get("removed"):
-                self.nodes[nid] = Node.model_validate(data)
-        self._known_nodes = set(graph["order"]) | {
-            m.path[len(self.root + "nodes/"):-5] for m in self.docs.list(self.root + "nodes/")}
-        for m in self.docs.list(self.root + "runs/"):
-            run = Run.model_validate(self._read(m.path))
-            self.runs[run.id] = run
-
-    def save(self) -> None:
-        if self.change is None:
-            return
-        self._write("change.json", self.change)
-        self._write("graph.json", {"order": list(self.nodes), "nodes": {
-            n.id: {"kind": n.kind, "title": n.title, "depends_on": n.depends_on, "wave": n.wave,
-                   "task": n.task.id if n.task else None} for n in self.nodes.values()}})
-        for nid in self._known_nodes - set(self.nodes):
-            self._write(f"nodes/{nid}.json", {"id": nid, "removed": True})
-        self._known_nodes |= set(self.nodes)
-        for n in self.nodes.values():
-            self._write(f"nodes/{n.id}.json", n)
-        for r in self.runs.values():
-            self._write(f"runs/{r.id}.json", r)
 
 
 def _parse_ts_safe(ts: str):

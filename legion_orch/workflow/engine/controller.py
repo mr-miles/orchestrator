@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from ...config import Config
 from ...git import GitRemote
 from ...sandbox import (
-    LocalRunner,
     Runner,
     make_runner,
 )
@@ -44,11 +43,9 @@ class Controller:
         unhandled = set(assets.roles) - set(ROLE_HANDLERS)
         if unhandled:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
-        runner = runner or make_runner(cfg)
         self.changes: dict[str, ChangeEngine] = {}
         self.auth = WorkloadAuth(cfg, self._runs_by_change)
-        if isinstance(runner, LocalRunner):
-            runner.gateway = self.auth.dev_gateway
+        runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
         self.svc = Services(
             cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
             git=GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path, cfg.repo.base_branch,

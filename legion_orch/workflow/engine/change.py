@@ -1,6 +1,7 @@
 """ChangeEngine: the workflow state machine for one change, composed of concern mixins."""
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -20,7 +21,6 @@ from ..model import (
     Change,
     Node,
     Run,
-    StateStore,
 )
 from .common import log
 from .dispatch import DispatchMixin
@@ -29,6 +29,7 @@ from .human import HumanMixin
 from .reports import ReportsMixin
 from .runs import RunsMixin
 from .services import EngineHost, Services
+from .state import StateStore
 from .verify import VerifyMixin
 
 
@@ -44,6 +45,7 @@ class ChangeEngine(GraphMixin, DispatchMixin, RunsMixin, ReportsMixin, VerifyMix
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
+        self._report_locks: dict[str, asyncio.Lock] = {}     # serialise reports of one run
 
     def load(self) -> None:
         """Rebuild this change's state from the store (on controller start)."""

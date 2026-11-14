@@ -31,6 +31,9 @@ from pathlib import Path
 from ..config import Config
 from .templates import base_values, render, spec_to_args
 
+# Obtains a bearer for a sandbox ref (what the OpenShell gateway does for real sandboxes).
+Gateway = Callable[[str], Awaitable[str]]
+
 
 @dataclass
 class SandboxSpec:
@@ -131,11 +134,12 @@ class OpenShellRunner(Runner):
 class LocalRunner(Runner):
     """Development runner: /sandbox maps to <state>/local-sandboxes/<name>; ref == name."""
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, gateway: Gateway):
+        """``gateway(sandbox_ref)`` obtains a bearer for a sandbox the way the OpenShell gateway
+        would (dev SPIRE SVID exchanged at the controller's token endpoint)."""
         self.cfg = cfg
         self.root = cfg.state_dir / "local-sandboxes"
-        # Set by the controller: obtains a bearer for a sandbox like the OpenShell gateway would.
-        self.gateway: Callable[[str], Awaitable[str]] | None = None
+        self.gateway = gateway
 
     def _root(self, name: str) -> Path:
         return self.root / name
@@ -146,8 +150,6 @@ class LocalRunner(Runner):
     async def _env(self, name: str) -> dict:
         env = dict(os.environ)
         env["SANDBOX_ROOT"] = str(self._root(name))
-        if self.gateway is None:
-            raise SandboxError("LocalRunner has no gateway emulation configured")
         env["LEGION_ACCESS_TOKEN"] = await self.gateway(name)
         return env
 
@@ -181,9 +183,12 @@ class LocalRunner(Runner):
         shutil.rmtree(self._root(name), ignore_errors=True)
 
 
-def make_runner(cfg: Config) -> Runner:
+def make_runner(cfg: Config, dev_gateway: Gateway | None = None) -> Runner:
+    """The configured runner. The local runner emulates the gateway with ``dev_gateway``."""
     if cfg.sandbox.runner == "openshell":
         return OpenShellRunner(cfg)
     if cfg.sandbox.runner == "local":
-        return LocalRunner(cfg)
+        if dev_gateway is None:
+            raise ValueError("the local runner needs gateway emulation (identity.dev_spire)")
+        return LocalRunner(cfg, dev_gateway)
     raise ValueError(f"unknown sandbox runner {cfg.sandbox.runner!r}")

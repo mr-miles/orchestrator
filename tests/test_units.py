@@ -609,12 +609,12 @@ def test_transition_rollback_keeps_identity():
     node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
     ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
-    cp = ce._checkpoint()
-    run.status, node.status, node.feedback = "REPORTED", "ACCEPTED", [{"x": 1}]
-    ce.st.change.tier = "R3"
-    ce.st.nodes["build:T1"] = Node(id="build:T1", kind="build", title="T1")      # e.g. materialized builds
-    del ce.st.nodes["plan"]
-    ce._restore(cp)
+    with pytest.raises(RuntimeError), ce.st.transaction():
+        run.status, node.status, node.feedback = "REPORTED", "ACCEPTED", [{"x": 1}]
+        ce.st.change.tier = "R3"
+        ce.st.nodes["build:T1"] = Node(id="build:T1", kind="build", title="T1")  # e.g. new builds
+        del ce.st.nodes["plan"]
+        raise RuntimeError("transition failed")
     assert ce.nodes["plan"] is node and ce.runs["r0001"] is run       # same objects
     assert (run.status, node.status, node.feedback) == ("ACTIVE", "PENDING", [])
     assert ce.change.tier is None and "build:T1" not in ce.nodes

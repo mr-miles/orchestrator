@@ -48,8 +48,25 @@ def _hidden(path: str) -> bool:
     return any(h in "/" + path for h in AGENT_HIDDEN)
 
 
+class _RecordingTools:
+    """Registers tools on the MCP server and records their names: the gateway's MCP allowlist
+    is generated from MCP_TOOLS and must match what is actually served."""
+
+    def __init__(self, server: MCPServer):
+        self.server, self.names = server, []
+
+    def tool(self, *, description: str):
+        register = self.server.tool(description=description)
+
+        def deco(fn):
+            self.names.append(fn.__name__)
+            return register(fn)
+        return deco
+
+
 def build_mcp(ctl: Controller) -> MCPServer:
     server = MCPServer("legion", instructions=INSTRUCTIONS)
+    tools = _RecordingTools(server)
 
     def current(ctx: Context) -> tuple[ChangeEngine, Run]:
         req = ctx.request_context.request
@@ -72,17 +89,17 @@ def build_mcp(ctl: Controller) -> MCPServer:
         return StoreSession(docs=ctl.docs, resolve=ce.p, readable=lambda p: not _hidden(p),
                             write=write)
 
-    register_store_tools(server, store_session)
+    register_store_tools(tools, store_session)
 
     # ------------------------------------------------------------------ workflow tools
-    @server.tool(description="Identify this run: id, role, change, node, cycle, write scope.")
+    @tools.tool(description="Identify this run: id, role, change, node, cycle, write scope.")
     async def whoami(ctx: Context) -> dict:
         ce, r = current(ctx)
         return {"run": r.id, "change": ce.cid, "role": r.role, "node": r.node_id, "cycle": r.cycle,
                 "soul": r.soul, "write_scope": r.write_scope, "required_docs": r.required_docs,
                 "doc_root": ce.p(""), "prompt_pin": r.prompt_pin}
 
-    @server.tool(description="Full assignment: task contract, context attestations, feedback, git.")
+    @tools.tool(description="Full assignment: task contract, context attestations, feedback, git.")
     async def get_assignment(ctx: Context) -> dict:
         ce, r = current(ctx)
         a = dict(r.assignment)
@@ -97,7 +114,7 @@ def build_mcp(ctl: Controller) -> MCPServer:
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
         return a
 
-    @server.tool(description="Check whether an attestation (file: or git:) resolves.")
+    @tools.tool(description="Check whether an attestation (file: or git:) resolves.")
     async def verify_attestation(ctx: Context, ref: str) -> dict:
         ce, _ = current(ctx)
         ref = attest.normalize(ref, ce.cid)
@@ -107,13 +124,13 @@ def build_mcp(ctl: Controller) -> MCPServer:
             return {"ref": ref, "valid": False, "error": str(e)}
         return {"ref": ref, "valid": await attest.resolve(a, ctl.docs, ctl.git)}
 
-    @server.tool(description="Report progress (shown live to the operator).")
+    @tools.tool(description="Report progress (shown live to the operator).")
     async def progress(ctx: Context, message: str, percent: float | None = None) -> dict:
         ce, r = current(ctx)
         ce.progress(r, message, percent)
         return {"ok": True}
 
-    @server.tool(description="Submit the result of this run. status is DONE or BLOCKED. "
+    @tools.tool(description="Submit the result of this run. status is DONE or BLOCKED. "
                              "attestations: list of file:/git: references. data: role-specific "
                              "structured result matching your report_schema. BLOCKED needs "
                              "blocked_reason and missing_decision. Returns accepted or violations.")
@@ -134,8 +151,9 @@ def build_mcp(ctl: Controller) -> MCPServer:
                                          blocked_reason, missing_decision)
         return outcome.model_dump(mode="json", exclude_none=True)
 
-    registered = {t.name for t in server._tool_manager.list_tools()}
-    if registered != set(MCP_TOOLS):   # the gateway's MCP allowlist must match exactly
+    # the gateway's MCP allowlist must match exactly what is served
+    registered = set(tools.names)
+    if registered != set(MCP_TOOLS) or len(tools.names) != len(registered):
         raise RuntimeError(f"MCP tools {sorted(registered)} != policy allowlist {sorted(MCP_TOOLS)}")
     ctl.set_mcp_tools(MCP_TOOLS)       # used when rendering sandbox network policies
     return server

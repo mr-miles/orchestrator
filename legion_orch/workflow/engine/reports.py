@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import copy
 from typing import Any
 
 from ...store import DocVersion
@@ -77,26 +76,7 @@ class ReportsMixin:
         self.host.touch()
 
     def _run_lock(self, run_id: str) -> asyncio.Lock:
-        locks = self.__dict__.setdefault("_report_locks", {})
-        return locks.setdefault(run_id, asyncio.Lock())
-
-    def _checkpoint(self) -> tuple:
-        """Snapshot of the change, node and run state (object identity is kept on restore, so
-        coroutines holding references keep seeing the live objects)."""
-        objs = [self.st.change, *self.st.nodes.values(), *self.st.runs.values()]
-        return (self.st.change, dict(self.st.nodes), dict(self.st.runs),
-                {id(o): copy.deepcopy(o.__dict__) for o in objs})
-
-    def _restore(self, cp: tuple) -> None:
-        change, nodes, runs, states = cp
-        self.st.change = change
-        self.st.nodes.clear()
-        self.st.nodes.update(nodes)
-        self.st.runs.clear()
-        self.st.runs.update(runs)
-        for o in [change, *nodes.values(), *runs.values()]:
-            o.__dict__.clear()
-            o.__dict__.update(states[id(o)])
+        return self._report_locks.setdefault(run_id, asyncio.Lock())
 
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
@@ -146,24 +126,25 @@ class ReportsMixin:
                     return ReportOutcome.reject(f"run changed during checks ({run.status})")
                 if v:
                     return self._reject_report(run, node, v)
-                checkpoint = self._checkpoint()
                 try:
-                    run.status = R_REPORTED
-                    run.ended_at = now_iso()
-                    run.report = RunReport(status=status, summary=summary, attestations=attestations,
-                                           data=data, blocked_reason=blocked_reason,
-                                           missing_decision=missing_decision, at=run.ended_at)
-                    self.event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
-                    if status == ReportStatus.BLOCKED:
-                        self.escalate(node, "blocked", blocked_reason or "",
-                                      resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
-                                      run=run.id, missing_decision=missing_decision)
-                    else:
-                        await self._on_done(run, node, data, ctx)
-                    self._save()
-                except Exception as e:      # never leave a half-applied transition behind
+                    with self.st.transaction():    # never leave a half-applied transition behind
+                        run.status = R_REPORTED
+                        run.ended_at = now_iso()
+                        run.report = RunReport(status=status, summary=summary,
+                                               attestations=attestations, data=data,
+                                               blocked_reason=blocked_reason,
+                                               missing_decision=missing_decision, at=run.ended_at)
+                        self.event("report", f"{run.role} reported {status}: {summary[:200]}",
+                                   node.id, run.id)
+                        if status == ReportStatus.BLOCKED:
+                            self.escalate(node, "blocked", blocked_reason or "",
+                                          resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
+                                          run=run.id, missing_decision=missing_decision)
+                        else:
+                            await self._on_done(run, node, data, ctx)
+                        self._save()
+                except Exception as e:
                     log.exception("applying report of %s failed", run.id)
-                    self._restore(checkpoint)
                     self._fail_run(run, f"controller error while applying the report: {e!r} "
                                         "(external effects such as git merges may already exist)")
                     with contextlib.suppress(Exception):
