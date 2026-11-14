@@ -1,6 +1,8 @@
 """The MCP server agents connect to: store tools + workflow tools on one endpoint.
 
-Every call is authenticated by the run's bearer token. The document tools come from
+Every call carries a bearer that the OpenShell gateway obtained for the calling sandbox with its
+SPIFFE identity (see identity.py); it is bound to the sandbox's live run per request. The
+sandbox itself holds no credential. The document tools come from
 :mod:`legion_orch.store.mcp`; this module supplies the orchestrator's session policy for them:
 
 * paths are relative to the run's change (``plan/spec.md``) unless they start with ``changes/``;
@@ -22,7 +24,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from . import attest
 from .engine import ChangeEngine, Controller, WorkflowError
+from .identity import bearer
 from .model import Run
+from .policy import MCP_TOOLS
 from .store import DocStoreError, DocVersion
 from .store.mcp import StoreSession, register_store_tools
 
@@ -45,11 +49,10 @@ def build_mcp(ctl: Controller) -> MCPServer:
 
     def current(ctx: Context) -> tuple[ChangeEngine, Run]:
         req = ctx.request_context.request
-        auth = req.headers.get("authorization", "") if req is not None else ""
-        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        found = ctl.run_for_token(token)
+        found = ctl.run_for_bearer(bearer(req.headers.get("authorization", "")) if req else None)
         if found is None:
-            raise ToolError("invalid or expired run token (runs end when their report is accepted)")
+            raise ToolError("no live run for this sandbox identity (runs end when their report is "
+                            "accepted; check the legion-controller provider is attached)")
         return found
 
     # ------------------------------------------------------------------ store tools
@@ -127,4 +130,7 @@ def build_mcp(ctl: Controller) -> MCPServer:
         return await ce.handle_report(r.id, status, summary, attestations, data,
                                       blocked_reason, missing_decision)
 
+    registered = {t.name for t in server._tool_manager.list_tools()}
+    if registered != set(MCP_TOOLS):   # the gateway's MCP allowlist must match exactly
+        raise RuntimeError(f"MCP tools {sorted(registered)} != policy allowlist {sorted(MCP_TOOLS)}")
     return server

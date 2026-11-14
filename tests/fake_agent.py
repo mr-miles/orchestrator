@@ -17,7 +17,13 @@ import urllib.request
 
 SB = os.environ.get("SANDBOX_ROOT", "/sandbox")
 URL = os.environ["LEGION_MCP_URL"]
-TOKEN = os.environ["LEGION_TOKEN"]
+# Under OpenShell the gateway injects the bearer; the local runner emulates that via the env.
+TOKEN = os.environ["LEGION_ACCESS_TOKEN"]
+for _f in ("run.env", "mcp.json", "prompt.md", "soul.md"):
+    _p = os.path.join(SB, "payload", _f)
+    if os.path.exists(_p):
+        assert TOKEN not in open(_p).read(), f"credential leaked into payload {_f}"
+assert "LEGION_TOKEN" not in open(os.path.join(SB, "payload", "run.env")).read()
 REPO = "app"
 _id = 0
 

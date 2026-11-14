@@ -17,6 +17,9 @@ from .docstore import DocStore, DocStoreError, DocVersion
 from .schemas import SchemaError
 
 
+STORE_TOOLS = ("docs_list", "docs_read", "docs_history", "docs_write", "docs_schema", "schema_get")
+
+
 @dataclass
 class StoreSession:
     """The store as seen by one authenticated caller.

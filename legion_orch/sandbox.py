@@ -2,22 +2,32 @@
 
 ``OpenShellRunner`` drives the NVIDIA OpenShell CLI:
 
-    openshell sandbox create --name <n> --detach --no-tty [--from IMG] [--provider P]...
+    openshell sandbox create --name <n> --detach --no-tty [--from IMG]
+                             --provider legion-controller [--provider P]...
                              --policy <policy.yaml> --upload <payload>:/sandbox --no-git-ignore
+    openshell sandbox get <n> --output json          # sandbox id used in its SPIFFE ID
     openshell sandbox exec <n> --no-tty [--workdir W] -- <argv>
     openshell sandbox delete <n>
 
+No credential is placed in a sandbox. The ``legion-controller`` provider (created once per
+workspace, see ``legion-orch setup-openshell``) makes the gateway supervisor exchange the
+sandbox's SPIFFE JWT-SVID at the controller and inject the bearer into requests to it.
+
 ``LocalRunner`` emulates the same contract with local directories and subprocesses. It provides
-**no isolation** and exists for development and tests only. Inside payload scripts the sandbox
-root is ``${SANDBOX_ROOT:-/sandbox}``.
+**no isolation** and exists for development and tests only. It also stands in for the gateway:
+before starting a process it obtains a bearer through ``gateway(sandbox_ref)`` (dev SPIRE → real
+``/oauth/token``) and passes it in the process environment, never in a file. Inside payload
+scripts the sandbox root is ``${SANDBOX_ROOT:-/sandbox}``.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from .config import Config
 
@@ -27,7 +37,7 @@ class SandboxSpec:
     name: str
     payload_dir: Path          # uploaded as /sandbox/payload
     policy_file: Path
-    agent: bool = True         # False => deterministic verifier (no providers, git fetch only)
+    agent: bool = True         # False => deterministic verifier (identity provider only)
     labels: dict[str, str] = field(default_factory=dict)
 
 
@@ -50,7 +60,8 @@ async def _run(argv: list[str], timeout: float, env: dict | None = None,
 
 
 class Runner:
-    async def create(self, spec: SandboxSpec) -> None: ...
+    async def create(self, spec: SandboxSpec) -> str:
+        """Create the sandbox; return its workload reference (the SPIFFE ID suffix)."""
     async def upload(self, name: str, payload_dir: Path) -> None: ...
     async def exec(self, name: str, argv: list[str], *, workdir: str | None = None,
                    timeout: float = 600) -> tuple[int, str]: ...
@@ -69,11 +80,12 @@ class OpenShellRunner(Runner):
             raise SandboxError(f"openshell {' '.join(args[:3])} failed ({rc}): {out.strip()[-2000:]}")
         return out
 
-    async def create(self, spec: SandboxSpec) -> None:
+    async def create(self, spec: SandboxSpec) -> str:
         sc = self.cfg.sandbox
         args = ["sandbox", "create", "--name", spec.name, "--detach", "--no-tty",
                 "--policy", str(spec.policy_file),
-                "--upload", f"{spec.payload_dir}:/sandbox", "--no-git-ignore"]
+                "--upload", f"{spec.payload_dir}:/sandbox", "--no-git-ignore",
+                "--provider", self.cfg.identity.provider]
         image = sc.image if spec.agent else (sc.verifier_image or sc.image)
         if image:
             args += ["--from", image]
@@ -84,6 +96,12 @@ class OpenShellRunner(Runner):
             args += ["--label", f"{k}={v}"]
         args += sc.extra_create_args
         await self._os(*args, timeout=900)
+        info = json.loads(await self._os("sandbox", "get", spec.name, "--output", "json"))
+        ref = info.get(self.cfg.identity.subject_field) if isinstance(info, dict) else None
+        if not ref:
+            raise SandboxError(f"`sandbox get {spec.name}` has no {self.cfg.identity.subject_field!r} "
+                               "field to match the SPIFFE ID; set identity.subject_field")
+        return str(ref)
 
     async def upload(self, name: str, payload_dir: Path) -> None:
         await self._os("sandbox", "upload", name, f"{payload_dir}", "/sandbox", "--no-git-ignore")
@@ -109,11 +127,13 @@ class OpenShellRunner(Runner):
 
 
 class LocalRunner(Runner):
-    """Development runner: /sandbox maps to <state>/local-sandboxes/<name>."""
+    """Development runner: /sandbox maps to <state>/local-sandboxes/<name>; ref == name."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.root = cfg.state_dir / "local-sandboxes"
+        # Set by the controller: obtains a bearer for a sandbox like the OpenShell gateway would.
+        self.gateway: Callable[[str], Awaitable[str]] | None = None
 
     def _root(self, name: str) -> Path:
         return self.root / name
@@ -121,9 +141,12 @@ class LocalRunner(Runner):
     def _map(self, name: str, s: str) -> str:
         return str(self._root(name)) + s[len("/sandbox"):] if s.startswith("/sandbox") else s
 
-    def _env(self, name: str) -> dict:
+    async def _env(self, name: str) -> dict:
         env = dict(os.environ)
         env["SANDBOX_ROOT"] = str(self._root(name))
+        if self.gateway is None:
+            raise SandboxError("LocalRunner has no gateway emulation configured")
+        env["LEGION_ACCESS_TOKEN"] = await self.gateway(name)
         return env
 
     async def create(self, spec):
@@ -132,6 +155,7 @@ class LocalRunner(Runner):
             raise SandboxError(f"sandbox {spec.name} already exists")
         r.mkdir(parents=True)
         await self.upload(spec.name, spec.payload_dir)
+        return spec.name
 
     async def upload(self, name, payload_dir):
         shutil.copytree(payload_dir, self._root(name) / payload_dir.name, dirs_exist_ok=True)
@@ -139,15 +163,15 @@ class LocalRunner(Runner):
     async def exec(self, name, argv, *, workdir=None, timeout=600):
         argv = [self._map(name, a) for a in argv]
         cwd = self._map(name, workdir) if workdir else str(self._root(name))
-        return await _run(argv, timeout, env=self._env(name), cwd=cwd)
+        return await _run(argv, timeout, env=await self._env(name), cwd=cwd)
 
     async def start_agent(self, name, log_file):
+        env = await self._env(name)
         log = open(log_file, "ab")
         try:
             return await asyncio.create_subprocess_exec(
                 "bash", str(self._root(name) / "payload" / "run-agent.sh"),
-                stdout=log, stderr=asyncio.subprocess.STDOUT, env=self._env(name),
-                cwd=str(self._root(name)))
+                stdout=log, stderr=asyncio.subprocess.STDOUT, env=env, cwd=str(self._root(name)))
         finally:
             log.close()
 
@@ -164,22 +188,38 @@ def make_runner(cfg: Config) -> Runner:
 
 
 # --------------------------------------------------------------------------- payload scripts
+# Under OpenShell, requests to the controller are authenticated by the gateway (it injects the
+# bearer); nothing here holds a credential. LEGION_ACCESS_TOKEN only exists with LocalRunner.
+GIT_AUTH = r"""
+git_auth() {
+  if [ -n "${LEGION_ACCESS_TOKEN:-}" ]; then
+    git -c http.extraHeader="Authorization: Bearer $LEGION_ACCESS_TOKEN" "$@"
+  else
+    git "$@"
+  fi
+}
+"""
+
 RUN_AGENT_SH = r"""#!/usr/bin/env bash
 # Generated by legion-orch. Prepares the working copy from the controller's git remote and starts
-# the agent. Re-entrant: rework runs in the same sandbox reuse /sandbox/work with a new token.
+# the agent. Re-entrant: rework runs in the same sandbox reuse /sandbox/work.
 set -euo pipefail
 SB="${SANDBOX_ROOT:-/sandbox}"
 P="$SB/payload"
 set -a; source "$P/run.env"; set +a
-AUTH="Authorization: Bearer $LEGION_TOKEN"
+""" + GIT_AUTH + r"""
 if [ "$LEGION_NEEDS_REPO" = "1" ]; then
   if [ ! -d "$SB/work/.git" ]; then
-    git -c http.extraHeader="$AUTH" clone --quiet "$LEGION_GIT_URL" "$SB/work"
+    git_auth clone --quiet "$LEGION_GIT_URL" "$SB/work"
   fi
   cd "$SB/work"
-  git config http.extraHeader "$AUTH"
+  git config --unset-all http.extraHeader 2>/dev/null || true
   git config user.name "legion-$LEGION_ROLE"
   git config user.email "$LEGION_RUN_ID@legion.local"
+  if [ -n "${LEGION_ACCESS_TOKEN:-}" ]; then
+    # local development only: emulate the gateway's injection for the agent's own git calls
+    git config http.extraHeader "Authorization: Bearer $LEGION_ACCESS_TOKEN"
+  fi
   git fetch --quiet origin
   git cat-file -e "$LEGION_BASE_SHA^{commit}" 2>/dev/null || git fetch --quiet origin "$LEGION_BASE_SHA"
   if git rev-parse --verify --quiet "refs/heads/$LEGION_BRANCH" >/dev/null; then
@@ -199,8 +239,9 @@ VERIFY_SETUP_SH = r"""#!/usr/bin/env bash
 set -euo pipefail
 SB="${SANDBOX_ROOT:-/sandbox}"
 source "$SB/payload/run.env"
-git -c http.extraHeader="Authorization: Bearer $LEGION_TOKEN" clone --quiet --no-checkout "$LEGION_GIT_URL" "$SB/work"
+""" + GIT_AUTH + r"""
+git_auth clone --quiet --no-checkout "$LEGION_GIT_URL" "$SB/work"
 cd "$SB/work"
-git cat-file -e "$1^{commit}" 2>/dev/null || git -c http.extraHeader="Authorization: Bearer $LEGION_TOKEN" fetch --quiet origin "$1"
+git cat-file -e "$1^{commit}" 2>/dev/null || git_auth fetch --quiet origin "$1"
 git checkout --quiet --detach "$1"
 """

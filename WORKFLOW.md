@@ -38,7 +38,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
    escalated to a human. Rework driven by *evidence* (failed verification, review findings, critique)
    is not a retry and is automatic, up to a cycle budget.
 6. **Independence.** Reviewers, verifiers and critics run in fresh sandboxes and never share a
-   sandbox, token or run with the work they judge.
+   sandbox, identity or run with the work they judge.
 7. **Humans own the boundaries.** Requirement acceptance, spec/oracle approval, escalations and
    whole-change acceptance are human decisions recorded with a named approver from
    `decision_owners`. No identity is inferred.
@@ -55,7 +55,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
  human --- web UI ----> |  workflow engine  |  guards  |  doc store  |  git remote     |
                         |  scheduler        |  risk/gates            |  openshell CLI  |
                         +-----------^-----------------------------------------|-------+
-                                    | MCP + git push over HTTP (run token)    | sandbox create / upload /
+                                    | MCP + git (gateway-injected bearer)     | sandbox create / upload /
                                     |                                         | exec / delete
                      +--------------+-------------+      +--------------------v----------+
                      | openshell sandbox: run 17  | ...  | openshell sandbox: verify 18  |
@@ -64,16 +64,37 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
                      +----------------------------+      +-------------------------------+
 ```
 
-* **Sandbox per run.** Each agent run gets its own OpenShell sandbox
-  (`openshell sandbox create --detach --name lg-<change>-<run> --policy … --upload payload:/sandbox`).
-  The payload is small and contains only `soul.md`, `prompt.md`, `mcp.json` (MCP endpoint + run
-  bearer token), `run.env` and `run-agent.sh`. **Nothing is ever downloaded from a sandbox.**
-* **Network policy.** The sandbox may reach only the model provider (via OpenShell providers) and
-  the controller (`host.openshell.internal:<port>`: MCP at `/mcp/`, git at `/git/`). Verifier
-  sandboxes reach only the controller's git endpoint, read-only.
+* **Sandbox per task.** A sandbox serves exactly one task in one role for its whole life: an
+  implementer sandbox is reused across that task's rework cycles; critics, reviewers and verifiers
+  always get their own (`openshell sandbox create --detach --name lg-<change>-<run>
+  --provider legion-controller --policy … --upload payload:/sandbox`). The payload contains only
+  `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and `run-agent.sh`.
+  **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
+* **Workload identity (SPIFFE/SPIRE).** Set up once per OpenShell workspace
+  (`legion-orch setup-openshell`): a provider profile `legion-controller` whose `token_grant` makes
+  the gateway's sandbox supervisor fetch the sandbox's JWT-SVID
+  (`spiffe://…/openshell/sandbox/<sandbox-id>`) and exchange it at the controller's
+  `POST /oauth/token` (OAuth2 client_credentials, `jwt-spiffe` client assertion). The controller
+  verifies the SVID against the SPIRE JWKS (signature, issuer, audience, expiry, sandbox prefix),
+  maps the sandbox id to the one task it serves and issues a short-lived, **task-scoped** token
+  (sandbox, change, task, role) signed with a key that never leaves controller memory. The gateway
+  injects it as `Authorization: Bearer` into requests to the controller only. Every MCP and git
+  request is then bound to the sandbox's live run, which must match the token's change, task and
+  role; when the run ends, the token is useless.
+* **Network policy** (generated per sandbox, `legion_orch/policy.py`, merged into the static
+  templates): the model provider, plus
+  * `legion_mcp` – `protocol: mcp` on the controller's dedicated MCP port (`/mcp`). The gateway
+    parses every JSON-RPC request and allows only the handshake methods and `tools/call` for the
+    controller's own tools (exactly the table below); anything else is denied before it reaches
+    the controller. (MCP has its own port because OpenShell does not allow an MCP endpoint to
+    share a host and port with another protocol.)
+  * `legion_git` – `protocol: rest` for `/git/<repo>.git`: fetch, and `git-receive-pack` only for
+    roles that push (implementer, oracle); other roles have push in `deny_rules`.
+
+  Verifier sandboxes get `legion_git` (fetch only) and nothing else.
 * **Agents push; the controller hosts the remote.** The controller serves its bare hub repository
-  over git smart-HTTP (`git http-backend`) at `/git/<repo>.git`, authenticated by the run token.
-  Every token may fetch. A token may push **only** to its run's branch
+  over git smart-HTTP (`git http-backend`) at `/git/<repo>.git`. Every live run may fetch. A run
+  may push **only** to its own branch
   `refs/heads/legion/<change>/<node>` (enforced by a `pre-receive` hook fed by the controller);
   ref deletion is refused, and judge roles may not push at all. The integration branch and
   `refs/legion/**` are written only by the controller. When a report is accepted the controller
@@ -85,7 +106,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   are always stored fully qualified (`file:changes/<id>/plan/spec.md@2`). Agents may read any
   change's documents (cross-change context) except `*/control/logs/`, and write only inside their
   own change and write scope.
-* **MCP tools** (all calls authenticated by the run token; a token dies when its run ends):
+* **MCP tools** (every call bound to the calling sandbox's live run via its gateway-injected token):
 
 | Tool | Purpose |
 | --- | --- |
@@ -112,7 +133,7 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
 | `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
-| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox, branch, **asset-set sha and rendered-prompt sha**, attempts, violations, report, progress. Never the token. |
+| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha and rendered-prompt sha**, attempts, violations, report, progress. No credential exists to store. |
 | `changes/<id>/control/events/<seq>.json` | append-only event log |
 | `changes/<id>/control/logs/<run>.log` | agent output, archived when the agent exits (last 512 KiB); not readable by agents |
 | `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship}/…` | human decisions and controller evidence |
@@ -122,11 +143,12 @@ Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset
 rendered soul + prompt.
 
 On disk, `state_dir` is set once per controller and holds only `state.db` (the store), `git/` (the
-bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted as soon
-as they are uploaded because they contain the run token, plus live agent logs). `tmp/` is wiped on
-start. Run tokens exist only in memory. On restart the controller rebuilds every change from the
-store; runs that were live can no longer authenticate, so they are failed and escalated (no
-automatic retry), and interrupted verification, merge or ship steps are resumed.
+bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted after
+upload, and live agent logs). `tmp/` is wiped on start. The access-token signing key exists only
+in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
+restart the controller rebuilds every change from the store; runs that were live lost their agent
+process, so they are failed and escalated (no automatic retry), and interrupted verification,
+merge or ship steps are resumed.
 
 ---
 
@@ -322,7 +344,7 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 
 ### 5.7 `verify` – deterministic (controller, no agent)
 
-A fresh sandbox (network: controller git endpoint only, read-only token) clones the candidate
+A fresh sandbox (network: controller git endpoint only, fetch-only grant) clones the candidate
 commit and runs each `verification` command; results come back through `sandbox exec` output.
 Results are written by the controller to `tasks/{{task_id}}/verification.json` (one version per cycle).
 

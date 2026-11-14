@@ -65,9 +65,9 @@ class Run:
     role: str
     soul: str
     cycle: int
-    token: str
     status: str = R_STARTING
     sandbox: str | None = None
+    sandbox_ref: str | None = None       # workload id in the sandbox's SPIFFE ID
     base_sha: str | None = None
     branch: str | None = None
     judged_sha: str | None = None        # candidate/head under judgement (judge roles)
@@ -125,7 +125,7 @@ class StateStore:
     changes/<cid>/control/change.json          change record
     changes/<cid>/control/graph.json           task graph structure (node order, kinds, deps, waves)
     changes/<cid>/control/nodes/<node>.json    node state (one version per transition)
-    changes/<cid>/control/runs/<run>.json      run record (bearer token never persisted)
+    changes/<cid>/control/runs/<run>.json      run record (no credentials exist to persist)
     changes/<cid>/control/events/<seq>.json    append-only event log
     """
 
@@ -167,7 +167,6 @@ class StateStore:
             m["path"][len(self.root + "nodes/"):-5] for m in self.docs.list(self.root + "nodes/")}
         for m in self.docs.list(self.root + "runs/"):
             data = self._read(m["path"])
-            data["token"] = ""          # tokens are memory-only; old runs can never act again
             run = _from_dict(Run, data)
             self.runs[run.id] = run
         for m in self.docs.list(self.root + "events/"):
@@ -188,7 +187,6 @@ class StateStore:
             self._write(f"nodes/{n.id}.json", asdict(n))
         for r in self.runs.values():
             d = asdict(r)
-            d.pop("token")
             self._write(f"runs/{r.id}.json", d)
 
     def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,

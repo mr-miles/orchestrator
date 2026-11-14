@@ -10,7 +10,8 @@ workflow_doc: WORKFLOW.md        # shown in the UI only
 protected_paths: [".github/", "WORKFLOW.md"]
 server:
   host: 0.0.0.0                  # sandboxes must reach this
-  port: 8765
+  port: 8765                     # UI, API, git, /oauth/token
+  mcp_port: 8766                 # agents' MCP endpoint (own port: vetted as protocol: mcp)
   public_url: http://host.openshell.internal:8765
   # operator_token: set LEGION_OPERATOR_TOKEN instead of committing it
 limits:
@@ -25,7 +26,16 @@ sandbox:
   openshell_bin: openshell
   image: registry.example.com/your-org/claude-agent:latest
   verifier_image: registry.example.com/your-org/toolchain:latest
-  providers: [claude-code]
+  providers: [claude-code]       # model credentials; legion-controller is added automatically
+  agent_binaries: [/usr/local/bin/claude]   # binaries allowed to call the controller's MCP
   policy_template: policies/agent-policy.template.yaml
   verifier_policy_template: policies/verifier-policy.template.yaml
   keep_failed: true
+identity:                        # SPIFFE/SPIRE workload identity (see legion_orch/identity.py)
+  provider: legion-controller    # created once per workspace: legion-orch setup-openshell --apply
+  jwks_uri: https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys
+  issuer: https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local
+  trust_prefix: "spiffe://openshell.local/openshell/sandbox/"
+  svid_audience: legion-controller
+  token_audience: legion-controller
+  subject_field: id              # field of `openshell sandbox get -o json` used in the SPIFFE ID

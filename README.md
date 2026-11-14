@@ -40,8 +40,17 @@ legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
   --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
 ```
 
-Endpoints served on one port: `/` (UI), `/api/*` (UI JSON + SSE), `/mcp/` (agent MCP tools,
-bearer = run token) and `/git/<repo>.git` (git smart-HTTP; push limited to the run's branch).
+Two listeners:
+- `server.port` (8765): `/` (UI), `/api/*` (UI JSON + SSE), `/git/<repo>.git` (git smart-HTTP; push
+  limited to the run's branch) and `/oauth/token` (SPIFFE JWT-SVID → task-scoped access token).
+- `server.mcp_port` (8766): `/mcp`, the agents' MCP endpoint. It has its own port so the OpenShell
+  gateway can vet it as `protocol: mcp`.
+
+No credential is ever placed in a sandbox. Once per OpenShell workspace, run
+`legion-orch -c orchestrator.yaml setup-openshell --apply`. This imports the `legion-controller`
+provider profile and creates the provider. The gateway then exchanges each sandbox's SPIFFE
+JWT-SVID at `/oauth/token` and injects the bearer into requests to the controller. Configure
+`identity.jwks_uri` (and `issuer`) with your SPIRE OIDC discovery endpoint.
 
 ### OpenShell
 

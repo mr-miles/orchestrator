@@ -1,13 +1,13 @@
-"""git smart-HTTP endpoint (``git http-backend`` as CGI) with run-token authentication.
+"""git smart-HTTP endpoint (``git http-backend`` as CGI) with workload-identity authentication.
 
-Agents authenticate with ``Authorization: Bearer <run token>`` (or HTTP Basic with the token as
-password). Fetch is allowed for any live token; push is allowed only when the token maps to an
-allowed ref, which the ``pre-receive`` hook enforces via ``LEGION_ALLOWED_REF``.
+Requests carry ``Authorization: Bearer <access token>`` injected by the OpenShell gateway for the
+sandbox (see identity.py). Fetch is allowed for a sandbox with a live run or an active verifier;
+push only to the live run's own branch, enforced by the ``pre-receive`` hook via
+``LEGION_ALLOWED_REF``.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import os
 from dataclasses import dataclass
 from typing import Callable
@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 
 from .gitops import GitRemote
+from .identity import bearer
 
 MAX_PUSH_BYTES = 512 * 1024 * 1024
 
@@ -26,24 +27,11 @@ class GitGrant:
     allowed_ref: str | None   # None => read-only
 
 
-def _token(request: Request) -> str | None:
-    auth = request.headers.get("authorization", "")
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-    if auth.lower().startswith("basic "):
-        try:
-            user, _, pw = base64.b64decode(auth[6:]).decode().partition(":")
-            return pw or user
-        except Exception:
-            return None
-    return None
-
-
 def make_git_endpoint(remote: GitRemote, authorize: Callable[[str], GitGrant | None]):
     backend = os.path.join(os.popen("git --exec-path").read().strip(), "git-http-backend")
 
     async def endpoint(request: Request) -> Response:
-        token = _token(request)
+        token = bearer(request.headers.get("authorization", ""))
         grant = authorize(token) if token else None
         if grant is None:
             return PlainTextResponse("authentication required", status_code=401,

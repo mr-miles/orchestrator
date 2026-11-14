@@ -7,8 +7,6 @@ import logging
 import sys
 import urllib.request
 
-import uvicorn
-
 from .assets import Assets
 from .config import load_config
 
@@ -19,6 +17,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="run the controller, MCP endpoint, git remote and web UI")
     sub.add_parser("check", help="validate config and the assets folder")
+    so = sub.add_parser("setup-openshell", help="one-time workspace setup: import the "
+                        "legion-controller provider profile and create the provider")
+    so.add_argument("--out", default="legion-provider-profile.yaml")
+    so.add_argument("--apply", action="store_true", help="run the openshell commands (else print)")
     st = sub.add_parser("start", help="start a change on a running controller")
     st.add_argument("goal")
     sub.add_parser("changes", help="list changes on a running controller")
@@ -43,10 +45,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
         return 0
     if args.cmd == "serve":
+        import asyncio
         from .engine import Controller
-        from .web import build_app
-        uvicorn.run(build_app(Controller(cfg)), host=cfg.server.host, port=cfg.server.port, log_level="info")
+        from .web import serve
+        asyncio.run(serve(Controller(cfg)))
         return 0
+    if args.cmd == "setup-openshell":
+        return setup_openshell(cfg, args)
 
     base = f"http://127.0.0.1:{cfg.server.port}"
     headers = {"Content-Type": "application/json"}
@@ -74,6 +79,24 @@ def main(argv: list[str] | None = None) -> int:
     except urllib.error.HTTPError as e:
         print(e.read().decode(), file=sys.stderr)
         return 1
+
+
+def setup_openshell(cfg, args) -> int:
+    import subprocess
+    import yaml
+    from .policy import provider_profile, setup_commands
+    with open(args.out, "w") as f:
+        yaml.safe_dump(provider_profile(cfg), f, sort_keys=False)
+    print(f"wrote {args.out}")
+    for cmd in setup_commands(cfg, args.out):
+        print("$", " ".join(cmd))
+        if args.apply:
+            r = subprocess.run(cmd)
+            if r.returncode != 0:
+                return r.returncode
+    if not args.apply:
+        print("(re-run with --apply to execute; this is done once per workspace, not per sandbox)")
+    return 0
 
 
 if __name__ == "__main__":

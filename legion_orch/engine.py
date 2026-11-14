@@ -17,21 +17,24 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+
+import httpx
 
 from . import attest, governance, guards, risk
 from .assets import AssetError, Assets
 from .config import Config
 from .store import DocStore, DocVersion, now_iso
 from .githttp import GitGrant
+from .policy import render_policy
+from .identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
 from .gitops import GitRemote
 from .model import (ACCEPTED, ACTIVE_NODE, AWAITING_HUMAN, BASELINE, BUILD, CRITIQUE, ESCALATED,
                     FAILED, H_CHANGE, H_REQUIREMENTS, H_SPEC, HUMAN, INTAKE, INTEGRATION, LIVE_RUN,
                     MERGING, ORACLE, PENDING, PLAN, R_ACCEPTED, R_ACTIVE, R_FAILED, R_REPORTED,
                     R_STARTING, R_SUPERSEDED, READY, RELEASE, REVIEWING, REWORK, ROLE_FOR_KIND,
                     RUNNING, SHIP, VERIFYING, Change, Node, Run, StateStore)
-from .sandbox import (RUN_AGENT_SH, VERIFY_SETUP_SH, Runner, SandboxError, SandboxSpec,
-                      make_runner)
+from .sandbox import (RUN_AGENT_SH, VERIFY_SETUP_SH, LocalRunner, Runner, SandboxError,
+                      SandboxSpec, make_runner)
 
 log = logging.getLogger("legion")
 
@@ -73,12 +76,38 @@ class Controller:
         self.runner = runner or make_runner(cfg)
         self.lock = asyncio.Lock()
         self.procs: dict[str, asyncio.subprocess.Process] = {}
-        self.read_tokens: dict[str, str] = {}
+        self.verifier_refs: dict[str, dict] = {}  # verifier sandbox ref -> {id, change, task}
+        self.identity, self.dev_spire = self._identity()
+        if isinstance(self.runner, LocalRunner):
+            self.runner.gateway = self._dev_gateway
         self.tasks: set[asyncio.Task] = set()
         self.changes: dict[str, ChangeEngine] = {}
         self.version = 0
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
+
+    def _identity(self) -> tuple[IdentityService, DevSpire | None]:
+        ic = self.cfg.identity
+        dev = DevSpire(ic.trust_prefix) if ic.dev_spire else None
+        verifier = SvidVerifier(issuer=dev.issuer if dev else ic.issuer, audience=ic.svid_audience,
+                                trust_prefix=ic.trust_prefix, jwks_uri=None if dev else ic.jwks_uri,
+                                static_jwks=dev.jwks() if dev else None, ca_file=ic.jwks_ca_file)
+        return IdentityService(verifier, AccessTokens(ic.token_audience, ic.access_ttl_s),
+                               ic.scope, dev), dev
+
+    async def _dev_gateway(self, sandbox_ref: str) -> str:
+        """LocalRunner only: do what the OpenShell supervisor does – mint the sandbox's JWT-SVID
+        (dev SPIRE) and exchange it at our own /oauth/token endpoint."""
+        if self.dev_spire is None:
+            raise RuntimeError("dev gateway requires identity.dev_spire")
+        ic = self.cfg.identity
+        form = {"grant_type": "client_credentials", "client_assertion_type": JWT_SPIFFE,
+                "client_assertion": self.dev_spire.mint(sandbox_ref, ic.svid_audience),
+                "audience": ic.token_audience, "scope": ic.scope}
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(f"{self.cfg.server.public_url.rstrip('/')}/oauth/token", data=form)
+            r.raise_for_status()
+            return r.json()["access_token"]
 
     @property
     def git_url(self) -> str:
@@ -86,7 +115,7 @@ class Controller:
 
     @property
     def mcp_url(self) -> str:
-        return f"{self.cfg.server.public_url.rstrip('/')}/mcp/"
+        return self.cfg.server.mcp_url
 
     def bump(self) -> None:
         self.version += 1
@@ -203,25 +232,46 @@ class Controller:
                 return ce, r
         raise WorkflowError(f"unknown run {run_id}")
 
-    def run_for_token(self, token: str, live_only: bool = True) -> tuple["ChangeEngine", Run] | None:
-        if not token:
+    def sandbox_binding(self, ref: str) -> dict[str, str] | None:
+        """The one task (and role) a live, managed sandbox serves – None if unknown or deleted.
+        A sandbox serves exactly one task for its whole life (an implementer sandbox is reused
+        across that task's rework cycles; judges and verifiers always get their own)."""
+        if ref in self.verifier_refs:
+            v = self.verifier_refs[ref]
+            return {"sandbox": ref, "change": v["change"], "task": v["task"], "role": "verifier"}
+        for ce, r in self.all_runs():
+            if r.sandbox_ref == ref and not r.sandbox_deleted:
+                return {"sandbox": ref, "change": ce.cid, "task": r.node_id, "role": r.role}
+        return None
+
+    def run_for_bearer(self, token: str | None) -> tuple["ChangeEngine", Run] | None:
+        """Bind a gateway-injected, task-scoped token to the sandbox's live run, per request.
+        The run must match the token's change, task and role exactly."""
+        claims = self.identity.tokens.verify(token) if token else None
+        if not claims:
             return None
         for ce, r in self.all_runs():
-            if r.token and secrets.compare_digest(r.token, token):
-                if live_only and r.status not in LIVE_RUN:
-                    return None
-                return ce, r
+            if r.sandbox_ref == claims["sandbox"] and r.status in LIVE_RUN:
+                if (ce.cid, r.node_id, r.role) == (claims["change"], claims["task"], claims["role"]):
+                    return ce, r
+                log.warning("token for %s does not match live run %s", claims, r.id)
+                return None
         return None
 
     def git_grant(self, token: str) -> GitGrant | None:
-        if token in self.read_tokens:
-            return GitGrant(self.read_tokens[token], None)
-        found = self.run_for_token(token)
+        claims = self.identity.tokens.verify(token) if token else None
+        if not claims:
+            return None
+        if claims["role"] == "verifier":
+            v = self.verifier_refs.get(claims["sandbox"])
+            if v and (v["change"], v["task"]) == (claims["change"], claims["task"]):
+                return GitGrant(v["id"], None)          # read-only
+            return None
+        found = self.run_for_bearer(token)
         if found is None:
             return None
         run = found[1]
-        ref = f"refs/heads/{run.branch}" if run.role in PUSH_ROLES else None
-        return GitGrant(run.id, ref)
+        return GitGrant(run.id, f"refs/heads/{run.branch}" if run.role in PUSH_ROLES else None)
 
 
 class ChangeEngine:
@@ -232,7 +282,7 @@ class ChangeEngine:
         self.cid = cid
         self.cfg, self.docs, self.git = ctl.cfg, ctl.docs, ctl.git
         self.assets, self.runner, self.lock = ctl.assets, ctl.runner, ctl.lock
-        self.procs, self.read_tokens = ctl.procs, ctl.read_tokens
+        self.procs = ctl.procs
         self.st = StateStore(ctl.docs, cid)
 
     # ================================================================== basics
@@ -295,7 +345,8 @@ class ChangeEngine:
         return json.loads(self._doc(rel, version).content)
 
     def recover(self) -> None:
-        """After a restart: tokens are gone, so live runs fail (and escalate); resume steps."""
+        """After a restart the agent processes are gone, so live runs fail (and escalate);
+        interrupted verification, merge and ship steps resume."""
         for run in self.runs.values():
             if run.status in LIVE_RUN:
                 self._fail_run(run, "controller restarted while the run was live")
@@ -538,7 +589,7 @@ class ChangeEngine:
             return None
         run = Run(id=run_id, node_id=node.id, role=role,
                   soul=self.assets.roles[role].soul if role != "implementer" else task.get("soul"),
-                  cycle=node.cycle, token=secrets.token_urlsafe(32),
+                  cycle=node.cycle,
                   base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
                   prompt_pin=rendered.pin, assets_sha=self.assets.sha,
                   write_scope=write, required_docs=required, context_refs=context,
@@ -549,6 +600,8 @@ class ChangeEngine:
         # G-D4: judges always get a fresh sandbox; only implementers reuse theirs across cycles.
         if role == "implementer" and node.sandbox:
             run.sandbox = node.sandbox
+            run.sandbox_ref = next((r.sandbox_ref for r in self.runs.values()
+                                    if r.sandbox == node.sandbox and r.sandbox_ref), None)
         else:
             run.sandbox = f"lg-{ch.id}-{run_id}".lower()[:63]
         if role in JUDGE_ROLES and node.current_run:
@@ -574,12 +627,11 @@ class ChangeEngine:
         """Scratch only: payload (deleted after upload) and the live agent log."""
         return self.ctl.tmp / "runs" / run_id
 
-    def _policy(self, template: str, dest: Path) -> Path:
-        u = urlparse(self.cfg.server.public_url)
-        text = self.cfg.resolve(template).read_text()
-        text = text.replace("__CONTROLLER_HOST__", u.hostname or "host.openshell.internal")
-        text = text.replace("__CONTROLLER_PORT__", str(u.port or (443 if u.scheme == "https" else 80)))
-        dest.write_text(text)
+    def _policy(self, template: str, dest: Path, *, agent: bool, push: bool) -> Path:
+        """Sandbox policy = static template + generated controller endpoints (policy.py):
+        MCP vetted by the gateway (protocol: mcp, tool allowlist), git push only if allowed."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(render_policy(self.cfg, template, agent=agent, push=push))
         return dest
 
     def _payload(self, run: Run, rendered) -> None:
@@ -587,11 +639,15 @@ class ChangeEngine:
         d.mkdir(parents=True, exist_ok=True)
         (d / "soul.md").write_text(rendered.soul)
         (d / "prompt.md").write_text(rendered.prompt)
-        (d / "mcp.json").write_text(json.dumps({"mcpServers": {"legion": {
-            "type": "http", "url": self.mcp_url,
-            "headers": {"Authorization": f"Bearer {run.token}"}}}}, indent=2))
+        # No credential: the OpenShell gateway injects the bearer for the controller endpoint.
+        # With the local runner the bearer is in the process env (gateway emulation) and Claude
+        # Code expands ${LEGION_ACCESS_TOKEN} in the MCP config at start-up.
+        server = {"type": "http", "url": self.mcp_url}
+        if self.cfg.identity.dev_spire:
+            server["headers"] = {"Authorization": "Bearer ${LEGION_ACCESS_TOKEN}"}
+        (d / "mcp.json").write_text(json.dumps({"mcpServers": {"legion": server}}, indent=2))
         env = {
-            "LEGION_TOKEN": run.token, "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
+            "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
             "LEGION_BRANCH": run.branch, "LEGION_BASE_SHA": run.judged_sha or run.base_sha,
             "LEGION_GIT_URL": self.git_url, "LEGION_MCP_URL": self.mcp_url,
             "LEGION_NEEDS_REPO": "1" if self.assets.roles[run.role].repo else "0",
@@ -610,8 +666,9 @@ class ChangeEngine:
                 await self.runner.upload(run.sandbox, payload)
             else:
                 policy = self._policy(self.cfg.sandbox.policy_template,
-                                      self._run_dir(run_id) / "policy.yaml")
-                await self.runner.create(SandboxSpec(
+                                      self._run_dir(run_id) / "policy.yaml",
+                                      agent=True, push=run.role in PUSH_ROLES)
+                run.sandbox_ref = await self.runner.create(SandboxSpec(
                     name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
                     labels={"legion.change": self.change.id, "legion.run": run.id,
                             "legion.role": run.role}))
@@ -1009,22 +1066,23 @@ class ChangeEngine:
     async def _verify(self, label: str, sha: str, commands: list[str]) -> dict:
         """G-V1: run commands at ``sha`` in a fresh sandbox. Never raises."""
         name = f"lg-{self.change.id}-v{secrets.token_hex(3)}".lower()
-        token = secrets.token_urlsafe(32)
-        self.read_tokens[token] = f"verifier:{name}"
         base = self.ctl.tmp / "verify" / name
         payload = base / "payload"
         payload.mkdir(parents=True, exist_ok=True)
         (payload / "run.env").write_text(
-            f"LEGION_TOKEN={shlex.quote(token)}\nLEGION_GIT_URL={shlex.quote(self.git_url)}\n")
+            f"LEGION_GIT_URL={shlex.quote(self.git_url)}\n")
         (payload / "verify-setup.sh").write_text(VERIFY_SETUP_SH)
         result: dict[str, Any] = {"sha": sha, "sandbox": name, "results": [], "ok": False,
                                   "infra_error": None, "at": now_iso()}
-        created = False
+        created, ref = False, None
         try:
-            policy = self._policy(self.cfg.sandbox.verifier_policy_template, base / "policy.yaml")
-            await self.runner.create(SandboxSpec(name=name, payload_dir=payload, policy_file=policy,
-                                                 agent=False, labels={"legion.change": self.change.id,
-                                                                      "legion.role": "verifier"}))
+            policy = self._policy(self.cfg.sandbox.verifier_policy_template, base / "policy.yaml",
+                                  agent=False, push=False)
+            ref = await self.runner.create(SandboxSpec(
+                name=name, payload_dir=payload, policy_file=policy, agent=False,
+                labels={"legion.change": self.change.id, "legion.role": "verifier"}))
+            self.ctl.verifier_refs[ref] = {"id": f"verifier:{name}", "change": self.cid,
+                                           "task": label}         # read-only git grant
             created = True
             rc, out = await self.runner.exec(name, ["bash", "/sandbox/payload/verify-setup.sh", sha],
                                              timeout=600)
@@ -1042,7 +1100,8 @@ class ChangeEngine:
         except Exception as e:
             result["infra_error"] = str(e)
         finally:
-            self.read_tokens.pop(token, None)
+            if ref:
+                self.ctl.verifier_refs.pop(ref, None)
             shutil.rmtree(base, ignore_errors=True)
             if created:
                 try:
@@ -1375,7 +1434,6 @@ class ChangeEngine:
         runs = []
         for r in self.runs.values():
             d = asdict(r)
-            d.pop("token")
             d.pop("assignment")
             runs.append(d)
         return {"project": self.cfg.project, "repo": self.cfg.repo.name,

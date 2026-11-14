@@ -1,4 +1,9 @@
-"""HTTP surface: web UI + JSON API, MCP endpoint (/mcp/), git smart-HTTP (/git/)."""
+"""HTTP surface, two listeners:
+
+* ``server.port``     – web UI + JSON API, git smart-HTTP (``/git/``), token endpoint (``/oauth/token``)
+* ``server.mcp_port`` – the agents' MCP endpoint (``/mcp``) on its own port, so the OpenShell
+  gateway can vet it as ``protocol: mcp`` (an MCP endpoint may not share host:port with REST).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -6,15 +11,19 @@ import contextlib
 import json
 import secrets
 from pathlib import Path
+from urllib.parse import urlparse
+
+import uvicorn
 
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 
 from .store import DocStoreError
 from .engine import Controller, WorkflowError
 from .githttp import make_git_endpoint
+from .identity import IdentityError
 from .mcp_tools import build_mcp
 
 STATIC = Path(__file__).parent / "static"
@@ -22,9 +31,25 @@ STATIC = Path(__file__).parent / "static"
 NOISY = ("/control/events/", "/control/nodes/", "/control/runs/")
 
 
+def build_mcp_app(ctl: Controller) -> Starlette:
+    path = urlparse(ctl.cfg.server.mcp_url).path or "/mcp"
+    return build_mcp(ctl).streamable_http_app(
+        streamable_http_path=path, stateless_http=True, json_response=True, host=ctl.cfg.server.host)
+
+
+def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
+    """Both listeners; run them together (see :func:`serve`)."""
+    s = ctl.cfg.server
+    return [uvicorn.Server(uvicorn.Config(build_app(ctl), host=s.host, port=s.port, log_level=log_level)),
+            uvicorn.Server(uvicorn.Config(build_mcp_app(ctl), host=s.host, port=s.mcp_port,
+                                          log_level=log_level))]
+
+
+async def serve(ctl: Controller) -> None:
+    await asyncio.gather(*(srv.serve() for srv in build_servers(ctl)))
+
+
 def build_app(ctl: Controller) -> Starlette:
-    mcp_app = build_mcp(ctl).streamable_http_app(
-        streamable_http_path="/", stateless_http=True, json_response=True, host=ctl.cfg.server.host)
     git_endpoint = make_git_endpoint(ctl.git, ctl.git_grant)
     op_token = ctl.cfg.server.operator_token
 
@@ -87,6 +112,19 @@ def build_app(ctl: Controller) -> Starlette:
         return JSONResponse(await ce.change_action(body.get("action", ""), body.get("approver", ""),
                                                    body.get("payload") or {}))
 
+    async def oauth_token(request: Request):
+        """Token endpoint for the OpenShell gateway: JWT-SVID client assertion → access token."""
+        form = dict(await request.form())
+        try:
+            body = await ctl.identity.token_request(form, ctl.sandbox_binding)
+        except IdentityError as e:
+            return JSONResponse({"error": e.error, "error_description": e.description},
+                                status_code=e.status)
+        except Exception as e:   # e.g. SPIRE JWKS unreachable
+            return JSONResponse({"error": "temporarily_unavailable", "error_description": str(e)},
+                                status_code=503)
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
     async def stream(request: Request):
         async def gen():
             last = -1
@@ -126,12 +164,11 @@ def build_app(ctl: Controller) -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        async with mcp_app.router.lifespan_context(app):
-            await ctl.start()
-            try:
-                yield
-            finally:
-                await ctl.stop()
+        await ctl.start()
+        try:
+            yield
+        finally:
+            await ctl.stop()
 
     return Starlette(routes=[
         Route("/", index),
@@ -147,5 +184,5 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/runs/{run_id}/log", run_log),
         Route("/api/workflow", workflow),
         Route("/git/{path:path}", git_endpoint, methods=["GET", "POST"]),
-        Mount("/mcp", app=mcp_app),
+        Route("/oauth/token", oauth_token, methods=["POST"]),
     ], lifespan=lifespan)

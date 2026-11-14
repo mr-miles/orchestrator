@@ -198,7 +198,7 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     ctl = types.SimpleNamespace(cfg=None, docs=docs, git=None, assets=None, runner=None, lock=None,
                                 procs={}, read_tokens={}, version=0)
     ce = ChangeEngine(ctl, "c1")
-    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, token="t",
+    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
     ce.st._events = []
     ce.st.event = lambda *a, **k: 0
@@ -260,3 +260,73 @@ def test_report_schemas():
     errs = reg.validate_data("report-review", bad)
     assert any("verdict" in e for e in errs) and any("findings/0" in e for e in errs)
     assert reg.validate_data("report-none", {}) == [] and reg.validate_data("report-none", {"x": 1})
+
+
+
+def test_svid_verification_and_access_tokens():
+    import asyncio, time
+    from legion_orch.identity import (AccessTokens, DevSpire, IdentityError, IdentityService,
+                                      JWT_SPIFFE, SvidVerifier, bearer)
+    prefix = "spiffe://openshell.local/openshell/sandbox/"
+    spire = DevSpire(prefix)
+    v = SvidVerifier(issuer=spire.issuer, audience="legion-controller", trust_prefix=prefix,
+                     static_jwks=spire.jwks())
+    run = asyncio.run
+    assert run(v.verify(spire.mint("sb-1", "legion-controller"))) == "sb-1"
+    bad = [spire.mint("sb-1", "other"),                                   # audience
+           spire.mint("sb-1", "legion-controller", exp=int(time.time()) - 120),   # expired
+           spire.mint("sb-1", "legion-controller", sub="spiffe://evil/x"),        # not a sandbox
+           spire.mint("sb-1", "legion-controller", iss="https://other"),          # issuer
+           DevSpire(prefix, kid=spire.kid).mint("sb-1", "legion-controller"),     # wrong key
+           "not.a.jwt"]
+    for svid in bad:
+        with pytest.raises(IdentityError):
+            run(v.verify(svid))
+    svc = IdentityService(v, AccessTokens("legion-controller", 60), "legion")
+    form = {"grant_type": "client_credentials", "client_assertion_type": JWT_SPIFFE,
+            "client_assertion": spire.mint("sb-1", "legion-controller"), "scope": "legion"}
+    binding = {"sandbox": "sb-1", "change": "c1", "task": "build:T1", "role": "implementer"}
+    tok = run(svc.token_request(form, lambda ref: binding if ref == "sb-1" else None))["access_token"]
+    assert svc.tokens.verify(tok) == binding                       # task-scoped claims
+    assert AccessTokens("legion-controller", 60).verify(tok) is None   # other key
+    with pytest.raises(IdentityError, match="not managed"):
+        run(svc.token_request(form, lambda ref: None))
+    with pytest.raises(IdentityError, match="client_credentials"):
+        run(svc.token_request(form | {"grant_type": "password"}, lambda ref: binding))
+    assert bearer("Bearer abc") == "abc" and bearer("Basic " + __import__("base64").b64encode(b"x:pw").decode()) == "pw"
+
+
+
+def test_generated_policy_and_provider_profile(tmp_path):
+    import yaml as _y
+    from legion_orch.config import load_config
+    from legion_orch.policy import MCP_TOOLS, provider_profile, render_policy
+    (tmp_path / "c.yaml").write_text(f"""
+project: p
+repo: {{name: app, path: {tmp_path}}}
+decision_owners: [miles]
+server: {{port: 8765, mcp_port: 8766, public_url: "http://host.openshell.internal:8765"}}
+identity: {{jwks_uri: "https://spire/keys"}}
+sandbox: {{runner: openshell}}
+""")
+    cfg = load_config(tmp_path / "c.yaml")
+    cfg.base_dir = ROOT
+    agent = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=True))
+    mcp = agent["network_policies"]["legion_mcp"]["endpoints"][0]
+    git = agent["network_policies"]["legion_git"]["endpoints"][0]
+    assert mcp["protocol"] == "mcp" and git["protocol"] == "rest"
+    assert (mcp["host"], mcp["port"], mcp["path"]) == ("host.openshell.internal", 8766, "/mcp")
+    assert (git["host"], git["port"]) == ("host.openshell.internal", 8765)   # MCP has its own port
+    calls = [r["allow"] for r in mcp["rules"] if r["allow"]["method"] == "tools/call"]
+    assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
+    assert any(r["allow"]["path"].endswith("git-receive-pack") for r in git["rules"])
+    judge = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=False))
+    jgit = judge["network_policies"]["legion_git"]["endpoints"][0]
+    assert not any(r["allow"]["path"].endswith("git-receive-pack") for r in jgit["rules"])
+    assert jgit["deny_rules"][0]["path"].endswith("git-receive-pack")
+    ver = _y.safe_load(render_policy(cfg, "policies/verifier-policy.template.yaml", agent=False, push=False))
+    assert set(ver["network_policies"]) == {"legion_git"}
+    prof = provider_profile(cfg)
+    assert prof["credentials"][0]["token_grant"]["token_endpoint"] == "http://host.openshell.internal:8765/oauth/token"
+    assert [e["protocol"] for e in prof["endpoints"]] == ["mcp", "rest"]
+    assert "Bearer" not in _y.safe_dump(agent) and "token" not in _y.safe_dump(agent).lower()

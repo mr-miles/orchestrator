@@ -20,9 +20,21 @@ class RepoConfig:
 class ServerConfig:
     host: str = "127.0.0.1"
     port: int = 8765
-    # Base URL agents use from inside the sandbox to reach the controller.
-    # MCP is served at <public_url>/mcp/ and git at <public_url>/git/<repo>.git
+    # MCP gets its own port: OpenShell does not allow an MCP endpoint to share a host and port
+    # with another protocol (git is REST).
+    mcp_port: int = 8766
+    # URLs sandboxes use: git at <public_url>/git/<repo>.git, token endpoint <public_url>/oauth/token
     public_url: str = "http://host.openshell.internal:8765"
+    # MCP endpoint as seen from sandboxes; default: public_url host with mcp_port, path /mcp
+    public_mcp_url: str | None = None
+
+    @property
+    def mcp_url(self) -> str:
+        if self.public_mcp_url:
+            return self.public_mcp_url
+        from urllib.parse import urlparse
+        u = urlparse(self.public_url)
+        return f"{u.scheme}://{u.hostname}:{self.mcp_port}/mcp"
     # Optional token required for human actions in the web UI (header X-Operator-Token).
     operator_token: str | None = None
 
@@ -44,6 +56,8 @@ class SandboxConfig:
     image: str | None = None  # --from for agent sandboxes
     verifier_image: str | None = None  # --from for deterministic verifier sandboxes
     providers: list[str] = field(default_factory=list)
+    # Binaries in the agent image allowed to call the controller's MCP endpoint
+    agent_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/claude"])
     # Templates: __CONTROLLER_HOST__ / __CONTROLLER_PORT__ are substituted per sandbox.
     policy_template: str = "policies/agent-policy.template.yaml"
     verifier_policy_template: str = "policies/verifier-policy.template.yaml"
@@ -60,6 +74,23 @@ class SandboxConfig:
 
 
 @dataclass
+class IdentityConfig:
+    """Workload identity (SPIFFE/SPIRE via the OpenShell gateway). See legion_orch/identity.py."""
+    # OpenShell provider created once per workspace from policies/legion-provider-profile.template.yaml
+    provider: str = "legion-controller"
+    trust_prefix: str = "spiffe://openshell.local/openshell/sandbox/"
+    jwks_uri: str | None = None          # SPIRE OIDC discovery JWKS, e.g. https://spire-oidc/keys
+    issuer: str | None = None            # expected JWT-SVID iss (None = not checked)
+    jwks_ca_file: str | None = None      # CA bundle for the JWKS endpoint
+    svid_audience: str = "legion-controller"   # jwt_svid_audience in the provider profile
+    token_audience: str = "legion-controller"  # audience in the provider profile
+    scope: str = "legion"
+    access_ttl_s: int = 300
+    subject_field: str = "id"            # field of `openshell sandbox get -o json` in the SPIFFE ID
+    dev_spire: bool | None = None        # in-process SPIRE stand-in; defaults to runner == local
+
+
+@dataclass
 class Config:
     project: str
     repo: RepoConfig
@@ -70,6 +101,7 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -104,9 +136,14 @@ def load_config(path: str | Path) -> Config:
         server=_build(ServerConfig, raw.get("server")),
         limits=_build(LimitsConfig, raw.get("limits")),
         sandbox=_build(SandboxConfig, raw.get("sandbox")),
+        identity=_build(IdentityConfig, raw.get("identity")),
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )
+    if cfg.identity.dev_spire is None:
+        cfg.identity.dev_spire = cfg.sandbox.runner == "local"
+    if not cfg.identity.dev_spire and not cfg.identity.jwks_uri:
+        raise ValueError("identity.jwks_uri (SPIRE JWKS) is required unless identity.dev_spire is true")
     if cfg.server.operator_token is None:
         cfg.server.operator_token = os.environ.get("LEGION_OPERATOR_TOKEN")
     if not Path(cfg.repo.path).is_absolute() and "://" not in cfg.repo.path:

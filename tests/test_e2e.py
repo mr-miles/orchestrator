@@ -11,7 +11,7 @@ import uvicorn
 
 from legion_orch.config import load_config
 from legion_orch.engine import Controller
-from legion_orch.web import build_app
+from legion_orch.web import build_servers
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -55,7 +55,7 @@ def _config(tmp_path, port):
         state_dir: state
         assets_dir: {ROOT / 'assets'}
         workflow_doc: {ROOT / 'WORKFLOW.md'}
-        server: {{host: 127.0.0.1, port: {port}, public_url: "http://127.0.0.1:{port}"}}
+        server: {{host: 127.0.0.1, port: {port}, mcp_port: {_free_port()}, public_url: "http://127.0.0.1:{port}"}}
         limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
         sandbox:
           runner: local
@@ -79,9 +79,9 @@ async def _full_workflow(tmp_path):
     port = _free_port()
     cfg = _config(tmp_path, port)
     ctl = Controller(cfg)
-    server = uvicorn.Server(uvicorn.Config(build_app(ctl), host="127.0.0.1", port=port,
-                                           log_level="warning"))
-    task = asyncio.create_task(server.serve())
+    servers = build_servers(ctl, log_level="warning")
+    task = asyncio.gather(*(srv.serve() for srv in servers))
+    server = servers[0]
     try:
         await _wait(ctl, lambda: server.started, "server start", 20)
         # two changes share one controller / state_dir and run concurrently
@@ -89,9 +89,12 @@ async def _full_workflow(tmp_path):
         b = await ctl.start_change("Say hello and goodbye, again")
         assert a.cid != b.cid
         await asyncio.gather(_drive(a), _drive(b))
-        live_tokens = {r.token for _, r in ctl.all_runs() if r.token}
+        old_token = ctl.identity.tokens.issue(
+            {"sandbox": "s", "change": a.cid, "task": "intake", "role": "intake"}, "x")
+        await _identity_checks(ctl, cfg)
     finally:
-        server.should_exit = True
+        for srv in servers:
+            srv.should_exit = True
         await task
 
     # nothing transient survives: no payloads with tokens, no sandboxes
@@ -111,7 +114,8 @@ async def _full_workflow(tmp_path):
         assert len(new.st.events()) == len(old.st.events())
         assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
         assert ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
-    assert all(ctl2.run_for_token(t, live_only=False) is None for t in live_tokens)
+    assert ctl2.identity.tokens.verify(old_token) is None     # signing key never persisted
+    assert all(r.sandbox_ref for _, r in ctl2.all_runs())
     assert not ctl2.docs.list("changes/" + a.cid + "/control/prompts/")
 
 
@@ -174,9 +178,9 @@ async def _r3_workflow(tmp_path):
     port = _free_port()
     cfg = _config(tmp_path, port)
     ctl = Controller(cfg)
-    server = uvicorn.Server(uvicorn.Config(build_app(ctl), host="127.0.0.1", port=port,
-                                           log_level="warning"))
-    task = asyncio.create_task(server.serve())
+    servers = build_servers(ctl, log_level="warning")
+    task = asyncio.gather(*(srv.serve() for srv in servers))
+    server = servers[0]
     try:
         await _wait(ctl, lambda: server.started, "server start", 20)
         ce = await ctl.start_change("R3: say hello and goodbye")
@@ -234,5 +238,65 @@ async def _r3_workflow(tmp_path):
         assert {"independent_baseline", "security_or_e2e_evaluator",
                 "rollback_or_forward_fix_evidence"} <= set(ship["human_judgement_gates"])
     finally:
-        server.should_exit = True
+        for srv in servers:
+            srv.should_exit = True
         await task
+
+
+async def _identity_checks(ctl, cfg):
+    """The token endpoint and MCP refuse anything but a managed sandbox's valid JWT-SVID."""
+    import httpx
+    from legion_orch.identity import JWT_SPIFFE
+    url = cfg.server.public_url
+    ic = cfg.identity
+    form = lambda svid, **kw: {"grant_type": "client_credentials", "client_assertion_type": JWT_SPIFFE,
+                               "client_assertion": svid, "audience": ic.token_audience,
+                               "scope": ic.scope} | kw
+    async with httpx.AsyncClient() as c:
+        unknown = ctl.dev_spire.mint("not-a-managed-sandbox", ic.svid_audience)
+        r = await c.post(f"{url}/oauth/token", data=form(unknown))
+        assert r.status_code == 401 and r.json()["error"] == "invalid_client"
+        deleted = next(r.sandbox_ref for _, r in ctl.all_runs())
+        r = await c.post(f"{url}/oauth/token", data=form(ctl.dev_spire.mint(deleted, ic.svid_audience)))
+        assert r.status_code == 401                               # deleted sandboxes get nothing
+        known = "lg-test-verifier"
+        ctl.verifier_refs[known] = {"id": "verifier:test", "change": "c", "task": "build:T1"}
+        r = await c.post(f"{url}/oauth/token", data=form(ctl.dev_spire.mint(known, "wrong-aud")))
+        assert r.status_code == 401
+        from legion_orch.identity import DevSpire
+        forged = DevSpire(ic.trust_prefix, kid=ctl.dev_spire.kid).mint(known, ic.svid_audience)
+        r = await c.post(f"{url}/oauth/token", data=form(forged))
+        assert r.status_code == 401                               # signed by the wrong key
+        r = await c.post(f"{url}/oauth/token", data=form(ctl.dev_spire.mint(known, ic.svid_audience)))
+        assert r.status_code == 200 and r.json()["token_type"] == "Bearer"
+        tok = r.json()["access_token"]
+        # valid identity but no live run (all runs finished) -> MCP refuses, with a visible reason
+        body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "whoami", "arguments": {}}}
+        hdr = {"Accept": "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18"}
+        for h in ({}, {"Authorization": f"Bearer {tok}"}):
+            res = (await c.post(cfg.server.mcp_url, json=body, headers=hdr | h)).json()["result"]
+            assert res["isError"] and "no live run" in res["content"][0]["text"]
+        auth = {"Authorization": f"Bearer {tok}"}
+        r = await c.get(f"{url}/git/app.git/info/refs?service=git-upload-pack", headers=auth)
+        assert r.status_code == 200                               # verifier: read-only fetch
+        r = await c.get(f"{url}/git/app.git/info/refs?service=git-receive-pack", headers=auth)
+        assert r.status_code == 403                               # ...but never push
+        del ctl.verifier_refs[known]
+        r = await c.get(f"{url}/git/app.git/info/refs?service=git-upload-pack", headers=auth)
+        assert r.status_code == 401                               # grant ends with the sandbox
+
+    # task-scoped: a token only works for the live run of the task (and role) it names
+    from legion_orch.model import Run
+    ce = next(iter(ctl.changes.values()))
+    ce.runs["r9999"] = Run(id="r9999", node_id="build:T1", role="implementer", soul="s", cycle=9,
+                           status="ACTIVE", sandbox="lg-x", sandbox_ref="lg-x")
+    try:
+        good = {"sandbox": "lg-x", "change": ce.cid, "task": "build:T1", "role": "implementer"}
+        assert ctl.run_for_bearer(ctl.identity.tokens.issue(good, "x"))[1].id == "r9999"
+        for wrong in ({"task": "build:T2"}, {"role": "reviewer"}, {"change": "c-other"},
+                      {"sandbox": "lg-y"}):
+            assert ctl.run_for_bearer(ctl.identity.tokens.issue(good | wrong, "x")) is None, wrong
+        assert ctl.sandbox_binding("lg-x") == good
+    finally:
+        del ce.runs["r9999"]
