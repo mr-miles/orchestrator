@@ -53,9 +53,9 @@ SECURITY_HEADERS = {
 NOISY = ("/control/nodes/", "/control/runs/")
 
 
-def build_mcp_app(ctl: Controller) -> Starlette:
+async def build_mcp_app(ctl: Controller) -> Starlette:
     path = urlparse(ctl.cfg.server.mcp_url).path or "/mcp"
-    return build_mcp(ctl).streamable_http_app(
+    return (await build_mcp(ctl)).streamable_http_app(
         streamable_http_path=path, stateless_http=True, json_response=True,
         host=ctl.cfg.server.agent_host)
 
@@ -73,19 +73,19 @@ def build_token_app(ctl: Controller) -> Starlette:
     return Starlette(routes=[Route("/oauth/token", endpoint, methods=["POST"])])
 
 
-def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
+async def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
     """All listeners; run them together (see :func:`serve`). The operator app starts the controller."""
     s = ctl.cfg.server
     cfg = lambda app, host, port: uvicorn.Server(uvicorn.Config(app, host=host, port=port,
                                                                 log_level=log_level))
     return [cfg(build_app(ctl), s.host, s.port),
-            cfg(build_mcp_app(ctl), s.agent_host, s.mcp_port),
+            cfg(await build_mcp_app(ctl), s.agent_host, s.mcp_port),
             cfg(build_git_app(ctl), s.agent_host, s.git_port),
             cfg(build_token_app(ctl), s.agent_host, s.token_port)]
 
 
 async def serve(ctl: Controller) -> None:
-    await asyncio.gather(*(srv.serve() for srv in build_servers(ctl)))
+    await asyncio.gather(*(srv.serve() for srv in await build_servers(ctl)))
 
 
 class BadRequest(Exception):

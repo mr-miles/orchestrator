@@ -81,7 +81,7 @@ async def _full_workflow(tmp_path):
     port = _free_port()
     cfg = _config(tmp_path, port)
     ctl = Controller(cfg)
-    servers = build_servers(ctl, log_level="warning")
+    servers = await build_servers(ctl, log_level="warning")
     task = asyncio.gather(*(srv.serve() for srv in servers))
     server = servers[0]
     try:
@@ -181,7 +181,7 @@ async def _r3_workflow(tmp_path):
     port = _free_port()
     cfg = _config(tmp_path, port)
     ctl = Controller(cfg)
-    servers = build_servers(ctl, log_level="warning")
+    servers = await build_servers(ctl, log_level="warning")
     task = asyncio.gather(*(srv.serve() for srv in servers))
     server = servers[0]
     try:

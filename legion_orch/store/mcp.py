@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
 
-from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .docstore import DocStore, DocStoreError, DocVersion
@@ -34,13 +33,7 @@ class StoreSession:
     write: Callable[[str, str, int | None], Awaitable[DocVersion]]  # store path, content, base
 
 
-class ToolRegistrar(Protocol):
-    """Where tools are registered: an ``MCPServer`` or anything exposing its ``tool`` decorator."""
-
-    def tool(self, *, description: str) -> Callable[[Callable], Callable]: ...
-
-
-def register_store_tools(server: ToolRegistrar, session: Callable[[Context], StoreSession]) -> None:
+def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSession]) -> None:
     def readable_path(s: StoreSession, path: str) -> str:
         full = s.resolve(path)
         if not s.readable(full):
