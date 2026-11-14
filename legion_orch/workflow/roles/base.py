@@ -11,13 +11,11 @@ Adding a role = assets (``roles.yaml``, soul, prompt, schemas) + one handler mod
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..attest import Attestation
 from ..model import ACCEPTED, Node, Run
-
-if TYPE_CHECKING:
-    from ..engine import ChangeEngine
+from ..view import RoleContext
 
 
 @dataclass
@@ -39,13 +37,43 @@ class Report:
 class RoleHandler:
     roles: tuple[str, ...] = ()
 
-    async def guards(self, e: ChangeEngine, r: Report) -> list[str]:
+    # ---- dispatch policy (read by the engine instead of hard-coded role names)
+    pushes = False                # pushes its own branch: one branch per node, git push allowed
+    judge = False                 # judges another run's work: always a fresh sandbox (G-D4)
+    panel = False                 # review-panel member: dispatched per cycle on the candidate
+    judges_head = False           # works at the integration head (judged sha = head)
+    reuses_sandbox = False        # keeps its sandbox across the node's rework cycles
+    needs_fresh_approval = False  # spec/oracle approval must be fresh before dispatch (G-B1)
+    # ---- context given to the run (attestations listed in the prompt / assignment)
+    sees_requirements = True      # accepted requirements and risk (H-1 pins)
+    sees_draft_plan = False       # latest plan documents, even after H-2 approval
+    sees_oracle_commit = True     # the protected oracle commit
+
+    def extra_context(self, e: RoleContext, node: Node) -> list[str]:
+        """Role-specific context attestations beyond the common ones."""
         return []
 
-    async def on_done(self, e: ChangeEngine, r: Report) -> None:
+    async def guards(self, e: RoleContext, r: Report) -> list[str]:
+        return []
+
+    async def on_done(self, e: RoleContext, r: Report) -> None:
         """Default: the work is accepted; the node completes and its sandboxes are deleted."""
         r.node.status = ACCEPTED
-        e._accept_runs(r.node)
+        e.accept_runs(r.node)
+
+
+def build_context(e: RoleContext, node: Node) -> list[str]:
+    """Context of a build task: its declared context and its accepted dependencies' commits."""
+    refs = [c for c in (node.task or {}).get("context", []) if isinstance(c, str)]
+    for d in node.depends_on:
+        dn = e.nodes.get(d)
+        if dn and dn.task and dn.accepted_sha:
+            refs.append(f"git:{e.cfg.repo.name}@{dn.accepted_sha}")
+    return refs
+
+
+def evidence_of(e: RoleContext, node: Node) -> str | None:
+    return e.latest_att(f"tasks/{node.task['id']}/evidence/cycle-{node.cycle}.md")
 
 
 REGISTRY: dict[str, RoleHandler] = {}
@@ -65,3 +93,8 @@ def handler_for(role: str) -> RoleHandler:
         return REGISTRY[role]
     except KeyError:
         raise ValueError(f"no handler registered for role {role!r}") from None
+
+
+def roles_where(attr: str) -> set[str]:
+    """Role names whose handler declares ``attr`` true, e.g. ``roles_where("pushes")``."""
+    return {name for name, h in REGISTRY.items() if getattr(h, attr)}

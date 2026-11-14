@@ -59,7 +59,7 @@ class HumanMixin:
                 res = {"ok": True}
             else:
                 raise WorkflowError(f"action {action!r} not available for {node_id} in {node.status}")
-            self._event("human_action", f"{approver}: {action}", node_id, data=payload)
+            self.event("human_action", f"{approver}: {action}", node_id, data=payload)
             self._save()
             return res
 
@@ -249,7 +249,7 @@ class HumanMixin:
                     raise WorkflowError(f"unknown change action {action!r}")
             except governance.GovernanceError as e:
                 raise WorkflowError(str(e)) from None
-            self._event("human_action", f"{approver}: {action}", data=payload)
+            self.event("human_action", f"{approver}: {action}", data=payload)
             self._save()
             return res
 
@@ -264,5 +264,5 @@ class HumanMixin:
             node = self.nodes[SHIP]
             node.status = ACCEPTED
             node.human = {"verdict": result["verdict"]}
-            self._event("ship", f"readiness verdict: {result['verdict']}", SHIP, data=result["gates"])
+            self.event("ship", f"readiness verdict: {result['verdict']}", SHIP, data=result["gates"])
             self._save()

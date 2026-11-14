@@ -31,8 +31,9 @@ from ..model import (
     Run,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
+from ..roles import handler_for
 from .change import ChangeEngine
-from .common import PUSH_ROLES, WorkflowError, log
+from .common import WorkflowError, log
 
 
 class Controller:
@@ -150,7 +151,7 @@ class Controller:
                     await ce.tick()
                 except Exception as e:
                     log.exception("tick failed")
-                    ce._event("error", f"scheduler error: {e}")
+                    ce.event("error", f"scheduler error: {e}")
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), 1.0)
@@ -175,7 +176,7 @@ class Controller:
             ce.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
             ce._add(Node(INTAKE, INTAKE, "Intake: requirements & risk"))
             ce._add(Node(H_REQUIREMENTS, HUMAN, "Accept requirements & tier", depends_on=[INTAKE]))
-            ce._event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
+            ce.event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
             ce._save()
             return ce
 
@@ -254,4 +255,4 @@ class Controller:
         if found is None:
             return None
         run = found[1]
-        return GitGrant(run.id, f"refs/heads/{run.branch}" if run.role in PUSH_ROLES else None)
+        return GitGrant(run.id, f"refs/heads/{run.branch}" if handler_for(run.role).pushes else None)

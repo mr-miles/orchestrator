@@ -36,7 +36,7 @@ class ReportsMixin:
         if controller_owned or not any(path.startswith(w) for w in run.write_scope):
             raise WorkflowError(f"G-W1: {path} is outside your write scope {run.write_scope}")
         v = self.docs.write(path, content, author=run.id, role=run.role, base_version=base_version)
-        self._event("doc", f"{v.attestation} written", run.node_id, run.id)
+        self.event("doc", f"{v.attestation} written", run.node_id, run.id)
         return v
 
     def progress(self, run: Run, message: str, percent: float | None) -> None:
@@ -74,7 +74,7 @@ class ReportsMixin:
             if v:
                 run.violations.append(v)
                 left = self.cfg.limits.max_report_attempts - run.attempts
-                self._event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
+                self.event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
                             node.id, run.id, data=v)
                 if left <= 0:
                     self._fail_run(run, "G-R6: too many rejected reports")
@@ -85,9 +85,9 @@ class ReportsMixin:
             run.report = {"status": status, "summary": summary, "attestations": attestations,
                           "data": data, "blocked_reason": blocked_reason,
                           "missing_decision": missing_decision, "at": run.ended_at}
-            self._event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
+            self.event("report", f"{run.role} reported {status}: {summary[:200]}", node.id, run.id)
             if status == "BLOCKED":
-                self._escalate(node, "blocked", blocked_reason or "",
+                self.escalate(node, "blocked", blocked_reason or "",
                                resume=REWORK if node.kind == BUILD else READY,
                                run=run.id, missing_decision=missing_decision)
             else:
@@ -118,7 +118,7 @@ class ReportsMixin:
         ctx["report"] = report
         return v + await handler_for(run.role).guards(self, report)
 
-    async def _protected_unchanged(self, head: str) -> list[str]:
+    async def protected_unchanged(self, head: str) -> list[str]:
         """Guard G-INT2."""
         v = []
         if not self.change.oracle_sha:
@@ -135,7 +135,7 @@ class ReportsMixin:
         """Role-specific transition after an accepted DONE report (see workflow/roles/)."""
         await handler_for(run.role).on_done(self, ctx["report"])
 
-    def _panel_complete(self, node: Node) -> None:
+    def panel_complete(self, node: Node) -> None:
         results = [node.reviews.get(f"{node.cycle}:{r}") for r in self.change.panel]
         if any(r is None for r in results):
             return
@@ -154,7 +154,7 @@ class ReportsMixin:
                    "attestations": docs})
         if len(node.finding_history) >= 2 and fps and node.finding_history[-1] == node.finding_history[-2]:
             node.feedback += fb
-            self._escalate(node, "stale_loop", "G-RV5: identical HIGH findings in two consecutive "
+            self.escalate(node, "stale_loop", "G-RV5: identical HIGH findings in two consecutive "
                            "review cycles", resume="rework_cycle")
             return
         self._rework(node, fb, "review")
@@ -167,11 +167,11 @@ class ReportsMixin:
         if cur and cur.status == R_REPORTED:
             cur.status = R_SUPERSEDED
         if node.cycle >= limit:
-            self._escalate(node, "cycle_budget",
+            self.escalate(node, "cycle_budget",
                            f"G-RV5: {node.cycle} cycle(s) used without acceptance ({source})",
                            resume="rework_cycle")
             return
         node.cycle += 1
         node.candidate_sha = None
         node.status = REWORK
-        self._event("rework", f"{source}: rework cycle {node.cycle}", node.id)
+        self.event("rework", f"{source}: rework cycle {node.cycle}", node.id)

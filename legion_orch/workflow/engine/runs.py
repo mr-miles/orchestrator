@@ -20,31 +20,35 @@ from ..model import (
     Node,
     Run,
 )
-from .common import PANEL_ROLES
+from ..roles import handler_for
 
 
 class RunsMixin:
-    def _escalate(self, node: Node, kind: str, reason: str, resume: str, **extra) -> None:
+    def delete_sandbox_later(self, name: str) -> None:
+        """Delete a sandbox in the background (its work has been accepted)."""
+        self._spawn(self._delete_sandbox(name))
+
+    def escalate(self, node: Node, kind: str, reason: str, resume: str, **extra) -> None:
         node.status = ESCALATED
         node.escalation = {"type": kind, "reason": reason, "resume": resume, "at": now_iso(),
                            **extra}
-        self._event("escalation", f"{kind}: {reason}", node.id, extra.get("run"))
+        self.event("escalation", f"{kind}: {reason}", node.id, extra.get("run"))
 
     def _fail_run(self, run: Run, reason: str) -> None:
         """No automatic retries (principle 5): a failed run escalates to a human."""
         run.status = R_FAILED
         run.ended_at = now_iso()
         node = self.nodes.get(run.node_id)
-        self._event("run_failed", reason, run.node_id, run.id)
+        self.event("run_failed", reason, run.node_id, run.id)
         if node is None:
             return
         tail = self.log_tail(run.id, 40)
-        if run.role in PANEL_ROLES:
-            self._escalate(node, "run_failed", f"{run.role} run {run.id}: {reason}",
+        if handler_for(run.role).panel:
+            self.escalate(node, "run_failed", f"{run.role} run {run.id}: {reason}",
                            resume=REVIEWING, run=run.id, log_tail=tail)
         else:
             resume = REWORK if node.kind == BUILD else READY
-            self._escalate(node, "run_failed", f"run {run.id}: {reason}", resume=resume,
+            self.escalate(node, "run_failed", f"run {run.id}: {reason}", resume=resume,
                            run=run.id, log_tail=tail)
         if not self.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             self._spawn(self._delete_sandbox(run.sandbox))
@@ -77,16 +81,16 @@ class RunsMixin:
         try:
             await self.runner.delete(name)
         except Exception as e:
-            self._event("sandbox", f"delete of {name} failed: {e}")
+            self.event("sandbox", f"delete of {name} failed: {e}")
             return
         async with self.lock:
             for r in self.runs.values():
                 if r.sandbox == name:
                     r.sandbox_deleted = True
-            self._event("sandbox", f"sandbox {name} deleted")
+            self.event("sandbox", f"sandbox {name} deleted")
             self._save()
 
-    def _accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
+    def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
         """Mark the node's reported runs ACCEPTED and delete their sandboxes (principle 8)."""
         sandboxes = set()
         for rid in node.runs:

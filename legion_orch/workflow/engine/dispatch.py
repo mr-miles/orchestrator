@@ -30,7 +30,8 @@ from ..model import (
     Node,
     Run,
 )
-from .common import JUDGE_ROLES, PANEL_ROLES, PLAN_DOCS, PUSH_ROLES, _slug
+from ..roles import handler_for
+from .common import PLAN_DOCS, _slug
 
 
 class DispatchMixin:
@@ -41,46 +42,28 @@ class DispatchMixin:
     def _plan_docs(self) -> list[str]:
         return PLAN_DOCS + [f"plan/specs/{r}.md" for r in self.change.requirements]
 
-    def _oracle_commands(self) -> list[str]:
+    def oracle_commands(self) -> list[str]:
         orc = self.change.oracle or {}
         cmds = orc.get("acceptance_commands", []) + orc.get("integration_commands", []) \
             + governance.surface_commands(self)
         return list(dict.fromkeys(cmds))
 
     def _context_refs(self, node: Node, role: str) -> list[str]:
+        """Common context plus the role handler's own (workflow/roles/)."""
+        h = handler_for(role)
         refs: list[str] = []
         appr1 = self.change.approvals.get(H_REQUIREMENTS)
-        if appr1 and role != "intake":
+        if appr1 and h.sees_requirements:
             refs += [f"file:{p}@{v}" for p, v in appr1["pins"].items()]
-        if role in ("critic", "oracle", "baseline") or not self.change.approvals.get("oracle"):
+        if h.sees_draft_plan or not self.change.approvals.get("oracle"):
             if self.nodes.get(PLAN) and self.nodes[PLAN].status == ACCEPTED:
                 refs += [a for a in (self.latest_att(p) for p in self._plan_docs()) if a]
         else:
             for key, appr in self.change.approvals.items():
                 if key == "oracle" or key.startswith("spec:"):
                     refs += [f"file:{p}@{v}" for p, v in appr["pins"].items()]
-        if node.kind == BUILD:
-            refs += [c for c in node.task.get("context", []) if isinstance(c, str)]
-            for d in node.depends_on:
-                dn = self.nodes.get(d)
-                if dn and dn.kind == BUILD and dn.accepted_sha:
-                    refs.append(f"git:{self.cfg.repo.name}@{dn.accepted_sha}")
-            if role in PANEL_ROLES:
-                ev = self.latest_att(f"tasks/{node.task['id']}/evidence/cycle-{node.cycle}.md")
-                if ev:
-                    refs.append(ev)
-                ver = node.verification.get(str(node.cycle))
-                if ver and ver.get("attestation"):
-                    refs.append(ver["attestation"])
-        if role in ("integration", "release"):
-            for b in self.build_nodes():
-                refs += [a for a in (self.latest_att(f"tasks/{b.task['id']}/evidence/cycle-{b.cycle}.md"),)
-                         if a]
-            if role == "release":
-                a = self.latest_att("integration/report.md")
-                if a:
-                    refs.append(a)
-        if self.change.oracle_sha and role not in ("intake", "planner", "critic", "oracle"):
+        refs += h.extra_context(self, node)
+        if self.change.oracle_sha and h.sees_oracle_commit:
             refs.append(f"git:{self.cfg.repo.name}@{self.change.oracle_sha}")
         return list(dict.fromkeys(refs))
 
@@ -97,19 +80,20 @@ class DispatchMixin:
     def _prepare(self, node: Node, role: str, judged_sha: str | None = None) -> Run | None:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1)."""
         ch = self.change
-        if role == "implementer":
+        h = handler_for(role)
+        if h.needs_fresh_approval:
             stale = self._approval_fresh()
             if stale:
-                self._escalate(node, "approval", "; ".join(stale), resume=REWORK)
+                self.escalate(node, "approval", "; ".join(stale), resume=REWORK)
                 return None
         if node.kind == BUILD and not node.base_sha:
             node.base_sha = ch.integration_head
         if node.kind in (ORACLE,):
             node.base_sha = ch.integration_head
-        if role in ("baseline", "integration", "release"):
+        if h.judges_head:
             judged_sha = ch.integration_head
         run_id = self.ctl.next_run_id()
-        branch = f"legion/{ch.id}/{_slug(node.id)}" if role in PUSH_ROLES \
+        branch = f"legion/{ch.id}/{_slug(node.id)}" if h.pushes \
             else f"legion/{ch.id}/{run_id}-{role}"
         task = node.task or {}
         variables = {
@@ -133,7 +117,7 @@ class DispatchMixin:
         try:
             rendered = self.assets.render_role(role, variables)
         except AssetError as e:
-            self._escalate(node, "assets", str(e), resume=node.status)
+            self.escalate(node, "assets", str(e), resume=node.status)
             return None
         run = Run(id=run_id, node_id=node.id, role=role,
                   soul=self.assets.roles[role].soul if role != "implementer" else task.get("soul"),
@@ -145,29 +129,28 @@ class DispatchMixin:
                               if k not in ("context_refs",)} | {"task": task,
                                                                 "context": context,
                                                                 "feedback_items": node.feedback})
-        # G-D4: judges always get a fresh sandbox; only implementers reuse theirs across cycles.
-        if role == "implementer" and node.sandbox:
+        # G-D4: judges always get a fresh sandbox; only roles that reuse theirs keep it per node.
+        if h.reuses_sandbox and node.sandbox:
             run.sandbox = node.sandbox
             run.sandbox_ref = next((r.sandbox_ref for r in self.runs.values()
                                     if r.sandbox == node.sandbox and r.sandbox_ref), None)
         else:
             run.sandbox = f"lg-{ch.id}-{run_id}".lower()[:63]
-        if role in JUDGE_ROLES and node.current_run:
+        if h.judge and node.current_run:
             judged = self.runs.get(node.current_run)
             if judged and (judged.sandbox == run.sandbox or judged.id == run.id):
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
         self.runs[run_id] = run
         node.runs.append(run_id)
-        if role not in PANEL_ROLES:
+        if not h.panel:
             node.current_run = run_id
             node.status = RUNNING
-        if role == "implementer":
-            if node.sandbox is None:
-                node.sandbox = run.sandbox
-            if ch.first_build_at is None:
-                ch.first_build_at = now_iso()
+        if h.reuses_sandbox and node.sandbox is None:
+            node.sandbox = run.sandbox
+        if node.kind == BUILD and h.pushes and ch.first_build_at is None:
+            ch.first_build_at = now_iso()          # approved_spec_and_oracle compares with this
         self._payload(run, rendered)
-        self._event("dispatch", f"{role} run {run_id} (cycle {run.cycle}, soul {run.soul}, "
+        self.event("dispatch", f"{role} run {run_id} (cycle {run.cycle}, soul {run.soul}, "
                     f"pin {rendered.pin[7:19]})", node.id, run_id)
         return run
 
@@ -211,13 +194,14 @@ class DispatchMixin:
         run = self.runs[run_id]
         payload = self._run_dir(run_id) / "payload"
         try:
-            reuse = run.role == "implementer" and any(
+            h = handler_for(run.role)
+            reuse = h.reuses_sandbox and any(
                 r.sandbox == run.sandbox and r.id != run.id for r in self.runs.values())
             if reuse:
                 await self.runner.upload(run.sandbox, payload)
             else:
                 policy = self._policy(self._run_dir(run_id) / "policy.yaml",
-                                      agent=True, push=run.role in PUSH_ROLES)
+                                      agent=True, push=h.pushes)
                 run.sandbox_ref = await self.runner.create(SandboxSpec(
                     name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
                     change=self.cid, task=run.node_id, role=run.role, run=run.id))
@@ -234,7 +218,7 @@ class DispatchMixin:
             self.procs[run_id] = proc
             if run.status == R_STARTING:
                 run.status = R_ACTIVE
-            self._event("sandbox", f"agent started in sandbox {run.sandbox}", run.node_id, run_id)
+            self.event("sandbox", f"agent started in sandbox {run.sandbox}", run.node_id, run_id)
             self._save()
         rc = await proc.wait()
         async with self.lock:
@@ -243,6 +227,6 @@ class DispatchMixin:
             if run.status in LIVE_RUN:
                 self._fail_run(run, f"agent exited with code {rc} without an accepted report")
             else:
-                self._event("agent", f"agent process exited ({rc})", run.node_id, run_id)
+                self.event("agent", f"agent process exited ({rc})", run.node_id, run_id)
             self._archive_log(run)
             self._save()

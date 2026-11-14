@@ -28,6 +28,10 @@ from .common import _slug
 
 
 class VerifyMixin:
+    def start_verification(self, node_id: str) -> None:
+        """Run the node's deterministic verification in the background (node is VERIFYING)."""
+        self._spawn(self._verify_node(node_id))
+
     async def _verify(self, label: str, sha: str, commands: list[str]) -> dict:
         """G-V1: run commands at ``sha`` in a fresh sandbox. Never raises."""
         name = f"lg-{self.change.id}-v{secrets.token_hex(3)}".lower()
@@ -71,7 +75,7 @@ class VerifyMixin:
                 try:
                     await self.runner.delete(name)
                 except Exception as e:
-                    self._event("sandbox", f"verifier delete failed: {e}")
+                    self.event("sandbox", f"verifier delete failed: {e}")
         return result
 
     async def _verify_node(self, node_id: str) -> None:
@@ -79,8 +83,8 @@ class VerifyMixin:
         if node.kind == BUILD:
             commands = node.task["verification"]
         else:
-            commands = self._oracle_commands()
-        self._event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
+            commands = self.oracle_commands()
+        self.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                     f"({len(commands)} command(s))", node_id)
         res = await self._verify(node_id, node.candidate_sha, commands)
         async with self.lock:
@@ -94,7 +98,7 @@ class VerifyMixin:
                 | {"results": [{"command": r["command"], "exit_code": r["exit_code"]}
                                for r in res["results"]]}
             if res["infra_error"]:
-                self._escalate(node, "verify_infra", res["infra_error"], resume=VERIFYING)
+                self.escalate(node, "verify_infra", res["infra_error"], resume=VERIFYING)
             elif not res["ok"]:
                 fails = [r for r in res["results"] if r["exit_code"] != 0]
                 if node.kind == BUILD:
@@ -103,18 +107,18 @@ class VerifyMixin:
                                                  f"{r['output'][-800:]}", "attestations": [att]}
                                         for r in fails], "verification")
                 else:
-                    self._escalate(node, "integration_failed",
+                    self.escalate(node, "integration_failed",
                                    f"G-V1: {len(fails)} oracle command(s) failed at head", resume=READY)
             elif node.kind == BUILD:
                 if self.change.panel:
                     node.status = REVIEWING
-                    self._event("review", f"verification passed; panel {self.change.panel}", node_id)
+                    self.event("review", f"verification passed; panel {self.change.panel}", node_id)
                 else:
                     node.status = MERGING
                     self._spawn(self._merge_node(node_id))
             else:  # integration
                 node.status = ACCEPTED
-                self._accept_runs(node)
+                self.accept_runs(node)
             self._save()
 
     async def _merge_node(self, node_id: str) -> None:
@@ -132,7 +136,7 @@ class VerifyMixin:
                     if not r or r["verdict"] != "PASS" or r["sha"] != sha:
                         v.append(f"G-A1: no {role} PASS at candidate")
             if v:
-                self._escalate(node, "accept_guard", "; ".join(v), resume=REWORK)
+                self.escalate(node, "accept_guard", "; ".join(v), resume=REWORK)
                 self._save()
                 return
             ok, out = await self.git.merge(self.cid, sha, f"legion {self.change.id}: {node.title} "
@@ -150,6 +154,6 @@ class VerifyMixin:
             self.change.integration_head = out
             node.accepted_sha = sha
             node.status = ACCEPTED
-            self._event("accepted", f"merged {sha[:12]} -> integration {out[:12]}", node_id)
-            self._accept_runs(node)  # deletes the implementer sandbox (principle 8)
+            self.event("accepted", f"merged {sha[:12]} -> integration {out[:12]}", node_id)
+            self.accept_runs(node)  # deletes the implementer sandbox (principle 8)
             self._save()

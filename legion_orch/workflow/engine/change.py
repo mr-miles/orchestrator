@@ -69,14 +69,14 @@ class ChangeEngine(GraphMixin, DispatchMixin, RunsMixin, ReportsMixin, VerifyMix
         self.st.save()
         self.ctl.bump()
 
-    def _event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
+    def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
                data: Any = None) -> None:
         self.st.event(kind, message, node, run, data)
         log.info("[%s %s] %s%s", self.cid, kind, f"{node}: " if node else "", message)
         self.ctl.version += 1
 
     def _spawn(self, coro) -> None:
-        self.ctl.spawn(coro, on_error=lambda e: self._event(
+        self.ctl.spawn(coro, on_error=lambda e: self.event(
             "error", f"internal error: {e}", data=traceback.format_exc()[-3000:]))
 
     def write_record(self, rel: str, content: str | dict) -> DocVersion:

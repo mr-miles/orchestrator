@@ -68,7 +68,7 @@ class GraphMixin:
     def build_nodes(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.kind == BUILD]
 
-    def _materialize_builds(self, taskgraph: dict) -> None:
+    def materialize_builds(self, taskgraph: dict) -> None:
         for n in self.build_nodes():
             del self.nodes[n.id]
         wv = guards.waves(taskgraph["tasks"])
@@ -116,7 +116,7 @@ class GraphMixin:
                 if node.status == PENDING and self._deps_accepted(node):
                     if node.kind == HUMAN:
                         node.status = AWAITING_HUMAN
-                        self._event("human", "awaiting human decision", node.id)
+                        self.event("human", "awaiting human decision", node.id)
                     elif node.kind == SHIP:
                         node.status = RUNNING
                         self._spawn(self._ship())

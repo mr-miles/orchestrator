@@ -443,3 +443,28 @@ def test_every_role_has_exactly_one_handler():
     from legion_orch.workflow.roles import REGISTRY
     roles = set(Assets(ROOT / "assets").roles)
     assert set(REGISTRY) == roles, (set(REGISTRY) ^ roles)
+
+
+def test_role_dispatch_policy():
+    """The dispatch policy each handler declares (formerly hard-coded role sets in the engine)."""
+    from legion_orch.workflow.roles import roles_where
+    panel = {"reviewer", "security", "architecture"}
+    assert roles_where("pushes") == {"implementer", "oracle"}
+    assert roles_where("panel") == panel
+    assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
+    assert roles_where("judges_head") == {"baseline", "integration", "release"}
+    assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}
+    assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
+    everyone = set(Assets(ROOT / "assets").roles)
+    assert everyone - roles_where("sees_requirements") == {"intake"}
+    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle"}
+
+
+def test_role_handlers_use_only_the_role_context():
+    from legion_orch.workflow.view import RoleContext
+    allowed = {n for n in dir(RoleContext) if not n.startswith("__")}
+    for proto in RoleContext.__mro__:
+        allowed |= set(getattr(proto, "__annotations__", {}))
+    for f in (ROOT / "legion_orch/workflow/roles").glob("*.py"):
+        used = set(re.findall(r"\be\.([A-Za-z_]{2,})", f.read_text()))   # ("e.g." is prose)
+        assert used <= allowed, f"{f.name} uses {used - allowed} outside RoleContext"

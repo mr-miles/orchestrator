@@ -5,17 +5,6 @@ import logging
 from datetime import UTC, datetime
 
 log = logging.getLogger("legion")
-
-
-PUSH_ROLES = {"implementer", "oracle"}
-
-
-PANEL_ROLES = ("reviewer", "security", "architecture")
-
-
-JUDGE_ROLES = {"critic", "integration", "baseline", *PANEL_ROLES}
-
-
 PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
 
 

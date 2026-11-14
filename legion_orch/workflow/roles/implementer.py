@@ -3,14 +3,21 @@ from __future__ import annotations
 
 from .. import governance, guards
 from ..model import VERIFYING
-from .base import Report, RoleHandler, register
+from ..view import RoleContext
+from .base import Report, RoleHandler, build_context, register
 
 
 @register
 class Implementer(RoleHandler):
     roles = ("implementer",)
+    pushes = True
+    reuses_sandbox = True
+    needs_fresh_approval = True
 
-    async def guards(self, e, r: Report) -> list[str]:
+    def extra_context(self, e: RoleContext, node) -> list[str]:
+        return build_context(e, node)
+
+    async def guards(self, e: RoleContext, r: Report) -> list[str]:
         run, t = r.run, r.node.task
         changed = await e.git.changed_paths(run.base_sha, r.sha)
         approved = governance.approved_protected_for(e, t["id"], run.created_at)  # G-PP1
@@ -20,8 +27,8 @@ class Implementer(RoleHandler):
         ev = e.docs.read(run.required_docs[0], r.docs[run.required_docs[0]].version).content
         return v + guards.evidence_mentions(ev, t["verification"])
 
-    async def on_done(self, e, r: Report) -> None:
+    async def on_done(self, e: RoleContext, r: Report) -> None:
         r.node.candidate_sha = r.sha
         await e.git.pin(r.run.id, r.sha)
         r.node.status = VERIFYING
-        e._spawn(e._verify_node(r.node.id))
+        e.start_verification(r.node.id)

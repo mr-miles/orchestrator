@@ -443,9 +443,11 @@ assets/
   fails G-D2. Load-time validation rejects unknown variables, missing files, and files not referenced
   by any role.
 * The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.
-* Each role's report handling (its guards and the transition after an accepted report) is a
-  handler in `legion_orch/workflow/roles/`; adding a role means assets plus one handler module.
-  The controller refuses to start if a role in `roles.yaml` has no handler.
+* Each role has a handler in `legion_orch/workflow/roles/`: its dispatch policy (`pushes`,
+  `judge`, `panel`, `judges_head`, `reuses_sandbox`, `needs_fresh_approval`, which context it
+  sees), its role-specific guards, and the transition after an accepted report. Handlers work
+  against the narrow `RoleContext` interface, not engine internals. Adding a role means assets
+  plus one handler module; the controller refuses to start if a role in `roles.yaml` has none.
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)
 

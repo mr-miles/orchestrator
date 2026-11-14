@@ -43,3 +43,32 @@ class ChangeView(Protocol):
         """Write a controller-owned document (author 'controller') as a new version."""
 
     def build_nodes(self) -> list[Node]: ...
+
+
+class RoleContext(ChangeView, Protocol):
+    """What a role handler (workflow/roles/) may use: the change view plus the engine operations
+    a role's transition needs. Handlers never touch engine internals."""
+
+    assets: Any        # workflow.assets.Assets (roles, schemas)
+
+    def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
+              data: Any = None) -> None: ...
+
+    def escalate(self, node: Node, kind: str, reason: str, resume: str, **extra: Any) -> None: ...
+
+    def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
+        """Mark the node's reported runs accepted and delete their sandboxes."""
+
+    def delete_sandbox_later(self, name: str) -> None: ...
+
+    def start_verification(self, node_id: str) -> None: ...
+
+    def materialize_builds(self, taskgraph: dict) -> None:
+        """Create the build nodes from an accepted task graph."""
+
+    def panel_complete(self, node: Node) -> None:
+        """Decide the review panel outcome once every member has reported."""
+
+    def oracle_commands(self) -> list[str]: ...
+
+    async def protected_unchanged(self, head: str) -> list[str]: ...
