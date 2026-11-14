@@ -16,6 +16,9 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
 * The web UI shows the plan, the live task graph, agent progress, reviews, verification, documents and
   ship gates, and it is where humans approve, revise and resolve escalations.
 * A sandbox is deleted as soon as the work it produced is accepted.
+* The document store and the git remote are the only durable state. Each change is namespaced under
+  `changes/<id>/`, including the controller's own graph, node, run and event records, and is rebuilt
+  from the store on restart. Several changes can run side by side, and `state_dir` is set once.
 
 ```
 start (intake) -> H-1 -> plan <-> critique -> oracle -> [baseline] -> H-2 -> build DAG
@@ -30,7 +33,8 @@ cp orchestrator.example.yaml orchestrator.yaml   # set repo, decision_owners, sa
 legion-orch -c orchestrator.yaml check            # validate the assets folder
 legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
 legion-orch -c orchestrator.yaml start "Add a /health endpoint"   # or use the UI
-legion-orch -c orchestrator.yaml act H-1 accept --approver miles
+legion-orch -c orchestrator.yaml changes                            # list changes
+legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
 ```
 
 Endpoints served on one port: `/` (UI), `/api/*` (UI JSON + SSE), `/mcp/` (agent MCP tools,

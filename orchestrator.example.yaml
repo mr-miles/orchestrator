@@ -4,7 +4,7 @@ repo:
   path: /path/to/your/repo       # local path or URL the controller clones (bare) once
   base_branch: main
 decision_owners: [miles]         # humans allowed to approve (H-1/H-2/H-3, escalations)
-state_dir: .legion-orch          # one change per state_dir
+state_dir: .legion-orch          # set once: state.db (store), git/, tmp/ – holds every change
 assets_dir: assets               # roles.yaml, souls/, skills/, prompts/
 workflow_doc: WORKFLOW.md        # shown in the UI only
 protected_paths: [".github/", "WORKFLOW.md"]

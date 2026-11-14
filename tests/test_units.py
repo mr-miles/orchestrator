@@ -171,3 +171,32 @@ def test_review_and_report_guards():
     assert guards.scoped_diff(["src/a.py", "tests/acc/t.py"], ["src/"], [], ["tests/acc/"], "G-B3") \
         == ["G-B3: tests/acc/t.py is outside the allowed paths", "G-B3: tests/acc/t.py is a protected path"]
     assert guards.intake("- REQ-1: x\n", _signals(), "- [ ] Q1: which db?", "DONE")[0].startswith("G-I3")
+
+
+def test_namespacing_and_agent_read_restrictions():
+    from legion_orch.attest import normalize, qualify
+    from legion_orch.mcp_tools import _hidden
+    assert qualify("plan/spec.md", "c1") == "changes/c1/plan/spec.md"
+    assert qualify("changes/c2/plan/spec.md", "c1") == "changes/c2/plan/spec.md"
+    assert normalize("file:plan/spec.md@2", "c1") == "file:changes/c1/plan/spec.md@2"
+    assert normalize(f"git:app@{SHA}", "c1") == f"git:app@{SHA}"
+    assert _hidden("changes/c1/control/logs/r0001.log")
+    assert not _hidden("changes/c1/control/approvals/spec.json")
+
+
+def test_agents_cannot_write_other_changes_or_control(tmp_path):
+    import types
+    from legion_orch.engine import ChangeEngine, WorkflowError
+    from legion_orch.model import Run
+    docs = _store()
+    ctl = types.SimpleNamespace(cfg=None, docs=docs, git=None, assets=None, runner=None, lock=None,
+                                procs={}, read_tokens={}, version=0)
+    ce = ChangeEngine(ctl, "c1")
+    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, token="t",
+              write_scope=["changes/c1/plan/"])
+    ce.st._events = []
+    ce.st.event = lambda *a, **k: 0
+    assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
+    for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md"):
+        with pytest.raises(WorkflowError, match="G-W1"):
+            ce.docs_write(run, bad, "x", None)

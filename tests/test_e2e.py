@@ -10,7 +10,7 @@ import pytest
 import uvicorn
 
 from legion_orch.config import load_config
-from legion_orch.engine import Engine
+from legion_orch.engine import Controller
 from legion_orch.web import build_app
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,8 +40,9 @@ async def _wait(engine, pred, what, timeout=90):
         if pred():
             return
         await asyncio.sleep(0.2)
-    events = "\n".join(f"{e['kind']} {e['node']} {e['message']}" for e in engine.st.events(limit=60))
-    states = {n.id: n.status for n in engine.nodes.values()}
+    events = "\n".join(f"{e['kind']} {e['node']} {e['message']}" for e in engine.st.events(limit=60)) \
+        if hasattr(engine, "st") else ""
+    states = {n.id: n.status for n in engine.nodes.values()} if hasattr(engine, "nodes") else {}
     raise AssertionError(f"timeout waiting for {what}; nodes={states}\n{events}")
 
 
@@ -69,60 +70,88 @@ async def _full_workflow(tmp_path):
           agent_command: "{sys.executable} {ROOT / 'tests/fake_agent.py'}"
     """))
     cfg = load_config(cfg_path)
-    engine = Engine(cfg)
-    server = uvicorn.Server(uvicorn.Config(build_app(engine), host="127.0.0.1", port=port,
+    ctl = Controller(cfg)
+    server = uvicorn.Server(uvicorn.Config(build_app(ctl), host="127.0.0.1", port=port,
                                            log_level="warning"))
     task = asyncio.create_task(server.serve())
     try:
-        await _wait(engine, lambda: server.started, "server start", 20)
-        await engine.start_change("Say hello and goodbye")
-        n = engine.nodes
-
-        await _wait(engine, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
-        assert engine.change.risk["tier"] == "R2"          # public_api=2 floor
-        await engine.human_action("H-1", "accept", "miles")
-        assert engine.change.panel == ["reviewer"]
-
-        await _wait(engine, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
-        assert n["plan"].cycle == 2                         # critique forced one rework
-        assert {"build:T1", "build:T2", "build:T3"} <= set(n)
-        assert engine.change.oracle_sha
-        with pytest.raises(Exception):
-            await engine.human_action("H-2", "approve", "mallory")   # not a decision owner
-        await engine.human_action("H-2", "approve", "miles")
-
-        await _wait(engine, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
-        assert n["build:T1"].cycle == 2                     # review FAIL -> rework
-        assert n["build:T2"].cycle == 2                     # verification FAIL -> rework
-        t3_runs = [engine.runs[r] for r in n["build:T3"].runs]
-        assert any(any(v.startswith("G-B3") for v in vs) for r in t3_runs for vs in r.violations)
-        await engine.human_action("H-3", "accept", "miles")
-
-        await _wait(engine, lambda: engine.change.ship is not None, "ship")
-        ship = engine.change.ship
-        assert ship["verdict"] == "READY", ship["gates"]
-        assert set(ship["gates"]) == {
-            "approved_delta_spec", "protected_oracle", "task_contract", "deterministic_verification",
-            "task_level_independent_review", "integration_or_real_interface_checks",
-            "whole_change_acceptance_evidence"}
-
-        # every accepted run's sandbox is gone; documents are versioned & immutable
-        await _wait(engine, lambda: all(r.sandbox_deleted for r in engine.runs.values()
-                                        if r.status == "ACCEPTED"), "sandbox cleanup", 20)
-        sandboxes = list((cfg.state_dir / "local-sandboxes").glob("*")) \
-            if (cfg.state_dir / "local-sandboxes").exists() else []
-        assert sandboxes == [], sandboxes
-        assert engine.docs.latest_version("plan/spec.md") == 2
-        with pytest.raises(Exception):
-            engine.conn.execute("UPDATE documents SET content='x'")
-
-        # integration branch contains all work; protected test unchanged
-        head = engine.change.integration_head
-        show = lambda p: subprocess.run(["git", "show", f"{head}:{p}"], cwd=engine.git.repo,
-                                        capture_output=True, text=True).stdout
-        assert show("src/greet.txt") == "hello\n\n"
-        assert show("src/bye.txt") == "goodbye\n"
-        assert "goodbye" in show("docs/README.md")
+        await _wait(ctl, lambda: server.started, "server start", 20)
+        # two changes share one controller / state_dir and run concurrently
+        a = await ctl.start_change("Say hello and goodbye")
+        b = await ctl.start_change("Say hello and goodbye, again")
+        assert a.cid != b.cid
+        await asyncio.gather(_drive(a), _drive(b))
+        live_tokens = {r.token for _, r in ctl.all_runs() if r.token}
     finally:
         server.should_exit = True
         await task
+
+    # nothing transient survives: no payloads with tokens, no sandboxes
+    leftovers = [p for p in cfg.state_dir.rglob("*") if p.name in ("run.env", "mcp.json")]
+    assert leftovers == [], leftovers
+
+    # restart: everything is rebuilt from the document store alone
+    ctl2 = Controller(cfg)
+    ctl2.load()
+    assert set(ctl2.changes) == {a.cid, b.cid}
+    for old in (a, b):
+        new = ctl2.changes[old.cid]
+        assert new.change.ship["verdict"] == "READY"
+        assert list(new.nodes) == list(old.nodes)
+        assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
+        assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
+        assert len(new.st.events()) == len(old.st.events())
+        assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
+        assert ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
+    assert all(ctl2.run_for_token(t, live_only=False) is None for t in live_tokens)
+    assert not ctl2.docs.list("changes/" + a.cid + "/control/prompts/")
+
+
+async def _drive(ce):
+    n = ce.nodes
+    await _wait(ce, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
+    assert ce.change.risk["tier"] == "R2"          # public_api=2 floor
+    await ce.human_action("H-1", "accept", "miles")
+    assert ce.change.panel == ["reviewer"]
+
+    await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
+    assert n["plan"].cycle == 2                     # critique forced one rework
+    assert {"build:T1", "build:T2", "build:T3"} <= set(n)
+    assert ce.change.oracle_sha
+    with pytest.raises(Exception):
+        await ce.human_action("H-2", "approve", "mallory")   # not a decision owner
+    await ce.human_action("H-2", "approve", "miles")
+
+    await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
+    assert n["build:T1"].cycle == 2                 # review FAIL -> rework
+    assert n["build:T2"].cycle == 2                 # verification FAIL -> rework
+    t3_runs = [ce.runs[r] for r in n["build:T3"].runs]
+    assert any(any(v.startswith("G-B3") for v in vs) for r in t3_runs for vs in r.violations)
+    await ce.human_action("H-3", "accept", "miles")
+
+    await _wait(ce, lambda: ce.change.ship is not None, "ship")
+    ship = ce.change.ship
+    assert ship["verdict"] == "READY", ship["gates"]
+    assert set(ship["gates"]) == {
+        "approved_delta_spec", "protected_oracle", "task_contract", "deterministic_verification",
+        "task_level_independent_review", "integration_or_real_interface_checks",
+        "whole_change_acceptance_evidence"}
+
+    # every accepted run's sandbox is gone; documents are namespaced, versioned & immutable
+    await _wait(ce, lambda: all(r.sandbox_deleted for r in ce.runs.values()
+                                if r.status == "ACCEPTED"), "sandbox cleanup", 20)
+    sb_root = ce.cfg.state_dir / "local-sandboxes"
+    mine = [p for p in sb_root.glob(f"lg-{ce.cid}-*")] if sb_root.exists() else []
+    assert mine == [], mine
+    assert ce.docs.latest_version(f"changes/{ce.cid}/plan/spec.md") == 2
+    assert ce.docs.latest_version("plan/spec.md") is None
+    with pytest.raises(Exception):
+        ce.docs.conn.execute("UPDATE documents SET content='x'")
+
+    # integration branch contains all work
+    head = ce.change.integration_head
+    show = lambda p: subprocess.run(["git", "show", f"{head}:{p}"], cwd=ce.git.repo,
+                                    capture_output=True, text=True).stdout
+    assert show("src/greet.txt") == "hello\n\n"
+    assert show("src/bye.txt") == "goodbye\n"
+    assert "goodbye" in show("docs/README.md")

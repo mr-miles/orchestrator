@@ -10,6 +10,7 @@ import json
 import logging
 import secrets
 import shlex
+import shutil
 import sqlite3
 import threading
 import traceback
@@ -51,14 +52,20 @@ def _parse_ts(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
 
-class Engine:
+class Controller:
+    """Shared resources and the scheduler loop. Holds one ChangeEngine per change.
+
+    Durable state lives only in the document store (``state.db``) and the git remote; ``tmp/``
+    holds transient sandbox payloads and live agent logs and is wiped on start.
+    """
+
     def __init__(self, cfg: Config, runner: Runner | None = None):
         self.cfg = cfg
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
+        self.tmp = cfg.state_dir / "tmp"
         self.dblock = threading.RLock()
         self.conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
         self.docs = DocStore(self.conn, self.dblock)
-        self.st = StateStore(self.conn, self.dblock)
         self.git = GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path,
                              cfg.repo.base_branch)
         self.assets = Assets(cfg.assets_dir)
@@ -67,10 +74,165 @@ class Engine:
         self.procs: dict[str, asyncio.subprocess.Process] = {}
         self.read_tokens: dict[str, str] = {}
         self.tasks: set[asyncio.Task] = set()
+        self.changes: dict[str, ChangeEngine] = {}
         self.version = 0
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
-        self._verify_seq = 0
+
+    @property
+    def git_url(self) -> str:
+        return f"{self.cfg.server.public_url.rstrip('/')}/git/{self.cfg.repo.name}.git"
+
+    @property
+    def mcp_url(self) -> str:
+        return f"{self.cfg.server.public_url.rstrip('/')}/mcp/"
+
+    def bump(self) -> None:
+        self.version += 1
+        self._wake.set()
+
+    def spawn(self, coro, on_error=None) -> None:
+        async def wrapper():
+            try:
+                await coro
+            except Exception as e:  # never lose a background failure silently
+                log.exception("background task failed")
+                if on_error:
+                    on_error(e)
+        t = asyncio.create_task(wrapper())
+        self.tasks.add(t)
+        t.add_done_callback(self.tasks.discard)
+
+    # ------------------------------------------------------------------ lifecycle
+    def load(self) -> None:
+        """Rebuild every change from the store."""
+        for m in self.docs.list("changes/"):
+            parts = m["path"].split("/")
+            if len(parts) == 4 and parts[2:] == ["control", "change.json"]:
+                ce = ChangeEngine(self, parts[1])
+                ce.st.load()
+                self.changes[ce.cid] = ce
+
+    async def start(self) -> None:
+        await self.git.ensure()
+        shutil.rmtree(self.tmp, ignore_errors=True)   # stale payloads may contain old tokens
+        self.tmp.mkdir(parents=True)
+        self.load()
+        async with self.lock:
+            for ce in self.changes.values():
+                ce.recover()
+        self._loop_task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._loop_task:
+            self._loop_task.cancel()
+        for p in self.procs.values():
+            if p.returncode is None:
+                p.kill()
+
+    async def _loop(self) -> None:
+        while True:
+            for ce in list(self.changes.values()):
+                try:
+                    await ce.tick()
+                except Exception as e:
+                    log.exception("tick failed")
+                    ce._event("error", f"scheduler error: {e}")
+            self._wake.clear()
+            try:
+                await asyncio.wait_for(self._wake.wait(), 1.0)
+            except asyncio.TimeoutError:
+                pass
+
+    # ------------------------------------------------------------------ changes
+    async def start_change(self, goal: str) -> "ChangeEngine":
+        goal = goal.strip()
+        if not goal:
+            raise WorkflowError("goal is required")
+        async with self.lock:
+            base = await self.git.resolve_base()
+            while True:
+                cid = "c" + datetime.now(timezone.utc).strftime("%y%m%d") + "-" + secrets.token_hex(2)
+                if cid not in self.changes:
+                    break
+            await self.git.init_integration(cid, base)
+            ce = ChangeEngine(self, cid)
+            ce.st.change = Change(id=cid, goal=goal, base_sha=base, integration_head=base)
+            self.changes[cid] = ce
+            ce._cwrite("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
+            ce._add(Node(INTAKE, INTAKE, "Intake: requirements & risk"))
+            ce._add(Node(H_REQUIREMENTS, HUMAN, "Accept requirements & tier", depends_on=[INTAKE]))
+            ce._event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
+            ce._save()
+            return ce
+
+    def get(self, cid: str) -> "ChangeEngine":
+        try:
+            return self.changes[cid]
+        except KeyError:
+            raise WorkflowError(f"unknown change {cid}") from None
+
+    def list_changes(self) -> list[dict]:
+        out = []
+        for ce in self.changes.values():
+            c = ce.change
+            out.append({"id": c.id, "goal": c.goal, "status": c.status, "tier": c.tier,
+                        "created_at": c.created_at,
+                        "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
+                        "nodes": len(ce.nodes),
+                        "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values())})
+        return sorted(out, key=lambda c: c["created_at"], reverse=True)
+
+    # ------------------------------------------------------------------ runs / tokens
+    def all_runs(self):
+        for ce in self.changes.values():
+            for r in ce.runs.values():
+                yield ce, r
+
+    def live_count(self) -> int:
+        return sum(1 for _, r in self.all_runs() if r.status in LIVE_RUN)
+
+    def next_run_id(self) -> str:
+        n = max((int(r.id[1:]) for _, r in self.all_runs()), default=0)
+        return f"r{n + 1:04d}"
+
+    def find_run(self, run_id: str) -> tuple["ChangeEngine", Run]:
+        for ce, r in self.all_runs():
+            if r.id == run_id:
+                return ce, r
+        raise WorkflowError(f"unknown run {run_id}")
+
+    def run_for_token(self, token: str, live_only: bool = True) -> tuple["ChangeEngine", Run] | None:
+        if not token:
+            return None
+        for ce, r in self.all_runs():
+            if r.token and secrets.compare_digest(r.token, token):
+                if live_only and r.status not in LIVE_RUN:
+                    return None
+                return ce, r
+        return None
+
+    def git_grant(self, token: str) -> GitGrant | None:
+        if token in self.read_tokens:
+            return GitGrant(self.read_tokens[token], None)
+        found = self.run_for_token(token)
+        if found is None:
+            return None
+        run = found[1]
+        ref = f"refs/heads/{run.branch}" if run.role in PUSH_ROLES else None
+        return GitGrant(run.id, ref)
+
+
+class ChangeEngine:
+    """Workflow state machine for one change; all durable state goes to the store."""
+
+    def __init__(self, ctl: Controller, cid: str):
+        self.ctl = ctl
+        self.cid = cid
+        self.cfg, self.docs, self.git = ctl.cfg, ctl.docs, ctl.git
+        self.assets, self.runner, self.lock = ctl.assets, ctl.runner, ctl.lock
+        self.procs, self.read_tokens = ctl.procs, ctl.read_tokens
+        self.st = StateStore(ctl.docs, cid)
 
     # ================================================================== basics
     @property
@@ -87,104 +249,63 @@ class Engine:
 
     @property
     def git_url(self) -> str:
-        return f"{self.cfg.server.public_url.rstrip('/')}/git/{self.cfg.repo.name}.git"
+        return self.ctl.git_url
 
     @property
     def mcp_url(self) -> str:
-        return f"{self.cfg.server.public_url.rstrip('/')}/mcp/"
+        return self.ctl.mcp_url
+
+    def p(self, rel: str) -> str:
+        """Qualify a document path into this change's namespace."""
+        return attest.qualify(rel, self.cid)
 
     def _save(self) -> None:
         self.st.save()
-        self.version += 1
-        self._wake.set()
+        self.ctl.bump()
 
     def _event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
                data: Any = None) -> None:
         self.st.event(kind, message, node, run, data)
-        log.info("[%s] %s%s", kind, f"{node}: " if node else "", message)
-        self.version += 1
+        log.info("[%s %s] %s%s", self.cid, kind, f"{node}: " if node else "", message)
+        self.ctl.version += 1
 
     def _spawn(self, coro) -> None:
-        async def wrapper():
-            try:
-                await coro
-            except Exception as e:  # never lose a background failure silently
-                log.exception("background task failed")
-                self._event("error", f"internal error: {e}", data=traceback.format_exc()[-3000:])
-        t = asyncio.create_task(wrapper())
-        self.tasks.add(t)
-        t.add_done_callback(self.tasks.discard)
+        self.ctl.spawn(coro, on_error=lambda e: self._event(
+            "error", f"internal error: {e}", data=traceback.format_exc()[-3000:]))
 
-    def _cwrite(self, path: str, content: str | dict) -> DocVersion:
+    def _cwrite(self, rel: str, content: str | dict) -> DocVersion:
+        path = self.p(rel)
         if not isinstance(content, str):
             content = json.dumps(content, indent=2, sort_keys=True)
         return self.docs.write(path, content, author="controller", role="controller",
                                base_version=self.docs.latest_version(path))
 
-    def _latest_att(self, path: str) -> str | None:
-        v = self.docs.latest_version(path)
-        return f"file:{path}@{v}" if v else None
+    def _latest(self, rel: str) -> int | None:
+        return self.docs.latest_version(self.p(rel))
 
-    def _json_doc(self, path: str, version: int | None = None) -> Any:
-        return json.loads(self.docs.read(path, version).content)
+    def _doc(self, rel: str, version: int | None = None) -> DocVersion:
+        return self.docs.read(self.p(rel), version)
 
-    # ================================================================== lifecycle
-    async def start(self) -> None:
-        await self.git.ensure()
-        async with self.lock:
-            for run in self.runs.values():
-                if run.status in LIVE_RUN:
-                    self._fail_run(run, "controller restarted while the run was live")
-            for node in self.nodes.values():
-                if node.status == VERIFYING:
-                    self._spawn(self._verify_node(node.id))
-                elif node.status == MERGING:
-                    self._spawn(self._merge_node(node.id))
-                elif node.kind == SHIP and node.status == RUNNING:
-                    self._spawn(self._ship())
-            self._save()
-        self._loop_task = asyncio.create_task(self._loop())
+    def _latest_att(self, rel: str) -> str | None:
+        v = self._latest(rel)
+        return f"file:{self.p(rel)}@{v}" if v else None
 
-    async def stop(self) -> None:
-        if self._loop_task:
-            self._loop_task.cancel()
-        for p in self.procs.values():
-            if p.returncode is None:
-                p.kill()
+    def _json_doc(self, rel: str, version: int | None = None) -> Any:
+        return json.loads(self._doc(rel, version).content)
 
-    async def _loop(self) -> None:
-        while True:
-            try:
-                await self.tick()
-            except Exception as e:
-                log.exception("tick failed")
-                self._event("error", f"scheduler error: {e}")
-            self._wake.clear()
-            try:
-                await asyncio.wait_for(self._wake.wait(), 1.0)
-            except asyncio.TimeoutError:
-                pass
-
-    # ================================================================== change start
-    async def start_change(self, goal: str) -> Change:
-        goal = goal.strip()
-        if not goal:
-            raise WorkflowError("goal is required")
-        async with self.lock:
-            if self.change is not None:
-                raise WorkflowError("this state directory already holds a change; "
-                                    "use a new state_dir for the next change")
-            base = await self.git.resolve_base()
-            cid = "c" + datetime.now(timezone.utc).strftime("%y%m%d") + "-" + secrets.token_hex(2)
-            await self.git.init_integration(cid, base)
-            self.st.change = Change(id=cid, goal=goal, base_sha=base, integration_head=base)
-            self._cwrite("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
-            self._add(Node(INTAKE, INTAKE, "Intake: requirements & risk"))
-            self._add(Node(H_REQUIREMENTS, HUMAN, "Accept requirements & tier",
-                           depends_on=[INTAKE]))
-            self._event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
-            self._save()
-            return self.change
+    def recover(self) -> None:
+        """After a restart: tokens are gone, so live runs fail (and escalate); resume steps."""
+        for run in self.runs.values():
+            if run.status in LIVE_RUN:
+                self._fail_run(run, "controller restarted while the run was live")
+        for node in self.nodes.values():
+            if node.status == VERIFYING:
+                self._spawn(self._verify_node(node.id))
+            elif node.status == MERGING:
+                self._spawn(self._merge_node(node.id))
+            elif node.kind == SHIP and node.status == RUNNING:
+                self._spawn(self._ship())
+        self._save()
 
     def _add(self, node: Node) -> None:
         self.nodes[node.id] = node
@@ -273,7 +394,7 @@ class Engine:
                     else:
                         node.status = READY
             self._check_timeouts()
-            capacity = self.cfg.limits.max_parallel - len(self._live_runs())
+            capacity = self.cfg.limits.max_parallel - self.ctl.live_count()
             for node in list(self.nodes.values()):
                 if capacity <= 0:
                     break
@@ -387,7 +508,7 @@ class Engine:
             node.base_sha = ch.integration_head
         if role in ("baseline", "integration", "release"):
             judged_sha = ch.integration_head
-        run_id = f"r{len(self.runs) + 1:04d}"
+        run_id = self.ctl.next_run_id()
         branch = f"legion/{ch.id}/{_slug(node.id)}" if role in PUSH_ROLES \
             else f"legion/{ch.id}/{run_id}-{role}"
         task = node.task or {}
@@ -401,6 +522,7 @@ class Engine:
             "workdir": "/sandbox/work", "task_soul": task.get("soul", ""),
         }
         write, required = self.assets.role_paths(role, variables)
+        write, required = [self.p(w) for w in write], [self.p(d) for d in required]
         context = self._context_refs(node, role)
         variables.update({
             "write_scope": ", ".join(f"`{w}`" for w in write),
@@ -417,7 +539,7 @@ class Engine:
                   soul=self.assets.roles[role].soul if role != "implementer" else task.get("soul"),
                   cycle=node.cycle, token=secrets.token_urlsafe(32),
                   base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
-                  prompt_pin=rendered.pin, workflow_sha=self.assets.sha,
+                  prompt_pin=rendered.pin, assets_sha=self.assets.sha,
                   write_scope=write, required_docs=required, context_refs=context,
                   assignment={k: v for k, v in variables.items()
                               if k not in ("context_refs",)} | {"task": task,
@@ -448,7 +570,8 @@ class Engine:
         return run
 
     def _run_dir(self, run_id: str) -> Path:
-        return self.cfg.state_dir / "runs" / run_id
+        """Scratch only: payload (deleted after upload) and the live agent log."""
+        return self.ctl.tmp / "runs" / run_id
 
     def _policy(self, template: str, dest: Path) -> Path:
         u = urlparse(self.cfg.server.public_url)
@@ -493,10 +616,13 @@ class Engine:
                             "legion.role": run.role}))
             proc = await self.runner.start_agent(run.sandbox, self._run_dir(run_id) / "agent.log")
         except Exception as e:
+            shutil.rmtree(payload, ignore_errors=True)
             async with self.lock:
                 self._fail_run(run, f"sandbox launch failed: {e}")
                 self._save()
             return
+        shutil.rmtree(payload, ignore_errors=True)            # contains the run token
+        (self._run_dir(run_id) / "policy.yaml").unlink(missing_ok=True)
         async with self.lock:
             self.procs[run_id] = proc
             if run.status == R_STARTING:
@@ -511,6 +637,7 @@ class Engine:
                 self._fail_run(run, f"agent exited with code {rc} without an accepted report")
             else:
                 self._event("agent", f"agent process exited ({rc})", run.node_id, run_id)
+            self._archive_log(run)
             self._save()
 
     # ================================================================== failure / escalation
@@ -539,12 +666,29 @@ class Engine:
         if not self.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             self._spawn(self._delete_sandbox(run.sandbox))
 
+    LOG_LIMIT = 512 * 1024
+
+    def _archive_log(self, run: Run) -> None:
+        """Move the agent log into the store (agents cannot read control/logs/)."""
+        f = self._run_dir(run.id) / "agent.log"
+        if not f.exists():
+            return
+        data = f.read_bytes()
+        text = data[-self.LOG_LIMIT:].decode(errors="replace")
+        if len(data) > self.LOG_LIMIT:
+            text = f"[truncated: last {self.LOG_LIMIT} of {len(data)} bytes]\n" + text
+        self._cwrite(f"control/logs/{run.id}.log", text)
+        shutil.rmtree(self._run_dir(run.id), ignore_errors=True)
+
     def log_tail(self, run_id: str, lines: int = 200) -> str:
         p = self._run_dir(run_id) / "agent.log"
-        if not p.exists():
+        if p.exists():
+            text = p.read_bytes()[-200_000:].decode(errors="replace")
+        elif self._latest(f"control/logs/{run_id}.log"):
+            text = self._doc(f"control/logs/{run_id}.log").content
+        else:
             return ""
-        data = p.read_bytes()[-200_000:].decode(errors="replace").splitlines()
-        return "\n".join(data[-lines:])
+        return "\n".join(text.splitlines()[-lines:])
 
     async def _delete_sandbox(self, name: str) -> None:
         try:
@@ -576,26 +720,10 @@ class Engine:
             self._spawn(self._delete_sandbox(sb))
 
     # ================================================================== MCP-facing
-    def run_for_token(self, token: str, live_only: bool = True) -> Run | None:
-        for r in self.runs.values():
-            if secrets.compare_digest(r.token, token):
-                if live_only and r.status not in LIVE_RUN:
-                    return None
-                return r
-        return None
-
-    def git_grant(self, token: str) -> GitGrant | None:
-        if token in self.read_tokens:
-            return GitGrant(self.read_tokens[token], None)
-        run = self.run_for_token(token)
-        if run is None:
-            return None
-        ref = f"refs/heads/{run.branch}" if run.role in PUSH_ROLES else None
-        return GitGrant(run.id, ref)
-
     def docs_write(self, run: Run, path: str, content: str, base_version: int | None) -> DocVersion:
-        """Guards G-W1 and G-W2."""
-        if path.startswith("control/") or not any(path.startswith(w) for w in run.write_scope):
+        """Guards G-W1 and G-W2. ``path`` may be relative to the change namespace."""
+        path = self.p(path)
+        if path.startswith(self.p("control/")) or not any(path.startswith(w) for w in run.write_scope):
             raise WorkflowError(f"G-W1: {path} is outside your write scope {run.write_scope}")
         v = self.docs.write(path, content, author=run.id, role=run.role, base_version=base_version)
         self._event("doc", f"{v.attestation} written", run.node_id, run.id)
@@ -606,7 +734,7 @@ class Engine:
         run.progress = run.progress[-50:]
         if run.status == R_STARTING:
             run.status = R_ACTIVE
-        self.version += 1
+        self.ctl.version += 1
 
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
@@ -618,6 +746,11 @@ class Engine:
             node = self.nodes[run.node_id]
             run.attempts += 1
             data = data or {}
+            attestations = [attest.normalize(a, self.cid) for a in attestations]
+            for f in data.get("findings") or []:
+                if isinstance(f, dict) and isinstance(f.get("attestations"), list):
+                    f["attestations"] = [attest.normalize(a, self.cid) for a in f["attestations"]
+                                         if isinstance(a, str)]
             v = guards.report_shape(status, blocked_reason, missing_decision)
             parsed, v3 = await attest.check_all(attestations, [self.cfg.repo.name], self.docs, self.git)
             v += v3
@@ -670,16 +803,15 @@ class Engine:
             return [f"G-R5: integration head moved to {self.change.integration_head}"]
 
         if run.role == "intake":
-            req = self.docs.read("intake/requirements.md", found["intake/requirements.md"].version)
-            rj, e = guards.load_json(self.docs, found["intake/risk.json"], "G-I2")
+            req = self.docs.read(self.p("intake/requirements.md"), found[self.p("intake/requirements.md")].version)
+            rj, e = guards.load_json(self.docs, found[self.p("intake/risk.json")], "G-I2")
             if e:
                 return e
-            q_ver = self.docs.latest_version("intake/questions.md")
-            q = self.docs.read("intake/questions.md").content if q_ver else None
+            q = self._doc("intake/questions.md").content if self._latest("intake/questions.md") else None
             v += guards.intake(req.content, rj, q, "DONE")
         elif run.role == "planner":
-            tg, e1 = guards.load_json(self.docs, found["plan/taskgraph.json"], "G-P1")
-            orc, e2 = guards.load_json(self.docs, found["plan/oracle.json"], "G-P1")
+            tg, e1 = guards.load_json(self.docs, found[self.p("plan/taskgraph.json")], "G-P1")
+            orc, e2 = guards.load_json(self.docs, found[self.p("plan/oracle.json")], "G-P1")
             if e1 or e2:
                 return e1 + e2
             v += guards.plan(tg, orc, self.change.requirements, self.change.tier,
@@ -687,7 +819,7 @@ class Engine:
             ctx["taskgraph"], ctx["oracle"] = tg, orc
         elif run.role == "critic":
             plan_atts = {a.path: a.version for a in parsed if a.kind == "file"}
-            latest = {p: self.docs.latest_version(p) for p in PLAN_DOCS}
+            latest = {self.p(p): self._latest(p) for p in PLAN_DOCS}
             v += guards.critique(data, plan_atts, latest, repo_atts)
         elif run.role == "oracle":
             orc = self._json_doc("plan/oracle.json")
@@ -723,8 +855,8 @@ class Engine:
                                       + orc.get("integration_commands", []), "G-INT1")
             v += await self._protected_unchanged(sha)
         elif run.role == "release":
-            v += guards.release_docs(self.docs.read("release/plan.md").content,
-                                     self.docs.read("release/rollback.md").content,
+            v += guards.release_docs(self._doc("release/plan.md").content,
+                                     self._doc("release/rollback.md").content,
                                      self.change.base_sha)
         return v
 
@@ -744,7 +876,7 @@ class Engine:
         role = run.role
         if role == "intake":
             node.status = ACCEPTED
-            rj = self._json_doc("intake/risk.json", ctx["docs"]["intake/risk.json"].version)
+            rj = self._json_doc("intake/risk.json", ctx["docs"][self.p("intake/risk.json")].version)
             ch.risk = risk.derive_tier(rj)
             self._event("risk", f"derived tier {ch.risk['tier']} (score {ch.risk['total']})", node.id)
             self._accept_runs(node)
@@ -778,7 +910,7 @@ class Engine:
         elif role == "oracle":
             node.candidate_sha = ctx["sha"]
             await self.git.pin(run.id, ctx["sha"])
-            ok, head = await self.git.merge(ctx["sha"], f"legion {ch.id}: oracle (protected acceptance tests)")
+            ok, head = await self.git.merge(ch.id, ctx["sha"], f"legion {ch.id}: oracle (protected acceptance tests)")
             if not ok:
                 self._escalate(node, "merge", f"oracle merge failed: {head[:400]}", resume=READY)
                 return
@@ -862,11 +994,10 @@ class Engine:
     # ================================================================== deterministic verification
     async def _verify(self, label: str, sha: str, commands: list[str]) -> dict:
         """G-V1: run commands at ``sha`` in a fresh sandbox. Never raises."""
-        self._verify_seq += 1
         name = f"lg-{self.change.id}-v{secrets.token_hex(3)}".lower()
         token = secrets.token_urlsafe(32)
         self.read_tokens[token] = f"verifier:{name}"
-        base = self.cfg.state_dir / "verify" / name
+        base = self.ctl.tmp / "verify" / name
         payload = base / "payload"
         payload.mkdir(parents=True, exist_ok=True)
         (payload / "run.env").write_text(
@@ -898,6 +1029,7 @@ class Engine:
             result["infra_error"] = str(e)
         finally:
             self.read_tokens.pop(token, None)
+            shutil.rmtree(base, ignore_errors=True)
             if created:
                 try:
                     await self.runner.delete(name)
@@ -966,7 +1098,7 @@ class Engine:
                 self._escalate(node, "accept_guard", "; ".join(v), resume=REWORK)
                 self._save()
                 return
-            ok, out = await self.git.merge(sha, f"legion {self.change.id}: {node.title} "
+            ok, out = await self.git.merge(self.cid, sha, f"legion {self.change.id}: {node.title} "
                                                 f"(cycle {node.cycle})")
             if not ok:
                 head = await self.git.integration_head(self.change.id)
@@ -1026,7 +1158,7 @@ class Engine:
         if node.id == H_REQUIREMENTS:
             intake = self.nodes[INTAKE]
             if action == "accept":
-                pins = {p: self.docs.latest_version(p) for p in ("intake/requirements.md", "intake/risk.json")}
+                pins = {self.p(p): self._latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
                 derived = ch.risk["tier"]
                 tier = payload.get("tier") or derived
                 if tier not in risk.TIERS:
@@ -1038,7 +1170,7 @@ class Engine:
                     ch.tier_override = {"from": derived, "to": tier, "reason": payload.get("reason"),
                                         "approver": approver, "at": now_iso()}
                 ch.tier = tier
-                ch.requirements = guards.requirements_ids(self.docs.read("intake/requirements.md").content)
+                ch.requirements = guards.requirements_ids(self._doc("intake/requirements.md").content)
                 ch.panel = risk.review_panel(tier, ch.risk["scores"])
                 att = self._cwrite("control/approvals/requirements.json", {
                     "gate": "H-1", "approver": approver, "at": now_iso(), "pins": pins, "tier": tier,
@@ -1061,7 +1193,7 @@ class Engine:
                 return {"ok": True}
         elif node.id == H_SPEC:
             if action == "approve":
-                pins = {p: self.docs.latest_version(p) for p in PLAN_DOCS}
+                pins = {self.p(p): self._latest(p) for p in PLAN_DOCS}
                 att = self._cwrite("control/approvals/spec.json", {
                     "gate": "H-2", "approver": approver, "at": now_iso(), "pins": pins,
                     "oracle_sha": ch.oracle_sha}).attestation
@@ -1172,6 +1304,7 @@ class Engine:
         if not risk.valid_reason(reason):
             raise WorkflowError("waiver reason must be ≥24 chars and more than one word")
         try:
+            source = attest.normalize(source, self.cid)
             a = attest.parse(source, [self.cfg.repo.name])
         except attest.AttestationError as e:
             raise WorkflowError(str(e))
@@ -1217,7 +1350,7 @@ class Engine:
             d.pop("assignment")
             runs.append(d)
         return {"project": self.cfg.project, "repo": self.cfg.repo.name,
-                "decision_owners": self.cfg.decision_owners, "version": self.version,
+                "decision_owners": self.cfg.decision_owners, "version": self.ctl.version,
                 "assets_sha": self.assets.sha, "limits": self.cfg.limits.__dict__,
                 "change": asdict(ch) if ch else None, "nodes": nodes, "runs": runs,
                 "gates": risk.GATES_BY_TIER.get(ch.tier, []) if ch and ch.tier else []}

@@ -80,6 +80,11 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   pins the attested sha under `refs/legion/evidence/<run>` so later force-pushes to a work branch
   can never orphan evidence.
 * **Documents** are written by agents directly to the versioned store through MCP `docs_write`.
+  Every change has its own namespace `changes/<change-id>/`. Agents use paths relative to their
+  change (`plan/spec.md`); the tools resolve them to `changes/<id>/plan/spec.md`, and attestations
+  are always stored fully qualified (`file:changes/<id>/plan/spec.md@2`). Agents may read any
+  change's documents (cross-change context) except `*/control/logs/`, and write only inside their
+  own change and write scope.
 * **MCP tools** (all calls authenticated by the run token; a token dies when its run ends):
 
 | Tool | Purpose |
@@ -93,6 +98,33 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 | `verify_attestation(ref)` | check that a `file:`/`git:` reference resolves |
 | `progress(message, percent?)` | heartbeat shown live in the UI |
 | `report(status, summary, attestations, data?, blocked_reason?, missing_decision?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations |
+
+### 2.1 State and persistence
+
+The document store and the git remote are the **only durable state**. Several changes can run side
+by side under one controller; they share `max_parallel` and the git remote but nothing else.
+
+| Where | What |
+| --- | --- |
+| `changes/<id>/<role docs>` | agent documents (`intake/`, `plan/`, `critique/`, `evidence/`, `reviews/`, …) |
+| `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
+| `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
+| `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
+| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox, branch, **asset-set sha and rendered-prompt sha**, attempts, violations, report, progress. Never the token. |
+| `changes/<id>/control/events/<seq>.json` | append-only event log |
+| `changes/<id>/control/logs/<run>.log` | agent output, archived when the agent exits (last 512 KiB); not readable by agents |
+| `changes/<id>/control/{approvals,verification,decisions,feedback,waivers,ship}/…` | human decisions and controller evidence |
+| git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
+
+Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset set and of its
+rendered soul + prompt.
+
+On disk, `state_dir` is set once per controller and holds only `state.db` (the store), `git/` (the
+bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted as soon
+as they are uploaded because they contain the run token, plus live agent logs). `tmp/` is wiped on
+start. Run tokens exist only in memory. On restart the controller rebuilds every change from the
+store; runs that were live can no longer authenticate, so they are failed and escalated (no
+automatic retry), and interrupted verification, merge or ship steps are resumed.
 
 ---
 
@@ -180,7 +212,7 @@ Universal guards apply to every task and are listed once.
 | G-R4 | report | The role's required documents are attested at their **latest** version and were **authored by this run**. |
 | G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
 | G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. |
-| G-W1 | docs_write | Path is inside the role's write scope; never `control/**`. |
+| G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never `control/**`. |
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). |
 
 ### 5.1 `intake` – start
@@ -271,7 +303,7 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 
 A fresh sandbox (network: controller git endpoint only, read-only token) clones the candidate
 commit and runs each `verification` command; results come back through `sandbox exec` output.
-Results are written by the controller to `control/verification/{{task_id}}/cycle-{{cycle}}.json`.
+Results are written by the controller to `control/verification/<node>.json` (one version per cycle).
 
 | ID | Rule |
 | --- | --- |

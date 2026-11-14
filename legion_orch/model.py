@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import threading
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
@@ -74,7 +72,7 @@ class Run:
     branch: str | None = None
     judged_sha: str | None = None        # candidate/head under judgement (judge roles)
     prompt_pin: str | None = None
-    workflow_sha: str | None = None   # sha256 of the asset set
+    assets_sha: str | None = None     # sha256 of the asset set used to render the prompt
     write_scope: list[str] = field(default_factory=list)
     required_docs: list[str] = field(default_factory=list)
     context_refs: list[str] = field(default_factory=list)
@@ -115,70 +113,93 @@ def _from_dict(cls, d: dict):
     return cls(**{k: v for k, v in d.items() if k in names})
 
 
-class StateStore:
-    """Persists the whole state as a JSON snapshot + an append-only event log."""
+CONTROL = "control/"
 
-    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
-        self.conn, self.lock = conn, lock
-        with lock:
-            conn.executescript("""
-            CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS events (
-              seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, kind TEXT NOT NULL,
-              node TEXT, run TEXT, message TEXT NOT NULL, data TEXT);
-            CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
-            BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
-            CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
-            BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
-            """)
-            conn.commit()
+
+class StateStore:
+    """Per-change state persisted as versioned documents in the store (no other durable state).
+
+    changes/<cid>/control/change.json          change record
+    changes/<cid>/control/graph.json           task graph structure (node order, kinds, deps, waves)
+    changes/<cid>/control/nodes/<node>.json    node state (one version per transition)
+    changes/<cid>/control/runs/<run>.json      run record (bearer token never persisted)
+    changes/<cid>/control/events/<seq>.json    append-only event log
+    """
+
+    def __init__(self, docs, cid: str):
+        self.docs = docs
+        self.cid = cid
+        self.root = f"changes/{cid}/{CONTROL}"
         self.change: Change | None = None
         self.nodes: dict[str, Node] = {}
         self.runs: dict[str, Run] = {}
-        self.load()
+        self._events: list[dict] = []
+        self._written: dict[str, str] = {}
+        self._known_nodes: set[str] = set()
+
+    # ------------------------------------------------------------- persistence
+    def _write(self, rel: str, obj: Any) -> None:
+        path = self.root + rel
+        content = json.dumps(obj, indent=2, sort_keys=True)
+        if self._written.get(path) == content:
+            return
+        self.docs.write(path, content, author="controller", role="controller",
+                        base_version=self.docs.latest_version(path))
+        self._written[path] = content
+
+    def _read(self, path: str) -> Any:
+        d = self.docs.read(path)
+        self._written[path] = d.content
+        return json.loads(d.content)
 
     def load(self) -> None:
-        with self.lock:
-            row = self.conn.execute("SELECT v FROM state WHERE k='snapshot'").fetchone()
-        if not row:
-            return
-        snap = json.loads(row[0])
-        self.change = _from_dict(Change, snap["change"]) if snap.get("change") else None
-        self.nodes = {k: _from_dict(Node, v) for k, v in snap["nodes"].items()}
-        self.runs = {k: _from_dict(Run, v) for k, v in snap["runs"].items()}
+        self.change = _from_dict(Change, self._read(self.root + "change.json"))
+        graph = self._read(self.root + "graph.json") if self.docs.latest_version(
+            self.root + "graph.json") else {"order": []}
+        for nid in graph["order"]:
+            data = self._read(f"{self.root}nodes/{nid}.json")
+            if not data.get("removed"):
+                self.nodes[nid] = _from_dict(Node, data)
+        self._known_nodes = set(graph["order"]) | {
+            m["path"][len(self.root + "nodes/"):-5] for m in self.docs.list(self.root + "nodes/")}
+        for m in self.docs.list(self.root + "runs/"):
+            data = self._read(m["path"])
+            data["token"] = ""          # tokens are memory-only; old runs can never act again
+            run = _from_dict(Run, data)
+            self.runs[run.id] = run
+        for m in self.docs.list(self.root + "events/"):
+            self._events.append(json.loads(self.docs.read(m["path"]).content))
+        self._events.sort(key=lambda e: e["seq"])
 
     def save(self) -> None:
-        snap = {"change": asdict(self.change) if self.change else None,
-                "nodes": {k: asdict(v) for k, v in self.nodes.items()},
-                "runs": {k: asdict(v) for k, v in self.runs.items()}}
-        with self.lock:
-            self.conn.execute("INSERT OR REPLACE INTO state VALUES ('snapshot', ?)",
-                              (json.dumps(snap),))
-            self.conn.commit()
+        if self.change is None:
+            return
+        self._write("change.json", asdict(self.change))
+        self._write("graph.json", {"order": list(self.nodes), "nodes": {
+            n.id: {"kind": n.kind, "title": n.title, "depends_on": n.depends_on, "wave": n.wave,
+                   "task": (n.task or {}).get("id")} for n in self.nodes.values()}})
+        for nid in self._known_nodes - set(self.nodes):
+            self._write(f"nodes/{nid}.json", {"id": nid, "removed": True})
+        self._known_nodes |= set(self.nodes)
+        for n in self.nodes.values():
+            self._write(f"nodes/{n.id}.json", asdict(n))
+        for r in self.runs.values():
+            d = asdict(r)
+            d.pop("token")
+            self._write(f"runs/{r.id}.json", d)
 
     def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
               data: Any = None) -> int:
-        with self.lock:
-            cur = self.conn.execute(
-                "INSERT INTO events (ts, kind, node, run, message, data) VALUES (?,?,?,?,?,?)",
-                (now_iso(), kind, node, run, message, json.dumps(data) if data is not None else None))
-            self.conn.commit()
-            return cur.lastrowid
+        seq = len(self._events) + 1
+        rec = {"seq": seq, "ts": now_iso(), "kind": kind, "node": node, "run": run,
+               "message": message, "data": data}
+        self.docs.write(f"{self.root}events/{seq:06d}.json", json.dumps(rec, sort_keys=True),
+                        author="controller", role="controller", base_version=None)
+        self._events.append(rec)
+        return seq
 
     def events(self, after: int = 0, limit: int = 500) -> list[dict]:
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT seq, ts, kind, node, run, message, data FROM events WHERE seq > ? "
-                "ORDER BY seq DESC LIMIT ?", (after, limit)).fetchall()
-        return [{"seq": r[0], "ts": r[1], "kind": r[2], "node": r[3], "run": r[4],
-                 "message": r[5], "data": json.loads(r[6]) if r[6] else None}
-                for r in reversed(rows)]
-
-    def run_by_token(self, token: str) -> Run | None:
-        for r in self.runs.values():
-            if r.token == token:
-                return r
-        return None
+        return [e for e in self._events if e["seq"] > after][-limit:]
 
 
 def _parse_ts_safe(ts: str):

@@ -35,6 +35,20 @@ class Attestation:
         return f"git:{body}@{self.sha}"
 
 
+def qualify(path: str, cid: str) -> str:
+    """Resolve a document path inside a change namespace. ``changes/...`` paths are absolute."""
+    path = path.strip().lstrip("/")
+    return path if path.startswith("changes/") else f"changes/{cid}/{path}"
+
+
+def normalize(ref: str, cid: str) -> str:
+    """``file:plan/spec.md@2`` -> ``file:changes/<cid>/plan/spec.md@2``; git refs unchanged."""
+    m = FILE_RE.match(ref.strip())
+    if not m:
+        return ref.strip()
+    return f"file:{qualify(m['path'], cid)}@{m['version']}"
+
+
 def parse(ref: str, repo_names: list[str]) -> Attestation:
     ref = ref.strip()
     m = FILE_RE.match(ref)

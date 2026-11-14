@@ -21,7 +21,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="validate config and the assets folder")
     st = sub.add_parser("start", help="start a change on a running controller")
     st.add_argument("goal")
+    sub.add_parser("changes", help="list changes on a running controller")
     act = sub.add_parser("act", help="perform a human action on a running controller")
+    act.add_argument("change")
     act.add_argument("node")
     act.add_argument("action")
     act.add_argument("--approver", required=True)
@@ -35,20 +37,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
         return 0
     if args.cmd == "serve":
-        from .engine import Engine
+        from .engine import Controller
         from .web import build_app
-        engine = Engine(cfg)
-        uvicorn.run(build_app(engine), host=cfg.server.host, port=cfg.server.port, log_level="info")
+        uvicorn.run(build_app(Controller(cfg)), host=cfg.server.host, port=cfg.server.port, log_level="info")
         return 0
 
     base = f"http://127.0.0.1:{cfg.server.port}"
     headers = {"Content-Type": "application/json"}
     if cfg.server.operator_token:
         headers["X-Operator-Token"] = cfg.server.operator_token
+    if args.cmd == "changes":
+        with urllib.request.urlopen(f"{base}/api/changes") as r:
+            for c in json.loads(r.read()):
+                print(f"{c['id']}  {c['status']:<9} {c['tier'] or '--'}  "
+                      f"{c['accepted']}/{c['nodes']} accepted  {c['goal'][:60]}")
+        return 0
     if args.cmd == "start":
-        url, body = f"{base}/api/change", {"goal": args.goal}
+        url, body = f"{base}/api/changes", {"goal": args.goal}
     else:
-        url, body = f"{base}/api/nodes/{args.node}/action", {
+        url, body = f"{base}/api/changes/{args.change}/nodes/{args.node}/action", {
             "action": args.action, "approver": args.approver, "payload": json.loads(args.payload)}
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:

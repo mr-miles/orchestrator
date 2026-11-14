@@ -13,120 +13,130 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, S
 from starlette.routing import Mount, Route
 
 from .docstore import DocStoreError
-from .engine import Engine, WorkflowError
+from .engine import Controller, WorkflowError
 from .githttp import make_git_endpoint
 from .mcp_tools import build_mcp
 
 STATIC = Path(__file__).parent / "static"
+# Bulky controller records hidden from the default document listing (still readable).
+NOISY = ("/control/events/", "/control/nodes/", "/control/runs/")
 
 
-def build_app(engine: Engine) -> Starlette:
-    mcp_app = build_mcp(engine).streamable_http_app(
-        streamable_http_path="/", stateless_http=True, json_response=True,
-        host=engine.cfg.server.host)
-    git_endpoint = make_git_endpoint(engine.git, engine.git_grant)
-    op_token = engine.cfg.server.operator_token
+def build_app(ctl: Controller) -> Starlette:
+    mcp_app = build_mcp(ctl).streamable_http_app(
+        streamable_http_path="/", stateless_http=True, json_response=True, host=ctl.cfg.server.host)
+    git_endpoint = make_git_endpoint(ctl.git, ctl.git_grant)
+    op_token = ctl.cfg.server.operator_token
 
     def operator(request: Request) -> None:
         if op_token and not secrets.compare_digest(request.headers.get("x-operator-token", ""), op_token):
             raise PermissionError("operator token required")
 
+    def guarded(fn):
+        async def wrapper(request: Request):
+            try:
+                return await fn(request)
+            except PermissionError as e:
+                return JSONResponse({"error": str(e)}, status_code=403)
+            except WorkflowError as e:
+                return JSONResponse({"error": str(e)}, status_code=400)
+        return wrapper
+
     async def index(_: Request):
         return FileResponse(STATIC / "index.html")
 
-    async def state(_: Request):
-        return JSONResponse(engine.snapshot())
+    async def meta(_: Request):
+        return JSONResponse({"project": ctl.cfg.project, "repo": ctl.cfg.repo.name,
+                             "decision_owners": ctl.cfg.decision_owners,
+                             "assets_sha": ctl.assets.sha, "version": ctl.version,
+                             "live_runs": ctl.live_count(),
+                             "max_parallel": ctl.cfg.limits.max_parallel})
 
+    @guarded
+    async def changes(request: Request):
+        if request.method == "POST":
+            operator(request)
+            body = await request.json()
+            ce = await ctl.start_change(body.get("goal", ""))
+            return JSONResponse({"ok": True, "change": ce.cid})
+        return JSONResponse(ctl.list_changes())
+
+    @guarded
+    async def state(request: Request):
+        return JSONResponse(ctl.get(request.path_params["cid"]).snapshot())
+
+    @guarded
     async def events(request: Request):
-        after = int(request.query_params.get("after", 0))
-        return JSONResponse(engine.st.events(after=after, limit=300))
+        ce = ctl.get(request.path_params["cid"])
+        return JSONResponse(ce.st.events(after=int(request.query_params.get("after", 0)), limit=300))
+
+    @guarded
+    async def action(request: Request):
+        operator(request)
+        body = await request.json()
+        ce = ctl.get(request.path_params["cid"])
+        return JSONResponse(await ce.human_action(
+            request.path_params["node_id"], body.get("action", ""), body.get("approver", ""),
+            body.get("payload") or {}))
 
     async def stream(request: Request):
         async def gen():
             last = -1
             while not await request.is_disconnected():
-                if engine.version != last:
-                    last = engine.version
+                if ctl.version != last:
+                    last = ctl.version
                     yield f"data: {json.dumps({'version': last})}\n\n"
                 await asyncio.sleep(0.5)
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
 
     async def docs(request: Request):
-        return JSONResponse(engine.docs.list(request.query_params.get("prefix", "")))
+        prefix = request.query_params.get("prefix", "")
+        items = ctl.docs.list(prefix)
+        if request.query_params.get("all") != "1":
+            items = [d for d in items if not any(n in "/" + d["path"] for n in NOISY)]
+        return JSONResponse(items)
 
     async def doc(request: Request):
         path = request.query_params["path"]
         ver = request.query_params.get("version")
         try:
-            d = engine.docs.read(path, int(ver) if ver else None)
+            d = ctl.docs.read(path, int(ver) if ver else None)
         except DocStoreError as e:
             return JSONResponse({"error": str(e)}, status_code=404)
-        return JSONResponse(d.meta() | {"content": d.content, "history": engine.docs.history(path)})
+        return JSONResponse(d.meta() | {"content": d.content, "history": ctl.docs.history(path)})
 
+    @guarded
     async def run_log(request: Request):
-        rid = request.path_params["run_id"]
-        if rid not in engine.runs:
-            return PlainTextResponse("unknown run", status_code=404)
-        return PlainTextResponse(engine.log_tail(rid, int(request.query_params.get("lines", 300))))
-
-    async def run_prompt(request: Request):
-        rid = request.path_params["run_id"]
-        p = engine.cfg.state_dir / "runs" / rid / "payload"
-        if rid not in engine.runs or not p.exists():
-            return JSONResponse({"error": "unknown run"}, status_code=404)
-        return JSONResponse({"soul": (p / "soul.md").read_text(), "prompt": (p / "prompt.md").read_text(),
-                             "pin": engine.runs[rid].prompt_pin})
+        ce, run = ctl.find_run(request.path_params["run_id"])
+        return PlainTextResponse(ce.log_tail(run.id, int(request.query_params.get("lines", 300))))
 
     async def workflow(_: Request):
-        doc = engine.cfg.workflow_doc
-        text = doc.read_text() if doc.is_file() else "(WORKFLOW.md not found)"
-        return PlainTextResponse(text, media_type="text/markdown")
-
-    async def start_change(request: Request):
-        try:
-            operator(request)
-            body = await request.json()
-            ch = await engine.start_change(body.get("goal", ""))
-            return JSONResponse({"ok": True, "change": ch.id})
-        except PermissionError as e:
-            return JSONResponse({"error": str(e)}, status_code=403)
-        except WorkflowError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
-
-    async def action(request: Request):
-        try:
-            operator(request)
-            body = await request.json()
-            res = await engine.human_action(request.path_params["node_id"], body.get("action", ""),
-                                            body.get("approver", ""), body.get("payload") or {})
-            return JSONResponse(res)
-        except PermissionError as e:
-            return JSONResponse({"error": str(e)}, status_code=403)
-        except WorkflowError as e:
-            return JSONResponse({"error": str(e)}, status_code=400)
+        p = ctl.cfg.workflow_doc
+        return PlainTextResponse(p.read_text() if p.is_file() else "(WORKFLOW.md not found)",
+                                 media_type="text/markdown")
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
         async with mcp_app.router.lifespan_context(app):
-            await engine.start()
+            await ctl.start()
             try:
                 yield
             finally:
-                await engine.stop()
+                await ctl.stop()
 
     return Starlette(routes=[
         Route("/", index),
-        Route("/api/state", state),
-        Route("/api/events", events),
+        Route("/api/meta", meta),
+        Route("/api/changes", changes, methods=["GET", "POST"]),
+        Route("/api/changes/{cid}/state", state),
+        Route("/api/changes/{cid}/events", events),
+        Route("/api/changes/{cid}/nodes/{node_id}/action", action, methods=["POST"]),
         Route("/api/stream", stream),
         Route("/api/docs", docs),
         Route("/api/doc", doc),
         Route("/api/runs/{run_id}/log", run_log),
-        Route("/api/runs/{run_id}/prompt", run_prompt),
         Route("/api/workflow", workflow),
-        Route("/api/change", start_change, methods=["POST"]),
-        Route("/api/nodes/{node_id}/action", action, methods=["POST"]),
         Route("/git/{path:path}", git_endpoint, methods=["GET", "POST"]),
         Mount("/mcp", app=mcp_app),
     ], lifespan=lifespan)

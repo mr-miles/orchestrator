@@ -80,7 +80,7 @@ class GitRemote:
         self.repo_name = repo_name
         self.project_root = self.root / "served"           # GIT_PROJECT_ROOT for http-backend
         self.repo = self.project_root / f"{repo_name}.git"  # bare hub
-        self.wt = self.root / "integration-wt"
+        self.worktrees = self.root / "worktrees"   # one integration worktree per change
         self.source = source
         self.base_branch = base_branch
         self.lock = asyncio.Lock()
@@ -141,25 +141,31 @@ class GitRemote:
     def integration_branch(change_id: str) -> str:
         return f"legion/{change_id}/integration"
 
+    def worktree(self, change_id: str) -> Path:
+        return self.worktrees / change_id
+
     async def init_integration(self, change_id: str, base_sha: str) -> None:
         branch = self.integration_branch(change_id)
-        if self.wt.exists():
-            await self.git("worktree", "remove", "--force", str(self.wt), check=False)
-            shutil.rmtree(self.wt, ignore_errors=True)
-        await self.git("worktree", "prune")
-        await self.git("branch", "-f", branch, base_sha)
-        await self.git("worktree", "add", "--quiet", str(self.wt), branch)
+        wt = self.worktree(change_id)
+        async with self.lock:
+            if wt.exists():
+                await self.git("worktree", "remove", "--force", str(wt), check=False)
+                shutil.rmtree(wt, ignore_errors=True)
+            await self.git("worktree", "prune")
+            await self.git("branch", "-f", branch, base_sha)
+            wt.parent.mkdir(parents=True, exist_ok=True)
+            await self.git("worktree", "add", "--quiet", str(wt), branch)
 
     async def integration_head(self, change_id: str) -> str:
         return await self.rev_parse(f"refs/heads/{self.integration_branch(change_id)}")
 
-    async def merge(self, sha: str, message: str) -> tuple[bool, str]:
-        """Merge a candidate into the integration worktree. Returns (clean, head | detail)."""
+    async def merge(self, change_id: str, sha: str, message: str) -> tuple[bool, str]:
+        """Merge a candidate into the change's integration worktree. Returns (clean, head|detail)."""
+        wt = self.worktree(change_id)
         async with self.lock:
-            rc, out = await run("git", "merge", "--no-ff", "-m", message, sha,
-                                cwd=self.wt, check=False)
+            rc, out = await run("git", "merge", "--no-ff", "-m", message, sha, cwd=wt, check=False)
             if rc != 0:
-                await run("git", "merge", "--abort", cwd=self.wt, check=False)
+                await run("git", "merge", "--abort", cwd=wt, check=False)
                 return False, out
-            head = (await run("git", "rev-parse", "HEAD", cwd=self.wt))[1].strip()
+            head = (await run("git", "rev-parse", "HEAD", cwd=wt))[1].strip()
             return True, head

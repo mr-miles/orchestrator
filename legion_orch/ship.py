@@ -12,7 +12,7 @@ from .gitops import path_matches
 from .model import ACCEPTED, BASELINE, H_CHANGE, H_SPEC, INTEGRATION, RELEASE, _parse_ts_safe
 
 if TYPE_CHECKING:
-    from .engine import Engine
+    from .engine import ChangeEngine as Engine
 
 SAT, UNSAT, UNEVAL = "satisfied", "unsatisfied", "unevaluable"
 
@@ -50,7 +50,7 @@ async def evaluate(e: "Engine") -> dict[str, Any]:
             return _g(UNEVAL, "no approved task graph (H-2)")
         if not approval_fresh:
             return _g(UNSAT, "approved task graph is stale")
-        tg = e._json_doc("plan/taskgraph.json", approval["pins"]["plan/taskgraph.json"])
+        tg = e._json_doc("plan/taskgraph.json", approval["pins"][e.p("plan/taskgraph.json")])
         ids = {t["id"] for t in tg["tasks"]}
         mine = {b.task["id"] for b in builds}
         if ids != mine:
@@ -77,7 +77,7 @@ async def evaluate(e: "Engine") -> dict[str, Any]:
         for b in builds:
             run = e.runs.get(b.current_run)
             atts = (run.report or {}).get("attestations", []) if run else []
-            ev = [a for a in atts if a.startswith(f"file:evidence/{b.task['id']}/")]
+            ev = [a for a in atts if a.startswith(f"file:{e.p('evidence/' + b.task['id'])}/")]
             if not ev or not all([await resolves(a) for a in ev]):
                 return _g(UNSAT, f"{b.id}: no resolvable evidence document")
         return _g(SAT, "every task has an attested evidence document")

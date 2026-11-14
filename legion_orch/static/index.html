@@ -62,6 +62,8 @@
 <body>
 <header>
   <h1>Legion Orchestrator</h1>
+  <select id="changeSel" style="width:auto;max-width:340px" onchange="pickChange(this.value)"></select>
+  <button class="act" style="margin:0" onclick="showStart=true;renderHeader()">+ New change</button>
   <span id="hdr" class="muted">loading…</span>
   <span style="flex:1"></span>
   <label class="muted">approver <input id="approver" style="width:120px"></label>
@@ -115,8 +117,19 @@ async function api(path, body) {
   return data;
 }
 
+let META = null, CHANGES = [], CID = location.hash.slice(1) || localStorage.cid || '', showStart = false;
+const EMPTY = {change:null, nodes:[], runs:[], gates:[]};
+const docPath = rel => CID ? `changes/${CID}/${rel}` : rel;
+async function loadState() {
+  META = await api('/api/meta');
+  CHANGES = await api('/api/changes');
+  if (!CHANGES.find(c => c.id === CID)) CID = CHANGES.length ? CHANGES[0].id : '';
+  const st = CID ? await api(`/api/changes/${CID}/state`) : EMPTY;
+  return Object.assign({}, st, {project: META.project, repo: META.repo, assets_sha: META.assets_sha});
+}
+function pickChange(id) { CID = id; location.hash = id; localStorage.cid = id; selected = null; docSel = null; showStart = false; refresh(); }
 async function refresh() {
-  S = await api('/api/state');
+  S = await loadState();
   renderHeader(); renderPipeline(); renderGraph(); renderLive(); renderDetail(); renderTab();
 }
 
@@ -125,8 +138,9 @@ function short(sha) { return sha ? `<code>${sha.slice(0,10)}</code>` : '—'; }
 
 function renderHeader() {
   const c = S.change;
-  $('#startbox').style.display = c ? 'none' : '';
-  if (!c) { $('#hdr').innerHTML = `${esc(S.project)} · repo <b>${esc(S.repo)}</b> · no active change`; return; }
+  $('#startbox').style.display = (showStart || !CHANGES.length) ? '' : 'none';
+  $('#changeSel').innerHTML = CHANGES.length ? CHANGES.map(x => `<option value="${x.id}" ${x.id===CID?'selected':''}>${esc(x.id)} · ${esc(x.status)}${x.tier?' · '+x.tier:''}${x.live_runs?' · '+x.live_runs+' live':''} · ${esc(x.goal.slice(0,40))}</option>`).join('') : '<option>no changes yet</option>';
+  if (!c) { $('#hdr').innerHTML = `${esc(S.project)} · repo <b>${esc(S.repo)}</b> · no changes`; return; }
   $('#hdr').innerHTML = `${esc(S.project)} · <b>${esc(c.id)}</b> · ${badge(c.status)} · tier ${c.tier ? `<b>${c.tier}</b>` : '<i>unassessed</i>'}
     · base ${short(c.base_sha)} · integration ${short(c.integration_head)} · <span class="muted" title="${esc(c.goal)}">${esc(c.goal.slice(0,90))}</span>`;
 }
@@ -237,13 +251,13 @@ function actionForm(n) {
       <table>${Object.entries(r.scores||{}).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
       <div class="grid2"><select id="f_tier"><option value="">keep ${r.tier}</option>${['R0','R1','R2','R3'].map(t=>`<option>${t}</option>`).join('')}</select>
       <input id="f_reason" placeholder="reason (required to lower)"></div>
-      <a onclick="openDoc('intake/requirements.md')">view requirements</a> · <a onclick="openDoc('intake/risk.json')">risk.json</a> · <a onclick="openDoc('intake/questions.md')">questions</a>
+      <a onclick="openDoc(docPath('intake/requirements.md'))">view requirements</a> · <a onclick="openDoc(docPath('intake/risk.json'))">risk.json</a> · <a onclick="openDoc(docPath('intake/questions.md'))">questions</a>
       <textarea id="f_text" placeholder="feedback for revision"></textarea>
       <button class="act ok" onclick="act('H-1','accept',{tier:$('#f_tier').value||null,reason:$('#f_reason').value})">Accept</button>
       <button class="act warn" onclick="act('H-1','revise',{feedback:$('#f_text').value})">Request revision</button></div>`;
   }
   if (n.id === 'H-2') return `<div class="card"><b>Approve spec &amp; oracle</b> <span class="muted">(pins current versions; must precede build)</span><br>
-      <a onclick="openDoc('plan/spec.md')">spec.md</a> · <a onclick="openDoc('plan/oracle.json')">oracle.json</a> · <a onclick="openDoc('plan/taskgraph.json')">taskgraph.json</a> · oracle commit ${short(c.oracle_sha)}
+      <a onclick="openDoc(docPath('plan/spec.md'))">spec.md</a> · <a onclick="openDoc(docPath('plan/oracle.json'))">oracle.json</a> · <a onclick="openDoc(docPath('plan/taskgraph.json'))">taskgraph.json</a> · oracle commit ${short(c.oracle_sha)}
       <textarea id="f_text" placeholder="feedback for revision"></textarea>
       <button class="act ok" onclick="act('H-2','approve',{})">Approve</button>
       <button class="act warn" onclick="act('H-2','revise',{feedback:$('#f_text').value})">Request revision</button></div>`;
@@ -286,18 +300,19 @@ function renderDetail() {
       ${r.progress.slice(-4).map(p=>`<div>· ${p.percent!=null?Math.round(p.percent)+'% ':''}${esc(p.message)}</div>`).join('')}
       ${r.report?`<div><b>${esc(r.report.status)}</b>: ${esc(r.report.summary)}</div><div class="mono muted">${r.report.attestations.map(a=>`<a onclick="openAtt('${a}')">${esc(a)}</a>`).join('<br>')}</div>`:''}
       ${r.violations.length?`<details><summary class="err">${r.violations.length} rejected report(s)</summary><pre>${esc(r.violations.map(v=>v.join('\n')).join('\n---\n'))}</pre></details>`:''}
-      <a onclick="showLog('${r.id}')">agent log</a> · <a onclick="showPrompt('${r.id}')">soul + prompt</a></div>`).join('');
+      <div class="muted mono">assets ${esc((r.assets_sha||'').slice(7,19))} · prompt ${esc((r.prompt_pin||'').slice(7,19))}</div>
+      <a onclick="showLog('${r.id}')">agent log</a></div>`).join('');
   $('#detail').innerHTML = h;
 }
 
 async function act(node, action, payload) {
   const approver = $('#approver').value.trim();
   if (!approver) { alert('Enter your approver id (top right).'); return; }
-  try { await api(`/api/nodes/${encodeURIComponent(node)}/action`, {action, approver, payload}); await refresh(); }
+  try { await api(`/api/changes/${CID}/nodes/${encodeURIComponent(node)}/action`, {action, approver, payload}); await refresh(); }
   catch (e) { alert(e.message); }
 }
 async function startChange() {
-  try { await api('/api/change', {goal: $('#goal').value}); $('#starterr').textContent=''; await refresh(); }
+  try { const r = await api('/api/changes', {goal: $('#goal').value}); $('#starterr').textContent=''; $('#goal').value=''; pickChange(r.change); }
   catch (e) { $('#starterr').textContent = e.message; }
 }
 
@@ -315,22 +330,27 @@ async function renderTab(force) {
       ${res?`<div class="muted">${esc(res.note)}</div>`:''}`;
   } else if (tab === 'plan') {
     try {
-      const tg = await api('/api/doc?path=plan/taskgraph.json');
-      const spec = await api('/api/doc?path=plan/spec.md');
+      const tg = await api('/api/doc?path=' + encodeURIComponent(docPath('plan/taskgraph.json')));
+      const spec = await api('/api/doc?path=' + encodeURIComponent(docPath('plan/spec.md')));
       const tasks = JSON.parse(tg.content).tasks || [];
       body.innerHTML = `<div class="muted">${esc(tg.attestation)} · ${esc(spec.attestation)}</div>
         <table><tr><th>task</th><th>soul</th><th>deps</th><th>files</th><th>reqs</th><th>verification</th></tr>${tasks.map(t=>`<tr><td><a onclick="select('build:${t.id}')">${esc(t.id)}</a> ${esc(t.title)}</td><td>${esc(t.soul)}</td><td>${esc((t.depends_on||[]).join(', '))}</td><td class="mono">${(t.files_modified||[]).map(esc).join('<br>')}</td><td>${esc((t.requirements||[]).join(', '))}</td><td class="mono">${(t.verification||[]).map(esc).join('<br>')}</td></tr>`).join('')}</table>
         <pre>${esc(spec.content)}</pre>`;
     } catch (e) { body.innerHTML = '<span class="muted">No plan yet.</span>'; }
   } else if (tab === 'docs') {
-    const list = await api('/api/docs');
+    const scope = $('#docscope') ? $('#docscope').value : 'change';
+    const showAll = $('#docall') && $('#docall').checked;
+    const list = await api(`/api/docs?prefix=${encodeURIComponent(scope==='change'?docPath(''):'')}${showAll?'&all=1':''}`);
+    const controls = `<div class="row" style="margin-bottom:6px"><select id="docscope" style="width:auto" onchange="renderTab()"><option value="change" ${scope==='change'?'selected':''}>this change</option><option value="all" ${scope==='all'?'selected':''}>all changes</option></select>
+      <label class="muted"><input id="docall" type="checkbox" style="width:auto" ${showAll?'checked':''} onchange="renderTab()"> include controller records (events, nodes, runs)</label></div>`;
     let viewer = '';
     if (docSel) { try { const d = await api(`/api/doc?path=${encodeURIComponent(docSel.path)}${docSel.version?'&version='+docSel.version:''}`);
       viewer = `<div class="card"><b>${esc(d.attestation)}</b> <span class="muted">by ${esc(d.author)} (${esc(d.role)}) · ${esc(d.created_at)} · ${esc(d.sha256.slice(0,19))}</span>
         <div>versions: ${d.history.map(h=>`<a onclick="openDoc('${d.path}',${h.version})">v${h.version}</a>`).join(' ')}</div><pre>${esc(d.content)}</pre></div>`; } catch(e) { viewer = `<div class="err">${esc(e.message)}</div>`; } }
-    body.innerHTML = viewer + `<table><tr><th>path</th><th>latest</th><th>author</th><th>written</th></tr>${list.map(d=>`<tr><td><a onclick="openDoc('${d.path}')">${esc(d.path)}</a></td><td>v${d.version}</td><td>${esc(d.author)} <span class="muted">${esc(d.role)}</span></td><td class="muted">${esc(d.created_at)}</td></tr>`).join('')}</table>`;
+    body.innerHTML = controls + viewer + `<table><tr><th>path</th><th>latest</th><th>author</th><th>written</th></tr>${list.map(d=>`<tr><td><a onclick="openDoc('${d.path}')">${esc(d.path)}</a></td><td>v${d.version}</td><td>${esc(d.author)} <span class="muted">${esc(d.role)}</span></td><td class="muted">${esc(d.created_at)}</td></tr>`).join('')}</table>`;
   } else if (tab === 'events') {
-    const ev = await api('/api/events');
+    if (!CID) { body.innerHTML = ''; return; }
+    const ev = await api(`/api/changes/${CID}/events`);
     body.innerHTML = `<table><tr><th>time</th><th>kind</th><th>node</th><th>run</th><th>message</th></tr>${ev.slice().reverse().map(e=>`<tr><td class="muted mono">${esc(e.ts.slice(11,19))}</td><td>${esc(e.kind)}</td><td>${e.node?`<a onclick="select('${e.node}')">${esc(e.node)}</a>`:''}</td><td>${esc(e.run||'')}</td><td>${esc(e.message)}</td></tr>`).join('')}</table>`;
   } else if (tab === 'workflow') {
     if (!tabCache.wf || force) tabCache.wf = await api('/api/workflow');
@@ -340,7 +360,6 @@ async function renderTab(force) {
 function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }
 function openAtt(a) { const m = /^file:(.+)@(\d+)$/.exec(a); if (m) openDoc(m[1], +m[2]); else alert(a); }
 async function showLog(id) { const t = await api(`/api/runs/${id}/log`); popup(`agent log ${id}`, t || '(empty)'); }
-async function showPrompt(id) { const p = await api(`/api/runs/${id}/prompt`); popup(`soul + prompt ${id} (${p.pin})`, p.soul + '\n\n=====\n\n' + p.prompt); }
 function popup(title, text) { $('#tabbody').innerHTML = `<div class="card"><b>${esc(title)}</b> <a onclick="renderTab()">close</a><pre style="max-height:600px">${esc(text)}</pre></div>`; }
 
 renderTabs();
@@ -348,7 +367,7 @@ refresh();
 let lastVersion = -1, pending = false;
 const es = new EventSource('/api/stream');
 es.onmessage = async ev => { const v = JSON.parse(ev.data).version; if (v !== lastVersion && !pending) { lastVersion = v; pending = true;
-  try { S = await api('/api/state'); renderHeader(); renderPipeline(); renderGraph(); renderLive();
+  try { S = await loadState(); renderHeader(); renderPipeline(); renderGraph(); renderLive();
     if (!document.activeElement || !['TEXTAREA','INPUT','SELECT'].includes(document.activeElement.tagName)) renderDetail();
     if (['gates','events'].includes(tab)) renderTab(); } finally { pending = false; } } };
 </script>
