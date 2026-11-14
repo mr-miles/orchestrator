@@ -14,7 +14,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import uvicorn
-
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse

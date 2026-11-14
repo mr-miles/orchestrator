@@ -22,7 +22,7 @@ def _g(status: str, detail: str, human: bool = False) -> dict:
     return {"status": status, "detail": detail, "human_judgement": human}
 
 
-async def evaluate(e: "Engine") -> dict[str, Any]:
+async def evaluate(e: Engine) -> dict[str, Any]:
     ch = e.change
     builds = e._build_nodes()
     task_ids = {b.task["id"] for b in builds}
@@ -106,7 +106,8 @@ async def evaluate(e: "Engine") -> dict[str, Any]:
             return _g(UNEVAL if not builds else UNSAT, "not every build task is accepted")
         for b in builds:
             ver = b.verification.get(str(b.cycle))
-            if not ver or not ver["ok"] or ver["sha"] != b.accepted_sha or not await resolves(ver.get("attestation")):
+            if not ver or not ver["ok"] or ver["sha"] != b.accepted_sha \
+                    or not await resolves(ver.get("attestation")):
                 return _g(UNSAT, f"{b.id}: no passing verification at accepted sha")
         iv = e.nodes.get(INTEGRATION)
         if iv is not None:

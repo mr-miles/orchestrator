@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field, fields
+from datetime import UTC
 from typing import Any
 
 from .util import now_iso
@@ -204,5 +205,5 @@ class StateStore:
 
 
 def _parse_ts_safe(ts: str):
-    from datetime import datetime, timezone
-    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    from datetime import datetime
+    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)

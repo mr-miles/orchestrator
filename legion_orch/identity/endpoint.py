@@ -1,7 +1,7 @@
 """Starlette handler for ``POST /oauth/token`` (called by the OpenShell gateway supervisor)."""
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse

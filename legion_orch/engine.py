@@ -14,7 +14,7 @@ import shutil
 import sqlite3
 import threading
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,16 +24,58 @@ from . import attest, governance, guards, risk
 from .assets import AssetError, Assets
 from .config import Config
 from .git import GitGrant, GitRemote
+from .identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
+from .model import (
+    ACCEPTED,
+    ACTIVE_NODE,
+    AWAITING_HUMAN,
+    BASELINE,
+    BUILD,
+    CRITIQUE,
+    ESCALATED,
+    FAILED,
+    H_CHANGE,
+    H_REQUIREMENTS,
+    H_SPEC,
+    HUMAN,
+    INTAKE,
+    INTEGRATION,
+    LIVE_RUN,
+    MERGING,
+    ORACLE,
+    PENDING,
+    PLAN,
+    R_ACCEPTED,
+    R_ACTIVE,
+    R_FAILED,
+    R_REPORTED,
+    R_STARTING,
+    R_SUPERSEDED,
+    READY,
+    RELEASE,
+    REVIEWING,
+    REWORK,
+    ROLE_FOR_KIND,
+    RUNNING,
+    SHIP,
+    VERIFYING,
+    Change,
+    Node,
+    Run,
+    StateStore,
+)
+from .sandbox import (
+    RUN_AGENT_SH,
+    VERIFY_SETUP_SH,
+    LocalRunner,
+    Runner,
+    SandboxError,
+    SandboxSpec,
+    make_runner,
+    render_policy,
+)
 from .store import DocStore, DocVersion
 from .util import now_iso
-from .identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
-from .model import (ACCEPTED, ACTIVE_NODE, AWAITING_HUMAN, BASELINE, BUILD, CRITIQUE, ESCALATED,
-                    FAILED, H_CHANGE, H_REQUIREMENTS, H_SPEC, HUMAN, INTAKE, INTEGRATION, LIVE_RUN,
-                    MERGING, ORACLE, PENDING, PLAN, R_ACCEPTED, R_ACTIVE, R_FAILED, R_REPORTED,
-                    R_STARTING, R_SUPERSEDED, READY, RELEASE, REVIEWING, REWORK, ROLE_FOR_KIND,
-                    RUNNING, SHIP, VERIFYING, Change, Node, Run, StateStore)
-from .sandbox import (RUN_AGENT_SH, VERIFY_SETUP_SH, LocalRunner, Runner, SandboxError,
-                      SandboxSpec, make_runner, render_policy)
 
 log = logging.getLogger("legion")
 
@@ -52,7 +94,7 @@ def _slug(node_id: str) -> str:
 
 
 def _parse_ts(ts: str) -> datetime:
-    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
 
 
 class Controller:
@@ -171,18 +213,18 @@ class Controller:
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), 1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     # ------------------------------------------------------------------ changes
-    async def start_change(self, goal: str) -> "ChangeEngine":
+    async def start_change(self, goal: str) -> ChangeEngine:
         goal = goal.strip()
         if not goal:
             raise WorkflowError("goal is required")
         async with self.lock:
             base = await self.git.resolve_base()
             while True:
-                cid = "c" + datetime.now(timezone.utc).strftime("%y%m%d") + "-" + secrets.token_hex(2)
+                cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:
                     break
             await self.git.init_integration(cid, base)
@@ -196,7 +238,7 @@ class Controller:
             ce._save()
             return ce
 
-    def get(self, cid: str) -> "ChangeEngine":
+    def get(self, cid: str) -> ChangeEngine:
         try:
             return self.changes[cid]
         except KeyError:
@@ -226,7 +268,7 @@ class Controller:
         n = max((int(r.id[1:]) for _, r in self.all_runs()), default=0)
         return f"r{n + 1:04d}"
 
-    def find_run(self, run_id: str) -> tuple["ChangeEngine", Run]:
+    def find_run(self, run_id: str) -> tuple[ChangeEngine, Run]:
         for ce, r in self.all_runs():
             if r.id == run_id:
                 return ce, r
@@ -244,7 +286,7 @@ class Controller:
                 return {"sandbox": ref, "change": ce.cid, "task": r.node_id, "role": r.role}
         return None
 
-    def run_for_bearer(self, token: str | None) -> tuple["ChangeEngine", Run] | None:
+    def run_for_bearer(self, token: str | None) -> tuple[ChangeEngine, Run] | None:
         """Bind a gateway-injected, task-scoped token to the sandbox's live run, per request.
         The run must match the token's change, task and role exactly."""
         claims = self.identity.tokens.verify(token) if token else None
@@ -477,7 +519,7 @@ class ChangeEngine:
 
     def _check_timeouts(self) -> None:
         limit = self.cfg.limits.run_timeout_s
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for run in self._live_runs():
             if (now - _parse_ts(run.created_at)).total_seconds() > limit:
                 proc = self.procs.get(run.id)
@@ -870,7 +912,8 @@ class ChangeEngine:
             return [f"G-R5: integration head moved to {self.change.integration_head}"]
 
         if run.role == "intake":
-            req = self.docs.read(self.p("intake/requirements.md"), found[self.p("intake/requirements.md")].version)
+            req_path = self.p("intake/requirements.md")
+            req = self.docs.read(req_path, found[req_path].version)
             rj, e = guards.load_json(self.docs, found[self.p("intake/risk.json")], "G-I2")
             if e:
                 return e
@@ -971,7 +1014,8 @@ class ChangeEngine:
                       "attestations": [str(a) for a in ctx["docs"].values()]}
                 if plan.cycle >= limit:
                     self._escalate(node, "critique_budget",
-                                   f"G-C2: {plan.cycle} critique cycles without PASS", resume="critique_budget")
+                                   f"G-C2: {plan.cycle} critique cycles without PASS",
+                                   resume="critique_budget")
                     node.feedback.append(fb)
                 else:
                     plan.cycle += 1
@@ -982,7 +1026,8 @@ class ChangeEngine:
         elif role == "oracle":
             node.candidate_sha = ctx["sha"]
             await self.git.pin(run.id, ctx["sha"])
-            ok, head = await self.git.merge(ch.id, ctx["sha"], f"legion {ch.id}: oracle (protected acceptance tests)")
+            ok, head = await self.git.merge(ch.id, ctx["sha"],
+                                            f"legion {ch.id}: oracle (protected acceptance tests)")
             if not ok:
                 self._escalate(node, "merge", f"oracle merge failed: {head[:400]}", resume=READY)
                 return
@@ -1127,7 +1172,8 @@ class ChangeEngine:
             res["attestation"] = att
             key = "integration" if node.kind == INTEGRATION else str(node.cycle)
             node.verification[key] = {k: res[k] for k in ("ok", "sha", "attestation", "infra_error")} \
-                | {"results": [{"command": r["command"], "exit_code": r["exit_code"]} for r in res["results"]]}
+                | {"results": [{"command": r["command"], "exit_code": r["exit_code"]}
+                               for r in res["results"]]}
             if res["infra_error"]:
                 self._escalate(node, "verify_infra", res["infra_error"], resume=VERIFYING)
             elif not res["ok"]:
@@ -1237,7 +1283,8 @@ class ChangeEngine:
                     raise WorkflowError(f"unknown tier {tier}")
                 if risk.rank(tier) < risk.rank(derived):
                     if not risk.valid_reason(payload.get("reason")):
-                        raise WorkflowError("lowering the tier needs a reason of ≥24 chars and more than one word")
+                        raise WorkflowError("lowering the tier needs a reason of ≥24 chars "
+                                            "and more than one word")
                 if tier != derived:
                     ch.tier_override = {"from": derived, "to": tier, "reason": payload.get("reason"),
                                         "approver": approver, "at": now_iso()}
@@ -1271,7 +1318,7 @@ class ChangeEngine:
                     done = await governance.approve_subjects(
                         self, payload.get("subjects") or "all", approver)
                 except governance.GovernanceError as e:
-                    raise WorkflowError(str(e))
+                    raise WorkflowError(str(e)) from None
                 status = governance.h2_status(self)
                 pending = [x["subject"] for x in status if x["status"] != "approved"]
                 if not pending and risk.rank(ch.tier) >= 3:
@@ -1402,7 +1449,7 @@ class ChangeEngine:
                 else:
                     raise WorkflowError(f"unknown change action {action!r}")
             except governance.GovernanceError as e:
-                raise WorkflowError(str(e))
+                raise WorkflowError(str(e)) from None
             self._event("human_action", f"{approver}: {action}", data=payload)
             self._save()
             return res

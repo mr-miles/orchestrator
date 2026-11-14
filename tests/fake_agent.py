@@ -194,7 +194,8 @@ def main():
         print(call("report", status="DONE", summary="baseline", attestations=[f"git:{REPO}@{head}", doc],
                    data={"results": results}))
     elif role == "release":
-        p = write("release/plan.md", "# Release\n\n## Health criteria\n- ok\n\n## Rollback criteria\n- not ok\n")
+        p = write("release/plan.md",
+                  "# Release\n\n## Health criteria\n- ok\n\n## Rollback criteria\n- not ok\n")
         r = write("release/rollback.md", f"Revert to {a['base_sha']}\n")
         print(call("report", status="DONE", summary="release plan", attestations=[p, r]))
     elif role == "integration":

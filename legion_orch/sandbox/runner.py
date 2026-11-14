@@ -24,9 +24,9 @@ import asyncio
 import json
 import os
 import shutil
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from ..config import Config
 from .templates import base_values, render, spec_to_args
@@ -55,7 +55,7 @@ async def _run(argv: list[str], timeout: float, env: dict | None = None,
         env=env, cwd=cwd)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         return 124, f"timeout after {timeout}s"

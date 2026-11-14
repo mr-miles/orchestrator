@@ -11,11 +11,12 @@ import re
 import sqlite3
 import threading
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .schemas import SchemaError, SchemaRegistry
 
-PATH_RE = re.compile(r"^(?!/)(?!.*//)(?!.*(?:^|/)\.\.?(?:/|$))[A-Za-z0-9._@+=:,~-]+(?:/[A-Za-z0-9._@+=:,~-]+)*$")
+PATH_RE = re.compile(r"^(?!/)(?!.*//)(?!.*(?:^|/)\.\.?(?:/|$))"
+                     r"[A-Za-z0-9._@+=:,~-]+(?:/[A-Za-z0-9._@+=:,~-]+)*$")
 MAX_DOC_BYTES = 2 * 1024 * 1024
 COLS = "path, version, content, sha256, author, role, created_at, schema, schema_sha"
 DCOLS = ", ".join("d." + c.strip() for c in COLS.split(","))
@@ -76,7 +77,7 @@ class DocVersion:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 class DocStore:

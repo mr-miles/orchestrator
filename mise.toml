@@ -1,0 +1,60 @@
+# Tooling and tasks for legion-orchestrator. `mise install` then `mise run <task>` (or `mise tasks`).
+# Python dependencies (including ruff, pytest, build) come from pyproject.toml via uv into .venv.
+
+[tools]
+python = "3.12"
+uv = "0.13"
+
+[env]
+# Project virtualenv, created with uv on first use and activated for every task.
+# `run` and `openshell:setup` use $LEGION_CONFIG (default orchestrator.yaml).
+_.python.venv = { path = ".venv", create = true }
+
+[settings]
+python.uv_venv_auto = true
+
+[tasks.install]
+description = "Install the package (editable) with test and dev extras into .venv"
+run = "uv pip install -q -e '.[test,dev]'"
+
+[tasks.lint]
+description = "ruff, UI JavaScript syntax, and asset/schema validation"
+depends = ["install"]
+run = [
+  "ruff check legion_orch tests scripts",
+  "python scripts/check_ui.py",
+  "legion-orch -c orchestrator.example.yaml check",
+]
+
+[tasks.fix]
+description = "Apply ruff's safe fixes"
+depends = ["install"]
+run = "ruff check legion_orch tests scripts --fix"
+
+[tasks.test]
+description = "Unit, git access-control and end-to-end workflow tests"
+depends = ["install"]
+run = "pytest -q"
+
+[tasks.build]
+description = "Build sdist and wheel into dist/"
+depends = ["install"]
+run = "uv build"
+
+[tasks.check]
+description = "Everything CI should run"
+depends = ["lint", "test", "build"]
+
+[tasks.run]
+description = "Run the controller (UI/API/git on server.port, MCP on server.mcp_port)"
+depends = ["install"]
+run = 'legion-orch -c "${LEGION_CONFIG:-orchestrator.yaml}" serve'
+
+[tasks."openshell:install"]
+description = "Install the OpenShell CLI with NVIDIA's installer (deb/rpm on Linux)"
+run = "curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh"
+
+[tasks."openshell:setup"]
+description = "One-time workspace setup: import the legion-controller provider profile and create the provider"
+depends = ["install"]
+run = 'legion-orch -c "${LEGION_CONFIG:-orchestrator.yaml}" setup-openshell --apply'

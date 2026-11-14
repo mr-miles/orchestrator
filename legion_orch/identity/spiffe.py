@@ -70,7 +70,7 @@ class SvidVerifier:
         try:
             header = jwt.get_unverified_header(svid)
         except jwt.PyJWTError as e:
-            raise IdentityError("invalid_client", f"malformed JWT-SVID: {e}", 401)
+            raise IdentityError("invalid_client", f"malformed JWT-SVID: {e}", 401) from None
         if header.get("alg") not in SVID_ALGS:
             raise IdentityError("invalid_client", f"unsupported JWT-SVID alg {header.get('alg')}", 401)
         jwk = None
@@ -88,7 +88,7 @@ class SvidVerifier:
                                 options={"require": ["sub", "aud", "exp"],
                                          "verify_iss": self.issuer is not None})
         except jwt.PyJWTError as e:
-            raise IdentityError("invalid_client", f"JWT-SVID rejected: {e}", 401)
+            raise IdentityError("invalid_client", f"JWT-SVID rejected: {e}", 401) from None
         sub = str(claims.get("sub", ""))
         if not sub.startswith(self.trust_prefix) or len(sub) == len(self.trust_prefix):
             raise IdentityError("invalid_client", "JWT-SVID subject is not an OpenShell sandbox", 401)

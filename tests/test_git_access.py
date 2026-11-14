@@ -33,7 +33,8 @@ async def _push_rules(tmp_path: Path):
     base = await remote.resolve_base()
     await remote.init_integration("c1", base)
     grants = {"writer": GitGrant("r1", "refs/heads/legion/c1/build-t1"), "judge": GitGrant("r2", None)}
-    app = Starlette(routes=[Route("/git/{path:path}", make_git_endpoint(remote, lambda req: grants.get(bearer(req.headers.get("authorization", "")))),
+    endpoint = make_git_endpoint(remote, lambda req: grants.get(bearer(req.headers.get("authorization", ""))))
+    app = Starlette(routes=[Route("/git/{path:path}", endpoint,
                                   methods=["GET", "POST"])])
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response

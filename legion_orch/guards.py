@@ -8,8 +8,8 @@ from typing import Any
 
 from . import risk
 from .attest import Attestation
-from .store import DocStore
 from .git import path_matches, paths_overlap
+from .store import DocStore
 
 GUARDS: dict[str, str] = {
     # universal

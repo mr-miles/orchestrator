@@ -1,16 +1,16 @@
 """End-to-end: real HTTP server (MCP + git smart-HTTP + API), LocalRunner, scripted agents."""
 import asyncio
 import socket
+import sqlite3
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
-import uvicorn
 
 from legion_orch.config import load_config
-from legion_orch.engine import Controller
+from legion_orch.engine import Controller, WorkflowError
 from legion_orch.server import build_servers
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -129,8 +129,8 @@ async def _drive(ce):
     assert n["plan"].cycle == 2                     # critique forced one rework
     assert {"build:T1", "build:T2", "build:T3"} <= set(n)
     assert ce.change.oracle_sha
-    with pytest.raises(Exception):
-        await ce.human_action("H-2", "approve", "mallory")   # not a decision owner
+    with pytest.raises(WorkflowError, match="not a decision owner"):
+        await ce.human_action("H-2", "approve", "mallory")
     r = await ce.human_action("H-2", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
     assert sorted(r["pending"]) == ["REQ-2", "oracle"] and n["H-2"].status == "AWAITING_HUMAN"
     r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["REQ-2", "oracle"]})
@@ -160,7 +160,7 @@ async def _drive(ce):
     assert mine == [], mine
     assert ce.docs.latest_version(f"changes/{ce.cid}/plan/spec.md") == 2
     assert ce.docs.latest_version("plan/spec.md") is None
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.DatabaseError, match="immutable"):
         ce.docs.conn.execute("UPDATE documents SET content='x'")
 
     # integration branch contains all work
@@ -232,7 +232,8 @@ async def _r3_workflow(tmp_path):
         await ce.human_action("ship", "recheck", "miles")
         await _wait(ce, lambda: ce.change.ship is not first, "ship recheck")
         ship = ce.change.ship
-        assert ship["verdict"] == "READY", {k: g for k, g in ship["gates"].items() if g["status"] != "satisfied"}
+        unsatisfied = {k: g for k, g in ship["gates"].items() if g["status"] != "satisfied"}
+        assert ship["verdict"] == "READY", unsatisfied
         assert ship["gates"]["evidence_bundle_or_log"]["added"]
         assert {"independent_baseline", "security_or_e2e_evaluator",
                 "rollback_or_forward_fix_evidence"} <= set(ship["human_judgement_gates"])
@@ -245,6 +246,7 @@ async def _r3_workflow(tmp_path):
 async def _identity_checks(ctl, cfg):
     """The token endpoint and MCP refuse anything but a managed sandbox's valid JWT-SVID."""
     import httpx
+
     from legion_orch.identity import JWT_SPIFFE
     url = cfg.server.public_url
     ic = cfg.identity

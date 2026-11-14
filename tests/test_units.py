@@ -33,7 +33,8 @@ def test_every_guard_is_referenced_outside_the_registry():
 
 def test_workflow_doc_links_every_asset_and_links_resolve():
     links = set(re.findall(r"\]\((assets/[^)]+)\)", DOC))
-    assert all((ROOT / l).exists() for l in links), [l for l in links if not (ROOT / l).exists()]
+    missing = [link for link in links if not (ROOT / link).exists()]
+    assert not missing, missing
     files = {str(p.relative_to(ROOT)) for p in (ROOT / "assets").rglob("*") if p.is_file()}
     assert files - links == set(), "assets not documented in WORKFLOW.md"
     a = Assets(ROOT / "assets")
@@ -158,7 +159,8 @@ def test_plan_guards():
     assert "G-P10" in ids(check([_task("T1", ["a"])], oracle=nosurf))
     badsurf = dict(ORACLE, surfaces=[{"id": "API", "commands": [], "pins": ["../x"]}])
     assert len([x for x in check([_task("T1", ["a"])], oracle=badsurf) if x.startswith("G-P10")]) == 3
-    bad = _task("T1", ["a"]); bad["soul"] = "code-reviewer"
+    bad = _task("T1", ["a"])
+    bad["soul"] = "code-reviewer"
     assert "G-P5" in ids(check([bad]))
 
 
@@ -192,6 +194,7 @@ def test_namespacing_and_agent_read_restrictions():
 
 def test_agents_cannot_write_other_changes_or_control(tmp_path):
     import types
+
     from legion_orch.engine import ChangeEngine, WorkflowError
     from legion_orch.model import Run
     docs = _store()
@@ -218,11 +221,13 @@ def test_review_panels():
 
 def test_protected_path_approval_timing_and_coverage():
     import types
+
     from legion_orch import governance
     e = types.SimpleNamespace(change=types.SimpleNamespace(protected_approvals=[
         {"task": "T1", "paths": ["tests/acc/test_a.py"], "at": "2026-01-02T00:00:00.000Z"}]))
     assert governance.approved_protected_for(e, "T1", "2026-01-03T00:00:00.000Z") == ["tests/acc/test_a.py"]
-    assert governance.approved_protected_for(e, "T1", "2026-01-01T00:00:00.000Z") == []   # run predates approval
+    # a run that predates the approval may not touch the path
+    assert governance.approved_protected_for(e, "T1", "2026-01-01T00:00:00.000Z") == []
     assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
     assert governance.coverage_ok({"covers": None}, {"T1", "T2"})
     assert not governance.coverage_ok({"covers": ["T1"]}, {"T1", "T2"})
@@ -230,6 +235,7 @@ def test_protected_path_approval_timing_and_coverage():
 
 def test_store_enforces_bound_schemas():
     import json as _j
+
     from legion_orch.store import SchemaViolation
     d = _store()
     good = {"tasks": [_task("T1", ["src/a.py"])]}
@@ -264,9 +270,17 @@ def test_report_schemas():
 
 
 def test_svid_verification_and_access_tokens():
-    import asyncio, time
-    from legion_orch.identity import (AccessTokens, DevSpire, IdentityError, IdentityService,
-                                      JWT_SPIFFE, SvidVerifier)
+    import asyncio
+    import time
+
+    from legion_orch.identity import (
+        JWT_SPIFFE,
+        AccessTokens,
+        DevSpire,
+        IdentityError,
+        IdentityService,
+        SvidVerifier,
+    )
     from legion_orch.util import bearer
     prefix = "spiffe://openshell.local/openshell/sandbox/"
     spire = DevSpire(prefix)
@@ -294,7 +308,9 @@ def test_svid_verification_and_access_tokens():
         run(svc.token_request(form, lambda ref: None))
     with pytest.raises(IdentityError, match="client_credentials"):
         run(svc.token_request(form | {"grant_type": "password"}, lambda ref: binding))
-    assert bearer("Bearer abc") == "abc" and bearer("Basic " + __import__("base64").b64encode(b"x:pw").decode()) == "pw"
+    import base64
+    assert bearer("Bearer abc") == "abc"
+    assert bearer("Basic " + base64.b64encode(b"x:pw").decode()) == "pw"
 
 
 
@@ -325,8 +341,7 @@ def test_template_vocabulary_is_shared_and_documented():
 
 
 def test_templates_render(tmp_path):
-    import yaml as _y
-    from legion_orch.sandbox import render, setup_commands
+    from legion_orch.sandbox import setup_commands
     from legion_orch.sandbox.runner import OpenShellRunner
     from legion_orch.sandbox.templates import TemplateError, render_text, spec_to_args
     cfg = _os_cfg(tmp_path)
@@ -338,6 +353,7 @@ def test_templates_render(tmp_path):
     r = OpenShellRunner(cfg)
     r._os = fake_os
     import asyncio
+
     from legion_orch.sandbox import SandboxSpec
     ref = asyncio.run(r.create(SandboxSpec(name="lg-c1-r0001", payload_dir=tmp_path / "payload",
                                            policy_file=tmp_path / "p.yaml", change="c1",
@@ -366,6 +382,7 @@ def test_templates_render(tmp_path):
 
 def test_generated_policy_and_provider_profile(tmp_path):
     import yaml as _y
+
     from legion_orch.sandbox import provider_profile, render_policy, setup_commands
     from legion_orch.server import MCP_TOOLS
     cfg = _os_cfg(tmp_path)

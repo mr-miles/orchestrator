@@ -7,15 +7,14 @@ immutability, optimistic concurrency and the path-bound schema (G-W2, G-W3).
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .docstore import DocStore, DocStoreError, DocVersion
 from .schemas import SchemaError
-
 
 STORE_TOOLS = ("docs_list", "docs_read", "docs_history", "docs_write", "docs_schema", "schema_get")
 
@@ -53,7 +52,7 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
         try:
             d = s.docs.read(readable_path(s, path), version)
         except DocStoreError as e:
-            raise ToolError(str(e))
+            raise ToolError(str(e)) from None
         return d.meta() | {"content": d.content}
 
     @server.tool(description="All versions of a document with author, role, sha256 and schema.")
@@ -70,7 +69,7 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
         try:
             v = await s.write(s.resolve(path), content, base_version)
         except DocStoreError as e:
-            raise ToolError(str(e))
+            raise ToolError(str(e)) from None
         return v.meta()
 
     @server.tool(description="The schema a document path is bound to (name, format, definition). "
@@ -81,7 +80,7 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
         try:
             sch = s.docs.schemas.get(s.docs.schemas.bound(full))
         except SchemaError as e:
-            raise ToolError(str(e))
+            raise ToolError(str(e)) from None
         return {"path": full, "schema": sch.name, "format": sch.fmt, "sha": sch.sha,
                 "definition": sch.body}
 
@@ -91,5 +90,5 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
         try:
             sch = s.docs.schemas.get(name)
         except SchemaError as e:
-            raise ToolError(str(e))
+            raise ToolError(str(e)) from None
         return {"schema": sch.name, "format": sch.fmt, "sha": sch.sha, "definition": sch.body}

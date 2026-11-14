@@ -1,4 +1,5 @@
-.legion-orch/
-__pycache__/
 *.egg-info/
+.legion-orch/
 .venv/
+__pycache__/
+dist/

@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "serve":
         import asyncio
+
         from .engine import Controller
         from .server import serve
         asyncio.run(serve(Controller(cfg)))
@@ -83,7 +84,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def setup_openshell(cfg, args) -> int:
     import subprocess
+
     import yaml
+
     from .sandbox import provider_profile, setup_commands
     from .server import MCP_TOOLS
     with open(args.out, "w") as f:

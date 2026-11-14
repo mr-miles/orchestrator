@@ -100,8 +100,10 @@ class SchemaRegistry:
             for h in s.body.get("required_headings", []):
                 if h.lower() not in headings:
                     errs.append(f"missing heading '{h}'")
-            for rx, why in zip(s.body.get("required_patterns", []),
-                               s.body.get("pattern_descriptions", []) + [None] * 99):
+            patterns = s.body.get("required_patterns", [])
+            descriptions = s.body.get("pattern_descriptions", [])
+            descriptions = (descriptions + [None] * len(patterns))[:len(patterns)]
+            for rx, why in zip(patterns, descriptions, strict=True):
                 if not re.search(rx, content, re.M):
                     errs.append(f"must contain {why or 'a match for /' + rx + '/'}")
             return errs

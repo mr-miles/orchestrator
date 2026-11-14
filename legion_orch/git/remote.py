@@ -42,9 +42,9 @@ async def run(*args: str, cwd: Path | None = None, check: bool = True,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
-        raise GitError(f"timeout: {' '.join(args)}")
+        raise GitError(f"timeout: {' '.join(args)}") from None
     text = out.decode(errors="replace")
     if check and proc.returncode != 0:
         raise GitError(f"{' '.join(args)} failed ({proc.returncode}): {text.strip()[:2000]}")
