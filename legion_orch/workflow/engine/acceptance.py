@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import secrets
 import shlex
 import shutil
 from collections.abc import AsyncIterator
@@ -13,6 +12,7 @@ from ...sandbox import (
     Runner,
     SandboxError,
     SandboxSpec,
+    verifier_sandbox_name,
 )
 from ..model import (
     ACCEPTED,
@@ -67,7 +67,7 @@ class Acceptance:
 
     async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
         """G-V1: run commands at ``sha`` in a fresh verifier sandbox. Never raises."""
-        name = f"lg-{self.c.change.id}-v{secrets.token_hex(3)}".lower()
+        name = verifier_sandbox_name()
         result = Verification(sha=sha, sandbox=name)
         if not commands:
             result.infra_error = "no commands to verify"

@@ -10,6 +10,7 @@ from typing import Any
 from ...sandbox import (
     RUN_AGENT_SH,
     SandboxSpec,
+    agent_sandbox_name,
 )
 from ...util import now_iso
 from .. import governance
@@ -165,7 +166,7 @@ class Dispatcher:
             run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
                                     if r.sandbox == node.sandbox and r.sandbox_ref), None)
         else:
-            run.sandbox = f"lg-{self.c.change.id}-{run.id}".lower()[:63]
+            run.sandbox = agent_sandbox_name(self.c.change.id, run.id)
         if h.judge and node.current_run:
             judged = self.c.runs.get(node.current_run)
             if judged and (judged.sandbox == run.sandbox or judged.id == run.id):

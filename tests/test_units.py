@@ -386,14 +386,15 @@ def test_templates_render(tmp_path):
     import asyncio
 
     from legion_orch.sandbox import SandboxSpec
-    ref = asyncio.run(r.create(SandboxSpec(name="lg-c1-r0001", payload_dir=tmp_path / "payload",
+    ref = asyncio.run(r.create(SandboxSpec(name="lg-r0001-0123456789", payload_dir=tmp_path / "payload",
                                            policy_file=tmp_path / "p.yaml", change="c1",
                                            task="build:T1", role="implementer", run="r0001")))
     assert ref == "sb-123"
     create = calls[0]
     assert create[:2] == ["sandbox", "create"]
-    for flag in (["--name", "lg-c1-r0001"], ["--from", "reg/agent:1"], ["--provider", "legion-controller"],
-                 ["--provider", "claude-code"], ["--label", "legion.task=build.T1"],
+    for flag in (["--name", "lg-r0001-0123456789"], ["--from", "reg/agent:1"],
+                 ["--provider", "legion-controller"], ["--provider", "claude-code"],
+                 ["--label", "legion.task=build.T1"],
                  ["--upload", f"{tmp_path / 'payload'}:/sandbox"]):
         assert any(create[i:i + 2] == flag for i in range(len(create))), flag
     assert "--detach" in create and "--no-tty" in create
@@ -746,3 +747,18 @@ def test_repo_path_is_optional(tmp_path):
     (tmp_path / "c.yaml").write_text("project: p\nrepo: {name: app, path: src}\ndecision_owners: [m]\n"
                                      "sandbox: {runner: local}\n")
     assert load_config(tmp_path / "c.yaml").repo.path == str(tmp_path / "src")
+
+
+def test_sandbox_names_fit_the_gateway_limit():
+    """OpenShell: a DNS label of at most 19 characters without '--' (NVIDIA/OpenShell#2651)."""
+    from legion_orch.sandbox import MAX_NAME, agent_sandbox_name, check_name, verifier_sandbox_name
+    a = agent_sandbox_name("c261114-a16e", "r0001")
+    assert len(a) == MAX_NAME == 19 and a.startswith("lg-r0001-") and check_name(a) == a
+    assert a == agent_sandbox_name("c261114-a16e", "r0001")             # stable for a run
+    assert a != agent_sandbox_name("c261114-b2c3", "r0001")             # unique across changes
+    assert len(agent_sandbox_name("c1", "r123456")) == 19
+    v = verifier_sandbox_name()
+    assert len(v) <= 19 and v.startswith("lg-v") and v != verifier_sandbox_name()
+    for bad in ("lg-c261114-a16e-r0001", "lg--x", "Lg-x", "-lg", "lg-x-", "lg_x"):
+        with pytest.raises(ValueError, match="at most 19"):
+            check_name(bad)

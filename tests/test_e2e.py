@@ -160,7 +160,8 @@ async def _drive(ce):
     await _wait(ce, lambda: all(r.sandbox_deleted for r in ce.runs.values()
                                 if r.status == "ACCEPTED"), "sandbox cleanup", 20)
     sb_root = ce.cfg.state_dir / "local-sandboxes"
-    mine = [p for p in sb_root.glob(f"lg-{ce.cid}-*")] if sb_root.exists() else []
+    names = {r.sandbox for r in ce.runs.values() if r.sandbox}
+    mine = [p for p in sb_root.glob("lg-*") if p.name in names] if sb_root.exists() else []
     assert mine == [], mine
     assert ce.docs.latest_version(f"changes/{ce.cid}/plan/spec.md") == 2
     assert ce.docs.latest_version("plan/spec.md") is None

@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import Config
+from .names import check_name
 from .templates import base_values, render, spec_to_args
 
 # Obtains a bearer for a sandbox ref (what the OpenShell gateway does for real sandboxes).
@@ -94,6 +95,7 @@ class OpenShellRunner(Runner):
 
     async def create(self, spec: SandboxSpec) -> str:
         """``sandbox create`` from policies/{agent,verifier}-sandbox.template.yaml."""
+        check_name(spec.name)
         values = base_values(self.cfg) | {
             "SANDBOX_NAME": spec.name, "POLICY_FILE": str(spec.policy_file),
             "PAYLOAD_UPLOAD": f"{spec.payload_dir}:/sandbox", "CHANGE_ID": spec.change,
@@ -154,6 +156,7 @@ class LocalRunner(Runner):
         return env
 
     async def create(self, spec):
+        check_name(spec.name)            # same rule as the gateway, so local runs catch it too
         r = self._root(spec.name)
         if r.exists():
             raise SandboxError(f"sandbox {spec.name} already exists")
