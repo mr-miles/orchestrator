@@ -467,7 +467,7 @@ class ChangeEngine:
                 if dn and dn.kind == BUILD and dn.accepted_sha:
                     refs.append(f"git:{self.cfg.repo.name}@{dn.accepted_sha}")
             if role in PANEL_ROLES:
-                ev = self._latest_att(f"evidence/{node.task['id']}/cycle-{node.cycle}.md")
+                ev = self._latest_att(f"tasks/{node.task['id']}/evidence/cycle-{node.cycle}.md")
                 if ev:
                     refs.append(ev)
                 ver = node.verification.get(str(node.cycle))
@@ -475,7 +475,7 @@ class ChangeEngine:
                     refs.append(ver["attestation"])
         if role in ("integration", "release"):
             for b in self._build_nodes():
-                refs += [a for a in (self._latest_att(f"evidence/{b.task['id']}/cycle-{b.cycle}.md"),)
+                refs += [a for a in (self._latest_att(f"tasks/{b.task['id']}/evidence/cycle-{b.cycle}.md"),)
                          if a]
             if role == "release":
                 a = self._latest_att("integration/report.md")
@@ -724,7 +724,11 @@ class ChangeEngine:
     def docs_write(self, run: Run, path: str, content: str, base_version: int | None) -> DocVersion:
         """Guards G-W1 and G-W2. ``path`` may be relative to the change namespace."""
         path = self.p(path)
-        if path.startswith(self.p("control/")) or not any(path.startswith(w) for w in run.write_scope):
+        rel = path[len(self.p("")):]
+        controller_owned = rel.startswith("control/") or (
+            rel.startswith("tasks/") and (rel.split("/")[2:3] in (["verification.json"], ["feedback"],
+                                                                  ["decisions"])))
+        if controller_owned or not any(path.startswith(w) for w in run.write_scope):
             raise WorkflowError(f"G-W1: {path} is outside your write scope {run.write_scope}")
         v = self.docs.write(path, content, author=run.id, role=run.role, base_version=base_version)
         self._event("doc", f"{v.attestation} written", run.node_id, run.id)
@@ -1055,7 +1059,8 @@ class ChangeEngine:
         async with self.lock:
             if node.status != VERIFYING:
                 return
-            att = self._cwrite(f"control/verification/{_slug(node_id)}.json", res).attestation
+            att = self._cwrite(f"tasks/{node.task['id']}/verification.json" if node.kind == BUILD
+                              else f"control/verification/{_slug(node_id)}.json", res).attestation
             res["attestation"] = att
             key = "integration" if node.kind == INTEGRATION else str(node.cycle)
             node.verification[key] = {k: res[k] for k in ("ok", "sha", "attestation", "infra_error")} \
@@ -1152,7 +1157,8 @@ class ChangeEngine:
 
     def _feedback_doc(self, node: Node, approver: str, text: str, kind: str) -> str:
         n = len([f for f in node.feedback if f["source"] == kind]) + 1
-        path = f"control/{kind}/{_slug(node.id)}-{n}.md"
+        path = f"tasks/{node.task['id']}/{kind}/{n}.md" if node.kind == BUILD \
+            else f"control/{kind}/{_slug(node.id)}-{n}.md"
         return self._cwrite(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
 
     async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> dict:

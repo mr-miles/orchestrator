@@ -202,7 +202,9 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     ce.st._events = []
     ce.st.event = lambda *a, **k: 0
     assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
-    for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md"):
+    run.write_scope = ["changes/c1/plan/", "changes/c1/tasks/T1/"]   # even a broad scope can't
+    for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md",
+                "tasks/T1/verification.json", "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
 

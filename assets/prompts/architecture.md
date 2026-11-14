@@ -11,7 +11,7 @@ Task contract:
 Approved specs and context: {{context_refs}}
 
 Apply the architecture checklist to `git diff {{base_sha}}..{{candidate_sha}}`. Write
-`reviews/{{task_id}}/architecture-cycle-{{cycle}}.md`. Report with `data.verdict`,
+`tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md`. Report with `data.verdict`,
 `data.findings`, `data.checked`, attesting `git:{{repo_name}}@{{candidate_sha}}`.
 
 Earlier findings: {{feedback}}

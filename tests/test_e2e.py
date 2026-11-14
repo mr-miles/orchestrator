@@ -217,7 +217,7 @@ async def _r3_workflow(tmp_path):
             await ce.change_action("override", "miles", {
                 "kind": "waive_gate", "gate": "deterministic_verification",
                 "reason": "we really want to skip the checks here", "evidence": "file:release/plan.md@1"})
-        sec = ce._latest_att("reviews/T1/security-cycle-2.md")
+        sec = ce._latest_att("tasks/T1/reviews/security-cycle-2.md")
         await ce.change_action("attest", "ana", {"kind": "security-evaluation", "verdict": "pass",
                                                  "sources": [sec]})
         await ce.change_action("attest", "ana", {"kind": "rollback-evidence", "verdict": "pass",

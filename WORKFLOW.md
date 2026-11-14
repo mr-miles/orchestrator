@@ -106,7 +106,8 @@ by side under one controller; they share `max_parallel` and the git remote but n
 
 | Where | What |
 | --- | --- |
-| `changes/<id>/<role docs>` | agent documents (`intake/`, `plan/`, `critique/`, `evidence/`, `reviews/`, …) |
+| `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
+| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller) |
 | `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
 | `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
@@ -226,7 +227,7 @@ Universal guards apply to every task and are listed once.
 | G-R4 | report | The role's required documents are attested at their **latest** version and were **authored by this run**. |
 | G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
 | G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. |
-| G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never `control/**`. |
+| G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). |
 
 ### 5.1 `intake` – start
@@ -305,7 +306,7 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 
 * **Soul:** the task's `soul` (`senior-developer`, `backend-engineer`, `frontend-engineer`)
 * **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`
-* **Writes:** `evidence/{{task_id}}/**`  **Required:** `evidence/{{task_id}}/cycle-{{cycle}}.md`, git `commit`
+* **Writes:** `tasks/{{task_id}}/evidence/**`  **Required:** `tasks/{{task_id}}/evidence/cycle-{{cycle}}.md`, git `commit`
 * **Sandbox:** created on first dispatch and **reused across rework cycles** (the agent keeps its
   working copy); deleted when the node is `ACCEPTED`.
 
@@ -320,7 +321,7 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 
 A fresh sandbox (network: controller git endpoint only, read-only token) clones the candidate
 commit and runs each `verification` command; results come back through `sandbox exec` output.
-Results are written by the controller to `control/verification/<node>.json` (one version per cycle).
+Results are written by the controller to `tasks/{{task_id}}/verification.json` (one version per cycle).
 
 | ID | Rule |
 | --- | --- |
@@ -331,10 +332,10 @@ Results are written by the controller to `control/verification/<node>.json` (one
 Panel: R1 `code-reviewer`; R2 `code-reviewer` (+ `security-reviewer` if security/authorization ≥ 2,
 + `architecture-reviewer` if scope_breadth/novelty_uncertainty ≥ 2); R3 all three. R0 has no panel.
 The architecture reviewer uses skill `architecture-checklist` and writes
-`reviews/{{task_id}}/architecture-cycle-{{cycle}}.md`.
+`tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md`.
 
 * **Souls:** `code-reviewer`, `security-reviewer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format` (+ `security-checklist`)
-* **Writes:** `reviews/{{task_id}}/**`  **Required:** `reviews/{{task_id}}/{{role}}-cycle-{{cycle}}.md`, git `candidate`
+* **Writes:** `tasks/{{task_id}}/reviews/**`  **Required:** `tasks/{{task_id}}/reviews/{{role}}-cycle-{{cycle}}.md`, git `candidate`
 
 | ID | Rule |
 | --- | --- |

@@ -11,7 +11,7 @@ Task contract:
 
 Evidence and context: {{context_refs}}
 
-Write `reviews/{{task_id}}/reviewer-cycle-{{cycle}}.md`. Report with `data.verdict`,
+Write `tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md`. Report with `data.verdict`,
 `data.findings`, `data.checked`, attesting `git:{{repo_name}}@{{candidate_sha}}`.
 
 Earlier findings on this task: {{feedback}}

@@ -140,7 +140,7 @@ def main():
                 wfile("src/greet.txt", "hello world\n")   # out of scope -> G-B3
         sha = commit_push(f"{tid}: implement", a["git"]["branch"])
         cmds = a["task"]["verification"]
-        ev = write(f"evidence/{tid}/cycle-{cycle}.md",
+        ev = write(f"tasks/{tid}/evidence/cycle-{cycle}.md",
                    "\n".join(f"- `{c}` -> exit 0" for c in cmds))
         res = call("report", status="DONE", summary=f"{tid} done", attestations=[f"git:{REPO}@{sha}", ev])
         print(res)
@@ -150,7 +150,7 @@ def main():
             git("commit", "-q", "--amend", "--no-edit", "-a")
             git("push", "-q", "--force", "origin", f"HEAD:refs/heads/{a['git']['branch']}")
             sha = git("rev-parse", "HEAD")
-            ev = write(f"evidence/{tid}/cycle-{cycle}.md",
+            ev = write(f"tasks/{tid}/evidence/cycle-{cycle}.md",
                        "\n".join(f"- `{c}` -> exit 0" for c in cmds) + "\n(fixed scope)")
             print(call("report", status="DONE", summary=f"{tid} fixed scope",
                        attestations=[f"git:{REPO}@{sha}", ev]))
@@ -165,7 +165,7 @@ def main():
                 "fix": "rewrite", "attestations": [catt]}]}
         else:
             data = {"verdict": "PASS", "checked": ["diff", "tests"], "findings": []}
-        doc = write(f"reviews/{tid}/{role}-cycle-{cycle}.md", f"{data['verdict']}")
+        doc = write(f"tasks/{tid}/reviews/{role}-cycle-{cycle}.md", f"{data['verdict']}")
         print(call("report", status="DONE", summary="reviewed", attestations=[catt, doc], data=data))
     elif role == "baseline":
         head = a["head_sha"]

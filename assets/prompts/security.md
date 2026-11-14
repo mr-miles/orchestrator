@@ -11,7 +11,7 @@ Task contract:
 Context: {{context_refs}}
 
 Apply the security checklist to `git diff {{base_sha}}..{{candidate_sha}}`. Write
-`reviews/{{task_id}}/security-cycle-{{cycle}}.md`. Report with `data.verdict`, `data.findings`,
+`tasks/{{task_id}}/reviews/security-cycle-{{cycle}}.md`. Report with `data.verdict`, `data.findings`,
 `data.checked`, attesting `git:{{repo_name}}@{{candidate_sha}}`.
 
 Earlier findings: {{feedback}}

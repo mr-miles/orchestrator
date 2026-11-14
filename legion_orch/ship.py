@@ -121,7 +121,7 @@ async def evaluate(e: "Engine") -> dict[str, Any]:
         for b in builds:
             run = e.runs.get(b.current_run)
             atts = (run.report or {}).get("attestations", []) if run else []
-            ev = [a for a in atts if a.startswith(f"file:{e.p('evidence/' + b.task['id'])}/")]
+            ev = [a for a in atts if a.startswith(f"file:{e.p('tasks/' + b.task['id'] + '/evidence')}/")]
             if not ev or not all([await resolves(a) for a in ev]):
                 return _g(UNSAT, f"{b.id}: no resolvable evidence document")
         return _g(SAT, "every task has an attested evidence document")

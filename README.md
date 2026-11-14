@@ -37,7 +37,7 @@ legion-orch -c orchestrator.yaml changes                            # list chang
 legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
 legion-orch -c orchestrator.yaml act <change-id> H-2 approve --approver miles --payload '{"subjects": ["REQ-1"]}'
 legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
-  --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:reviews/T1/security-cycle-1.md@1"]}'
+  --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
 ```
 
 Endpoints served on one port: `/` (UI), `/api/*` (UI JSON + SSE), `/mcp/` (agent MCP tools,

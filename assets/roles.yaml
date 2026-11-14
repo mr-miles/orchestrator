@@ -37,22 +37,22 @@ implementer:
   soul: "{{task_soul}}"
   souls_allowed: [senior-developer, backend-engineer, frontend-engineer]
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
-  write: ["evidence/{{task_id}}/"]
-  required_docs: ["evidence/{{task_id}}/cycle-{{cycle}}.md"]
+  write: ["tasks/{{task_id}}/evidence/"]
+  required_docs: ["tasks/{{task_id}}/evidence/cycle-{{cycle}}.md"]
   git: commit
   repo: true
 reviewer:
   soul: code-reviewer
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
-  write: ["reviews/{{task_id}}/"]
-  required_docs: ["reviews/{{task_id}}/reviewer-cycle-{{cycle}}.md"]
+  write: ["tasks/{{task_id}}/reviews/"]
+  required_docs: ["tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md"]
   git: candidate
   repo: true
 security:
   soul: security-reviewer
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, security-checklist]
-  write: ["reviews/{{task_id}}/"]
-  required_docs: ["reviews/{{task_id}}/security-cycle-{{cycle}}.md"]
+  write: ["tasks/{{task_id}}/reviews/"]
+  required_docs: ["tasks/{{task_id}}/reviews/security-cycle-{{cycle}}.md"]
   git: candidate
   repo: true
 integration:
@@ -72,7 +72,7 @@ release:
 architecture:
   soul: architecture-reviewer
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, architecture-checklist]
-  write: ["reviews/{{task_id}}/"]
-  required_docs: ["reviews/{{task_id}}/architecture-cycle-{{cycle}}.md"]
+  write: ["tasks/{{task_id}}/reviews/"]
+  required_docs: ["tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md"]
   git: candidate
   repo: true

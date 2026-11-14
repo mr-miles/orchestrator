@@ -12,7 +12,7 @@ Task contract (authoritative):
 Context to read before editing: {{context_refs}}
 
 Steps: read context → implement within `files_modified` → run every `verification` command →
-write `evidence/{{task_id}}/cycle-{{cycle}}.md` listing each command with its exit code and the
+write `tasks/{{task_id}}/evidence/cycle-{{cycle}}.md` listing each command with its exit code and the
 relevant output → commit → report `DONE` attesting `git:{{repo_name}}@<HEAD sha>` and the evidence
 document.
 
