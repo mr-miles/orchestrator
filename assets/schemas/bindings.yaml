@@ -16,7 +16,6 @@
 - {pattern: "control/graph.json", schema: graph}
 - {pattern: "control/nodes/*.json", schema: node}
 - {pattern: "control/runs/*.json", schema: run}
-- {pattern: "control/events/*.json", schema: event}
 - {pattern: "control/approvals/*.json", schema: approval}
 - {pattern: "control/approvals/*/*.json", schema: approval}
 - {pattern: "control/attestations/*.json", schema: attestation}

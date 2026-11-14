@@ -242,7 +242,7 @@ async function startChange() {
   catch (e) { $('#starterr').textContent = e.message; }
 }
 
-const TABS = {gates:'Ship gates', plan:'Plan', docs:'Documents', events:'Events', workflow:'WORKFLOW.md'};
+const TABS = {gates:'Ship gates', plan:'Plan', docs:'Documents', workflow:'WORKFLOW.md'};
 function renderTabs() { $('#tabs').innerHTML = Object.entries(TABS).map(([k,v]) => `<button class="${tab===k?'on':''}" ${on('setTab', k)}>${v}</button>`).join(''); }
 let tabCache = {};
 async function renderTab(force) {
@@ -268,16 +268,12 @@ async function renderTab(force) {
     const showAll = $('#docall') && $('#docall').checked;
     const list = await api(`/api/docs?prefix=${encodeURIComponent(scope==='change'?docPath(''):'')}${showAll?'&all=1':''}`);
     const controls = `<div class="row" style="margin-bottom:6px"><select id="docscope" style="width:auto" data-onchange="renderTab"><option value="change" ${scope==='change'?'selected':''}>this change</option><option value="all" ${scope==='all'?'selected':''}>all changes</option></select>
-      <label class="muted"><input id="docall" type="checkbox" style="width:auto" ${showAll?'checked':''} data-onchange="renderTab"> include controller records (events, nodes, runs)</label></div>`;
+      <label class="muted"><input id="docall" type="checkbox" style="width:auto" ${showAll?'checked':''} data-onchange="renderTab"> include controller records (nodes, runs)</label></div>`;
     let viewer = '';
     if (docSel) { try { const d = await api(`/api/doc?path=${encodeURIComponent(docSel.path)}${docSel.version?'&version='+docSel.version:''}`);
       viewer = `<div class="card"><b>${esc(d.attestation)}</b> <span class="muted">by ${esc(d.author)} (${esc(d.role)}) · ${esc(d.created_at)} · ${esc(d.sha256.slice(0,19))} · schema <code>${esc(d.schema)}</code> ${esc((d.schema_sha||'').slice(7,15))}</span>
         <div>versions: ${d.history.map(h=>`<a ${on('openDoc', d.path, h.version)}>v${h.version}</a>`).join(' ')}</div><pre>${esc(d.content)}</pre></div>`; } catch(e) { viewer = `<div class="err">${esc(e.message)}</div>`; } }
     body.innerHTML = controls + viewer + `<table><tr><th>path</th><th>latest</th><th>schema</th><th>author</th><th>written</th></tr>${list.map(d=>`<tr><td><a ${on('openDoc', d.path)}>${esc(d.path)}</a></td><td>v${d.version}</td><td><code>${esc(d.schema)}</code></td><td>${esc(d.author)} <span class="muted">${esc(d.role)}</span></td><td class="muted">${esc(d.created_at)}</td></tr>`).join('')}</table>`;
-  } else if (tab === 'events') {
-    if (!CID) { body.innerHTML = ''; return; }
-    const ev = await api(`/api/changes/${CID}/events`);
-    body.innerHTML = `<table><tr><th>time</th><th>kind</th><th>node</th><th>run</th><th>message</th></tr>${ev.slice().reverse().map(e=>`<tr><td class="muted mono">${esc(e.ts.slice(11,19))}</td><td>${esc(e.kind)}</td><td>${e.node?`<a ${on('select', e.node)}>${esc(e.node)}</a>`:''}</td><td>${esc(e.run||'')}</td><td>${esc(e.message)}</td></tr>`).join('')}</table>`;
   } else if (tab === 'workflow') {
     if (!tabCache.wf || force) tabCache.wf = await api('/api/workflow');
     body.innerHTML = `<div class="muted">asset set ${esc(S.assets_sha)}</div><pre style="max-height:600px">${esc(tabCache.wf)}</pre>`;
@@ -345,4 +341,4 @@ const es = new EventSource('/api/stream');
 es.onmessage = async ev => { const v = JSON.parse(ev.data).version; if (v !== lastVersion && !pending) { lastVersion = v; pending = true;
   try { S = await loadState(); renderHeader(); renderPipeline(); renderGraph(); renderLive();
     if (!document.activeElement || !['TEXTAREA','INPUT','SELECT'].includes(document.activeElement.tagName)) renderDetail();
-    if (['gates','events'].includes(tab)) renderTab(); } finally { pending = false; } } };
+    if (tab === 'gates') renderTab(); } finally { pending = false; } } };

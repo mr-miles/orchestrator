@@ -42,7 +42,7 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
 }
 # Bulky controller records hidden from the default document listing (still readable).
-NOISY = ("/control/events/", "/control/nodes/", "/control/runs/")
+NOISY = ("/control/nodes/", "/control/runs/")
 
 
 def build_mcp_app(ctl: Controller) -> Starlette:
@@ -125,11 +125,6 @@ def build_app(ctl: Controller) -> Starlette:
         return JSONResponse(ctl.get(request.path_params["cid"]).snapshot())
 
     @guarded
-    async def events(request: Request):
-        ce = ctl.get(request.path_params["cid"])
-        return JSONResponse(ce.st.events(after=int(request.query_params.get("after", 0)), limit=300))
-
-    @guarded
     async def action(request: Request):
         operator(request)
         body = await request.json()
@@ -197,7 +192,6 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/meta", meta),
         Route("/api/changes", changes, methods=["GET", "POST"]),
         Route("/api/changes/{cid}/state", state),
-        Route("/api/changes/{cid}/events", events),
         Route("/api/changes/{cid}/nodes/{node_id}/action", action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/stream", stream),

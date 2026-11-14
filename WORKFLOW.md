@@ -140,7 +140,6 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
 | `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
 | `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha and rendered-prompt sha**, attempts, violations, report, progress. No credential exists to store. |
-| `changes/<id>/control/events/<seq>.json` | append-only event log |
 | `changes/<id>/control/logs/<run>.log` | agent output, archived when the agent exits (last 512 KiB); not readable by agents |
 | `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship}/…` | human decisions and controller evidence |
 | git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
@@ -503,7 +502,6 @@ guards, because a per-file schema cannot express them.
 * [`attestation`](assets/schemas/attestation.json)
 * [`change`](assets/schemas/change.json)
 * [`delta-spec`](assets/schemas/delta-spec.json)
-* [`event`](assets/schemas/event.json)
 * [`evidence`](assets/schemas/evidence.json)
 * [`graph`](assets/schemas/graph.json)
 * [`json`](assets/schemas/json.json)

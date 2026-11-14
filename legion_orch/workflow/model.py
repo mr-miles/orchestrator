@@ -127,7 +127,6 @@ class StateStore:
     changes/<cid>/control/graph.json           task graph structure (node order, kinds, deps, waves)
     changes/<cid>/control/nodes/<node>.json    node state (one version per transition)
     changes/<cid>/control/runs/<run>.json      run record (no credentials exist to persist)
-    changes/<cid>/control/events/<seq>.json    append-only event log
     """
 
     def __init__(self, docs, cid: str):
@@ -137,7 +136,6 @@ class StateStore:
         self.change: Change | None = None
         self.nodes: dict[str, Node] = {}
         self.runs: dict[str, Run] = {}
-        self._events: list[dict] = []
         self._written: dict[str, str] = {}
         self._known_nodes: set[str] = set()
 
@@ -170,9 +168,6 @@ class StateStore:
             data = self._read(m["path"])
             run = _from_dict(Run, data)
             self.runs[run.id] = run
-        for m in self.docs.list(self.root + "events/"):
-            self._events.append(json.loads(self.docs.read(m["path"]).content))
-        self._events.sort(key=lambda e: e["seq"])
 
     def save(self) -> None:
         if self.change is None:
@@ -189,19 +184,6 @@ class StateStore:
         for r in self.runs.values():
             d = asdict(r)
             self._write(f"runs/{r.id}.json", d)
-
-    def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
-              data: Any = None) -> int:
-        seq = len(self._events) + 1
-        rec = {"seq": seq, "ts": now_iso(), "kind": kind, "node": node, "run": run,
-               "message": message, "data": data}
-        self.docs.write(f"{self.root}events/{seq:06d}.json", json.dumps(rec, sort_keys=True),
-                        author="controller", role="controller", base_version=None)
-        self._events.append(rec)
-        return seq
-
-    def events(self, after: int = 0, limit: int = 500) -> list[dict]:
-        return [e for e in self._events if e["seq"] > after][-limit:]
 
 
 def _parse_ts_safe(ts: str):

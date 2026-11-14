@@ -71,7 +71,8 @@ class ChangeEngine(GraphMixin, DispatchMixin, RunsMixin, ReportsMixin, VerifyMix
 
     def event(self, kind: str, message: str, node: str | None = None, run: str | None = None,
                data: Any = None) -> None:
-        self.st.event(kind, message, node, run, data)
+        """Log a notable step. Not persisted: the store's records (node and run versions,
+        control documents) are the history."""
         log.info("[%s %s] %s%s", self.cid, kind, f"{node}: " if node else "", message)
         self.ctl.version += 1
 

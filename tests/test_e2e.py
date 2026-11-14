@@ -40,10 +40,8 @@ async def _wait(engine, pred, what, timeout=90):
         if pred():
             return
         await asyncio.sleep(0.2)
-    events = "\n".join(f"{e['kind']} {e['node']} {e['message']}" for e in engine.st.events(limit=60)) \
-        if hasattr(engine, "st") else ""
     states = {n.id: n.status for n in engine.nodes.values()} if hasattr(engine, "nodes") else {}
-    raise AssertionError(f"timeout waiting for {what}; nodes={states}\n{events}")
+    raise AssertionError(f"timeout waiting for {what}; nodes={states}")
 
 
 def _config(tmp_path, port):
@@ -111,7 +109,6 @@ async def _full_workflow(tmp_path):
         assert list(new.nodes) == list(old.nodes)
         assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
-        assert len(new.st.events()) == len(old.st.events())
         assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
         assert ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
     assert ctl2.identity.tokens.verify(old_token) is None     # signing key never persisted
