@@ -7,7 +7,7 @@ document is not parsed.
 
 Every dispatch records two pins: the SHA-256 of the whole asset set and the SHA-256 of the rendered
 soul + skills + prompt. Any edit to an asset is therefore visible in the run record. Guard IDs
-(`G-…`, `H-…`) are implemented one-to-one in `legion_orch/guards.py`; `tests/test_units.py` fails if
+(`G-…`, `H-…`) are implemented one-to-one in `legion_orch/workflow/guards.py`; `tests/test_units.py` fails if
 this document and the code drift apart, or if a link below points at a missing asset.
 
 The model follows [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended):

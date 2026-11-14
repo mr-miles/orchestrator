@@ -20,11 +20,23 @@ from typing import Any
 
 import httpx
 
+from ..config import Config
+from ..git import GitGrant, GitRemote
+from ..identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
+from ..sandbox import (
+    RUN_AGENT_SH,
+    VERIFY_SETUP_SH,
+    LocalRunner,
+    Runner,
+    SandboxError,
+    SandboxSpec,
+    make_runner,
+    render_policy,
+)
+from ..store import DocStore, DocVersion
+from ..util import now_iso
 from . import attest, governance, guards, risk
 from .assets import AssetError, Assets
-from .config import Config
-from .git import GitGrant, GitRemote
-from .identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
 from .model import (
     ACCEPTED,
     ACTIVE_NODE,
@@ -64,18 +76,6 @@ from .model import (
     Run,
     StateStore,
 )
-from .sandbox import (
-    RUN_AGENT_SH,
-    VERIFY_SETUP_SH,
-    LocalRunner,
-    Runner,
-    SandboxError,
-    SandboxSpec,
-    make_runner,
-    render_policy,
-)
-from .store import DocStore, DocVersion
-from .util import now_iso
 
 log = logging.getLogger("legion")
 
@@ -463,7 +463,7 @@ class ChangeEngine:
 
     def _overlaps_running(self, node: Node) -> bool:
         """Guard G-D3 (file overlap part)."""
-        from .git import paths_overlap
+        from ..git import paths_overlap
         mine = node.task["files_modified"]
         for other in self._build_nodes():
             if other.id == node.id or other.status not in ACTIVE_NODE | {REWORK}:

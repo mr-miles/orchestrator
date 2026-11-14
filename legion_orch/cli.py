@@ -7,8 +7,8 @@ import logging
 import sys
 import urllib.request
 
-from .assets import Assets
 from .config import load_config
+from .workflow.assets import Assets
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,8 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         import asyncio
 
-        from .engine import Controller
         from .server import serve
+        from .workflow.engine import Controller
         asyncio.run(serve(Controller(cfg)))
         return 0
     if args.cmd == "setup-openshell":

@@ -9,8 +9,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .git import GitRemote
-from .store import DocStore
+from ..git import GitRemote
+from ..store import DocStore
 
 FILE_RE = re.compile(r"^file:(?P<path>[^@\s]+)@(?P<version>[1-9][0-9]*)$")
 GIT_RE = re.compile(r"^git:(?P<body>[^@\s]+)@(?P<sha>[0-9a-f]{40})$")

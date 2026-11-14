@@ -6,10 +6,10 @@ import json
 import re
 from typing import Any
 
+from ..git import path_matches, paths_overlap
+from ..store import DocStore
 from . import risk
 from .attest import Attestation
-from .git import path_matches, paths_overlap
-from .store import DocStore
 
 GUARDS: dict[str, str] = {
     # universal

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC
 from typing import Any
 
-from .util import now_iso
+from ..util import now_iso
 
 # Node kinds
 INTAKE, PLAN, CRITIQUE, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (

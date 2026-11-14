@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from .store import SchemaRegistry
+from ..store import SchemaRegistry
 
 VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")

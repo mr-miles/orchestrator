@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from legion_orch.config import load_config
-from legion_orch.engine import Controller, WorkflowError
 from legion_orch.server import build_servers
+from legion_orch.workflow.engine import Controller, WorkflowError
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -288,7 +288,7 @@ async def _identity_checks(ctl, cfg):
         assert r.status_code == 401                               # grant ends with the sandbox
 
     # task-scoped: a token only works for the live run of the task (and role) it names
-    from legion_orch.model import Run
+    from legion_orch.workflow.model import Run
     ce = next(iter(ctl.changes.values()))
     ce.runs["r9999"] = Run(id="r9999", node_id="build:T1", role="implementer", soul="s", cycle=9,
                            status="ACTIVE", sandbox="lg-x", sandbox_ref="lg-x")

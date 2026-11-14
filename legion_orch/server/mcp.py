@@ -22,12 +22,12 @@ from typing import Any
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .. import attest
-from ..engine import ChangeEngine, Controller, WorkflowError
-from ..model import Run
 from ..store import DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
+from ..workflow import attest
+from ..workflow.engine import ChangeEngine, Controller, WorkflowError
+from ..workflow.model import Run
 
 INSTRUCTIONS = """Legion orchestrator tools. Start with get_assignment(). Documents are immutable,
 versioned and schema-validated (docs_write creates a new version; pass base_version when revising;

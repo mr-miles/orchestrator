@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from legion_orch import guards, risk
-from legion_orch.assets import AssetError, Assets
-from legion_orch.attest import AttestationError, parse
 from legion_orch.store import DocStore, DocStoreError, VersionConflict
+from legion_orch.workflow import guards, risk
+from legion_orch.workflow.assets import AssetError, Assets
+from legion_orch.workflow.attest import AttestationError, parse
 
 ROOT = Path(__file__).resolve().parent.parent
 SHA = "a" * 40
@@ -26,7 +26,8 @@ def test_workflow_doc_guard_ids_match_code():
 def test_every_guard_is_referenced_outside_the_registry():
     src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py")
                   if p.name != "guards.py")
-    src += re.sub(r"GUARDS: dict.*?\n}\n", "", (ROOT / "legion_orch/guards.py").read_text(), flags=re.S)
+    guards_src = (ROOT / "legion_orch/workflow/guards.py").read_text()
+    src += re.sub(r"GUARDS: dict.*?\n}\n", "", guards_src, flags=re.S)
     missing = [g for g in guards.GUARDS if g not in src and not g.startswith("H-")]
     assert not missing, missing
 
@@ -182,8 +183,8 @@ def test_review_and_report_guards():
 
 
 def test_namespacing_and_agent_read_restrictions():
-    from legion_orch.attest import normalize, qualify
     from legion_orch.server.mcp import _hidden
+    from legion_orch.workflow.attest import normalize, qualify
     assert qualify("plan/spec.md", "c1") == "changes/c1/plan/spec.md"
     assert qualify("changes/c2/plan/spec.md", "c1") == "changes/c2/plan/spec.md"
     assert normalize("file:plan/spec.md@2", "c1") == "file:changes/c1/plan/spec.md@2"
@@ -195,8 +196,8 @@ def test_namespacing_and_agent_read_restrictions():
 def test_agents_cannot_write_other_changes_or_control(tmp_path):
     import types
 
-    from legion_orch.engine import ChangeEngine, WorkflowError
-    from legion_orch.model import Run
+    from legion_orch.workflow.engine import ChangeEngine, WorkflowError
+    from legion_orch.workflow.model import Run
     docs = _store()
     ctl = types.SimpleNamespace(cfg=None, docs=docs, git=None, assets=None, runner=None, lock=None,
                                 procs={}, read_tokens={}, version=0)
@@ -222,7 +223,7 @@ def test_review_panels():
 def test_protected_path_approval_timing_and_coverage():
     import types
 
-    from legion_orch import governance
+    from legion_orch.workflow import governance
     e = types.SimpleNamespace(change=types.SimpleNamespace(protected_approvals=[
         {"task": "T1", "paths": ["tests/acc/test_a.py"], "at": "2026-01-02T00:00:00.000Z"}]))
     assert governance.approved_protected_for(e, "T1", "2026-01-03T00:00:00.000Z") == ["tests/acc/test_a.py"]

@@ -19,11 +19,11 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
-from ..engine import Controller, WorkflowError
 from ..git import make_git_endpoint
 from ..identity import make_token_endpoint
 from ..store import DocStoreError
 from ..util import bearer
+from ..workflow.engine import Controller, WorkflowError
 from .mcp import build_mcp
 
 STATIC = Path(__file__).parent / "static"
