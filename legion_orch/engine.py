@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from . import attest, guards, risk
+from . import attest, governance, guards, risk
 from .assets import AssetError, Assets
 from .config import Config
 from .docstore import DocStore, DocVersion, now_iso
@@ -36,7 +36,8 @@ from .sandbox import (RUN_AGENT_SH, VERIFY_SETUP_SH, Runner, SandboxError, Sandb
 log = logging.getLogger("legion")
 
 PUSH_ROLES = {"implementer", "oracle"}
-JUDGE_ROLES = {"critic", "reviewer", "security", "integration", "baseline"}
+PANEL_ROLES = ("reviewer", "security", "architecture")
+JUDGE_ROLES = {"critic", "integration", "baseline", *PANEL_ROLES}
 PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
 
 
@@ -435,37 +436,37 @@ class ChangeEngine:
 
     # ================================================================== dispatch
     def _approval_fresh(self) -> list[str]:
-        """Guard G-B1."""
-        appr = self.change.approvals.get(H_SPEC)
-        if not appr:
-            return ["G-B1: spec/oracle not approved (H-2)"]
-        v = []
-        for path, ver in appr["pins"].items():
-            if self.docs.latest_version(path) != ver:
-                v.append(f"G-B1: approval is stale: {path} changed after approval")
-        if appr.get("oracle_sha") != self.change.oracle_sha:
-            v.append("G-B1: oracle commit changed after approval")
-        return v
+        """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
+        return governance.stale_approvals(self)
+
+    def _plan_docs(self) -> list[str]:
+        return PLAN_DOCS + [f"plan/specs/{r}.md" for r in self.change.requirements]
+
+    def _oracle_commands(self) -> list[str]:
+        orc = self.change.oracle or {}
+        cmds = orc.get("acceptance_commands", []) + orc.get("integration_commands", []) \
+            + governance.surface_commands(self)
+        return list(dict.fromkeys(cmds))
 
     def _context_refs(self, node: Node, role: str) -> list[str]:
         refs: list[str] = []
         appr1 = self.change.approvals.get(H_REQUIREMENTS)
         if appr1 and role != "intake":
             refs += [f"file:{p}@{v}" for p, v in appr1["pins"].items()]
-        appr2 = self.change.approvals.get(H_SPEC)
-        if role in ("critic", "oracle"):
-            refs += [a for a in (self._latest_att(p) for p in PLAN_DOCS) if a]
-        elif appr2:
-            refs += [f"file:{p}@{v}" for p, v in appr2["pins"].items()]
-        elif role == "baseline":
-            refs += [a for a in (self._latest_att(p) for p in PLAN_DOCS) if a]
+        if role in ("critic", "oracle", "baseline") or not self.change.approvals.get("oracle"):
+            if self.nodes.get(PLAN) and self.nodes[PLAN].status == ACCEPTED:
+                refs += [a for a in (self._latest_att(p) for p in self._plan_docs()) if a]
+        else:
+            for key, appr in self.change.approvals.items():
+                if key == "oracle" or key.startswith("spec:"):
+                    refs += [f"file:{p}@{v}" for p, v in appr["pins"].items()]
         if node.kind == BUILD:
             refs += [c for c in node.task.get("context", []) if isinstance(c, str)]
             for d in node.depends_on:
                 dn = self.nodes.get(d)
                 if dn and dn.kind == BUILD and dn.accepted_sha:
                     refs.append(f"git:{self.cfg.repo.name}@{dn.accepted_sha}")
-            if role in ("reviewer", "security"):
+            if role in PANEL_ROLES:
                 ev = self._latest_att(f"evidence/{node.task['id']}/cycle-{node.cycle}.md")
                 if ev:
                     refs.append(ev)
@@ -556,7 +557,7 @@ class ChangeEngine:
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
         self.runs[run_id] = run
         node.runs.append(run_id)
-        if role not in ("reviewer", "security"):
+        if role not in PANEL_ROLES:
             node.current_run = run_id
             node.status = RUNNING
         if role == "implementer":
@@ -656,7 +657,7 @@ class ChangeEngine:
         if node is None:
             return
         tail = self.log_tail(run.id, 40)
-        if run.role in ("reviewer", "security"):
+        if run.role in PANEL_ROLES:
             self._escalate(node, "run_failed", f"{run.role} run {run.id}: {reason}",
                            resume=REVIEWING, run=run.id, log_tail=tail)
         else:
@@ -816,6 +817,9 @@ class ChangeEngine:
                 return e1 + e2
             v += guards.plan(tg, orc, self.change.requirements, self.change.tier,
                              self.cfg.protected_paths, self.assets.roles["implementer"].souls_allowed)
+            _, vs = guards.required_docs(run.id, [self.p(f"plan/specs/{r}.md")
+                                                  for r in self.change.requirements], parsed, self.docs)
+            v += [x.replace("G-R4", "G-P9") for x in vs]
             ctx["taskgraph"], ctx["oracle"] = tg, orc
         elif run.role == "critic":
             plan_atts = {a.path: a.version for a in parsed if a.kind == "file"}
@@ -836,13 +840,13 @@ class ChangeEngine:
         elif run.role == "implementer":
             t = node.task
             changed = await self.git.changed_paths(run.base_sha, sha)
-            protected = list((self.change.oracle or {}).get("acceptance_tests", [])) \
-                + self.cfg.protected_paths
-            v += guards.scoped_diff(changed, t["files_modified"], t.get("files_forbidden", []),
-                                    protected, "G-B3")
+            approved = governance.approved_protected_for(self, t["id"], run.created_at)  # G-PP1
+            protected = [p for p in governance.protected_paths(self) if p not in approved]
+            v += guards.scoped_diff(changed, t["files_modified"] + approved,
+                                    t.get("files_forbidden", []), protected, "G-B3")
             ev = self.docs.read(run.required_docs[0], found[run.required_docs[0]].version).content
             v += guards.evidence_mentions(ev, t["verification"])
-        elif run.role in ("reviewer", "security"):
+        elif run.role in PANEL_ROLES:
             v += guards.findings(data, repo_atts)
             v += guards.verdict(data, pass_word="PASS", fail_word="FAIL", gid="G-RV3",
                                 cycle=run.cycle, require_checked=True)
@@ -851,8 +855,7 @@ class ChangeEngine:
             v += guards.verdict(data, pass_word="PASS", fail_word="FAIL", gid="G-INT1",
                                 cycle=2, require_checked=False)
             v += [x.replace("G-RV2", "G-INT1") for x in guards.findings(data, repo_atts)]
-            v += guards.results_cover(data, orc.get("acceptance_commands", [])
-                                      + orc.get("integration_commands", []), "G-INT1")
+            v += guards.results_cover(data, self._oracle_commands(), "G-INT1")
             v += await self._protected_unchanged(sha)
         elif run.role == "release":
             v += guards.release_docs(self._doc("release/plan.md").content,
@@ -865,7 +868,10 @@ class ChangeEngine:
         v = []
         if not self.change.oracle_sha:
             return v
+        approved = governance.all_approved_protected(self)
         for p in (self.change.oracle or {}).get("acceptance_tests", []):
+            if p in approved:
+                continue
             if await self.git.blob(head, p) != await self.git.blob(self.change.oracle_sha, p):
                 v.append(f"G-INT2: protected acceptance test {p} changed since oracle commit")
         return v
@@ -928,7 +934,7 @@ class ChangeEngine:
             await self.git.pin(run.id, ctx["sha"])
             node.status = VERIFYING
             self._spawn(self._verify_node(node.id))
-        elif role in ("reviewer", "security"):
+        elif role in PANEL_ROLES:
             node.reviews[f"{run.cycle}:{role}"] = {
                 "verdict": data["verdict"], "sha": run.judged_sha, "run": run.id,
                 "findings": data.get("findings", []), "checked": data.get("checked", []),
@@ -1042,8 +1048,7 @@ class ChangeEngine:
         if node.kind == BUILD:
             commands = node.task["verification"]
         else:
-            orc = self.change.oracle or {}
-            commands = orc.get("acceptance_commands", []) + orc.get("integration_commands", [])
+            commands = self._oracle_commands()
         self._event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                     f"({len(commands)} command(s))", node_id)
         res = await self._verify(node_id, node.candidate_sha, commands)
@@ -1135,8 +1140,6 @@ class ChangeEngine:
                 res = self._resolve_escalation(node, action, approver, payload)
             elif node.kind == HUMAN and node.status == AWAITING_HUMAN:
                 res = await self._human_gate(node, action, approver, payload)
-            elif node.kind == RELEASE and action == "waive":
-                res = self._waive_release(node, approver, payload)
             elif node.kind == SHIP and action == "recheck" and node.status == ACCEPTED:
                 node.status = RUNNING
                 self._spawn(self._ship())
@@ -1193,16 +1196,26 @@ class ChangeEngine:
                 return {"ok": True}
         elif node.id == H_SPEC:
             if action == "approve":
-                pins = {self.p(p): self._latest(p) for p in PLAN_DOCS}
-                att = self._cwrite("control/approvals/spec.json", {
-                    "gate": "H-2", "approver": approver, "at": now_iso(), "pins": pins,
-                    "oracle_sha": ch.oracle_sha}).attestation
-                ch.approvals[H_SPEC] = {"approver": approver, "at": now_iso(), "pins": pins,
-                                        "oracle_sha": ch.oracle_sha, "attestation": att}
-                ch.oracle = self._json_doc("plan/oracle.json")
+                # Each delta spec, the plan and the oracle are separate decisions (may be
+                # different approvers); H-2 completes once every subject is approved and fresh.
+                try:
+                    done = await governance.approve_subjects(
+                        self, payload.get("subjects") or "all", approver)
+                except governance.GovernanceError as e:
+                    raise WorkflowError(str(e))
+                status = governance.h2_status(self)
+                pending = [x["subject"] for x in status if x["status"] != "approved"]
+                if not pending and risk.rank(ch.tier) >= 3:
+                    b = ch.attestations.get("independent-baseline")
+                    if not b or b["verdict"] != "pass":
+                        return {"ok": True, "approved": done, "pending": ["independent-baseline"],
+                                "note": "R3: attest independent-baseline (pass) before build starts, "
+                                        "then approve again to release the build"}
+                if pending:
+                    return {"ok": True, "approved": done, "pending": pending}
                 node.status = ACCEPTED
-                node.human = ch.approvals[H_SPEC]
-                return {"ok": True}
+                node.human = {"approved_at": governance.last_h2_approval_at(self), "subjects": status}
+                return {"ok": True, "approved": done, "pending": []}
             if action == "revise":
                 if not text:
                     raise WorkflowError("feedback is required")
@@ -1220,6 +1233,7 @@ class ChangeEngine:
                     del self.nodes[b.id]
                 await self.git.init_integration(ch.id, ch.base_sha)
                 ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
+                ch.surface_pins = {}
                 node.status = PENDING
                 return {"ok": True}
         elif node.id == H_CHANGE:
@@ -1299,25 +1313,30 @@ class ChangeEngine:
             node.status = resume if resume in (READY, REWORK) else READY
         return {"ok": True, "status": node.status}
 
-    def _waive_release(self, node: Node, approver: str, payload: dict) -> dict:
-        reason, source = payload.get("reason"), payload.get("source", "")
-        if not risk.valid_reason(reason):
-            raise WorkflowError("waiver reason must be ≥24 chars and more than one word")
-        try:
-            source = attest.normalize(source, self.cid)
-            a = attest.parse(source, [self.cfg.repo.name])
-        except attest.AttestationError as e:
-            raise WorkflowError(str(e))
-        if a.kind != "file" or not self.docs.exists(a.path, a.version):
-            raise WorkflowError("waiver source must be a resolvable file: attestation")
-        att = self._cwrite("control/waivers/release_observation_plan.json", {
-            "gate": "release_observation_plan", "verdict": "not_applicable", "approver": approver,
-            "reason": reason, "source": source, "at": now_iso()}).attestation
-        self.change.waivers["release_observation_plan"] = {"approver": approver, "reason": reason,
-                                                           "source": source, "attestation": att}
-        node.status = ACCEPTED
-        node.human = {"waiver": True, "approver": approver}
-        return {"ok": True}
+    async def change_action(self, action: str, approver: str, payload: dict | None = None) -> dict:
+        """Change-level governance: attest, override, approve_protected_paths, approve_surface."""
+        payload = payload or {}
+        async with self.lock:
+            self._check_approver(approver)
+            try:
+                if action == "attest":
+                    res = await governance.record_attestation(self, approver, payload)
+                elif action == "override":
+                    res = await governance.record_override(self, approver, payload)
+                elif action == "approve_protected_paths":
+                    res = governance.record_protected_approval(self, approver, payload)
+                elif action == "approve_surface":
+                    if not risk.valid_reason(payload.get("reason")):
+                        raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")
+                    res = {"ok": True, "surfaces": await governance.pin_surfaces(
+                        self, approver, payload.get("surface"), payload["reason"])}
+                else:
+                    raise WorkflowError(f"unknown change action {action!r}")
+            except governance.GovernanceError as e:
+                raise WorkflowError(str(e))
+            self._event("human_action", f"{approver}: {action}", data=payload)
+            self._save()
+            return res
 
     # ================================================================== ship
     async def _ship(self) -> None:
@@ -1353,4 +1372,7 @@ class ChangeEngine:
                 "decision_owners": self.cfg.decision_owners, "version": self.ctl.version,
                 "assets_sha": self.assets.sha, "limits": self.cfg.limits.__dict__,
                 "change": asdict(ch) if ch else None, "nodes": nodes, "runs": runs,
-                "gates": risk.GATES_BY_TIER.get(ch.tier, []) if ch and ch.tier else []}
+                "gates": governance.gate_set(self) if ch and ch.tier else [],
+                "h2": governance.h2_status(self) if ch and ch.requirements else [],
+                "surfaces": governance.surfaces(self) if ch else [],
+                "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}

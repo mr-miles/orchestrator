@@ -46,30 +46,38 @@ async def _wait(engine, pred, what, timeout=90):
     raise AssertionError(f"timeout waiting for {what}; nodes={states}\n{events}")
 
 
-def test_full_workflow(tmp_path):
-    asyncio.run(_full_workflow(tmp_path))
-
-
-async def _full_workflow(tmp_path):
-    _make_repo(tmp_path / "src-repo")
-    port = _free_port()
+def _config(tmp_path, port):
     cfg_path = tmp_path / "orchestrator.yaml"
     cfg_path.write_text(textwrap.dedent(f"""
         project: e2e
         repo: {{name: app, path: {tmp_path / 'src-repo'}, base_branch: main}}
-        decision_owners: [miles]
+        decision_owners: [miles, ana]
         state_dir: state
         assets_dir: {ROOT / 'assets'}
         workflow_doc: {ROOT / 'WORKFLOW.md'}
         server: {{host: 127.0.0.1, port: {port}, public_url: "http://127.0.0.1:{port}"}}
-        limits: {{max_parallel: 3, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
+        limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
         sandbox:
           runner: local
           policy_template: {ROOT / 'policies/agent-policy.template.yaml'}
           verifier_policy_template: {ROOT / 'policies/verifier-policy.template.yaml'}
           agent_command: "{sys.executable} {ROOT / 'tests/fake_agent.py'}"
     """))
-    cfg = load_config(cfg_path)
+    return load_config(cfg_path)
+
+
+def test_full_workflow(tmp_path):
+    asyncio.run(_full_workflow(tmp_path))
+
+
+def test_r3_governance(tmp_path):
+    asyncio.run(_r3_workflow(tmp_path))
+
+
+async def _full_workflow(tmp_path):
+    _make_repo(tmp_path / "src-repo")
+    port = _free_port()
+    cfg = _config(tmp_path, port)
     ctl = Controller(cfg)
     server = uvicorn.Server(uvicorn.Config(build_app(ctl), host="127.0.0.1", port=port,
                                            log_level="warning"))
@@ -120,7 +128,11 @@ async def _drive(ce):
     assert ce.change.oracle_sha
     with pytest.raises(Exception):
         await ce.human_action("H-2", "approve", "mallory")   # not a decision owner
-    await ce.human_action("H-2", "approve", "miles")
+    r = await ce.human_action("H-2", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
+    assert sorted(r["pending"]) == ["REQ-2", "oracle"] and n["H-2"].status == "AWAITING_HUMAN"
+    r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["REQ-2", "oracle"]})
+    assert r["pending"] == [] and n["H-2"].status == "ACCEPTED"
+    assert ce.change.surface_pins["files"]["pins"]["README.md"]
 
     await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
     assert n["build:T1"].cycle == 2                 # review FAIL -> rework
@@ -155,3 +167,72 @@ async def _drive(ce):
     assert show("src/greet.txt") == "hello\n\n"
     assert show("src/bye.txt") == "goodbye\n"
     assert "goodbye" in show("docs/README.md")
+
+
+async def _r3_workflow(tmp_path):
+    _make_repo(tmp_path / "src-repo")
+    port = _free_port()
+    cfg = _config(tmp_path, port)
+    ctl = Controller(cfg)
+    server = uvicorn.Server(uvicorn.Config(build_app(ctl), host="127.0.0.1", port=port,
+                                           log_level="warning"))
+    task = asyncio.create_task(server.serve())
+    try:
+        await _wait(ctl, lambda: server.started, "server start", 20)
+        ce = await ctl.start_change("R3: say hello and goodbye")
+        n = ce.nodes
+        await _wait(ce, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
+        await ce.human_action("H-1", "accept", "miles")
+        assert ce.change.tier == "R3" and ce.change.panel == ["reviewer", "security", "architecture"]
+
+        await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
+        assert n["baseline"].status == "ACCEPTED"
+        r = await ce.human_action("H-2", "approve", "miles")
+        assert r["pending"] == ["independent-baseline"]        # R3: baseline attested before build
+        with pytest.raises(Exception, match="G-AT1"):
+            await ce.change_action("attest", "miles", {"kind": "independent-baseline",
+                                                       "verdict": "pass", "sources": []})
+        r = await ce.change_action("attest", "miles", {
+            "kind": "independent-baseline", "verdict": "pass", "sources": ["file:baseline/report.md@1"]})
+        assert r["warnings"] == []
+        await ce.human_action("H-2", "approve", "miles")
+        assert n["H-2"].status == "ACCEPTED"
+
+        await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
+        assert all(f"{b.cycle}:architecture" in b.reviews for b in ce._build_nodes())
+        await ce.human_action("H-3", "accept", "miles")
+        await _wait(ce, lambda: ce.change.ship is not None, "ship")
+        gates = ce.change.ship["gates"]
+        assert ce.change.ship["verdict"] == "NOT_READY"
+        assert gates["security_or_e2e_evaluator"]["status"] == "unevaluable"
+        assert gates["rollback_or_forward_fix_evidence"]["status"] == "unevaluable"
+        assert gates["independent_baseline"]["status"] == "satisfied"
+        assert gates["architecture_or_security_review"]["status"] == "satisfied"
+        assert gates["release_observation_plan"]["status"] == "satisfied"
+
+        with pytest.raises(Exception, match="G-AT1"):
+            await ce.change_action("attest", "miles", {"kind": "release-observation", "verdict": "pass",
+                                                       "sources": ["file:release/plan.md@1"]})
+        with pytest.raises(Exception, match="cannot be waived"):
+            await ce.change_action("override", "miles", {
+                "kind": "waive_gate", "gate": "deterministic_verification",
+                "reason": "we really want to skip the checks here", "evidence": "file:release/plan.md@1"})
+        sec = ce._latest_att("reviews/T1/security-cycle-2.md")
+        await ce.change_action("attest", "ana", {"kind": "security-evaluation", "verdict": "pass",
+                                                 "sources": [sec]})
+        await ce.change_action("attest", "ana", {"kind": "rollback-evidence", "verdict": "pass",
+                                                 "sources": ["file:release/rollback.md@1"]})
+        await ce.change_action("override", "miles", {
+            "kind": "add_gate", "gate": "evidence_bundle_or_log",
+            "reason": "keep the per-task evidence logs for audit"})
+        first = ce.change.ship
+        await ce.human_action("ship", "recheck", "miles")
+        await _wait(ce, lambda: ce.change.ship is not first, "ship recheck")
+        ship = ce.change.ship
+        assert ship["verdict"] == "READY", {k: g for k, g in ship["gates"].items() if g["status"] != "satisfied"}
+        assert ship["gates"]["evidence_bundle_or_log"]["added"]
+        assert {"independent_baseline", "security_or_e2e_evaluator",
+                "rollback_or_forward_fix_evidence"} <= set(ship["human_judgement_gates"])
+    finally:
+        server.should_exit = True
+        await task

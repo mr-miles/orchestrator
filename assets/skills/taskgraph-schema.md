@@ -24,8 +24,21 @@
 {"acceptance_tests": ["tests/acceptance/test_users_api.py"],
  "acceptance_commands": ["pytest -q tests/acceptance"],
  "integration_commands": ["pytest -q"],
- "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…"}]}
+ "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…"}],
+ "surfaces": [{"id": "users-api",
+               "description": "HTTP API served by docker compose, checked against the OpenAPI schema",
+               "commands": ["docker compose up -d && pytest -q tests/integration/test_api.py"],
+               "pins": ["docker-compose.yml", "schema/openapi.yaml"]}]}
 ```
+
+**Delta specs:** one document per accepted requirement, `plan/specs/<REQ-id>.md`: current
+behaviour, the change, contracts, and the acceptance criteria that prove it. Each is approved
+separately by a human (G-P9). `plan/spec.md` is the overview tying them together.
+
+**Verification surfaces** (R2+, G-P10) declare what the integration commands really reach and pin
+the files that make that true (compose files, schemas, fixtures). The controller pins those files
+when the oracle is approved. If a task edits a pinned file, the gate stays unsatisfied until a human
+re-affirms the surface, so pin what defines the real interface, not files the tasks will change.
 
 Rules the controller enforces: every REQ covered and every task traced (G-P3); ≥1 verification
 command and acceptance criterion per task (G-P4); tasks that may run in parallel (no dependency

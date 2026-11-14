@@ -74,9 +74,13 @@ def review_panel(tier: str, scores: dict[str, int]) -> list[str]:
     if tier == "R1":
         return ["reviewer"]
     if tier == "R2":
-        sec = max(scores.get("security", 0), scores.get("authorization", 0)) >= 2
-        return ["reviewer", "security"] if sec else ["reviewer"]
-    return ["reviewer", "security"]
+        panel = ["reviewer"]
+        if max(scores.get("security", 0), scores.get("authorization", 0)) >= 2:
+            panel.append("security")
+        if max(scores.get("scope_breadth", 0), scores.get("novelty_uncertainty", 0)) >= 2:
+            panel.append("architecture")
+        return panel
+    return ["reviewer", "security", "architecture"]
 
 
 def valid_reason(reason: str | None) -> bool:

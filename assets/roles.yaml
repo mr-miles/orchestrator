@@ -69,3 +69,10 @@ release:
   required_docs: ["release/plan.md", "release/rollback.md"]
   git: none
   repo: true
+architecture:
+  soul: architecture-reviewer
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, architecture-checklist]
+  write: ["reviews/{{task_id}}/"]
+  required_docs: ["reviews/{{task_id}}/architecture-cycle-{{cycle}}.md"]
+  git: candidate
+  repo: true

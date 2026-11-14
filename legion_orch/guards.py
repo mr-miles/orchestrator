@@ -39,6 +39,8 @@ GUARDS: dict[str, str] = {
     "G-P6": "valid paths, parallel tasks disjoint",
     "G-P7": "no protected paths in files_modified",
     "G-P8": "R2+ oracle completeness",
+    "G-P9": "a delta spec per accepted requirement",
+    "G-P10": "R2+ oracle declares verification surfaces",
     "G-C1": "critique verdict and findings",
     "G-C2": "critique cycle budget",
     "G-O1": "oracle diff only touches acceptance tests",
@@ -50,6 +52,7 @@ GUARDS: dict[str, str] = {
     "G-B2": "commit is the pushed tip of the run branch and descends from base",
     "G-B3": "scoped diff",
     "G-B4": "evidence lists verification commands",
+    "G-PP1": "protected paths changed only after a prior human approval for that task",
     "G-V1": "deterministic verification passes",
     "G-RV1": "review attests candidate sha",
     "G-RV2": "finding format",
@@ -63,6 +66,9 @@ GUARDS: dict[str, str] = {
     "G-INT2": "protected acceptance tests unchanged since oracle commit",
     "G-REL1": "release plan and rollback documents complete",
     "H-3": "human accepts the change at the integration head",
+    "G-AT1": "attestation shape: kind, verdict, sources, waiver rules, coverage",
+    "G-SF1": "verification surface pins unchanged (or re-affirmed)",
+    "G-OV1": "gate overrides: add or waive with reason and replacement evidence",
 }
 
 REQ_RE = re.compile(r"\bREQ-([0-9]+)\b")
@@ -271,6 +277,23 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
         for c in crit:
             if not isinstance(c, dict) or c.get("requirement") not in req_set:
                 v.append(f"G-P8: criterion {c!r:.60} must reference an accepted requirement")
+        surfaces = oracle.get("surfaces")
+        if not isinstance(surfaces, list) or not surfaces:
+            v.append("G-P10: oracle.surfaces must declare at least one verification surface")
+        else:
+            ids = []
+            for sf in surfaces:
+                if not isinstance(sf, dict) or not str(sf.get("id") or "").strip():
+                    v.append("G-P10: every surface needs an id")
+                    continue
+                ids.append(sf["id"])
+                if not [c for c in sf.get("commands") or [] if isinstance(c, str) and c.strip()]:
+                    v.append(f"G-P10: surface {sf['id']} needs at least one command")
+                if not sf.get("pins") or not all(isinstance(p, str) and not bad_path.search(p)
+                                                 for p in sf["pins"]):
+                    v.append(f"G-P10: surface {sf['id']} must pin at least one valid repository path")
+            if len(ids) != len(set(ids)) or any(not re.match(r"^[a-z0-9][a-z0-9-]*$", i) for i in ids):
+                v.append("G-P10: surface ids must be unique lowercase-dashed names")
     return v
 
 

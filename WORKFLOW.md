@@ -113,7 +113,7 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox, branch, **asset-set sha and rendered-prompt sha**, attempts, violations, report, progress. Never the token. |
 | `changes/<id>/control/events/<seq>.json` | append-only event log |
 | `changes/<id>/control/logs/<run>.log` | agent output, archived when the agent exits (last 512 KiB); not readable by agents |
-| `changes/<id>/control/{approvals,verification,decisions,feedback,waivers,ship}/…` | human decisions and controller evidence |
+| `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship}/…` | human decisions and controller evidence |
 | git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
 
 Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset set and of its
@@ -144,12 +144,26 @@ scope_breadth, novelty_uncertainty, verification_quality`).
 | --- | --- | --- |
 | R0 | `current_task_contract_or_small_change_record`, `deterministic_verification`, `evidence_note` | no reviewer, no oracle task |
 | R1 | `task_contract`, `scoped_implementer_run`, `deterministic_verification`, `evidence_bundle_or_log`, `lightweight_independent_review` | 1 reviewer per task |
-| R2 | `approved_delta_spec`, `protected_oracle`, `task_contract`, `deterministic_verification`, `task_level_independent_review`, `integration_or_real_interface_checks`, `whole_change_acceptance_evidence` | oracle task, reviewer per task (+security reviewer if `security`/`authorization` ≥ 2), integration verifier, H-3 |
-| R3 | `independent_baseline`, `approved_spec_and_oracle`, `protected_oracle`, `deterministic_verification`, `architecture_or_security_review`, `protected_acceptance_tests`, `security_or_e2e_evaluator`, `explicit_human_approval`, `release_observation_plan`, `rollback_or_forward_fix_evidence` | adds baseline, security reviewer on every task, release planner |
+| R2 | `approved_delta_spec`, `protected_oracle`, `task_contract`, `deterministic_verification`, `task_level_independent_review`, `integration_or_real_interface_checks`, `whole_change_acceptance_evidence` | oracle task with verification surfaces, reviewer per task (+security reviewer if `security`/`authorization` ≥ 2, +architecture reviewer if `scope_breadth`/`novelty_uncertainty` ≥ 2), integration verifier, H-3 |
+| R3 | `independent_baseline`, `approved_spec_and_oracle`, `protected_oracle`, `deterministic_verification`, `architecture_or_security_review`, `protected_acceptance_tests`, `security_or_e2e_evaluator`, `explicit_human_approval`, `release_observation_plan`, `rollback_or_forward_fix_evidence` | adds baseline, security and architecture reviewers on every task, release planner, and human attestations (§5.12) |
 
 Each gate is reported as `satisfied`, `unsatisfied` or `unevaluable` by the deterministic ship check
-(§5.11). A human waiver is allowed only for `release_observation_plan` (reason ≥ 24 chars and
-attested source) and is listed in `waived_gates`.
+(§5.11). Where each gate's evidence comes from:
+
+| Gate | Evidence |
+| --- | --- |
+| `approved_delta_spec` | every delta spec `plan/specs/<REQ>.md` (and the plan) approved at H-2 against its current version |
+| `approved_spec_and_oracle` | all H-2 subjects approved and fresh, the **last** approval before the first build run |
+| `protected_oracle` / `protected_acceptance_tests` | acceptance-test blobs unchanged since the oracle commit, except paths a human approved beforehand (G-PP1); acceptance commands pass at head |
+| `integration_or_real_interface_checks` | integration verifier PASS, oracle and **surface** commands pass at head, surface pins unchanged or re-affirmed (G-SF1) |
+| `independent_baseline` | human `independent-baseline` attestation (pass), recorded **before** the first build run |
+| `security_or_e2e_evaluator` | human `security-evaluation` or `e2e-evaluation` attestation; any `fail` blocks |
+| `architecture_or_security_review` | architecture or security panel PASS on every task, or a human `architecture-review` attestation; a `fail` attestation blocks |
+| `rollback_or_forward_fix_evidence` | human `rollback-evidence` or `forward-fix-evidence` attestation |
+| `release_observation_plan` | release planner's `release/plan.md`, or a `release-observation` `not_applicable` attestation (waiver) |
+
+Gates can be added or waived by a human (G-OV1, §5.12); waived and human-judgement gates are
+listed in the readiness result.
 
 ---
 
@@ -243,6 +257,8 @@ Universal guards apply to every task and are listed once.
 | G-P6 | `files_modified` non-empty, relative, no `..`; tasks with no dependency path between them have disjoint `files_modified` (parallel safety). |
 | G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, config `protected_paths`). |
 | G-P8 | R2+: `oracle.json` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
+| G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
+| G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
 
 ### 5.3 `critique`
 
@@ -282,8 +298,8 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 
 | ID | Rule |
 | --- | --- |
-| H-2 | Approver ∈ `decision_owners`. Pins `plan/spec.md`, `plan/oracle.json`, `plan/taskgraph.json` versions and (R2+) the oracle commit sha. |
-| G-B1 | (dispatch of any build run) the H-2 pins equal the current latest versions – an approval goes stale if the plan changes, and the approval timestamp precedes the first build run (`approved_spec_and_oracle`). |
+| H-2 | Separate decisions, possibly by different approvers ∈ `decision_owners`: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md`, and the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). The node completes when every subject is approved against current versions; at R3 it also requires an `independent-baseline` pass attestation, so the baseline is recorded before any build run. |
+| G-B1 | (dispatch of any build run) every H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
 
 ### 5.6 `build` – one node per task in `plan/taskgraph.json`
 
@@ -298,6 +314,7 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 | G-B2 | The attested commit is the current tip of the run's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
 | G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected. |
 | G-B4 | The evidence document names every `verification` command of the task with its exit code. |
+| G-PP1 | A protected path may appear in the diff only if a human approved it for **this task** before **this run** was created (`approve_protected_paths`); it is then treated as in scope. |
 
 ### 5.7 `verify` – deterministic (controller, no agent)
 
@@ -311,8 +328,10 @@ Results are written by the controller to `control/verification/<node>.json` (one
 
 ### 5.8 `review` – independent panel
 
-Panel: R1 `code-reviewer`; R2 `code-reviewer` (+ `security-reviewer` if security/authorization ≥ 2);
-R3 `code-reviewer` + `security-reviewer`. R0 has no panel.
+Panel: R1 `code-reviewer`; R2 `code-reviewer` (+ `security-reviewer` if security/authorization ≥ 2,
++ `architecture-reviewer` if scope_breadth/novelty_uncertainty ≥ 2); R3 all three. R0 has no panel.
+The architecture reviewer uses skill `architecture-checklist` and writes
+`reviews/{{task_id}}/architecture-cycle-{{cycle}}.md`.
 
 * **Souls:** `code-reviewer`, `security-reviewer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format` (+ `security-checklist`)
 * **Writes:** `reviews/{{task_id}}/**`  **Required:** `reviews/{{task_id}}/{{role}}-cycle-{{cycle}}.md`, git `candidate`
@@ -355,6 +374,24 @@ The controller evaluates every gate of the tier (§3) against the store and the 
 every attestation it relies on, and writes `control/ship/readiness.json`. Verdict `READY` iff every
 gate is `satisfied` (or validly waived). It publishes nothing.
 
+### 5.12 Change-level governance (human)
+
+Recorded at any time by a decision owner (UI, `legion-orch govern`, or `POST /api/changes/<id>/action`).
+Each is a versioned document under `control/`, so superseding keeps the history.
+
+| Action | Record | Rules |
+| --- | --- | --- |
+| `attest` | `control/attestations/<kind>.json` | G-AT1 |
+| `approve_protected_paths` | `control/approvals/protected-paths/<n>.json` | G-PP1 |
+| `approve_surface` | `control/surfaces/<id>.json` | G-SF1 |
+| `override` | `control/overrides/<n>.json` | G-OV1 |
+
+| ID | Rule |
+| --- | --- |
+| G-AT1 | Kind ∈ `independent-baseline, security-evaluation, e2e-evaluation, architecture-review, rollback-evidence, forward-fix-evidence, release-observation`; verdict ∈ `pass, fail, unknown, not_applicable`; ≥1 resolvable source attestation (a waiver still names its bytes); `not_applicable` needs a waiver reason (≥24 chars, >1 word) and only it may carry one; `release-observation` cannot be `pass` (the release plan is the evidence); optional `covers` lists task ids – partial coverage leaves the gate unsatisfied. One record per kind: re-attesting supersedes, and a `fail` is never undone by a pass on a sibling kind. |
+| G-SF1 | At ship, every file pinned by a verification surface has the same blob at the integration head as when pinned. A drift leaves `integration_or_real_interface_checks` unsatisfied until a human re-affirms the surface (`approve_surface`, with a reason) – a decision, never a silent re-pin. |
+| G-OV1 | `add_gate` adds any known gate to this change's set; `waive_gate` needs a reason (≥24 chars) and resolvable replacement evidence, and is refused for `deterministic_verification`, `explicit_human_approval` and `whole_change_acceptance_evidence`. Tier changes happen only at H-1. |
+
 ---
 
 ## 6. Assets
@@ -391,6 +428,7 @@ assets/
 | `implementer` | [`prompts/implementer.md`](assets/prompts/implementer.md) |
 | `reviewer` | [`prompts/reviewer.md`](assets/prompts/reviewer.md) |
 | `security` | [`prompts/security.md`](assets/prompts/security.md) |
+| `architecture` | [`prompts/architecture.md`](assets/prompts/architecture.md) |
 | `integration` | [`prompts/integration.md`](assets/prompts/integration.md) |
 | `release` | [`prompts/release.md`](assets/prompts/release.md) |
 
@@ -406,6 +444,7 @@ assets/
 * [`frontend-engineer`](assets/souls/frontend-engineer.md)
 * [`code-reviewer`](assets/souls/code-reviewer.md)
 * [`security-reviewer`](assets/souls/security-reviewer.md)
+* [`architecture-reviewer`](assets/souls/architecture-reviewer.md)
 * [`integration-verifier`](assets/souls/integration-verifier.md)
 * [`release-planner`](assets/souls/release-planner.md)
 
@@ -421,3 +460,4 @@ assets/
 * [`pre-mortem`](assets/skills/pre-mortem.md)
 * [`finding-format`](assets/skills/finding-format.md)
 * [`security-checklist`](assets/skills/security-checklist.md)
+* [`architecture-checklist`](assets/skills/architecture-checklist.md)

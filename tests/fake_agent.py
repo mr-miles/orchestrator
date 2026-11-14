@@ -79,16 +79,23 @@ def main():
             "verification_quality")]
         signals += [{"name": "public_api", "score": 2, "rationale": "files are the public API"},
                     {"name": "scope_breadth", "score": 1, "rationale": "two files"}]
+        if "R3" in a["goal"]:
+            signals = [x for x in signals if x["name"] != "security"] + [
+                {"name": "security", "score": 3, "rationale": "pretend secrets are involved"}]
         risk = write("intake/risk.json", json.dumps({"signals": signals}))
         print(call("report", status="DONE", summary="requirements captured", attestations=[req, risk]))
     elif role == "planner":
         spec = write("plan/spec.md", f"# Spec (cycle {cycle})\n\nWrite greet/bye files and docs.\n")
+        deltas = [write(f"plan/specs/{r}.md", f"# {r} delta spec (cycle {cycle})\n")
+                  for r in ("REQ-1", "REQ-2")]
         oracle = write("plan/oracle.json", json.dumps({
             "acceptance_tests": ["tests/acceptance/test_greet.sh"],
             "acceptance_commands": ["sh tests/acceptance/test_greet.sh"],
             "integration_commands": ["test -f docs/README.md"],
             "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "hello"},
-                         {"id": "AC-2", "requirement": "REQ-2", "text": "goodbye"}]}))
+                         {"id": "AC-2", "requirement": "REQ-2", "text": "goodbye"}],
+            "surfaces": [{"id": "files", "description": "the repository files are the interface",
+                          "commands": ["test -f README.md"], "pins": ["README.md"]}]}))
         tasks = [
             {"id": "T1", "title": "greet", "soul": "backend-engineer", "requirements": ["REQ-1"],
              "depends_on": [], "files_modified": ["src/greet.txt"], "instructions": "write hello",
@@ -101,7 +108,8 @@ def main():
              "acceptance": ["docs exist"], "verification": ["test -f docs/README.md"]},
         ]
         tg = write("plan/taskgraph.json", json.dumps({"tasks": tasks}))
-        print(call("report", status="DONE", summary="plan written", attestations=[spec, oracle, tg]))
+        print(call("report", status="DONE", summary="plan written",
+                   attestations=[spec, oracle, tg] + deltas))
     elif role == "critic":
         plan = [call("docs_read", path=p)["attestation"] for p in
                 ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
@@ -146,7 +154,7 @@ def main():
                        "\n".join(f"- `{c}` -> exit 0" for c in cmds) + "\n(fixed scope)")
             print(call("report", status="DONE", summary=f"{tid} fixed scope",
                        attestations=[f"git:{REPO}@{sha}", ev]))
-    elif role in ("reviewer", "security"):
+    elif role in ("reviewer", "security", "architecture"):
         tid = a["task"]["id"]
         cand = a["candidate_sha"]
         catt = f"git:{REPO}@{cand}"
@@ -159,11 +167,25 @@ def main():
             data = {"verdict": "PASS", "checked": ["diff", "tests"], "findings": []}
         doc = write(f"reviews/{tid}/{role}-cycle-{cycle}.md", f"{data['verdict']}")
         print(call("report", status="DONE", summary="reviewed", attestations=[catt, doc], data=data))
+    elif role == "baseline":
+        head = a["head_sha"]
+        orc = json.loads(call("docs_read", path="plan/oracle.json")["content"])
+        results = [{"command": c, "exit_code": subprocess.run(["sh", "-c", c]).returncode}
+                   for c in orc["acceptance_commands"] + orc["integration_commands"]]
+        doc = write("baseline/report.md", f"baseline at {head}: {results}")
+        print(call("report", status="DONE", summary="baseline", attestations=[f"git:{REPO}@{head}", doc],
+                   data={"results": results}))
+    elif role == "release":
+        p = write("release/plan.md", "# Release\n\n## Health criteria\n- ok\n\n## Rollback criteria\n- not ok\n")
+        r = write("release/rollback.md", f"Revert to {a['base_sha']}\n")
+        print(call("report", status="DONE", summary="release plan", attestations=[p, r]))
     elif role == "integration":
         head = a["head_sha"]
         orc = json.loads(call("docs_read", path="plan/oracle.json")["content"])
         results = []
-        for c in orc["acceptance_commands"] + orc["integration_commands"]:
+        cmds = orc["acceptance_commands"] + orc["integration_commands"] + \
+            [c for sf in orc.get("surfaces", []) for c in sf["commands"]]
+        for c in dict.fromkeys(cmds):
             results.append({"command": c, "exit_code": subprocess.run(["sh", "-c", c]).returncode})
         ok = all(r["exit_code"] == 0 for r in results)
         doc = write("integration/report.md", f"results: {results}")

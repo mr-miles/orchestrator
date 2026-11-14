@@ -28,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
     act.add_argument("action")
     act.add_argument("--approver", required=True)
     act.add_argument("--payload", default="{}", help="JSON payload")
+    gov = sub.add_parser("govern", help="change-level governance: attest | override | "
+                                        "approve_protected_paths | approve_surface")
+    gov.add_argument("change")
+    gov.add_argument("action")
+    gov.add_argument("--approver", required=True)
+    gov.add_argument("--payload", default="{}", help="JSON payload")
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -54,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "start":
         url, body = f"{base}/api/changes", {"goal": args.goal}
+    elif args.cmd == "govern":
+        url, body = f"{base}/api/changes/{args.change}/action", {
+            "action": args.action, "approver": args.approver, "payload": json.loads(args.payload)}
     else:
         url, body = f"{base}/api/changes/{args.change}/nodes/{args.node}/action", {
             "action": args.action, "approver": args.approver, "payload": json.loads(args.payload)}

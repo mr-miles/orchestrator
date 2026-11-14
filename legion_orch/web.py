@@ -79,6 +79,14 @@ def build_app(ctl: Controller) -> Starlette:
             request.path_params["node_id"], body.get("action", ""), body.get("approver", ""),
             body.get("payload") or {}))
 
+    @guarded
+    async def change_action(request: Request):
+        operator(request)
+        body = await request.json()
+        ce = ctl.get(request.path_params["cid"])
+        return JSONResponse(await ce.change_action(body.get("action", ""), body.get("approver", ""),
+                                                   body.get("payload") or {}))
+
     async def stream(request: Request):
         async def gen():
             last = -1
@@ -132,6 +140,7 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/changes/{cid}/state", state),
         Route("/api/changes/{cid}/events", events),
         Route("/api/changes/{cid}/nodes/{node_id}/action", action, methods=["POST"]),
+        Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/stream", stream),
         Route("/api/docs", docs),
         Route("/api/doc", doc),

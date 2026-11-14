@@ -244,7 +244,7 @@ function actionForm(n) {
       ${n.kind==='build'?`<button class="act warn" onclick="act('${n.id}','override_accept',{reason:$('#f_reason').value})">Override accept</button>`:''}
       <button class="act danger" onclick="if(confirm('Abandon the change?'))act('${n.id}','abandon',{})">Abandon</button></div>`;
   }
-  if (n.status !== 'AWAITING_HUMAN' && !(n.kind==='release' && c.tier==='R3' && n.status!=='ACCEPTED') && !(n.kind==='ship' && n.status==='ACCEPTED')) return '';
+  if (n.status !== 'AWAITING_HUMAN' && !(n.kind==='ship' && n.status==='ACCEPTED')) return '';
   if (n.id === 'H-1') {
     const r = c.risk || {};
     return `<div class="card"><b>Accept requirements</b><div class="muted">derived tier <b>${r.tier}</b> (score ${r.total}; threshold ${r.threshold_tier}; floors ${(r.floors||[]).map(f=>f.signal+'→'+f.tier).join(', ')||'none'})</div>
@@ -256,18 +256,20 @@ function actionForm(n) {
       <button class="act ok" onclick="act('H-1','accept',{tier:$('#f_tier').value||null,reason:$('#f_reason').value})">Accept</button>
       <button class="act warn" onclick="act('H-1','revise',{feedback:$('#f_text').value})">Request revision</button></div>`;
   }
-  if (n.id === 'H-2') return `<div class="card"><b>Approve spec &amp; oracle</b> <span class="muted">(pins current versions; must precede build)</span><br>
-      <a onclick="openDoc(docPath('plan/spec.md'))">spec.md</a> · <a onclick="openDoc(docPath('plan/oracle.json'))">oracle.json</a> · <a onclick="openDoc(docPath('plan/taskgraph.json'))">taskgraph.json</a> · oracle commit ${short(c.oracle_sha)}
+  if (n.id === 'H-2') {
+    const subj = (S.h2||[]).map(x => `<tr><td><b>${esc(x.subject)}</b></td><td class="mono">${x.paths.map(p=>`<a onclick="openDoc('${p}')">${esc(p.split('/').slice(2).join('/'))}</a>`).join('<br>')}</td>
+      <td class="${x.status==='approved'?'gate-satisfied':x.status==='stale'?'gate-unsatisfied':'gate-unevaluable'}">${x.status}${x.approver?' · '+esc(x.approver):''}</td>
+      <td>${x.status!=='approved'?`<button class="act ok" onclick="act('H-2','approve',{subjects:['${x.subject}']})">Approve</button>`:''}</td></tr>`).join('');
+    return `<div class="card"><b>Approve spec &amp; oracle</b> <span class="muted">(each delta spec, the plan and the oracle are separate decisions; all must be approved before build${c.tier==='R3'?'; R3 also needs an independent-baseline attestation first':''})</span>
+      <table>${subj}</table> oracle commit ${short(c.oracle_sha)}
+      <div><button class="act ok" onclick="act('H-2','approve',{subjects:'all'})">Approve all pending</button></div>
       <textarea id="f_text" placeholder="feedback for revision"></textarea>
-      <button class="act ok" onclick="act('H-2','approve',{})">Approve</button>
       <button class="act warn" onclick="act('H-2','revise',{feedback:$('#f_text').value})">Request revision</button></div>`;
+  }
   if (n.id === 'H-3') return `<div class="card"><b>Accept the whole change</b> at integration head ${short(c.integration_head)}
       <textarea id="f_text" placeholder="note"></textarea>
       <button class="act ok" onclick="act('H-3','accept',{feedback:$('#f_text').value})">Accept change</button>
       <button class="act danger" onclick="act('H-3','reject',{})">Reject</button></div>`;
-  if (n.kind === 'release') return `<div class="card"><b>Waive release observation plan</b> (audited)
-      <input id="f_reason" placeholder="waiver reason (≥24 chars)"><input id="f_src" placeholder="source attestation file:path@version">
-      <button class="act warn" onclick="act('release','waive',{reason:$('#f_reason').value,source:$('#f_src').value})">Waive</button></div>`;
   if (n.kind === 'ship') return `<button class="act" onclick="act('ship','recheck',{})">Re-run readiness check</button>`;
   return '';
 }
@@ -308,7 +310,7 @@ function renderDetail() {
 async function act(node, action, payload) {
   const approver = $('#approver').value.trim();
   if (!approver) { alert('Enter your approver id (top right).'); return; }
-  try { await api(`/api/changes/${CID}/nodes/${encodeURIComponent(node)}/action`, {action, approver, payload}); await refresh(); }
+  try { const r = await api(`/api/changes/${CID}/nodes/${encodeURIComponent(node)}/action`, {action, approver, payload}); if (r.note) alert(r.note); await refresh(); }
   catch (e) { alert(e.message); }
 }
 async function startChange() {
@@ -327,7 +329,7 @@ async function renderTab(force) {
     body.innerHTML = `<div>Tier <b>${c.tier}</b>: ${S.gates.length} gates. ${res?`Verdict <b class="${res.verdict==='READY'?'gate-satisfied':'gate-unsatisfied'}">${res.verdict}</b> at ${short(res.integration_head)} on <code>${esc(res.integration_branch)}</code>`:'<span class="muted">not evaluated yet (runs at the ship node)</span>'}</div>
       <table><tr><th>gate</th><th>status</th><th>detail</th></tr>${S.gates.map(g => { const r = res && res.gates[g];
         return `<tr><td><code>${g}</code></td><td class="gate-${r?r.status:''}">${r?r.status:'—'}${r&&r.human_judgement?' (human)':''}</td><td>${r?esc(r.detail):''}</td></tr>`; }).join('')}</table>
-      ${res?`<div class="muted">${esc(res.note)}</div>`:''}`;
+      ${res?`<div class="muted">${esc(res.note)}</div>`:''}` + governanceHtml(c);
   } else if (tab === 'plan') {
     try {
       const tg = await api('/api/doc?path=' + encodeURIComponent(docPath('plan/taskgraph.json')));
@@ -356,6 +358,39 @@ async function renderTab(force) {
     if (!tabCache.wf || force) tabCache.wf = await api('/api/workflow');
     body.innerHTML = `<div class="muted">asset set ${esc(S.assets_sha)}</div><pre style="max-height:600px">${esc(tabCache.wf)}</pre>`;
   }
+}
+function governanceHtml(c) {
+  const atts = Object.values(c.attestations||{});
+  const tasks = S.nodes.filter(n=>n.kind==='build').map(n=>n.task.id);
+  return `<h2 style="margin-top:14px">Governance</h2>
+    <table><tr><th>attestation</th><th>verdict</th><th>by</th><th>sources</th></tr>${atts.map(a=>`<tr><td>${esc(a.kind)}</td><td>${esc(a.verdict)}</td><td>${esc(a.attested_by)}</td><td class="mono">${a.sources.map(x=>`<a onclick="openAtt('${x}')">${esc(x)}</a>`).join('<br>')}${a.warnings.length?`<div class="err">${a.warnings.map(esc).join('<br>')}</div>`:''}</td></tr>`).join('') || '<tr><td colspan=4 class="muted">none</td></tr>'}</table>
+    <div class="card"><b>Attest</b><div class="grid2">
+      <select id="g_kind">${(S.attestation_kinds||[]).map(k=>`<option>${k}</option>`).join('')}</select>
+      <select id="g_verdict">${['pass','fail','unknown','not_applicable'].map(v=>`<option>${v}</option>`).join('')}</select></div>
+      <input id="g_sources" placeholder="sources: file:… or git:… (comma separated; relative paths are in this change)">
+      <input id="g_covers" placeholder="covers task ids (optional, comma separated: ${tasks.join(', ')})">
+      <input id="g_waiver" placeholder="waiver reason (not_applicable only)">
+      <button class="act" onclick="govern('attest',{kind:$('#g_kind').value,verdict:$('#g_verdict').value,sources:csv('#g_sources'),covers:csv('#g_covers').length?csv('#g_covers'):null,waiver_reason:$('#g_waiver').value||null})">Record attestation</button></div>
+    <table><tr><th>override</th><th>gate</th><th>by</th><th>reason / evidence</th></tr>${(c.overrides||[]).map(o=>`<tr><td>${esc(o.kind)}</td><td><code>${esc(o.gate)}</code></td><td>${esc(o.approver)}</td><td>${esc(o.reason)} ${o.evidence?`<a onclick="openAtt('${o.evidence}')">${esc(o.evidence)}</a>`:''}</td></tr>`).join('') || '<tr><td colspan=4 class="muted">none</td></tr>'}</table>
+    <div class="card"><b>Override a gate</b><div class="grid2"><select id="o_kind"><option>add_gate</option><option>waive_gate</option></select><input id="o_gate" placeholder="gate id"></div>
+      <input id="o_reason" placeholder="reason (≥24 chars)"><input id="o_evidence" placeholder="replacement evidence attestation (waive only)">
+      <button class="act warn" onclick="govern('override',{kind:$('#o_kind').value,gate:$('#o_gate').value,reason:$('#o_reason').value,evidence:$('#o_evidence').value})">Record override</button></div>
+    <table><tr><th>protected-path approval</th><th>paths</th><th>by</th><th>reason</th></tr>${(c.protected_approvals||[]).map(p=>`<tr><td>${esc(p.task)}</td><td class="mono">${p.paths.map(esc).join('<br>')}</td><td>${esc(p.approver)} <span class="muted">${esc(p.at)}</span></td><td>${esc(p.reason)}</td></tr>`).join('') || '<tr><td colspan=4 class="muted">none</td></tr>'}</table>
+    <div class="card"><b>Permit a task to modify protected acceptance tests</b> <span class="muted">(only runs started after this approval)</span>
+      <div class="grid2"><select id="p_task">${tasks.map(t=>`<option>${t}</option>`).join('')}</select><input id="p_paths" placeholder="paths (comma separated)"></div>
+      <input id="p_reason" placeholder="reason (≥24 chars)">
+      <button class="act warn" onclick="govern('approve_protected_paths',{task:$('#p_task').value,paths:csv('#p_paths'),reason:$('#p_reason').value})">Approve protected paths</button></div>
+    <table><tr><th>surface</th><th>commands</th><th>pins</th><th>pinned by</th></tr>${(S.surfaces||[]).map(sf=>{const pin=(c.surface_pins||{})[sf.id];
+      return `<tr><td><b>${esc(sf.id)}</b><div class="muted">${esc(sf.description||'')}</div></td><td class="mono">${(sf.commands||[]).map(esc).join('<br>')}</td><td class="mono">${pin?Object.entries(pin.pins).map(([p,b])=>`${esc(p)} ${b?b.slice(0,8):'(absent)'}`).join('<br>'):'not pinned'}</td>
+      <td>${pin?esc(pin.approver)+' · '+esc(pin.reason):''}<br><button class="act warn" onclick="govern('approve_surface',{surface:'${sf.id}',reason:prompt('Why does this surface still describe the real interface? (≥24 chars)')||''})">Re-affirm</button></td></tr>`}).join('') || '<tr><td colspan=4 class="muted">no surfaces declared</td></tr>'}</table>`;
+}
+const csv = sel => ($(sel).value||'').split(',').map(x=>x.trim()).filter(Boolean);
+async function govern(action, payload) {
+  const approver = $('#approver').value.trim();
+  if (!approver) { alert('Enter your approver id (top right).'); return; }
+  try { const r = await api(`/api/changes/${CID}/action`, {action, approver, payload});
+    if (r.warnings && r.warnings.length) alert(r.warnings.join('\n')); await refresh(); }
+  catch (e) { alert(e.message); }
 }
 function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }
 function openAtt(a) { const m = /^file:(.+)@(\d+)$/.exec(a); if (m) openDoc(m[1], +m[2]); else alert(a); }

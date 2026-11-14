@@ -132,7 +132,8 @@ def _task(tid, files, deps=(), reqs=("REQ-1",)):
 
 
 ORACLE = {"acceptance_tests": ["tests/acc/test_a.py"], "acceptance_commands": ["pytest tests/acc"],
-          "integration_commands": [], "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "t"}]}
+          "integration_commands": [], "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "t"}],
+          "surfaces": [{"id": "api", "commands": ["pytest tests/acc"], "pins": ["docker-compose.yml"]}]}
 SOULS = ["senior-developer", "backend-engineer"]
 
 
@@ -152,6 +153,10 @@ def test_plan_guards():
     assert "G-P6" in ids(check([_task("T1", ["../x"])]))
     assert "G-P8" in ids(check([_task("T1", ["a"])], oracle={"acceptance_tests": []}))
     assert check([_task("T1", ["a"])], tier="R1", oracle={}) == []
+    nosurf = dict(ORACLE, surfaces=[])
+    assert "G-P10" in ids(check([_task("T1", ["a"])], oracle=nosurf))
+    badsurf = dict(ORACLE, surfaces=[{"id": "API", "commands": [], "pins": ["../x"]}])
+    assert len([x for x in check([_task("T1", ["a"])], oracle=badsurf) if x.startswith("G-P10")]) == 3
     bad = _task("T1", ["a"]); bad["soul"] = "code-reviewer"
     assert "G-P5" in ids(check([bad]))
 
@@ -200,3 +205,21 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
+
+
+def test_review_panels():
+    assert risk.review_panel("R3", {}) == ["reviewer", "security", "architecture"]
+    assert risk.review_panel("R2", {"scope_breadth": 2}) == ["reviewer", "architecture"]
+    assert risk.review_panel("R2", {}) == ["reviewer"]
+
+
+def test_protected_path_approval_timing_and_coverage():
+    import types
+    from legion_orch import governance
+    e = types.SimpleNamespace(change=types.SimpleNamespace(protected_approvals=[
+        {"task": "T1", "paths": ["tests/acc/test_a.py"], "at": "2026-01-02T00:00:00.000Z"}]))
+    assert governance.approved_protected_for(e, "T1", "2026-01-03T00:00:00.000Z") == ["tests/acc/test_a.py"]
+    assert governance.approved_protected_for(e, "T1", "2026-01-01T00:00:00.000Z") == []   # run predates approval
+    assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
+    assert governance.coverage_ok({"covers": None}, {"T1", "T2"})
+    assert not governance.coverage_ok({"covers": ["T1"]}, {"T1", "T2"})

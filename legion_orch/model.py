@@ -104,7 +104,10 @@ class Change:
     panel: list[str] = field(default_factory=list)
     requirements: list[str] = field(default_factory=list)
     first_build_at: str | None = None
-    waivers: dict[str, dict] = field(default_factory=dict)
+    attestations: dict[str, dict] = field(default_factory=dict)   # kind -> latest record
+    overrides: list[dict] = field(default_factory=list)           # add_gate / waive_gate
+    protected_approvals: list[dict] = field(default_factory=list) # approve protected-paths
+    surface_pins: dict[str, dict] = field(default_factory=dict)   # surface id -> pins record
     ship: dict | None = None
 
 
