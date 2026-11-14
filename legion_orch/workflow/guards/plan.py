@@ -20,33 +20,59 @@ def _reachable(graph: dict[str, list[str]], start: str) -> set[str]:
     return seen
 
 
+_BAD_PATH = re.compile(r"(^/|\\|(^|/)\.\.?(/|$)|^$)")
+_SURFACE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+Graph = dict[str, list[str]]
+
+
 def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
          protected_cfg: list[str], implementer_souls: list[str], schemas: SchemaRegistry) -> list[str]:
     """Cross-document plan rules. Shape (G-P1) is the ``taskgraph`` / ``oracle`` JSON Schemas –
-    the same ones the store enforces on write – so they are defined in exactly one place."""
-    v = [f"G-P1: taskgraph.json {e}" for e in schemas.validate_data("taskgraph", taskgraph)]
-    v += [f"G-P1: oracle.json {e}" for e in schemas.validate_data("oracle", oracle)]
+    the same ones the store enforces on write – so they are defined in exactly one place. The
+    remaining guards assume the shape; the file-overlap check also needs every earlier one."""
+    v = shape(taskgraph, oracle, schemas)
     if v:
         return v
     tasks = taskgraph["tasks"]
+    graph = {t["id"]: list(t["depends_on"]) for t in tasks}
+    v = dependencies(tasks, graph)
+    v += traceability(tasks, requirements)
+    v += task_fields(tasks, implementer_souls)
+    v += paths_valid(tasks)
+    if not v:      # needs an acyclic graph and valid paths
+        v += parallel_overlap(tasks, graph)
+    v += protected_untouched(tasks, oracle, protected_cfg)
+    if risk.rank(tier) >= 2:
+        v += oracle_strength(oracle, requirements)
+        v += surfaces(oracle)
+    return v
+
+
+def shape(taskgraph: Any, oracle: Any, schemas: SchemaRegistry) -> list[str]:
+    """G-P1: both documents match their schemas."""
+    return ([f"G-P1: taskgraph.json {e}" for e in schemas.validate_data("taskgraph", taskgraph)]
+            + [f"G-P1: oracle.json {e}" for e in schemas.validate_data("oracle", oracle)])
+
+
+def dependencies(tasks: list[dict], graph: Graph) -> list[str]:
+    """G-P2: unique ids, known dependencies, no cycles."""
     ids = [t["id"] for t in tasks]
-    # G-P2
+    v = []
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
         v.append(f"G-P2: duplicate task ids {dup}")
-    graph = {t["id"]: list(t["depends_on"]) for t in tasks}
-    for tid, deps in graph.items():
-        for d in deps:
-            if d not in graph:
-                v.append(f"G-P2: task {tid} depends on unknown task {d}")
+    v += [f"G-P2: task {tid} depends on unknown task {d}"
+          for tid, deps in graph.items() for d in deps if d not in graph]
     if not v:
-        for tid in graph:
-            if tid in _reachable(graph, tid):
-                v.append(f"G-P2: dependency cycle through {tid}")
-                break
-    # G-P3
-    req_set = set(requirements)
-    covered = set()
+        cyclic = next((tid for tid in graph if tid in _reachable(graph, tid)), None)
+        if cyclic:
+            v.append(f"G-P2: dependency cycle through {cyclic}")
+    return v
+
+
+def traceability(tasks: list[dict], requirements: list[str]) -> list[str]:
+    """G-P3: every task cites known requirements; every requirement is covered."""
+    req_set, covered, v = set(requirements), set(), []
     for t in tasks:
         if not t["requirements"]:
             v.append(f"G-P3: task {t['id']} cites no requirement")
@@ -54,74 +80,103 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
             if r not in req_set:
                 v.append(f"G-P3: task {t['id']} cites unknown requirement {r}")
             covered.add(r)
-    for r in sorted(req_set - covered):
-        v.append(f"G-P3: requirement {r} is not covered by any task")
-    # G-P4 / G-P5
+    v += [f"G-P3: requirement {r} is not covered by any task" for r in sorted(req_set - covered)]
+    return v
+
+
+def task_fields(tasks: list[dict], implementer_souls: list[str]) -> list[str]:
+    """G-P4: a verification command and an acceptance criterion; G-P5: a known soul."""
+    v = []
     for t in tasks:
-        if not [c for c in t["verification"] if isinstance(c, str) and c.strip()]:
+        if not _commands(t["verification"]):
             v.append(f"G-P4: task {t['id']} has no verification command")
         if not t["acceptance"]:
             v.append(f"G-P4: task {t['id']} has no acceptance criterion")
         if t["soul"] not in implementer_souls:
             v.append(f"G-P5: task {t['id']} soul {t['soul']!r} not in {implementer_souls}")
-    # G-P6
-    bad_path = re.compile(r"(^/|\\|(^|/)\.\.?(/|$)|^$)")
+    return v
+
+
+def paths_valid(tasks: list[dict]) -> list[str]:
+    """G-P6 (paths): files_modified is non-empty and every path is relative and normalised."""
+    v = []
     for t in tasks:
         if not t["files_modified"]:
             v.append(f"G-P6: task {t['id']} has empty files_modified")
         for p in t["files_modified"] + t.get("files_forbidden", []):
-            if not isinstance(p, str) or bad_path.search(p):
+            if not _valid_path(p):
                 v.append(f"G-P6: task {t['id']} has invalid path {p!r}")
-    if not v:
-        reach = {tid: _reachable(graph, tid) for tid in graph}
-        index = {t["id"]: _file_index(t["files_modified"]) for t in tasks}
-        for i, a in enumerate(tasks):
-            for b in tasks[i + 1:]:
-                related = b["id"] in reach[a["id"]] or a["id"] in reach[b["id"]]
-                if related:
-                    continue
-                clash = _files_clash(index[a["id"]], index[b["id"]])
-                if clash:
-                    v.append(f"G-P6: parallel tasks {a['id']} and {b['id']} both modify "
-                             f"{clash}; add a dependency")
-    # G-P7
-    protected = list(oracle.get("acceptance_tests", [])) + list(oracle.get("protected_support", [])) \
-        + list(protected_cfg)
-    for t in tasks:
-        for p in t["files_modified"]:
-            for prot in protected:
-                if paths_overlap(p, prot) or path_matches(p, prot):
-                    v.append(f"G-P7: task {t['id']} modifies protected path {prot}")
-    # G-P8
-    if risk.rank(tier) >= 2:
-        if not oracle.get("acceptance_tests"):
-            v.append("G-P8: oracle.acceptance_tests must list at least one test path")
-        if not oracle.get("acceptance_commands"):
-            v.append("G-P8: oracle.acceptance_commands must list at least one command")
-        crit = oracle.get("criteria") or []
-        if not crit:
-            v.append("G-P8: oracle.criteria must map acceptance criteria to requirements")
-        for c in crit:
-            if not isinstance(c, dict) or c.get("requirement") not in req_set:
-                v.append(f"G-P8: criterion {c!r:.60} must reference an accepted requirement")
-        surfaces = oracle.get("surfaces")
-        if not isinstance(surfaces, list) or not surfaces:
-            v.append("G-P10: oracle.surfaces must declare at least one verification surface")
-        else:
-            ids = []
-            for sf in surfaces:
-                if not isinstance(sf, dict) or not str(sf.get("id") or "").strip():
-                    v.append("G-P10: every surface needs an id")
-                    continue
-                ids.append(sf["id"])
-                if not [c for c in sf.get("commands") or [] if isinstance(c, str) and c.strip()]:
-                    v.append(f"G-P10: surface {sf['id']} needs at least one command")
-                if not sf.get("pins") or not all(isinstance(p, str) and not bad_path.search(p)
-                                                 for p in sf["pins"]):
-                    v.append(f"G-P10: surface {sf['id']} must pin at least one valid repository path")
-            if len(ids) != len(set(ids)) or any(not re.match(r"^[a-z0-9][a-z0-9-]*$", i) for i in ids):
-                v.append("G-P10: surface ids must be unique lowercase-dashed names")
     return v
+
+
+def parallel_overlap(tasks: list[dict], graph: Graph) -> list[str]:
+    """G-P6 (overlap): tasks that may run in parallel (neither depends on the other) modify
+    disjoint files."""
+    reach = {tid: _reachable(graph, tid) for tid in graph}
+    index = {t["id"]: _file_index(t["files_modified"]) for t in tasks}
+    v = []
+    for i, a in enumerate(tasks):
+        for b in tasks[i + 1:]:
+            if b["id"] in reach[a["id"]] or a["id"] in reach[b["id"]]:
+                continue
+            clash = _files_clash(index[a["id"]], index[b["id"]])
+            if clash:
+                v.append(f"G-P6: parallel tasks {a['id']} and {b['id']} both modify "
+                         f"{clash}; add a dependency")
+    return v
+
+
+def protected_untouched(tasks: list[dict], oracle: dict, protected_cfg: list[str]) -> list[str]:
+    """G-P7: no task modifies the oracle's tests and support files or a configured protected path."""
+    protected = [*oracle.get("acceptance_tests", []), *oracle.get("protected_support", []),
+                 *protected_cfg]
+    return [f"G-P7: task {t['id']} modifies protected path {prot}"
+            for t in tasks for p in t["files_modified"] for prot in protected
+            if paths_overlap(p, prot) or path_matches(p, prot)]
+
+
+def oracle_strength(oracle: dict, requirements: list[str]) -> list[str]:
+    """G-P8 (tier >= 2): the oracle has tests, commands and criteria tied to requirements."""
+    v = []
+    if not oracle.get("acceptance_tests"):
+        v.append("G-P8: oracle.acceptance_tests must list at least one test path")
+    if not oracle.get("acceptance_commands"):
+        v.append("G-P8: oracle.acceptance_commands must list at least one command")
+    crit = oracle.get("criteria") or []
+    if not crit:
+        v.append("G-P8: oracle.criteria must map acceptance criteria to requirements")
+    v += [f"G-P8: criterion {c!r:.60} must reference an accepted requirement" for c in crit
+          if not isinstance(c, dict) or c.get("requirement") not in set(requirements)]
+    return v
+
+
+def surfaces(oracle: dict) -> list[str]:
+    """G-P10 (tier >= 2): at least one verification surface; each has a unique id, commands
+    and valid pinned paths."""
+    found = oracle.get("surfaces")
+    if not isinstance(found, list) or not found:
+        return ["G-P10: oracle.surfaces must declare at least one verification surface"]
+    v, ids = [], []
+    for sf in found:
+        if not isinstance(sf, dict) or not str(sf.get("id") or "").strip():
+            v.append("G-P10: every surface needs an id")
+            continue
+        ids.append(sf["id"])
+        if not _commands(sf.get("commands") or []):
+            v.append(f"G-P10: surface {sf['id']} needs at least one command")
+        if not sf.get("pins") or not all(_valid_path(p) for p in sf["pins"]):
+            v.append(f"G-P10: surface {sf['id']} must pin at least one valid repository path")
+    if len(ids) != len(set(ids)) or not all(_SURFACE_ID.match(i) for i in ids):
+        v.append("G-P10: surface ids must be unique lowercase-dashed names")
+    return v
+
+
+def _commands(cmds: list) -> list[str]:
+    return [c for c in cmds if isinstance(c, str) and c.strip()]
+
+
+def _valid_path(p: Any) -> bool:
+    return isinstance(p, str) and not _BAD_PATH.search(p)
 
 
 def waves(tasks: list[dict]) -> dict[str, int]:

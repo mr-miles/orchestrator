@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+from dataclasses import dataclass, field
 
 from ...store import DocVersion
 from ...util import now_iso
@@ -33,6 +33,27 @@ from ..model import (
 from ..results import ReportOutcome
 from ..roles import Report, handler_for
 from .common import WorkflowError, log
+
+
+@dataclass
+class _Submitted:
+    """The arguments of one ``report`` call."""
+    status: str
+    summary: str
+    attestations: list[str]
+    data: dict
+    blocked_reason: str | None
+    missing_decision: str | None
+
+
+@dataclass
+class _Admitted:
+    """A report that passed phase 1, carried through the checks to the apply phase."""
+    run: Run
+    node: Node
+    attempt: int                 # run.attempts when admitted; a change means it was superseded
+    r: _Submitted
+    violations: list[str] = field(default_factory=list)
 
 
 class ReportsMixin:
@@ -81,76 +102,98 @@ class ReportsMixin:
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
                             missing_decision: str | None) -> ReportOutcome:
-        """Three phases. (1) Under the controller lock: bookkeeping and cheap checks. (2) Without
-        it: attestation resolution, git checks and role guards, which can be slow – reports of
-        the same run are serialised by a per-run lock and the checks are time-limited. (3) Under
-        the lock again: re-check the run is unchanged, then apply the transition transactionally
-        (any exception restores the state and escalates)."""
+        """Three phases. (1) :meth:`_admit_report`, under the controller lock: bookkeeping and
+        cheap checks. (2) :meth:`_check_report`, without it: attestation resolution, git checks
+        and role guards, which can be slow – reports of the same run are serialised by a per-run
+        lock and the checks are time-limited. (3) :meth:`_apply_report`, under the lock again:
+        re-check the run is unchanged, then apply the transition transactionally."""
         async with self._run_lock(run_id):
             async with self.lock:
-                run = self.runs[run_id]
-                if run.status not in LIVE_RUN:
-                    return ReportOutcome.reject(f"run is {run.status}")
-                node = self.nodes[run.node_id]
-                run.attempts += 1
-                attempt = run.attempts
-                data = data or {}
-                v = guards.report_limits(summary, attestations, data, blocked_reason, missing_decision)
-                if not v:
-                    attestations = [attest.normalize(a, self.cid) for a in attestations]
-                    for f in data.get("findings") or []:
-                        if isinstance(f, dict) and isinstance(f.get("attestations"), list):
-                            f["attestations"] = [attest.normalize(a, self.cid)
-                                                 for a in f["attestations"] if isinstance(a, str)]
-                    v = guards.report_shape(status, blocked_reason, missing_decision)
-                    if status == ReportStatus.DONE:   # G-R7: structured data matches the role's report schema
-                        schema = self.assets.roles[run.role].report_schema
-                        v += [f"G-R7: data does not match schema {schema!r}: {x}"
-                              for x in self.assets.schemas.validate_data(schema, data)]
-                self._save()
-
-            ctx: dict[str, Any] = {}
-            if not v:
-                try:
-                    async with asyncio.timeout(self.cfg.limits.report_check_timeout_s):
-                        parsed, v3 = await attest.check_all(attestations, [self.cfg.repo.name],
-                                                            self.docs, self.git)
-                        v += v3
-                        if not v and status == ReportStatus.DONE:
-                            v += await self._role_guards(run, node, parsed, data, ctx)
-                except TimeoutError:
-                    v.append(f"G-R8: report checks exceeded {self.cfg.limits.report_check_timeout_s}s")
-
+                sub = self._admit_report(run_id, _Submitted(
+                    status=status, summary=summary, attestations=attestations, data=data or {},
+                    blocked_reason=blocked_reason, missing_decision=missing_decision))
+            if isinstance(sub, ReportOutcome):
+                return sub
+            report = await self._check_report(sub) if not sub.violations else None
             async with self.lock:
-                if run.status not in LIVE_RUN or run.attempts != attempt:
-                    return ReportOutcome.reject(f"run changed during checks ({run.status})")
-                if v:
-                    return self._reject_report(run, node, v)
-                try:
-                    with self.st.transaction():    # never leave a half-applied transition behind
-                        run.status = R_REPORTED
-                        run.ended_at = now_iso()
-                        run.report = RunReport(status=status, summary=summary,
-                                               attestations=attestations, data=data,
-                                               blocked_reason=blocked_reason,
-                                               missing_decision=missing_decision, at=run.ended_at)
-                        self.event("report", f"{run.role} reported {status}: {summary[:200]}",
-                                   node.id, run.id)
-                        if status == ReportStatus.BLOCKED:
-                            self.escalate(node, "blocked", blocked_reason or "",
-                                          resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
-                                          run=run.id, missing_decision=missing_decision)
-                        else:
-                            await self._on_done(run, node, data, ctx)
-                        self._save()
-                except Exception as e:
-                    log.exception("applying report of %s failed", run.id)
-                    self._fail_run(run, f"controller error while applying the report: {e!r} "
-                                        "(external effects such as git merges may already exist)")
-                    with contextlib.suppress(Exception):
-                        self._save()
-                    return ReportOutcome.reject("controller error while applying the report; escalated")
-                return ReportOutcome(accepted=True, next=node.status)
+                return await self._apply_report(sub, report)
+
+    def _admit_report(self, run_id: str, r: _Submitted) -> _Admitted | ReportOutcome:
+        """Phase 1 (lock held): count the attempt, check limits and shape, normalise the
+        attestations (here and in review findings) to fully qualified form."""
+        run = self.runs[run_id]
+        if run.status not in LIVE_RUN:
+            return ReportOutcome.reject(f"run is {run.status}")
+        run.attempts += 1
+        sub = _Admitted(run=run, node=self.nodes[run.node_id], attempt=run.attempts, r=r)
+        sub.violations = guards.report_limits(r.summary, r.attestations, r.data, r.blocked_reason,
+                                              r.missing_decision)
+        if not sub.violations:
+            r.attestations = [attest.normalize(a, self.cid) for a in r.attestations]
+            for f in r.data.get("findings") or []:
+                if isinstance(f, dict) and isinstance(f.get("attestations"), list):
+                    f["attestations"] = [attest.normalize(a, self.cid)
+                                         for a in f["attestations"] if isinstance(a, str)]
+            sub.violations = guards.report_shape(r.status, r.blocked_reason, r.missing_decision)
+            if r.status == ReportStatus.DONE:   # G-R7: structured data matches the report schema
+                schema = self.assets.roles[run.role].report_schema
+                sub.violations += [f"G-R7: data does not match schema {schema!r}: {x}"
+                                   for x in self.assets.schemas.validate_data(schema, r.data)]
+        self._save()
+        return sub
+
+    async def _check_report(self, sub: _Admitted) -> Report | None:
+        """Phase 2 (lock not held, time-limited): attestations resolve; for DONE, the role's
+        git and document guards. Adds to ``sub.violations``; returns the typed report a DONE
+        transition needs."""
+        timeout = self.cfg.limits.report_check_timeout_s
+        try:
+            async with asyncio.timeout(timeout):
+                parsed, v = await attest.check_all(sub.r.attestations, [self.cfg.repo.name],
+                                                   self.docs, self.git)
+                sub.violations += v
+                if sub.violations or sub.r.status != ReportStatus.DONE:
+                    return None
+                v, report = await self._role_guards(sub.run, sub.node, parsed, sub.r.data)
+                sub.violations += v
+                return report
+        except TimeoutError:
+            sub.violations.append(f"G-R8: report checks exceeded {timeout}s")
+            return None
+
+    async def _apply_report(self, sub: _Admitted, report: Report | None) -> ReportOutcome:
+        """Phase 3 (lock held): reject, or record the report and run the transition. Any
+        exception restores the state and escalates – never a half-applied transition."""
+        run, node, r = sub.run, sub.node, sub.r
+        if run.status not in LIVE_RUN or run.attempts != sub.attempt:
+            return ReportOutcome.reject(f"run changed during checks ({run.status})")
+        if sub.violations:
+            return self._reject_report(run, node, sub.violations)
+        try:
+            with self.st.transaction():
+                run.status = R_REPORTED
+                run.ended_at = now_iso()
+                run.report = RunReport(status=r.status, summary=r.summary,
+                                       attestations=r.attestations, data=r.data,
+                                       blocked_reason=r.blocked_reason,
+                                       missing_decision=r.missing_decision, at=run.ended_at)
+                self.event("report", f"{run.role} reported {r.status}: {r.summary[:200]}",
+                           node.id, run.id)
+                if r.status == ReportStatus.BLOCKED:
+                    self.escalate(node, "blocked", r.blocked_reason or "",
+                                  resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
+                                  run=run.id, missing_decision=r.missing_decision)
+                else:   # role-specific transition (see workflow/roles/)
+                    await handler_for(run.role).on_done(self, report)
+                self._save()
+        except Exception as e:
+            log.exception("applying report of %s failed", run.id)
+            self._fail_run(run, f"controller error while applying the report: {e!r} "
+                                "(external effects such as git merges may already exist)")
+            with contextlib.suppress(Exception):
+                self._save()
+            return ReportOutcome.reject("controller error while applying the report; escalated")
+        return ReportOutcome(accepted=True, next=node.status)
 
     def _reject_report(self, run: Run, node: Node, v: list[str]) -> ReportOutcome:
         run.violations.append(v)
@@ -163,28 +206,28 @@ class ReportsMixin:
         return ReportOutcome.reject(*v, attempts_left=max(left, 0))
 
     async def _role_guards(self, run: Run, node: Node, parsed: list[attest.Attestation],
-                           data: dict, ctx: dict) -> list[str]:
+                           data: dict) -> tuple[list[str], Report | None]:
+        """Required documents and git (G-R4/G-R5, G-B2), then the role handler's own guards.
+        Returns the violations and, once the generic checks pass, the typed report."""
         role = self.assets.roles[run.role]
         found, v = guards.required_docs(run.id, run.required_docs, parsed, self.docs)
         sha, vg = guards.required_git(role.git, parsed, self.cfg.repo.name, run.judged_sha)
         v += vg
         if v:
-            return v
-        ctx["docs"], ctx["sha"] = found, sha
+            return v, None
         if role.git == GitMode.COMMIT:
             tip = await self.git.ref_sha(f"refs/heads/{run.branch}")
             if tip != sha:
                 return [f"G-B2: {sha} is not the tip of {run.branch} on the controller remote "
-                        f"(tip: {tip or 'branch not pushed'}) – push before reporting"]
+                        f"(tip: {tip or 'branch not pushed'}) – push before reporting"], None
             if not await self.git.is_ancestor(run.base_sha, sha):
-                return [f"G-B2: {sha} does not descend from base {run.base_sha}"]
+                return [f"G-B2: {sha} does not descend from base {run.base_sha}"], None
         if role.git == GitMode.HEAD and sha != self.change.integration_head:
-            return [f"G-R5: integration head moved to {self.change.integration_head}"]
+            return [f"G-R5: integration head moved to {self.change.integration_head}"], None
 
         typed = report_data.parse(role.report_schema, data)     # schema-valid (G-R7)
         report = Report(run=run, node=node, parsed=parsed, data=typed, docs=found, sha=sha)
-        ctx["report"] = report
-        return v + await handler_for(run.role).guards(self, report)
+        return await handler_for(run.role).guards(self, report), report
 
     async def protected_unchanged(self, head: str) -> list[str]:
         """Guard G-INT2."""
@@ -199,10 +242,6 @@ class ReportsMixin:
             if await self.git.blob(head, p) != await self.git.blob(self.change.oracle_sha, p):
                 v.append(f"G-INT2: protected acceptance test {p} changed since oracle commit")
         return v
-
-    async def _on_done(self, run: Run, node: Node, data: dict, ctx: dict) -> None:
-        """Role-specific transition after an accepted DONE report (see workflow/roles/)."""
-        await handler_for(run.role).on_done(self, ctx["report"])
 
     def panel_complete(self, node: Node) -> None:
         results = [node.review(node.cycle, r) for r in self.change.panel]

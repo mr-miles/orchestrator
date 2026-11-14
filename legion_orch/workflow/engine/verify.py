@@ -3,12 +3,16 @@
 Mixin of :class:`ChangeEngine`; relies on its state and helpers."""
 from __future__ import annotations
 
+import contextlib
 import secrets
 import shlex
 import shutil
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from ...sandbox import (
     VERIFY_SETUP_SH,
+    Runner,
     SandboxError,
     SandboxSpec,
 )
@@ -30,55 +34,72 @@ from .auth import VerifierGrant
 from .common import _slug
 
 
+@dataclass
+class VerifierSandbox:
+    """A live verifier sandbox with the candidate checked out in /sandbox/work."""
+    name: str
+    runner: Runner
+    timeout_s: int
+
+    async def run(self, cmd: str) -> CommandResult:
+        rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir="/sandbox/work",
+                                         timeout=self.timeout_s)
+        return CommandResult(command=cmd, exit_code=rc, output=out[-4000:])
+
+
 class VerifyMixin:
     def start_verification(self, node_id: str) -> None:
         """Run the node's deterministic verification in the background (node is VERIFYING)."""
         self._spawn(self._verify_node(node_id))
 
     async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
-        """G-V1: run commands at ``sha`` in a fresh sandbox. Never raises."""
+        """G-V1: run commands at ``sha`` in a fresh verifier sandbox. Never raises."""
         name = f"lg-{self.change.id}-v{secrets.token_hex(3)}".lower()
+        result = Verification(sha=sha, sandbox=name)
+        if not commands:
+            result.infra_error = "no commands to verify"
+            return result
+        try:
+            async with self._verifier_sandbox(name, label, sha) as box:
+                for cmd in commands:
+                    result.results.append(await box.run(cmd))
+            result.ok = all(r.exit_code == 0 for r in result.results)
+        except Exception as e:
+            result.infra_error = str(e)
+        return result
+
+    @contextlib.asynccontextmanager
+    async def _verifier_sandbox(self, name: str, label: str,
+                                sha: str) -> AsyncIterator[VerifierSandbox]:
+        """A non-agent sandbox with a read-only git grant, checked out at ``sha``. On exit the
+        grant is revoked and the sandbox and its payload are deleted, however the block ends."""
         base = self.svc.tmp / "verify" / name
         payload = base / "payload"
         payload.mkdir(parents=True, exist_ok=True)
-        (payload / "run.env").write_text(
-            f"LEGION_GIT_URL={shlex.quote(self.git_url)}\n")
+        (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.git_url)}\n")
         (payload / "verify-setup.sh").write_text(VERIFY_SETUP_SH)
-        result = Verification(sha=sha, sandbox=name)
-        created, ref = False, None
+        ref = None
         try:
             policy = self._policy(base / "policy.yaml", agent=False, push=False)
             ref = await self.runner.create(SandboxSpec(
                 name=name, payload_dir=payload, policy_file=policy, agent=False,
                 change=self.cid, task=label, role="verifier", run=name))
-            self.svc.auth.register_verifier(      # read-only git grant while it lives
+            self.svc.auth.register_verifier(
                 ref, VerifierGrant(id=f"verifier:{name}", change=self.cid, task=label))
-            created = True
             rc, out = await self.runner.exec(name, ["bash", "/sandbox/payload/verify-setup.sh", sha],
                                              timeout=600)
             if rc != 0:
                 raise SandboxError(f"verifier setup failed ({rc}): {out[-1500:]}")
-            ok = True
-            for cmd in commands:
-                rc, out = await self.runner.exec(name, ["bash", "-lc", cmd], workdir="/sandbox/work",
-                                                 timeout=self.cfg.limits.verify_timeout_s)
-                result.results.append(CommandResult(command=cmd, exit_code=rc, output=out[-4000:]))
-                ok = ok and rc == 0
-            result.ok = ok and bool(commands)
-            if not commands:
-                result.infra_error = "no commands to verify"
-        except Exception as e:
-            result.infra_error = str(e)
+            yield VerifierSandbox(name, self.runner, self.cfg.limits.verify_timeout_s)
         finally:
             if ref:
                 self.svc.auth.unregister_verifier(ref)
             shutil.rmtree(base, ignore_errors=True)
-            if created:
+            if ref:
                 try:
                     await self.runner.delete(name)
                 except Exception as e:
                     self.event("sandbox", f"verifier delete failed: {e}")
-        return result
 
     async def _verify_node(self, node_id: str) -> None:
         node = self.nodes[node_id]
