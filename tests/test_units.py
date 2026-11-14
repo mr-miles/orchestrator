@@ -621,3 +621,19 @@ def test_protected_support_files_are_protected():
                               cfg=types.SimpleNamespace(
         protected_paths=[".github/"]))
     assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
+
+
+def test_cgi_head_parsing():
+    from legion_orch.git.http import _parse_cgi_head
+    assert _parse_cgi_head(b"Status: 403 Forbidden\r\nContent-Type: text/plain\r\nX-A: 1\r\n\r\nbody") \
+        == (403, {"X-A": "1"}, "text/plain", b"body")
+    assert _parse_cgi_head(b"Content-Type: application/x-git\n\nPACK") \
+        == (200, {}, "application/x-git", b"PACK")
+    assert _parse_cgi_head(b"Content-Type: text/plain\r\n") is None        # incomplete header block
+
+
+def test_every_human_gate_action_has_a_handler():
+    from legion_orch.workflow.engine import ChangeEngine
+    from legion_orch.workflow.model import H_CHANGE, H_REQUIREMENTS, H_SPEC
+    assert {g for g, _ in ChangeEngine.GATE_ACTIONS} == {H_REQUIREMENTS, H_SPEC, H_CHANGE}
+    assert all(callable(getattr(ChangeEngine, m)) for m in ChangeEngine.GATE_ACTIONS.values())

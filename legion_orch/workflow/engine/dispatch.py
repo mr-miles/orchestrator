@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import shlex
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ...sandbox import (
     RUN_AGENT_SH,
@@ -34,6 +36,23 @@ from ..model import (
 )
 from ..roles import handler_for
 from .common import PLAN_DOCS, _slug
+
+
+@dataclass
+class Assignment:
+    """What a run is told: template variables, document scopes and context attestations."""
+    variables: dict[str, Any]
+    write_scope: list[str]
+    required_docs: list[str]
+    context: list[str]
+    task: dict[str, Any]
+
+    def for_agent(self, node: Node) -> dict[str, Any]:
+        """The assignment returned by get_assignment() (the rendered list of context refs is
+        replaced by the list itself)."""
+        return {k: v for k, v in self.variables.items() if k != "context_refs"} | {
+            "task": self.task, "context": self.context,
+            "feedback_items": [f.model_dump(mode="json") for f in node.feedback]}
 
 
 class DispatchMixin:
@@ -80,24 +99,44 @@ class DispatchMixin:
         return "\n".join(lines)
 
     def _prepare(self, node: Node, role: str, judged_sha: str | None = None) -> Run | None:
-        """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1)."""
-        ch = self.change
-        h = handler_for(role)
+        """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or escalate the
+        node and return None."""
+        ch, h = self.change, handler_for(role)
         if h.needs_fresh_approval:
             stale = self._approval_fresh()
             if stale:
                 self.escalate(node, "approval", "; ".join(stale), resume=Resume.REWORK)
                 return None
-        if node.kind == BUILD and not node.base_sha:
-            node.base_sha = ch.integration_head
-        if node.kind in (ORACLE,):
+        if node.kind == ORACLE or (node.kind == BUILD and not node.base_sha):
             node.base_sha = ch.integration_head
         if h.judges_head:
             judged_sha = ch.integration_head
         run_id = self.host.next_run_id()
-        branch = f"legion/{ch.id}/{_slug(node.id)}" if h.pushes \
-            else f"legion/{ch.id}/{run_id}-{role}"
-        task = node.task
+        branch = f"legion/{ch.id}/{_slug(node.id)}" if h.pushes else f"legion/{ch.id}/{run_id}-{role}"
+        asg = self._assignment(node, role, branch, judged_sha)
+        try:
+            rendered = self.assets.render_role(role, asg.variables)
+        except AssetError as e:
+            self.escalate(node, "assets", str(e),
+                          resume=Resume.REWORK if node.status == REWORK else Resume.READY)
+            return None
+        run = Run(id=run_id, node_id=node.id, role=role, cycle=node.cycle,
+                  soul=node.task.soul if node.task and role == "implementer"
+                  else self.assets.roles[role].soul,
+                  base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
+                  prompt_pin=rendered.pin, assets_sha=self.assets.sha,
+                  write_scope=asg.write_scope, required_docs=asg.required_docs,
+                  context_refs=asg.context, assignment=asg.for_agent(node))
+        self._place_in_sandbox(run, node)
+        self._record_dispatch(run, node)
+        self._payload(run, rendered)
+        self.event("dispatch", f"{role} run {run_id} (cycle {run.cycle}, soul {run.soul}, "
+                    f"pin {rendered.pin[7:19]})", node.id, run_id)
+        return run
+
+    def _assignment(self, node: Node, role: str, branch: str, judged_sha: str | None) -> Assignment:
+        """The template variables, document scopes and context of a run (guard G-D2 binds them)."""
+        ch, task = self.change, node.task
         task_json = task.model_dump(mode="json") if task else {}
         variables = {
             "change_id": ch.id, "goal": ch.goal, "tier": ch.tier or "unassessed",
@@ -118,46 +157,34 @@ class DispatchMixin:
             "context_refs": "\n".join(f"- {c}" for c in context) or "(none)",
             "feedback": self._feedback_text(node),
         })
-        try:
-            rendered = self.assets.render_role(role, variables)
-        except AssetError as e:
-            self.escalate(node, "assets", str(e),
-                          resume=Resume.REWORK if node.status == REWORK else Resume.READY)
-            return None
-        run = Run(id=run_id, node_id=node.id, role=role,
-                  soul=task.soul if task and role == "implementer" else self.assets.roles[role].soul,
-                  cycle=node.cycle,
-                  base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
-                  prompt_pin=rendered.pin, assets_sha=self.assets.sha,
-                  write_scope=write, required_docs=required, context_refs=context,
-                  assignment={k: v for k, v in variables.items()
-                              if k != "context_refs"} | {
-                      "task": task_json, "context": context,
-                      "feedback_items": [f.model_dump(mode="json") for f in node.feedback]})
-        # G-D4: judges always get a fresh sandbox; only roles that reuse theirs keep it per node.
+        return Assignment(variables, write, required, context, task_json)
+
+    def _place_in_sandbox(self, run: Run, node: Node) -> None:
+        """Guard G-D4: judges always get a fresh sandbox; only roles that reuse theirs keep it
+        across the node's cycles."""
+        h = handler_for(run.role)
         if h.reuses_sandbox and node.sandbox:
             run.sandbox = node.sandbox
             run.sandbox_ref = next((r.sandbox_ref for r in self.runs.values()
                                     if r.sandbox == node.sandbox and r.sandbox_ref), None)
         else:
-            run.sandbox = f"lg-{ch.id}-{run_id}".lower()[:63]
+            run.sandbox = f"lg-{self.change.id}-{run.id}".lower()[:63]
         if h.judge and node.current_run:
             judged = self.runs.get(node.current_run)
             if judged and (judged.sandbox == run.sandbox or judged.id == run.id):
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
-        self.runs[run_id] = run
-        node.runs.append(run_id)
-        if not h.panel:
-            node.current_run = run_id
+
+    def _record_dispatch(self, run: Run, node: Node) -> None:
+        h, ch = handler_for(run.role), self.change
+        self.runs[run.id] = run
+        node.runs.append(run.id)
+        if not h.panel:                 # panel members run alongside; the node stays REVIEWING
+            node.current_run = run.id
             node.status = RUNNING
         if h.reuses_sandbox and node.sandbox is None:
             node.sandbox = run.sandbox
         if node.kind == BUILD and h.pushes and ch.first_build_at is None:
             ch.first_build_at = now_iso()          # approved_spec_and_oracle compares with this
-        self._payload(run, rendered)
-        self.event("dispatch", f"{role} run {run_id} (cycle {run.cycle}, soul {run.soul}, "
-                    f"pin {rendered.pin[7:19]})", node.id, run_id)
-        return run
 
     def _run_dir(self, run_id: str) -> Path:
         """Scratch only: payload (deleted after upload) and the live agent log."""
