@@ -17,7 +17,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   ship gates, and it is where humans approve, revise and resolve escalations.
 * A sandbox is deleted as soon as the work it produced is accepted.
 * The document store and the git remote are the only durable state. Each change is namespaced under
-  `changes/<id>/`, including the controller's own graph, node, run and event records, and is rebuilt
+  `changes/<id>/`, including the controller's own graph, node and run records, and is rebuilt
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.
 
 ```
