@@ -25,6 +25,8 @@ GUARDS: dict[str, str] = {
     "G-R6": "report: too many rejected reports fails the run",
     "G-W1": "docs_write: inside write scope, never control/",
     "G-W2": "docs_write: base_version equals latest",
+    "G-W3": "store write: content matches the schema bound to the path",
+    "G-R7": "report: data matches the role's report schema",
     # intake
     "G-I1": "requirements contain unique REQ ids",
     "G-I2": "risk.json has all 12 signals with scores and rationale",

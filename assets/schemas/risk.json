@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Twelve risk signals scored 0-3 (intake/risk.json).",
+  "type": "object",
+  "required": [
+    "signals"
+  ],
+  "properties": {
+    "signals": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "score",
+          "rationale"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "security",
+              "authorization",
+              "data_migration",
+              "external_side_effect",
+              "public_api",
+              "ui",
+              "performance",
+              "infrastructure",
+              "irreversible_action",
+              "scope_breadth",
+              "novelty_uncertainty",
+              "verification_quality"
+            ]
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,32 @@
+# Path (relative to changes/<id>/) -> schema. First match wins; the last entry is the catch-all.
+# The store validates every write against the bound schema and records its name and sha.
+
+# ---- agent documents
+- {pattern: "intake/requirements.md", schema: requirements}
+- {pattern: "intake/risk.json", schema: risk}
+- {pattern: "intake/questions.md", schema: questions}
+- {pattern: "plan/spec.md", schema: markdown}
+- {pattern: "plan/specs/REQ-*.md", schema: delta-spec}
+- {pattern: "plan/taskgraph.json", schema: taskgraph}
+- {pattern: "plan/oracle.json", schema: oracle}
+- {pattern: "tasks/*/evidence/*.md", schema: evidence}
+- {pattern: "release/plan.md", schema: release-plan}
+# ---- controller documents
+- {pattern: "control/change.json", schema: change}
+- {pattern: "control/graph.json", schema: graph}
+- {pattern: "control/nodes/*.json", schema: node}
+- {pattern: "control/runs/*.json", schema: run}
+- {pattern: "control/events/*.json", schema: event}
+- {pattern: "control/approvals/*.json", schema: approval}
+- {pattern: "control/approvals/*/*.json", schema: approval}
+- {pattern: "control/attestations/*.json", schema: attestation}
+- {pattern: "control/overrides/*.json", schema: override}
+- {pattern: "control/surfaces/*.json", schema: surface-pin}
+- {pattern: "control/verification/*.json", schema: verification}
+- {pattern: "tasks/*/verification.json", schema: verification}
+- {pattern: "control/ship/readiness.json", schema: readiness}
+- {pattern: "control/logs/*.log", schema: text}
+# ---- everything else
+- {pattern: "*.json", schema: json}
+- {pattern: "*.md", schema: markdown}
+- {pattern: "*", schema: text}

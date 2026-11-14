@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Controller node state (or a removal tombstone).",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "cycle"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "PENDING",
+            "READY",
+            "RUNNING",
+            "VERIFYING",
+            "REVIEWING",
+            "MERGING",
+            "REWORK",
+            "ACCEPTED",
+            "ESCALATED",
+            "FAILED",
+            "AWAITING_HUMAN"
+          ]
+        },
+        "cycle": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "removed": {
+          "not": {}
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "removed"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "removed": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

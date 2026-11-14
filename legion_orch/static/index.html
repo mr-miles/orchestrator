@@ -347,9 +347,9 @@ async function renderTab(force) {
       <label class="muted"><input id="docall" type="checkbox" style="width:auto" ${showAll?'checked':''} onchange="renderTab()"> include controller records (events, nodes, runs)</label></div>`;
     let viewer = '';
     if (docSel) { try { const d = await api(`/api/doc?path=${encodeURIComponent(docSel.path)}${docSel.version?'&version='+docSel.version:''}`);
-      viewer = `<div class="card"><b>${esc(d.attestation)}</b> <span class="muted">by ${esc(d.author)} (${esc(d.role)}) · ${esc(d.created_at)} · ${esc(d.sha256.slice(0,19))}</span>
+      viewer = `<div class="card"><b>${esc(d.attestation)}</b> <span class="muted">by ${esc(d.author)} (${esc(d.role)}) · ${esc(d.created_at)} · ${esc(d.sha256.slice(0,19))} · schema <code>${esc(d.schema)}</code> ${esc((d.schema_sha||'').slice(7,15))}</span>
         <div>versions: ${d.history.map(h=>`<a onclick="openDoc('${d.path}',${h.version})">v${h.version}</a>`).join(' ')}</div><pre>${esc(d.content)}</pre></div>`; } catch(e) { viewer = `<div class="err">${esc(e.message)}</div>`; } }
-    body.innerHTML = controls + viewer + `<table><tr><th>path</th><th>latest</th><th>author</th><th>written</th></tr>${list.map(d=>`<tr><td><a onclick="openDoc('${d.path}')">${esc(d.path)}</a></td><td>v${d.version}</td><td>${esc(d.author)} <span class="muted">${esc(d.role)}</span></td><td class="muted">${esc(d.created_at)}</td></tr>`).join('')}</table>`;
+    body.innerHTML = controls + viewer + `<table><tr><th>path</th><th>latest</th><th>schema</th><th>author</th><th>written</th></tr>${list.map(d=>`<tr><td><a onclick="openDoc('${d.path}')">${esc(d.path)}</a></td><td>v${d.version}</td><td><code>${esc(d.schema)}</code></td><td>${esc(d.author)} <span class="muted">${esc(d.role)}</span></td><td class="muted">${esc(d.created_at)}</td></tr>`).join('')}</table>`;
   } else if (tab === 'events') {
     if (!CID) { body.innerHTML = ''; return; }
     const ev = await api(`/api/changes/${CID}/events`);

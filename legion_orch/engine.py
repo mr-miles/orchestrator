@@ -66,10 +66,10 @@ class Controller:
         self.tmp = cfg.state_dir / "tmp"
         self.dblock = threading.RLock()
         self.conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
-        self.docs = DocStore(self.conn, self.dblock)
+        self.assets = Assets(cfg.assets_dir)
+        self.docs = DocStore(self.conn, self.dblock, self.assets.schemas)
         self.git = GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path,
                              cfg.repo.base_branch)
-        self.assets = Assets(cfg.assets_dir)
         self.runner = runner or make_runner(cfg)
         self.lock = asyncio.Lock()
         self.procs: dict[str, asyncio.subprocess.Process] = {}
@@ -757,6 +757,10 @@ class ChangeEngine:
                     f["attestations"] = [attest.normalize(a, self.cid) for a in f["attestations"]
                                          if isinstance(a, str)]
             v = guards.report_shape(status, blocked_reason, missing_decision)
+            if status == "DONE":   # G-R7: structured data matches the role's report schema
+                schema = self.assets.roles[run.role].report_schema
+                v += [f"G-R7: data does not match schema {schema!r}: {x}"
+                      for x in self.assets.schemas.validate_data(schema, data)]
             parsed, v3 = await attest.check_all(attestations, [self.cfg.repo.name], self.docs, self.git)
             v += v3
             ctx: dict[str, Any] = {}

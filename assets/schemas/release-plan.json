@@ -1,0 +1,3 @@
+{"x-format": "markdown",
+ "description": "Release observation plan.",
+ "required_headings": ["Health criteria", "Rollback criteria"]}

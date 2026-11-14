@@ -1,0 +1,4 @@
+{"x-format": "markdown",
+ "description": "Numbered requirements, one REQ-<n> per bullet or heading.",
+ "required_patterns": ["^\\s*(?:[-*]|#+)?\\s*\\**REQ-[0-9]+\\b"],
+ "pattern_descriptions": ["at least one requirement line starting with REQ-<n>"]}

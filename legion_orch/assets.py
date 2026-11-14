@@ -18,6 +18,8 @@ from typing import Any
 
 import yaml
 
+from .schemas import SchemaRegistry
+
 VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
@@ -26,7 +28,7 @@ TEMPLATE_VARS = {
     "task_title", "task_json", "cycle", "role", "context_refs", "feedback", "candidate_sha",
     "write_scope", "required_docs", "workdir", "task_soul",
 }
-ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed"}
+ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema"}
 
 
 class AssetError(Exception):
@@ -43,6 +45,7 @@ class Role:
     git: str  # none | commit | candidate | head
     repo: bool = True
     souls_allowed: list[str] = field(default_factory=list)
+    report_schema: str = "report-none"
 
 
 @dataclass
@@ -83,6 +86,7 @@ class Assets:
             if unknown:
                 raise AssetError(f"roles.yaml: role {name}: unknown keys {sorted(unknown)}")
             self.roles[name] = Role(name=name, **r)
+        self.schemas = SchemaRegistry(self.root / "schemas")
         self.sha = self._hash()
         self._validate()
 
@@ -99,8 +103,9 @@ class Assets:
 
     def _hash(self) -> str:
         h = hashlib.sha256()
-        files = [self.root / "roles.yaml"] + sorted(
-            p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md"))
+        files = [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
+            p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md")) \
+            + sorted((self.root / "schemas").glob("*.json"))
         for p in files:
             h.update(str(p.relative_to(self.root)).encode() + b"\0" + p.read_bytes() + b"\0")
         return "sha256:" + h.hexdigest()
@@ -137,7 +142,14 @@ class Assets:
             self.prompt(role.name)
             if role.git not in {"none", "commit", "candidate", "head"}:
                 raise AssetError(f"role {role.name}: bad git requirement {role.git!r}")
-        orphans = ([f"souls/{s}.md" for s in set(self.souls_) - used_souls]
+        used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
+        for r in self.roles.values():
+            if r.report_schema not in self.schemas.schemas:
+                raise AssetError(f"role {r.name}: unknown report_schema {r.report_schema!r}")
+            if self.schemas.get(r.report_schema).fmt != "json":
+                raise AssetError(f"role {r.name}: report_schema must be a JSON schema")
+        orphans = ([f"schemas/{s}.json" for s in set(self.schemas.schemas) - used_schemas]
+                   + [f"souls/{s}.md" for s in set(self.souls_) - used_souls]
                    + [f"skills/{s}.md" for s in set(self.skills_) - used_skills]
                    + [f"prompts/{p}.md" for p in set(self.prompts_) - set(self.roles)])
         if orphans:

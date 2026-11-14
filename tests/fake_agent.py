@@ -86,7 +86,8 @@ def main():
         print(call("report", status="DONE", summary="requirements captured", attestations=[req, risk]))
     elif role == "planner":
         spec = write("plan/spec.md", f"# Spec (cycle {cycle})\n\nWrite greet/bye files and docs.\n")
-        deltas = [write(f"plan/specs/{r}.md", f"# {r} delta spec (cycle {cycle})\n")
+        deltas = [write(f"plan/specs/{r}.md", f"# {r} delta spec (cycle {cycle})\n\n## Current behaviour\n"
+                        f"missing\n\n## Change\nadd it\n\n## Acceptance criteria\n- works\n")
                   for r in ("REQ-1", "REQ-2")]
         oracle = write("plan/oracle.json", json.dumps({
             "acceptance_tests": ["tests/acceptance/test_greet.sh"],

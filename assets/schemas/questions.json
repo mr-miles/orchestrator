@@ -1,0 +1,4 @@
+{"x-format": "markdown",
+ "description": "Questions for the human as a checklist: '- [ ] Q1: …' open, '- [x] Q1: … — answer' answered.",
+ "required_patterns": ["^\\s*[-*]\\s*\\[[ xX]\\]"],
+ "pattern_descriptions": ["at least one '- [ ]' or '- [x]' question"]}

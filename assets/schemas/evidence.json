@@ -1,0 +1,4 @@
+{"x-format": "markdown",
+ "description": "Implementer evidence: each verification command with its exit code and relevant output.",
+ "required_patterns": ["exit"],
+ "pattern_descriptions": ["exit codes for the verification commands"]}

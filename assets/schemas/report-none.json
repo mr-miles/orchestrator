@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Roles whose report carries no structured data.",
+  "type": "object",
+  "maxProperties": 0
+}

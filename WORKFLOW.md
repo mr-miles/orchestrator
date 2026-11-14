@@ -94,7 +94,8 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 | `docs_list(prefix)` | list documents and latest versions |
 | `docs_read(path, version?)` | read an immutable version (latest by default) |
 | `docs_history(path)` | all versions with author/run and sha256 |
-| `docs_write(path, content, base_version?)` | create version N+1. `base_version` must equal the current latest (optimistic concurrency); omit only for a new path. Scope-checked. Returns `file:<path>@<N>` |
+| `docs_schema(path)` / `schema_get(name)` | the schema a path is bound to / a schema by name |
+| `docs_write(path, content, base_version?)` | create version N+1; content must match the path's schema (G-W3). `base_version` must equal the current latest (optimistic concurrency); omit only for a new path. Scope-checked. Returns `file:<path>@<N>` |
 | `verify_attestation(ref)` | check that a `file:`/`git:` reference resolves |
 | `progress(message, percent?)` | heartbeat shown live in the UI |
 | `report(status, summary, attestations, data?, blocked_reason?, missing_decision?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations |
@@ -227,8 +228,10 @@ Universal guards apply to every task and are listed once.
 | G-R4 | report | The role's required documents are attested at their **latest** version and were **authored by this run**. |
 | G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
 | G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. |
+| G-R7 | report | `data` matches the role's `report_schema` (`roles.yaml`): verdicts, findings, results. |
 | G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). |
+| G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
 
 ### 5.1 `intake` – start
 
@@ -448,6 +451,40 @@ assets/
 * [`architecture-reviewer`](assets/souls/architecture-reviewer.md)
 * [`integration-verifier`](assets/souls/integration-verifier.md)
 * [`release-planner`](assets/souls/release-planner.md)
+
+**Schemas** ([`bindings.yaml`](assets/schemas/bindings.yaml) maps path patterns to these; agents
+can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON documents use JSON Schema
+2020-12; `x-format: markdown` schemas require headings/patterns; `x-format: text` is free text.
+Cross-document rules (coverage, cycles, parallel overlap, resolvable attestations) stay in the
+guards, because a per-file schema cannot express them.
+
+* [`approval`](assets/schemas/approval.json)
+* [`attestation`](assets/schemas/attestation.json)
+* [`change`](assets/schemas/change.json)
+* [`delta-spec`](assets/schemas/delta-spec.json)
+* [`event`](assets/schemas/event.json)
+* [`evidence`](assets/schemas/evidence.json)
+* [`graph`](assets/schemas/graph.json)
+* [`json`](assets/schemas/json.json)
+* [`markdown`](assets/schemas/markdown.json)
+* [`node`](assets/schemas/node.json)
+* [`oracle`](assets/schemas/oracle.json)
+* [`override`](assets/schemas/override.json)
+* [`questions`](assets/schemas/questions.json)
+* [`readiness`](assets/schemas/readiness.json)
+* [`release-plan`](assets/schemas/release-plan.json)
+* [`report-baseline`](assets/schemas/report-baseline.json)
+* [`report-critique`](assets/schemas/report-critique.json)
+* [`report-integration`](assets/schemas/report-integration.json)
+* [`report-none`](assets/schemas/report-none.json)
+* [`report-review`](assets/schemas/report-review.json)
+* [`requirements`](assets/schemas/requirements.json)
+* [`risk`](assets/schemas/risk.json)
+* [`run`](assets/schemas/run.json)
+* [`surface-pin`](assets/schemas/surface-pin.json)
+* [`taskgraph`](assets/schemas/taskgraph.json)
+* [`text`](assets/schemas/text.json)
+* [`verification`](assets/schemas/verification.json)
 
 **Skills**
 

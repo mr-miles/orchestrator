@@ -5,7 +5,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
 
 * **[WORKFLOW.md](WORKFLOW.md)** is the specification: stages, guards, risk tiers, ship gates, and
   which soul, skills and prompt each task uses.
-* **[assets/](assets/)** holds the agent-facing text, one file per asset: `roles.yaml`,
+* **[assets/](assets/)** holds the agent-facing text and document schemas: `roles.yaml`, `schemas/` (JSON Schemas bound to document paths; the store validates every write and records the schema),
   `souls/<soul>.md`, `skills/<skill>.md` and `prompts/<role>.md`. The controller loads and validates
   the folder at start-up, then pins the asset-set hash and the rendered-prompt hash on every run.
   WORKFLOW.md is documentation only and is never parsed.

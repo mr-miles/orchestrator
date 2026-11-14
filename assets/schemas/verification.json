@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Deterministic verification result.",
+  "type": "object",
+  "required": [
+    "ok",
+    "sha",
+    "results"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "command",
+          "exit_code"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "infra_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Controller change record.",
+  "type": "object",
+  "required": [
+    "id",
+    "goal",
+    "status",
+    "base_sha"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "ACTIVE",
+        "READY",
+        "NOT_READY",
+        "ABANDONED"
+      ]
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "tier": {
+      "enum": [
+        "R0",
+        "R1",
+        "R2",
+        "R3",
+        null
+      ]
+    }
+  }
+}

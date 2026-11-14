@@ -76,7 +76,8 @@ def test_assets_render_and_pin():
 
 # ------------------------------------------------------------------ document store
 def _store():
-    return DocStore(sqlite3.connect(":memory:"), threading.RLock())
+    from legion_orch.schemas import SchemaRegistry
+    return DocStore(sqlite3.connect(":memory:"), threading.RLock(), SchemaRegistry(ROOT / "assets/schemas"))
 
 
 def test_docstore_versions_are_immutable():
@@ -225,3 +226,37 @@ def test_protected_path_approval_timing_and_coverage():
     assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
     assert governance.coverage_ok({"covers": None}, {"T1", "T2"})
     assert not governance.coverage_ok({"covers": ["T1"]}, {"T1", "T2"})
+
+
+def test_store_enforces_bound_schemas():
+    import json as _j
+    from legion_orch.docstore import SchemaViolation
+    d = _store()
+    good = {"tasks": [_task("T1", ["src/a.py"])]}
+    v = d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner")
+    assert (v.schema, v.schema_sha.startswith("sha256:")) == ("taskgraph", True)
+    assert d.read("changes/c1/plan/taskgraph.json").schema == "taskgraph"
+    bad = {"tasks": [dict(_task("T1", ["/abs"]), extra=1)]}
+    with pytest.raises(SchemaViolation, match="G-W3.*taskgraph"):
+        d.write("changes/c1/plan/taskgraph.json", _j.dumps(bad), author="r1", role="planner", base_version=1)
+    with pytest.raises(SchemaViolation, match="bound to schema 'taskgraph', not 'json'"):
+        d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner",
+                base_version=1, schema="json")
+    with pytest.raises(SchemaViolation, match="missing heading 'Change'"):
+        d.write("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n",
+                author="r1", role="planner")
+    run = {"id": "r0001", "node_id": "plan", "role": "planner", "status": "ACTIVE", "cycle": 1, "token": "x"}
+    with pytest.raises(SchemaViolation, match="run"):     # run records may never carry a token
+        d.write("changes/c1/control/runs/r0001.json", _j.dumps(run), author="controller", role="controller")
+    assert d.write("changes/c1/notes/anything.txt", "free text", author="r", role="r").schema == "text"
+
+
+def test_report_schemas():
+    from legion_orch.schemas import SchemaRegistry
+    reg = SchemaRegistry(ROOT / "assets/schemas")
+    ok = {"verdict": "PASS", "findings": [], "checked": ["diff"]}
+    assert reg.validate_data("report-review", ok) == []
+    bad = {"verdict": "OK", "findings": [{"severity": "BAD"}], "checked": []}
+    errs = reg.validate_data("report-review", bad)
+    assert any("verdict" in e for e in errs) and any("findings/0" in e for e in errs)
+    assert reg.validate_data("report-none", {}) == [] and reg.validate_data("report-none", {"x": 1})

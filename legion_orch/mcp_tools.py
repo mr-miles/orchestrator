@@ -61,6 +61,7 @@ def build_mcp(ctl: Controller) -> MCPServer:
                   "node": r.node_id, "write_scope": r.write_scope,
                   "required_docs": r.required_docs, "context": r.context_refs,
                   "required_git": ctl.assets.roles[r.role].git,
+                  "report_schema": ctl.assets.roles[r.role].report_schema,
                   "git": {"url": ctl.git_url, "branch": r.branch, "base_sha": r.base_sha,
                           "checkout_sha": r.judged_sha or r.base_sha,
                           "can_push": r.role in ("implementer", "oracle")},
@@ -99,6 +100,24 @@ def build_mcp(ctl: Controller) -> MCPServer:
         except (DocStoreError, WorkflowError) as e:
             raise ValueError(str(e))
         return v.meta()
+
+    @server.tool(description="The schema a document path is bound to (name, format, definition). "
+                             "Every write is validated against it; check before writing.")
+    async def docs_schema(ctx: Context, path: str) -> dict:
+        ce, _ = current(ctx)
+        name = ctl.docs.schemas.bound(ce.p(path))
+        s = ctl.docs.schemas.get(name)
+        return {"path": ce.p(path), "schema": name, "format": s.fmt, "sha": s.sha, "definition": s.body}
+
+    @server.tool(description="A schema by name, e.g. your role's report schema "
+                             "(get_assignment().report_schema).")
+    async def schema_get(ctx: Context, name: str) -> dict:
+        current(ctx)
+        try:
+            s = ctl.docs.schemas.get(name)
+        except Exception as e:
+            raise ValueError(str(e))
+        return {"schema": name, "format": s.fmt, "sha": s.sha, "definition": s.body}
 
     @server.tool(description="Check whether an attestation resolves.")
     async def verify_attestation(ctx: Context, ref: str) -> dict:

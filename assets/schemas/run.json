@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Controller run record. Never contains the bearer token.",
+  "type": "object",
+  "required": [
+    "id",
+    "node_id",
+    "role",
+    "status",
+    "cycle"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^r[0-9]{4,}$"
+    },
+    "node_id": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "STARTING",
+        "ACTIVE",
+        "REPORTED",
+        "ACCEPTED",
+        "SUPERSEDED",
+        "FAILED"
+      ]
+    },
+    "cycle": {
+      "type": "integer"
+    },
+    "prompt_pin": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "assets_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "token": false
+  }
+}

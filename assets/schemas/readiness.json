@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Ship readiness verdict.",
+  "type": "object",
+  "required": [
+    "verdict",
+    "tier",
+    "gates"
+  ],
+  "properties": {
+    "verdict": {
+      "enum": [
+        "READY",
+        "NOT_READY"
+      ]
+    },
+    "tier": {
+      "enum": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ]
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "satisfied",
+              "unsatisfied",
+              "unevaluable"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

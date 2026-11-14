@@ -12,4 +12,7 @@ ever overwritten or deleted.
 - Writes outside your write scope are refused. `control/**` belongs to the controller.
 - `docs_write` returns the fully qualified attestation `file:changes/<id>/<path>@<version>`;
   cite it as returned in your report.
+- Every path is bound to a schema and every write is validated against it. Call
+  `docs_schema(path)` before writing a structured document; a refused write lists the errors.
+  Your report's `data` must match your role's `report_schema` (`schema_get(name)`).
 - Prefer markdown for prose and JSON for anything the controller parses.

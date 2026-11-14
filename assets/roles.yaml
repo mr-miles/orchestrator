@@ -4,6 +4,7 @@ intake:
   write: ["intake/"]
   required_docs: ["intake/requirements.md", "intake/risk.json"]
   git: none
+  report_schema: report-none
   repo: true
 planner:
   soul: architect-planner
@@ -11,6 +12,7 @@ planner:
   write: ["plan/"]
   required_docs: ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
   git: none
+  report_schema: report-none
   repo: true
 critic:
   soul: plan-critic
@@ -18,6 +20,7 @@ critic:
   write: ["critique/"]
   required_docs: ["critique/cycle-{{cycle}}.md"]
   git: none
+  report_schema: report-critique
   repo: true
 oracle:
   soul: test-engineer
@@ -25,6 +28,7 @@ oracle:
   write: ["oracle/"]
   required_docs: ["oracle/tests.md"]
   git: commit
+  report_schema: report-none
   repo: true
 baseline:
   soul: baseline-verifier
@@ -32,6 +36,7 @@ baseline:
   write: ["baseline/"]
   required_docs: ["baseline/report.md"]
   git: head
+  report_schema: report-baseline
   repo: true
 implementer:
   soul: "{{task_soul}}"
@@ -40,6 +45,7 @@ implementer:
   write: ["tasks/{{task_id}}/evidence/"]
   required_docs: ["tasks/{{task_id}}/evidence/cycle-{{cycle}}.md"]
   git: commit
+  report_schema: report-none
   repo: true
 reviewer:
   soul: code-reviewer
@@ -47,6 +53,7 @@ reviewer:
   write: ["tasks/{{task_id}}/reviews/"]
   required_docs: ["tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md"]
   git: candidate
+  report_schema: report-review
   repo: true
 security:
   soul: security-reviewer
@@ -54,6 +61,7 @@ security:
   write: ["tasks/{{task_id}}/reviews/"]
   required_docs: ["tasks/{{task_id}}/reviews/security-cycle-{{cycle}}.md"]
   git: candidate
+  report_schema: report-review
   repo: true
 integration:
   soul: integration-verifier
@@ -61,6 +69,7 @@ integration:
   write: ["integration/"]
   required_docs: ["integration/report.md"]
   git: head
+  report_schema: report-integration
   repo: true
 release:
   soul: release-planner
@@ -68,6 +77,7 @@ release:
   write: ["release/"]
   required_docs: ["release/plan.md", "release/rollback.md"]
   git: none
+  report_schema: report-none
   repo: true
 architecture:
   soul: architecture-reviewer
@@ -75,4 +85,5 @@ architecture:
   write: ["tasks/{{task_id}}/reviews/"]
   required_docs: ["tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md"]
   git: candidate
+  report_schema: report-review
   repo: true
