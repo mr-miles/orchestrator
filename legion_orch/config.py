@@ -88,6 +88,10 @@ class SandboxConfig:
     providers: list[str] = field(default_factory=list)
     # Binaries in the agent image allowed to call the controller's MCP endpoint
     agent_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/claude"])
+    # Binaries allowed to reach the controller's git remote. git's HTTP traffic is sent by its
+    # remote helper: /usr/lib/git-core on Debian/Ubuntu, /usr/libexec/git-core on Fedora/RHEL/Alpine.
+    git_binaries: list[str] = field(default_factory=lambda: [
+        "/usr/bin/git", "/usr/lib/git-core/git-remote-http", "/usr/lib/git-core/git-remote-https"])
     # Folder with the templates for everything created in OpenShell (policies, sandboxes,
     # provider profile, provider); see policies/README.md for the placeholder vocabulary.
     templates_dir: str = "policies"

@@ -69,8 +69,6 @@ VOCABULARY: dict[str, str] = {
     "TASK_ID": "node / task id the sandbox serves (sanitised automatically in labels)",
 }
 
-GIT_BINARIES = ["/usr/bin/git", "/usr/lib/git-core/git-remote-http",
-                "/usr/lib/git-core/git-remote-https"]
 MCP_VERSIONS = ["2025-06-18", "2025-11-25", "2026-07-28"]
 PROFILE_ID = "legion-controller"
 
@@ -104,8 +102,8 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
         "AGENT_IMAGE": sc.image, "VERIFIER_IMAGE": sc.verifier_image or sc.image,
         "SANDBOX_PROVIDERS": list(dict.fromkeys([ic.provider, *sc.providers])),
         "AGENT_BINARIES": [{"path": b} for b in sc.agent_binaries],
-        "GIT_BINARIES": [{"path": b} for b in GIT_BINARIES],
-        "PROFILE_BINARIES": list(dict.fromkeys([*sc.agent_binaries, *GIT_BINARIES])),
+        "GIT_BINARIES": [{"path": b} for b in sc.git_binaries],
+        "PROFILE_BINARIES": list(dict.fromkeys([*sc.agent_binaries, *sc.git_binaries])),
     }
     if mcp_tools is not None:
         v["MCP_TOOLS"] = list(mcp_tools)

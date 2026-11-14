@@ -40,6 +40,8 @@ sandbox:
   verifier_image: registry.example.com/your-org/toolchain:latest
   providers: [claude-code]       # model credentials; legion-controller is added automatically
   agent_binaries: [/usr/local/bin/claude]   # binaries allowed to call the controller's MCP
+  # git_binaries: [/usr/bin/git, /usr/lib/git-core/git-remote-http, /usr/lib/git-core/git-remote-https]
+  #   allowed to reach the controller's git remote; Fedora/RHEL/Alpine use /usr/libexec/git-core/
   templates_dir: policies         # templates for everything created in OpenShell (see policies/README.md)
   keep_failed: true
 identity:                        # SPIFFE/SPIRE workload identity (see legion_orch/identity.py)
