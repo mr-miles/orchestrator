@@ -1,11 +1,7 @@
-# OpenShell sandbox policy for agent runs – static part.
-# legion-orch adds two generated entries per sandbox (legion_orch/policy.py):
-#   legion_mcp  – protocol: mcp on the controller's MCP port; the gateway vets every JSON-RPC
-#                 request and allows only the handshake methods and the controller's tools
-#   legion_git  – protocol: rest on the controller's git endpoint; push only for roles that push
-# Do not declare legion_mcp / legion_git here. Credentials are never placed in the sandbox: the
-# workspace `legion-controller` provider injects a SPIFFE-derived bearer at the gateway.
-# Adjust binary paths to your agent image (`openshell sandbox exec <n> -- which claude git`).
+# OpenShell sandbox policy for agent runs (critic, planner, implementer, reviewers, ...).
+# Rendered per sandbox by legion-orch; placeholders: see policies/README.md.
+# No credentials appear here: the workspace provider ${PROVIDER} injects a SPIFFE-derived bearer
+# into requests to the controller at the gateway.
 version: 1
 filesystem_policy:
   include_workdir: true
@@ -17,11 +13,51 @@ process:
   run_as_user: sandbox
   run_as_group: sandbox
 network_policies:
-  # Model provider (credentials are injected by the OpenShell provider, never by legion-orch).
+  # Model provider (credentials come from the model providers attached to the sandbox).
   claude_anthropic:
     name: claude_anthropic
     endpoints:
       - { host: api.anthropic.com, port: 443 }
       - { host: statsig.anthropic.com, port: 443 }
-    binaries:
-      - { path: /usr/local/bin/claude }
+    binaries: ${AGENT_BINARIES}
+
+  # Controller MCP, vetted by the gateway: only the handshake methods and the controller's tools.
+  # Own port: OpenShell does not allow MCP to share a host:port with another protocol.
+  legion_mcp:
+    name: legion-mcp
+    endpoints:
+      - host: ${MCP_HOST}
+        port: ${MCP_PORT}
+        path: ${MCP_PATH}
+        protocol: mcp
+        tls: ${MCP_TLS}
+        enforcement: enforce
+        mcp:
+          versions: ${MCP_VERSIONS}
+        rules:
+          - allow: { method: initialize }
+          - allow: { method: notifications/initialized }
+          - allow: { method: notifications/cancelled }
+          - allow: { method: ping }
+          - allow: { method: tools/list }
+          - allow: { method: server/discover }
+          - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
+    binaries: ${AGENT_BINARIES}
+
+  # Controller git remote. Push is allowed here and removed by deny rules for roles that do not
+  # push (deny takes precedence); the controller's pre-receive hook also enforces the branch.
+  legion_git:
+    name: legion-git
+    endpoints:
+      - host: ${CONTROLLER_HOST}
+        port: ${CONTROLLER_PORT}
+        path: ${GIT_PATH_GLOB}
+        protocol: rest
+        tls: ${CONTROLLER_TLS}
+        enforcement: enforce
+        rules:
+          - allow: { method: GET, path: ${GIT_INFO_REFS} }
+          - allow: { method: POST, path: ${GIT_UPLOAD_PACK} }
+          - allow: { method: POST, path: ${GIT_RECEIVE_PACK} }
+        deny_rules: ${GIT_PUSH_DENY_RULES}
+    binaries: ${GIT_BINARIES}

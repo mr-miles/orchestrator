@@ -3,9 +3,7 @@
 ``OpenShellRunner`` drives the NVIDIA OpenShell CLI:
 
     (every call is prefixed with ``openshell --workspace <workspace> [-g <gateway>]``)
-    openshell sandbox create --name <n> --detach --no-tty [--from IMG]
-                             --provider legion-controller [--provider P]...
-                             --policy <policy.yaml> --upload <payload>:/sandbox --no-git-ignore
+    openshell sandbox create <flags rendered from policies/agent-sandbox.template.yaml>
     openshell sandbox get <n> --output json          # sandbox id used in its SPIFFE ID
     openshell sandbox exec <n> --no-tty [--workdir W] -- <argv>
     openshell sandbox delete <n>
@@ -26,11 +24,12 @@ import asyncio
 import json
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from ..config import Config
+from .templates import base_values, render, spec_to_args
 
 
 @dataclass
@@ -39,7 +38,10 @@ class SandboxSpec:
     payload_dir: Path          # uploaded as /sandbox/payload
     policy_file: Path
     agent: bool = True         # False => deterministic verifier (identity provider only)
-    labels: dict[str, str] = field(default_factory=dict)
+    change: str = ""
+    task: str = ""
+    role: str = ""
+    run: str = ""
 
 
 class SandboxError(Exception):
@@ -88,21 +90,14 @@ class OpenShellRunner(Runner):
         return out
 
     async def create(self, spec: SandboxSpec) -> str:
-        sc = self.cfg.sandbox
-        args = ["sandbox", "create", "--name", spec.name, "--detach", "--no-tty",
-                "--policy", str(spec.policy_file),
-                "--upload", f"{spec.payload_dir}:/sandbox", "--no-git-ignore",
-                "--provider", self.cfg.identity.provider]
-        image = sc.image if spec.agent else (sc.verifier_image or sc.image)
-        if image:
-            args += ["--from", image]
-        if spec.agent:
-            for p in sc.providers:
-                args += ["--provider", p]
-        for k, v in spec.labels.items():
-            args += ["--label", f"{k}={v}"]
-        args += sc.extra_create_args
-        await self._os(*args, timeout=900)
+        """``sandbox create`` from policies/{agent,verifier}-sandbox.template.yaml."""
+        values = base_values(self.cfg) | {
+            "SANDBOX_NAME": spec.name, "POLICY_FILE": str(spec.policy_file),
+            "PAYLOAD_UPLOAD": f"{spec.payload_dir}:/sandbox", "CHANGE_ID": spec.change,
+            "TASK_ID": spec.task, "ROLE": spec.role, "RUN_ID": spec.run or spec.name}
+        tmpl = render(self.cfg, "agent_sandbox" if spec.agent else "verifier_sandbox", values)
+        await self._os("sandbox", "create", *spec_to_args(tmpl), *self.cfg.sandbox.extra_create_args,
+                       timeout=900)
         info = json.loads(await self._os("sandbox", "get", spec.name, "--output", "json"))
         ref = info.get(self.cfg.identity.subject_field) if isinstance(info, dict) else None
         if not ref:

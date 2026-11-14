@@ -298,23 +298,79 @@ def test_svid_verification_and_access_tokens():
 
 
 
-def test_generated_policy_and_provider_profile(tmp_path):
-    import yaml as _y
+def _os_cfg(tmp_path):
     from legion_orch.config import load_config
-    from legion_orch.sandbox import provider_profile, render_policy, setup_commands
-    from legion_orch.server import MCP_TOOLS
     (tmp_path / "c.yaml").write_text(f"""
 project: p
 repo: {{name: app, path: {tmp_path}}}
 decision_owners: [miles]
 server: {{port: 8765, mcp_port: 8766, public_url: "http://host.openshell.internal:8765"}}
 identity: {{jwks_uri: "https://spire/keys"}}
-sandbox: {{runner: openshell, workspace: team-ml, gateway: prod}}
+sandbox: {{runner: openshell, workspace: team-ml, gateway: prod, image: "reg/agent:1",
+          providers: [claude-code], templates_dir: {ROOT / 'policies'}}}
 """)
-    cfg = load_config(tmp_path / "c.yaml")
-    cfg.base_dir = ROOT
+    return load_config(tmp_path / "c.yaml")
+
+
+def test_template_vocabulary_is_shared_and_documented():
+    from legion_orch.sandbox.templates import TEMPLATES, VOCABULARY, placeholders
+    used = set()
+    for f in TEMPLATES.values():
+        used |= placeholders((ROOT / "policies" / f).read_text())
+    assert used <= set(VOCABULARY), used - set(VOCABULARY)
+    assert set(VOCABULARY) <= used, f"unused vocabulary {set(VOCABULARY) - used}"
+    readme = (ROOT / "policies/README.md").read_text()
+    assert all(f"`${{{k}}}`" in readme for k in VOCABULARY)
+    assert all(f"`{f}`" in readme for f in TEMPLATES.values())
+
+
+def test_templates_render(tmp_path):
+    import yaml as _y
+    from legion_orch.sandbox import render, setup_commands
+    from legion_orch.sandbox.runner import OpenShellRunner
+    from legion_orch.sandbox.templates import TemplateError, render_text, spec_to_args
+    cfg = _os_cfg(tmp_path)
+    calls = []
+
+    async def fake_os(*args, timeout=0):
+        calls.append(list(args))
+        return '{"id": "sb-123"}' if args[:2] == ("sandbox", "get") else ""
+    r = OpenShellRunner(cfg)
+    r._os = fake_os
+    import asyncio
+    from legion_orch.sandbox import SandboxSpec
+    ref = asyncio.run(r.create(SandboxSpec(name="lg-c1-r0001", payload_dir=tmp_path / "payload",
+                                           policy_file=tmp_path / "p.yaml", change="c1",
+                                           task="build:T1", role="implementer", run="r0001")))
+    assert ref == "sb-123"
+    create = calls[0]
+    assert create[:2] == ["sandbox", "create"]
+    for flag in (["--name", "lg-c1-r0001"], ["--from", "reg/agent:1"], ["--provider", "legion-controller"],
+                 ["--provider", "claude-code"], ["--label", "legion.task=build:T1"],
+                 ["--upload", f"{tmp_path / 'payload'}:/sandbox"]):
+        assert any(create[i:i + 2] == flag for i in range(len(create))), flag
+    assert "--detach" in create and "--no-tty" in create
+    assert r.cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
+    cmds = setup_commands(cfg, "p.yaml")
+    assert cmds[1][5:] == ["provider", "create", "--name", "legion-controller",
+                           "--type", "legion-controller", "--runtime-credentials"]
+    assert spec_to_args({"a_b": None, "c": False, "d": True, "e": [1, 2], "f": {"k": "v"}}) == \
+        ["--d", "--e", "1", "--e", "2", "--f", "k=v"]
+    with pytest.raises(TemplateError, match="whole values"):
+        render_text("path: ${GIT_INFO_REFS}/x", {"GIT_INFO_REFS": "/a"})
+    with pytest.raises(TemplateError, match="unknown"):
+        render_text("x: ${NOT_A_THING}", {})
+    with pytest.raises(TemplateError, match="no value"):
+        render_text("x: ${MCP_TOOLS}", {})
+
+
+def test_generated_policy_and_provider_profile(tmp_path):
+    import yaml as _y
+    from legion_orch.sandbox import provider_profile, render_policy, setup_commands
+    from legion_orch.server import MCP_TOOLS
+    cfg = _os_cfg(tmp_path)
     kw = {"mcp_tools": list(MCP_TOOLS)}
-    agent = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=True, **kw))
+    agent = _y.safe_load(render_policy(cfg, agent=True, push=True, **kw))
     mcp = agent["network_policies"]["legion_mcp"]["endpoints"][0]
     git = agent["network_policies"]["legion_git"]["endpoints"][0]
     assert mcp["protocol"] == "mcp" and git["protocol"] == "rest"
@@ -323,11 +379,11 @@ sandbox: {{runner: openshell, workspace: team-ml, gateway: prod}}
     calls = [r["allow"] for r in mcp["rules"] if r["allow"]["method"] == "tools/call"]
     assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
     assert any(r["allow"]["path"].endswith("git-receive-pack") for r in git["rules"])
-    judge = _y.safe_load(render_policy(cfg, "policies/agent-policy.template.yaml", agent=True, push=False, **kw))
+    judge = _y.safe_load(render_policy(cfg, agent=True, push=False, **kw))
     jgit = judge["network_policies"]["legion_git"]["endpoints"][0]
-    assert not any(r["allow"]["path"].endswith("git-receive-pack") for r in jgit["rules"])
-    assert jgit["deny_rules"][0]["path"].endswith("git-receive-pack")
-    ver = _y.safe_load(render_policy(cfg, "policies/verifier-policy.template.yaml", agent=False, push=False, **kw))
+    assert git["deny_rules"] == []                                       # pushing role
+    assert jgit["deny_rules"] == [{"method": "POST", "path": "/git/app.git/git-receive-pack"}]
+    ver = _y.safe_load(render_policy(cfg, agent=False, push=False, **kw))
     assert set(ver["network_policies"]) == {"legion_git"}
     prof = provider_profile(cfg, list(MCP_TOOLS))
     assert prof["credentials"][0]["token_grant"]["token_endpoint"] == "http://host.openshell.internal:8765/oauth/token"

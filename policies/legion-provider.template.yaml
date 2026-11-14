@@ -1,0 +1,5 @@
+# `openshell --workspace ${WORKSPACE} provider create`, run once per workspace.
+# Every sandbox then attaches it (`--provider ${PROVIDER}`, added by legion-orch).
+name: ${PROVIDER}
+type: ${PROFILE_ID}
+runtime_credentials: true

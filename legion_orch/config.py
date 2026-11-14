@@ -63,9 +63,9 @@ class SandboxConfig:
     providers: list[str] = field(default_factory=list)
     # Binaries in the agent image allowed to call the controller's MCP endpoint
     agent_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/claude"])
-    # Templates: __CONTROLLER_HOST__ / __CONTROLLER_PORT__ are substituted per sandbox.
-    policy_template: str = "policies/agent-policy.template.yaml"
-    verifier_policy_template: str = "policies/verifier-policy.template.yaml"
+    # Folder with the templates for everything created in OpenShell (policies, sandboxes,
+    # provider profile, provider); see policies/README.md for the placeholder vocabulary.
+    templates_dir: str = "policies"
     keep_failed: bool = True
     # Command run inside the sandbox to start the agent. Executed via `bash -lc` from
     # /sandbox/work, with the payload in /sandbox/payload.

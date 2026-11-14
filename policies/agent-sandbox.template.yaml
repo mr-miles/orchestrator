@@ -1,0 +1,15 @@
+# `openshell --workspace ${WORKSPACE} sandbox create` for an agent run. Keys are CLI flags:
+# lists repeat the flag, maps become KEY=VALUE, true is a bare flag, null/false omit it.
+name: ${SANDBOX_NAME}
+from: ${AGENT_IMAGE}
+detach: true
+no_tty: true
+policy: ${POLICY_FILE}
+upload: ${PAYLOAD_UPLOAD}
+no_git_ignore: true
+provider: ${SANDBOX_PROVIDERS}
+label:
+  legion.change: ${CHANGE_ID}
+  legion.task: ${TASK_ID}
+  legion.role: ${ROLE}
+  legion.run: ${RUN_ID}

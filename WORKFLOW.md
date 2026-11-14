@@ -81,8 +81,10 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   injects it as `Authorization: Bearer` into requests to the controller only. Every MCP and git
   request is then bound to the sandbox's live run, which must match the token's change, task and
   role; when the run ends, the token is useless.
-* **Network policy** (generated per sandbox, `legion_orch/policy.py`, merged into the static
-  templates): the model provider, plus
+* **Network policy** (rendered per sandbox from [`policies/agent-policy.template.yaml`](policies/agent-policy.template.yaml);
+  every object legion-orch creates in OpenShell – policies, sandboxes, provider profile, provider –
+  comes from a template in [`policies/`](policies/README.md) using one shared placeholder
+  vocabulary): the model provider, plus
   * `legion_mcp` – `protocol: mcp` on the controller's dedicated MCP port (`/mcp`). The gateway
     parses every JSON-RPC request and allows only the handshake methods and `tools/call` for the
     controller's own tools (exactly the table below); anything else is denied before it reaches

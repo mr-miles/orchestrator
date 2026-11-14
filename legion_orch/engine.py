@@ -627,13 +627,13 @@ class ChangeEngine:
         """Scratch only: payload (deleted after upload) and the live agent log."""
         return self.ctl.tmp / "runs" / run_id
 
-    def _policy(self, template: str, dest: Path, *, agent: bool, push: bool) -> Path:
-        """Sandbox policy = static template + generated controller endpoints (policy.py):
-        MCP vetted by the gateway (protocol: mcp, tool allowlist), git push only if allowed."""
+    def _policy(self, dest: Path, *, agent: bool, push: bool) -> Path:
+        """Sandbox policy from policies/{agent,verifier}-policy.template.yaml: MCP vetted by the
+        gateway (protocol: mcp, tool allowlist), git push only if the role may push."""
         dest.parent.mkdir(parents=True, exist_ok=True)
         if self.ctl.mcp_tools is None:
             raise RuntimeError("MCP server not built: no tool allowlist for the sandbox policy")
-        dest.write_text(render_policy(self.cfg, template, agent=agent, push=push,
+        dest.write_text(render_policy(self.cfg, agent=agent, push=push,
                                       mcp_tools=self.ctl.mcp_tools))
         return dest
 
@@ -668,13 +668,11 @@ class ChangeEngine:
             if reuse:
                 await self.runner.upload(run.sandbox, payload)
             else:
-                policy = self._policy(self.cfg.sandbox.policy_template,
-                                      self._run_dir(run_id) / "policy.yaml",
+                policy = self._policy(self._run_dir(run_id) / "policy.yaml",
                                       agent=True, push=run.role in PUSH_ROLES)
                 run.sandbox_ref = await self.runner.create(SandboxSpec(
                     name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
-                    labels={"legion.change": self.change.id, "legion.run": run.id,
-                            "legion.role": run.role}))
+                    change=self.cid, task=run.node_id, role=run.role, run=run.id))
             proc = await self.runner.start_agent(run.sandbox, self._run_dir(run_id) / "agent.log")
         except Exception as e:
             shutil.rmtree(payload, ignore_errors=True)
@@ -1079,11 +1077,10 @@ class ChangeEngine:
                                   "infra_error": None, "at": now_iso()}
         created, ref = False, None
         try:
-            policy = self._policy(self.cfg.sandbox.verifier_policy_template, base / "policy.yaml",
-                                  agent=False, push=False)
+            policy = self._policy(base / "policy.yaml", agent=False, push=False)
             ref = await self.runner.create(SandboxSpec(
                 name=name, payload_dir=payload, policy_file=policy, agent=False,
-                labels={"legion.change": self.change.id, "legion.role": "verifier"}))
+                change=self.cid, task=label, role="verifier", run=name))
             self.ctl.verifier_refs[ref] = {"id": f"verifier:{name}", "change": self.cid,
                                            "task": label}         # read-only git grant
             created = True

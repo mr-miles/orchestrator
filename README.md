@@ -47,7 +47,10 @@ Two listeners:
   gateway can vet it as `protocol: mcp`.
 
 No credential is ever placed in a sandbox. Once per OpenShell workspace, run
-`legion-orch -c orchestrator.yaml setup-openshell --apply`. This imports the `legion-controller`
+`legion-orch -c orchestrator.yaml setup-openshell --apply`. Every OpenShell object (sandbox
+policies, `sandbox create` flags, provider profile, provider) is rendered from a template in
+[`policies/`](policies/README.md) with one shared `${PLACEHOLDER}` vocabulary, and every
+`openshell` call targets `sandbox.workspace`. This imports the `legion-controller`
 provider profile and creates the provider. The gateway then exchanges each sandbox's SPIFFE
 JWT-SVID at `/oauth/token` and injects the bearer into requests to the controller. Configure
 `identity.jwks_uri` (and `issuer`) with your SPIRE OIDC discovery endpoint.

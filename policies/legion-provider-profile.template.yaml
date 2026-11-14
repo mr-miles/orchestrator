@@ -1,0 +1,49 @@
+# Provider profile imported once into the workspace (`legion-orch setup-openshell`):
+# the gateway exchanges the sandbox's SPIFFE JWT-SVID at the controller and injects the returned
+# task-scoped bearer into requests to the controller's MCP and git endpoints only.
+id: ${PROFILE_ID}
+display_name: Legion orchestrator
+description: Controller access (MCP + git) with a task-scoped token obtained from the sandbox's SPIFFE JWT-SVID
+category: other
+credentials:
+  - name: access_token
+    description: Short-lived controller token (client_credentials, jwt-spiffe client assertion)
+    required: false
+    auth_style: bearer
+    header_name: Authorization
+    token_grant:
+      grant_type: client_credentials
+      token_endpoint: ${TOKEN_ENDPOINT}
+      audience: ${TOKEN_AUDIENCE}
+      jwt_svid_audience: ${SVID_AUDIENCE}
+      client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+      scopes: [${SCOPE}]
+      cache_ttl_seconds: ${TOKEN_CACHE_TTL}
+endpoints:
+  - host: ${MCP_HOST}
+    port: ${MCP_PORT}
+    path: ${MCP_PATH}
+    protocol: mcp
+    tls: ${MCP_TLS}
+    enforcement: enforce
+    mcp:
+      versions: ${MCP_VERSIONS}
+    rules:
+      - allow: { method: initialize }
+      - allow: { method: notifications/initialized }
+      - allow: { method: notifications/cancelled }
+      - allow: { method: ping }
+      - allow: { method: tools/list }
+      - allow: { method: server/discover }
+      - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
+  - host: ${CONTROLLER_HOST}
+    port: ${CONTROLLER_PORT}
+    path: ${GIT_PATH_GLOB}
+    protocol: rest
+    tls: ${CONTROLLER_TLS}
+    enforcement: enforce
+    rules:
+      - allow: { method: GET, path: ${GIT_INFO_REFS} }
+      - allow: { method: POST, path: ${GIT_UPLOAD_PACK} }
+      - allow: { method: POST, path: ${GIT_RECEIVE_PACK} }
+binaries: ${PROFILE_BINARIES}

@@ -59,8 +59,7 @@ def _config(tmp_path, port):
         limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
         sandbox:
           runner: local
-          policy_template: {ROOT / 'policies/agent-policy.template.yaml'}
-          verifier_policy_template: {ROOT / 'policies/verifier-policy.template.yaml'}
+          templates_dir: {ROOT / 'policies'}
           agent_command: "{sys.executable} {ROOT / 'tests/fake_agent.py'}"
     """))
     return load_config(cfg_path)
