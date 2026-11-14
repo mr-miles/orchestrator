@@ -30,6 +30,7 @@ from ..model import (
     Node,
     Run,
 )
+from ..roles import REGISTRY as ROLE_HANDLERS
 from .change import ChangeEngine
 from .common import PUSH_ROLES, WorkflowError, log
 
@@ -48,6 +49,9 @@ class Controller:
         self.dblock = threading.RLock()
         self.conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
         self.assets = Assets(cfg.assets_dir)
+        unhandled = set(self.assets.roles) - set(ROLE_HANDLERS)
+        if unhandled:
+            raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
         self.docs = DocStore(self.conn, self.dblock, self.assets.schemas)
         self.git = GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path,
                              cfg.repo.base_branch)

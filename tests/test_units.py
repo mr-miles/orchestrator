@@ -141,7 +141,9 @@ SOULS = ["senior-developer", "backend-engineer"]
 
 
 def check(tasks, reqs=("REQ-1",), tier="R2", oracle=ORACLE):
-    return guards.plan({"tasks": tasks}, oracle, list(reqs), tier, [".github/"], SOULS)
+    from legion_orch.store import SchemaRegistry
+    return guards.plan({"tasks": tasks}, oracle, list(reqs), tier, [".github/"], SOULS,
+                       SchemaRegistry(ROOT / "assets/schemas"))
 
 
 def test_plan_guards():
@@ -153,13 +155,18 @@ def test_plan_guards():
     assert check([_task("T1", ["src/"]), _task("T2", ["src/b.py"], ["T1"])]) == []    # ordered: fine
     assert "G-P7" in ids(check([_task("T1", ["tests/acc/test_a.py"])]))
     assert "G-P7" in ids(check([_task("T1", [".github/workflows/ci.yml"])]))
-    assert "G-P6" in ids(check([_task("T1", ["../x"])]))
-    assert "G-P8" in ids(check([_task("T1", ["a"])], oracle={"acceptance_tests": []}))
-    assert check([_task("T1", ["a"])], tier="R1", oracle={}) == []
+    assert "G-P1" in ids(check([_task("T1", ["../x"])]))   # path shape is in the schema
+    empty_oracle = {"acceptance_tests": [], "acceptance_commands": [], "integration_commands": [],
+                    "criteria": []}
+    assert "G-P8" in ids(check([_task("T1", ["a"])], oracle=empty_oracle))
+    assert check([_task("T1", ["a"])], tier="R1", oracle=empty_oracle) == []
+    assert "G-P1" in ids(check([_task("T1", ["a"])], tier="R1", oracle={}))   # shape: schema
     nosurf = dict(ORACLE, surfaces=[])
     assert "G-P10" in ids(check([_task("T1", ["a"])], oracle=nosurf))
     badsurf = dict(ORACLE, surfaces=[{"id": "API", "commands": [], "pins": ["../x"]}])
-    assert len([x for x in check([_task("T1", ["a"])], oracle=badsurf) if x.startswith("G-P10")]) == 3
+    assert len([x for x in check([_task("T1", ["a"])], oracle=badsurf) if x.startswith("G-P1:")]) == 3
+    dupsurf = dict(ORACLE, surfaces=[ORACLE["surfaces"][0]] * 2)
+    assert "G-P10" in ids(check([_task("T1", ["a"])], oracle=dupsurf))       # cross-item rule
     bad = _task("T1", ["a"])
     bad["soul"] = "code-reviewer"
     assert "G-P5" in ids(check([bad]))
@@ -430,3 +437,9 @@ def test_governance_and_ship_use_only_the_change_view():
     for f in ("governance.py", "ship.py"):
         used = set(re.findall(r"\be\.([A-Za-z_]+)", (ROOT / "legion_orch/workflow" / f).read_text()))
         assert used <= allowed, f"{f} uses {used - allowed} outside ChangeView"
+
+
+def test_every_role_has_exactly_one_handler():
+    from legion_orch.workflow.roles import REGISTRY
+    roles = set(Assets(ROOT / "assets").roles)
+    assert set(REGISTRY) == roles, (set(REGISTRY) ^ roles)

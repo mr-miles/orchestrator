@@ -277,7 +277,7 @@ Universal guards apply to every task and are listed once.
 
 | ID | Rule |
 | --- | --- |
-| G-P1 | `taskgraph.json` and `oracle.json` match the schema in skill `taskgraph-schema`. |
+| G-P1 | `taskgraph.json` and `oracle.json` match the [`taskgraph`](assets/schemas/taskgraph.json) and [`oracle`](assets/schemas/oracle.json) JSON Schemas (also enforced by the store on every write). |
 | G-P2 | Task ids unique; `depends_on` refers to existing tasks; graph is acyclic. |
 | G-P3 | Traceability: every accepted `REQ-*` is covered by ≥1 task; every task cites ≥1 existing `REQ-*`. |
 | G-P4 | Every task has ≥1 `verification` command and ≥1 `acceptance` criterion. |
@@ -443,6 +443,9 @@ assets/
   fails G-D2. Load-time validation rejects unknown variables, missing files, and files not referenced
   by any role.
 * The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.
+* Each role's report handling (its guards and the transition after an accepted report) is a
+  handler in `legion_orch/workflow/roles/`; adding a role means assets plus one handler module.
+  The controller refuses to start if a role in `roles.yaml` has no handler.
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)
 

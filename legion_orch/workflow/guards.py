@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from ..git import path_matches, paths_overlap
-from ..store import DocStore
+from ..store import DocStore, SchemaRegistry
 from . import risk
 from .attest import Attestation
 
@@ -74,7 +74,6 @@ GUARDS: dict[str, str] = {
 }
 
 REQ_RE = re.compile(r"\bREQ-([0-9]+)\b")
-TASK_ID_RE = re.compile(r"^T[0-9]+$")
 SEVERITIES = {"BLOCKER", "WARNING", "SUGGESTION"}
 CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
 
@@ -175,37 +174,15 @@ def _reachable(graph: dict[str, list[str]], start: str) -> set[str]:
 
 
 def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
-         protected_cfg: list[str], implementer_souls: list[str]) -> list[str]:
-    v: list[str] = []
-    if not isinstance(taskgraph, dict) or not isinstance(taskgraph.get("tasks"), list) \
-            or not taskgraph["tasks"]:
-        return ["G-P1: taskgraph.json must be {\"tasks\": [ ... ]} with at least one task"]
-    if not isinstance(oracle, dict):
-        return ["G-P1: oracle.json must be an object"]
-    for key in ("acceptance_tests", "acceptance_commands", "integration_commands", "criteria"):
-        if not isinstance(oracle.get(key, []), list):
-            v.append(f"G-P1: oracle.{key} must be a list")
-    tasks = taskgraph["tasks"]
-    required = {"id": str, "title": str, "soul": str, "requirements": list, "depends_on": list,
-                "files_modified": list, "instructions": str, "acceptance": list,
-                "verification": list}
-    ids: list[str] = []
-    for t in tasks:
-        if not isinstance(t, dict):
-            v.append("G-P1: every task must be an object")
-            continue
-        for k, typ in required.items():
-            if not isinstance(t.get(k), typ):
-                v.append(f"G-P1: task {t.get('id', '?')}: field {k} must be {typ.__name__}")
-        for k in ("files_forbidden", "context"):
-            if k in t and not isinstance(t[k], list):
-                v.append(f"G-P1: task {t.get('id')}: {k} must be a list")
-        if isinstance(t.get("id"), str):
-            if not TASK_ID_RE.match(t["id"]):
-                v.append(f"G-P1: task id {t['id']!r} must match T<n>")
-            ids.append(t["id"])
+         protected_cfg: list[str], implementer_souls: list[str], schemas: SchemaRegistry) -> list[str]:
+    """Cross-document plan rules. Shape (G-P1) is the ``taskgraph`` / ``oracle`` JSON Schemas –
+    the same ones the store enforces on write – so they are defined in exactly one place."""
+    v = [f"G-P1: taskgraph.json {e}" for e in schemas.validate_data("taskgraph", taskgraph)]
+    v += [f"G-P1: oracle.json {e}" for e in schemas.validate_data("oracle", oracle)]
     if v:
         return v
+    tasks = taskgraph["tasks"]
+    ids = [t["id"] for t in tasks]
     # G-P2
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
