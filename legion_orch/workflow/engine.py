@@ -231,7 +231,7 @@ class Controller:
             ce = ChangeEngine(self, cid)
             ce.st.change = Change(id=cid, goal=goal, base_sha=base, integration_head=base)
             self.changes[cid] = ce
-            ce._cwrite("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
+            ce.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
             ce._add(Node(INTAKE, INTAKE, "Intake: requirements & risk"))
             ce._add(Node(H_REQUIREMENTS, HUMAN, "Accept requirements & tier", depends_on=[INTAKE]))
             ce._event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
@@ -366,25 +366,25 @@ class ChangeEngine:
         self.ctl.spawn(coro, on_error=lambda e: self._event(
             "error", f"internal error: {e}", data=traceback.format_exc()[-3000:]))
 
-    def _cwrite(self, rel: str, content: str | dict) -> DocVersion:
+    def write_record(self, rel: str, content: str | dict) -> DocVersion:
         path = self.p(rel)
         if not isinstance(content, str):
             content = json.dumps(content, indent=2, sort_keys=True)
         return self.docs.write(path, content, author="controller", role="controller",
                                base_version=self.docs.latest_version(path))
 
-    def _latest(self, rel: str) -> int | None:
+    def latest(self, rel: str) -> int | None:
         return self.docs.latest_version(self.p(rel))
 
-    def _doc(self, rel: str, version: int | None = None) -> DocVersion:
+    def doc(self, rel: str, version: int | None = None) -> DocVersion:
         return self.docs.read(self.p(rel), version)
 
-    def _latest_att(self, rel: str) -> str | None:
-        v = self._latest(rel)
+    def latest_att(self, rel: str) -> str | None:
+        v = self.latest(rel)
         return f"file:{self.p(rel)}@{v}" if v else None
 
-    def _json_doc(self, rel: str, version: int | None = None) -> Any:
-        return json.loads(self._doc(rel, version).content)
+    def json_doc(self, rel: str, version: int | None = None) -> Any:
+        return json.loads(self.doc(rel, version).content)
 
     def recover(self) -> None:
         """After a restart the agent processes are gone, so live runs fail (and escalate);
@@ -429,11 +429,11 @@ class ChangeEngine:
         self._add(Node(SHIP, SHIP, "Ship readiness check",
                        depends_on=[H_CHANGE] if r >= 2 else [H_SPEC]))
 
-    def _build_nodes(self) -> list[Node]:
+    def build_nodes(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.kind == BUILD]
 
     def _materialize_builds(self, taskgraph: dict) -> None:
-        for n in self._build_nodes():
+        for n in self.build_nodes():
             del self.nodes[n.id]
         wv = guards.waves(taskgraph["tasks"])
         ids = []
@@ -465,7 +465,7 @@ class ChangeEngine:
         """Guard G-D3 (file overlap part)."""
         from ..git import paths_overlap
         mine = node.task["files_modified"]
-        for other in self._build_nodes():
+        for other in self.build_nodes():
             if other.id == node.id or other.status not in ACTIVE_NODE | {REWORK}:
                 continue
             if any(paths_overlap(a, b) for a in mine for b in other.task["files_modified"]):
@@ -548,7 +548,7 @@ class ChangeEngine:
             refs += [f"file:{p}@{v}" for p, v in appr1["pins"].items()]
         if role in ("critic", "oracle", "baseline") or not self.change.approvals.get("oracle"):
             if self.nodes.get(PLAN) and self.nodes[PLAN].status == ACCEPTED:
-                refs += [a for a in (self._latest_att(p) for p in self._plan_docs()) if a]
+                refs += [a for a in (self.latest_att(p) for p in self._plan_docs()) if a]
         else:
             for key, appr in self.change.approvals.items():
                 if key == "oracle" or key.startswith("spec:"):
@@ -560,18 +560,18 @@ class ChangeEngine:
                 if dn and dn.kind == BUILD and dn.accepted_sha:
                     refs.append(f"git:{self.cfg.repo.name}@{dn.accepted_sha}")
             if role in PANEL_ROLES:
-                ev = self._latest_att(f"tasks/{node.task['id']}/evidence/cycle-{node.cycle}.md")
+                ev = self.latest_att(f"tasks/{node.task['id']}/evidence/cycle-{node.cycle}.md")
                 if ev:
                     refs.append(ev)
                 ver = node.verification.get(str(node.cycle))
                 if ver and ver.get("attestation"):
                     refs.append(ver["attestation"])
         if role in ("integration", "release"):
-            for b in self._build_nodes():
-                refs += [a for a in (self._latest_att(f"tasks/{b.task['id']}/evidence/cycle-{b.cycle}.md"),)
+            for b in self.build_nodes():
+                refs += [a for a in (self.latest_att(f"tasks/{b.task['id']}/evidence/cycle-{b.cycle}.md"),)
                          if a]
             if role == "release":
-                a = self._latest_att("integration/report.md")
+                a = self.latest_att("integration/report.md")
                 if a:
                     refs.append(a)
         if self.change.oracle_sha and role not in ("intake", "planner", "critic", "oracle"):
@@ -778,15 +778,15 @@ class ChangeEngine:
         text = data[-self.LOG_LIMIT:].decode(errors="replace")
         if len(data) > self.LOG_LIMIT:
             text = f"[truncated: last {self.LOG_LIMIT} of {len(data)} bytes]\n" + text
-        self._cwrite(f"control/logs/{run.id}.log", text)
+        self.write_record(f"control/logs/{run.id}.log", text)
         shutil.rmtree(self._run_dir(run.id), ignore_errors=True)
 
     def log_tail(self, run_id: str, lines: int = 200) -> str:
         p = self._run_dir(run_id) / "agent.log"
         if p.exists():
             text = p.read_bytes()[-200_000:].decode(errors="replace")
-        elif self._latest(f"control/logs/{run_id}.log"):
-            text = self._doc(f"control/logs/{run_id}.log").content
+        elif self.latest(f"control/logs/{run_id}.log"):
+            text = self.doc(f"control/logs/{run_id}.log").content
         else:
             return ""
         return "\n".join(text.splitlines()[-lines:])
@@ -917,7 +917,7 @@ class ChangeEngine:
             rj, e = guards.load_json(self.docs, found[self.p("intake/risk.json")], "G-I2")
             if e:
                 return e
-            q = self._doc("intake/questions.md").content if self._latest("intake/questions.md") else None
+            q = self.doc("intake/questions.md").content if self.latest("intake/questions.md") else None
             v += guards.intake(req.content, rj, q, "DONE")
         elif run.role == "planner":
             tg, e1 = guards.load_json(self.docs, found[self.p("plan/taskgraph.json")], "G-P1")
@@ -932,10 +932,10 @@ class ChangeEngine:
             ctx["taskgraph"], ctx["oracle"] = tg, orc
         elif run.role == "critic":
             plan_atts = {a.path: a.version for a in parsed if a.kind == "file"}
-            latest = {self.p(p): self._latest(p) for p in PLAN_DOCS}
+            latest = {self.p(p): self.latest(p) for p in PLAN_DOCS}
             v += guards.critique(data, plan_atts, latest, repo_atts)
         elif run.role == "oracle":
-            orc = self._json_doc("plan/oracle.json")
+            orc = self.json_doc("plan/oracle.json")
             changed = await self.git.changed_paths(run.base_sha, sha)
             v += guards.scoped_diff(changed, orc.get("acceptance_tests", []), [],
                                     self.cfg.protected_paths, "G-O1")
@@ -943,7 +943,7 @@ class ChangeEngine:
                 if not await self.git.has_object(sha, p):
                     v.append(f"G-O2: acceptance test {p} missing at {sha[:12]}")
         elif run.role == "baseline":
-            orc = self._json_doc("plan/oracle.json")
+            orc = self.json_doc("plan/oracle.json")
             v += guards.results_cover(data, orc.get("acceptance_commands", [])
                                       + orc.get("integration_commands", []), "G-BL1")
         elif run.role == "implementer":
@@ -967,8 +967,8 @@ class ChangeEngine:
             v += guards.results_cover(data, self._oracle_commands(), "G-INT1")
             v += await self._protected_unchanged(sha)
         elif run.role == "release":
-            v += guards.release_docs(self._doc("release/plan.md").content,
-                                     self._doc("release/rollback.md").content,
+            v += guards.release_docs(self.doc("release/plan.md").content,
+                                     self.doc("release/rollback.md").content,
                                      self.change.base_sha)
         return v
 
@@ -991,7 +991,7 @@ class ChangeEngine:
         role = run.role
         if role == "intake":
             node.status = ACCEPTED
-            rj = self._json_doc("intake/risk.json", ctx["docs"][self.p("intake/risk.json")].version)
+            rj = self.json_doc("intake/risk.json", ctx["docs"][self.p("intake/risk.json")].version)
             ch.risk = risk.derive_tier(rj)
             self._event("risk", f"derived tier {ch.risk['tier']} (score {ch.risk['total']})", node.id)
             self._accept_runs(node)
@@ -1004,8 +1004,8 @@ class ChangeEngine:
             self._accept_runs(node)
             if data["verdict"] == "PASS":
                 node.status = ACCEPTED
-                self._materialize_builds(self._json_doc("plan/taskgraph.json"))
-                self._event("plan", f"plan accepted by critic; {len(self._build_nodes())} build task(s)")
+                self._materialize_builds(self.json_doc("plan/taskgraph.json"))
+                self._event("plan", f"plan accepted by critic; {len(self.build_nodes())} build task(s)")
             else:
                 plan = self.nodes[PLAN]
                 limit = self.cfg.limits.critique_max_cycles + node.extra_cycles
@@ -1033,7 +1033,7 @@ class ChangeEngine:
                 return
             ch.oracle_sha = ctx["sha"]
             ch.integration_head = head
-            ch.oracle = self._json_doc("plan/oracle.json")
+            ch.oracle = self.json_doc("plan/oracle.json")
             node.accepted_sha = ctx["sha"]
             node.status = ACCEPTED
             self._accept_runs(node)
@@ -1167,7 +1167,7 @@ class ChangeEngine:
         async with self.lock:
             if node.status != VERIFYING:
                 return
-            att = self._cwrite(f"tasks/{node.task['id']}/verification.json" if node.kind == BUILD
+            att = self.write_record(f"tasks/{node.task['id']}/verification.json" if node.kind == BUILD
                               else f"control/verification/{_slug(node_id)}.json", res).attestation
             res["attestation"] = att
             key = "integration" if node.kind == INTEGRATION else str(node.cycle)
@@ -1268,7 +1268,7 @@ class ChangeEngine:
         n = len([f for f in node.feedback if f["source"] == kind]) + 1
         path = f"tasks/{node.task['id']}/{kind}/{n}.md" if node.kind == BUILD \
             else f"control/{kind}/{_slug(node.id)}-{n}.md"
-        return self._cwrite(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
+        return self.write_record(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
 
     async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> dict:
         ch = self.change
@@ -1276,7 +1276,7 @@ class ChangeEngine:
         if node.id == H_REQUIREMENTS:
             intake = self.nodes[INTAKE]
             if action == "accept":
-                pins = {self.p(p): self._latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
+                pins = {self.p(p): self.latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
                 derived = ch.risk["tier"]
                 tier = payload.get("tier") or derived
                 if tier not in risk.TIERS:
@@ -1289,9 +1289,9 @@ class ChangeEngine:
                     ch.tier_override = {"from": derived, "to": tier, "reason": payload.get("reason"),
                                         "approver": approver, "at": now_iso()}
                 ch.tier = tier
-                ch.requirements = guards.requirements_ids(self._doc("intake/requirements.md").content)
+                ch.requirements = guards.requirements_ids(self.doc("intake/requirements.md").content)
                 ch.panel = risk.review_panel(tier, ch.risk["scores"])
-                att = self._cwrite("control/approvals/requirements.json", {
+                att = self.write_record("control/approvals/requirements.json", {
                     "gate": "H-1", "approver": approver, "at": now_iso(), "pins": pins, "tier": tier,
                     "derived_tier": derived, "override": ch.tier_override}).attestation
                 ch.approvals[H_REQUIREMENTS] = {"approver": approver, "at": now_iso(), "pins": pins,
@@ -1345,7 +1345,7 @@ class ChangeEngine:
                     if nid in self.nodes:
                         n = self.nodes[nid]
                         n.status, n.cycle = PENDING, n.cycle + 1
-                for b in self._build_nodes():
+                for b in self.build_nodes():
                     del self.nodes[b.id]
                 await self.git.init_integration(ch.id, ch.base_sha)
                 ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
@@ -1357,7 +1357,7 @@ class ChangeEngine:
             if action == "accept":
                 if head != ch.integration_head:
                     raise WorkflowError("integration head moved; refresh")
-                att = self._cwrite("control/approvals/change.json", {
+                att = self.write_record("control/approvals/change.json", {
                     "gate": "H-3", "approver": approver, "at": now_iso(), "head": head,
                     "note": text}).attestation
                 ch.approvals[H_CHANGE] = {"approver": approver, "at": now_iso(), "head": head,
@@ -1459,7 +1459,7 @@ class ChangeEngine:
         from .ship import evaluate
         result = await evaluate(self)
         async with self.lock:
-            att = self._cwrite("control/ship/readiness.json", result).attestation
+            att = self.write_record("control/ship/readiness.json", result).attestation
             result["attestation"] = att
             self.change.ship = result
             self.change.status = "READY" if result["verdict"] == "READY" else "NOT_READY"

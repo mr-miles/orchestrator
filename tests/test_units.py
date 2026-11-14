@@ -421,3 +421,12 @@ def test_generated_policy_and_provider_profile(tmp_path):
     assert OpenShellRunner(cfg).cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
     assert all(c[:5] == ["openshell", "--workspace", "team-ml", "-g", "prod"]
                for c in setup_commands(cfg, "p.yaml"))
+
+
+def test_governance_and_ship_use_only_the_change_view():
+    """They depend on the ChangeView protocol, never on engine internals."""
+    from legion_orch.workflow.view import ChangeView
+    allowed = {n for n in dir(ChangeView) if not n.startswith("__")} | set(ChangeView.__annotations__)
+    for f in ("governance.py", "ship.py"):
+        used = set(re.findall(r"\be\.([A-Za-z_]+)", (ROOT / "legion_orch/workflow" / f).read_text()))
+        assert used <= allowed, f"{f} uses {used - allowed} outside ChangeView"

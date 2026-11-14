@@ -202,7 +202,7 @@ async def _r3_workflow(tmp_path):
         assert n["H-2"].status == "ACCEPTED"
 
         await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
-        assert all(f"{b.cycle}:architecture" in b.reviews for b in ce._build_nodes())
+        assert all(f"{b.cycle}:architecture" in b.reviews for b in ce.build_nodes())
         await ce.human_action("H-3", "accept", "miles")
         await _wait(ce, lambda: ce.change.ship is not None, "ship")
         gates = ce.change.ship["gates"]
@@ -220,7 +220,7 @@ async def _r3_workflow(tmp_path):
             await ce.change_action("override", "miles", {
                 "kind": "waive_gate", "gate": "deterministic_verification",
                 "reason": "we really want to skip the checks here", "evidence": "file:release/plan.md@1"})
-        sec = ce._latest_att("tasks/T1/reviews/security-cycle-2.md")
+        sec = ce.latest_att("tasks/T1/reviews/security-cycle-2.md")
         await ce.change_action("attest", "ana", {"kind": "security-evaluation", "verdict": "pass",
                                                  "sources": [sec]})
         await ce.change_action("attest", "ana", {"kind": "rollback-evidence", "verdict": "pass",

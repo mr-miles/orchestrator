@@ -6,14 +6,12 @@ is satisfied only while its replacement evidence resolves, and is reported as hu
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..git import path_matches
 from . import attest, governance
 from .model import ACCEPTED, BASELINE, H_CHANGE, INTEGRATION, RELEASE, _parse_ts_safe
-
-if TYPE_CHECKING:
-    from .engine import ChangeEngine as Engine
+from .view import ChangeView
 
 SAT, UNSAT, UNEVAL = "satisfied", "unsatisfied", "unevaluable"
 
@@ -22,9 +20,9 @@ def _g(status: str, detail: str, human: bool = False) -> dict:
     return {"status": status, "detail": detail, "human_judgement": human}
 
 
-async def evaluate(e: Engine) -> dict[str, Any]:
+async def evaluate(e: ChangeView) -> dict[str, Any]:
     ch = e.change
-    builds = e._build_nodes()
+    builds = e.build_nodes()
     task_ids = {b.task["id"] for b in builds}
     head = await e.git.integration_head(ch.id)
     repo = e.cfg.repo.name
@@ -72,7 +70,7 @@ async def evaluate(e: Engine) -> dict[str, Any]:
         if plan["status"] != "approved":
             return _g(UNSAT, "approved task graph is stale")
         rec = ch.approvals["spec:plan"]
-        tg = e._json_doc("plan/taskgraph.json", rec["pins"][e.p("plan/taskgraph.json")])
+        tg = e.json_doc("plan/taskgraph.json", rec["pins"][e.p("plan/taskgraph.json")])
         ids = {t["id"] for t in tg["tasks"]}
         if ids != task_ids:
             return _g(UNSAT, f"build tasks {sorted(task_ids)} != contract {sorted(ids)}")
@@ -247,7 +245,7 @@ async def evaluate(e: Engine) -> dict[str, Any]:
         n = e.nodes.get(RELEASE)
         if not n or n.status != ACCEPTED:
             return _g(UNEVAL, "no release plan")
-        return _g(SAT, "release/plan.md attested") if await resolves(e._latest_att("release/plan.md")) \
+        return _g(SAT, "release/plan.md attested") if await resolves(e.latest_att("release/plan.md")) \
             else _g(UNSAT, "release plan missing")
 
     async def rollback() -> dict:
