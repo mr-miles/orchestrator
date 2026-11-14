@@ -512,3 +512,32 @@ def test_panel_members_cannot_write_each_others_reviews():
         for other in scopes:
             path = f"tasks/T1/reviews/{other}-cycle-1.md"
             assert any(path.startswith(w) for w in scope) == (role == other), (role, path)
+
+
+
+def test_plan_limits_and_scale():
+    import time
+
+    from legion_orch.store import SchemaRegistry
+    reg = SchemaRegistry(ROOT / "assets/schemas")
+    too_many = {"tasks": [_task(f"T{i}", [f"src/{i}.py"]) for i in range(1, 102)]}
+    assert any("tasks" in e for e in reg.validate_data("taskgraph", too_many))
+    # a 100-long dependency chain: waves are iterative (no recursion limit)
+    chain = [_task(f"T{i}", [f"src/{i}.py"], [f"T{i - 1}"] if i > 1 else []) for i in range(1, 101)]
+    assert guards.waves(chain)["T100"] == 100
+    import sys
+    old = sys.getrecursionlimit()
+    sys.setrecursionlimit(80)
+    try:
+        assert guards.waves(chain)["T100"] == 100
+    finally:
+        sys.setrecursionlimit(old)
+    # 100 independent tasks x 50 files: the parallel-overlap check stays fast
+    wide = [_task(f"T{i}", [f"src/t{i}/f{j}.py" for j in range(50)]) for i in range(1, 101)]
+    t0 = time.monotonic()
+    assert check(wide) == []
+    assert time.monotonic() - t0 < 5
+    clash = [_task("T1", ["src/"]), _task("T2", ["src/x/y.py"])]
+    assert "G-P6" in {x.split(":")[0] for x in check(clash)}
+    many_reqs = "\n".join(f"- REQ-{i}: x" for i in range(1, 102))
+    assert any("at most 100" in x for x in guards.intake(many_reqs, _signals(), None, "DONE"))

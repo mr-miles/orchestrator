@@ -74,6 +74,7 @@ GUARDS: dict[str, str] = {
 }
 
 REQ_RE = re.compile(r"\bREQ-([0-9]+)\b")
+MAX_REQUIREMENTS = 100
 SEVERITIES = {"BLOCKER", "WARNING", "SUGGESTION"}
 CONFIDENCES = {"HIGH", "MEDIUM", "LOW"}
 
@@ -152,6 +153,9 @@ def intake(req_text: str, risk_json: Any, questions_text: str | None, status: st
     dups = sorted({i for i in ids if ids.count(i) > 1})
     if dups:
         v.append(f"G-I1: duplicate requirement ids {dups}")
+    if len(set(ids)) > MAX_REQUIREMENTS:
+        v.append(f"G-I1: {len(set(ids))} requirements; at most {MAX_REQUIREMENTS} per change – "
+                 "split the goal into several changes")
     v += risk.validate_signals(risk_json)
     if questions_text and status == "DONE":
         open_q = [ln.strip() for ln in questions_text.splitlines() if re.match(r"^\s*[-*]\s*\[ \]", ln)]
@@ -227,16 +231,16 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
                 v.append(f"G-P6: task {t['id']} has invalid path {p!r}")
     if not v:
         reach = {tid: _reachable(graph, tid) for tid in graph}
+        index = {t["id"]: _file_index(t["files_modified"]) for t in tasks}
         for i, a in enumerate(tasks):
             for b in tasks[i + 1:]:
                 related = b["id"] in reach[a["id"]] or a["id"] in reach[b["id"]]
                 if related:
                     continue
-                for pa in a["files_modified"]:
-                    for pb in b["files_modified"]:
-                        if paths_overlap(pa, pb):
-                            v.append(f"G-P6: parallel tasks {a['id']} and {b['id']} both modify "
-                                     f"{pa if pa == pb else pa + ' / ' + pb}; add a dependency")
+                clash = _files_clash(index[a["id"]], index[b["id"]])
+                if clash:
+                    v.append(f"G-P6: parallel tasks {a['id']} and {b['id']} both modify "
+                             f"{clash}; add a dependency")
     # G-P7
     protected = list(oracle.get("acceptance_tests", [])) + list(protected_cfg)
     for t in tasks:
@@ -277,15 +281,45 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
 
 
 def waves(tasks: list[dict]) -> dict[str, int]:
+    """Wave number per task (1 + deepest dependency). Iterative: no recursion limit on long
+    chains. Assumes the graph is acyclic (G-P2 runs first)."""
     graph = {t["id"]: t["depends_on"] for t in tasks}
-    memo: dict[str, int] = {}
+    level: dict[str, int] = {}
+    for start in graph:
+        stack = [start]
+        while stack:
+            tid = stack[-1]
+            if tid in level:
+                stack.pop()
+                continue
+            pending = [d for d in graph[tid] if d not in level]
+            if pending:
+                stack.extend(pending)
+            else:
+                level[tid] = 1 + max((level[d] for d in graph[tid]), default=0)
+                stack.pop()
+    return level
 
-    def level(tid: str) -> int:
-        if tid not in memo:
-            memo[tid] = 1 + max((level(d) for d in graph[tid]), default=0)
-        return memo[tid]
 
-    return {tid: level(tid) for tid in graph}
+def _file_index(paths: list[str]) -> tuple[set[str], list[str]]:
+    """Exact paths (set) and patterns (directory prefixes ending in '/', globs)."""
+    patterns = [p for p in paths if p.endswith("/") or any(c in p for c in "*?[")]
+    return set(paths) - set(patterns), patterns
+
+
+def _files_clash(a: tuple[set[str], list[str]], b: tuple[set[str], list[str]]) -> str | None:
+    common = a[0] & b[0]
+    if common:
+        return min(common)
+    for pa in a[1]:
+        for pb in list(b[0]) + b[1]:
+            if paths_overlap(pa, pb):
+                return f"{pa} / {pb}"
+    for pb in b[1]:
+        for pa in a[0]:
+            if paths_overlap(pa, pb):
+                return f"{pa} / {pb}"
+    return None
 
 
 # ---------------------------------------------------------------- findings / verdicts
