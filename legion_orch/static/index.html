@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Legion Orchestrator</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a; --text:#e6e8eb; --muted:#9aa3b2;
+    --PENDING:#6b7280; --READY:#60a5fa; --RUNNING:#3b82f6; --VERIFYING:#a855f7; --REVIEWING:#eab308;
+    --MERGING:#06b6d4; --REWORK:#f97316; --ACCEPTED:#22c55e; --ESCALATED:#ef4444; --FAILED:#991b1b;
+    --AWAITING_HUMAN:#ec4899;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; gap:16px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  .muted { color:var(--muted); }
+  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; color:#0b0d10; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:4px; background:var(--panel2); border:1px solid var(--line); font-size:11px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 440px; gap:12px; padding:12px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; min-width:0; }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 8px; font-weight:600; }
+  #pipeline { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .stage { padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:var(--panel2); cursor:pointer; }
+  .stage .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .arrow { color:var(--muted); }
+  #progressbar { height:8px; background:var(--panel2); border-radius:4px; overflow:hidden; display:flex; margin:8px 0 4px; }
+  #progressbar div { height:100%; }
+  #graphwrap { overflow:auto; max-height:62vh; border:1px solid var(--line); border-radius:6px; background:#12151b; }
+  svg text { fill:var(--text); font-size:11px; }
+  .node rect { stroke-width:1.5; cursor:pointer; }
+  .node.sel rect { stroke:#fff !important; stroke-width:2.5; }
+  .node.RUNNING rect, .node.VERIFYING rect, .node.REVIEWING rect { animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity:.65; } }
+  .edge { fill:none; stroke:#3a4150; stroke-width:1.4; }
+  .edge.done { stroke:#2f6b40; }
+  .tabs { display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap; }
+  .tabs button { background:var(--panel2); color:var(--muted); border:1px solid var(--line); padding:4px 10px; border-radius:5px; cursor:pointer; }
+  .tabs button.on { color:var(--text); border-color:#4b5563; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:11px; }
+  pre { white-space:pre-wrap; word-break:break-word; background:#0b0d11; border:1px solid var(--line); border-radius:6px; padding:8px; max-height:420px; overflow:auto; margin:6px 0; }
+  .card { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:8px; margin:6px 0; }
+  .sev-BLOCKER { color:#f87171; } .sev-WARNING { color:#fbbf24; } .sev-SUGGESTION { color:#93c5fd; }
+  input, textarea, select { background:#0b0d11; color:var(--text); border:1px solid var(--line); border-radius:5px; padding:5px 7px; font:inherit; width:100%; }
+  textarea { min-height:60px; }
+  button.act { background:#2563eb; color:#fff; border:0; padding:5px 12px; border-radius:5px; cursor:pointer; margin:4px 4px 0 0; font-weight:600; }
+  button.act.warn { background:#b45309; } button.act.danger { background:#b91c1c; } button.act.ok { background:#15803d; }
+  .err { color:#f87171; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:6px; }
+  #live .card { border-left:3px solid var(--RUNNING); }
+  .kv { display:grid; grid-template-columns:110px 1fr; gap:2px 8px; }
+  .kv div:nth-child(odd) { color:var(--muted); }
+  a { color:#93c5fd; cursor:pointer; text-decoration:none; }
+  .gate-satisfied { color:#4ade80; } .gate-unsatisfied { color:#f87171; } .gate-unevaluable { color:#fbbf24; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Legion Orchestrator</h1>
+  <span id="hdr" class="muted">loading…</span>
+  <span style="flex:1"></span>
+  <label class="muted">approver <input id="approver" style="width:120px"></label>
+  <label class="muted">operator token <input id="optoken" type="password" style="width:120px"></label>
+</header>
+<main>
+  <div style="display:flex; flex-direction:column; gap:12px; min-width:0">
+    <section id="startbox" style="display:none">
+      <h2>Start a change</h2>
+      <textarea id="goal" placeholder="Describe the goal for the agents…"></textarea>
+      <button class="act" onclick="startChange()">Start intake</button> <span id="starterr" class="err"></span>
+    </section>
+    <section>
+      <h2>Workflow</h2>
+      <div id="pipeline"></div>
+      <div id="progressbar"></div>
+      <div id="progresstext" class="muted"></div>
+    </section>
+    <section>
+      <h2>Task graph</h2>
+      <div id="graphwrap"><svg id="graph"></svg></div>
+      <div id="legend" class="muted" style="margin-top:6px"></div>
+    </section>
+    <section>
+      <div class="tabs" id="tabs"></div>
+      <div id="tabbody"></div>
+    </section>
+  </div>
+  <div style="display:flex; flex-direction:column; gap:12px; min-width:0">
+    <section id="live"><h2>Live agents</h2><div id="livebody" class="muted">none</div></section>
+    <section><h2>Details</h2><div id="detail" class="muted">Select a node in the graph.</div></section>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const STATUSES = ['PENDING','READY','RUNNING','VERIFYING','REVIEWING','MERGING','REWORK','AWAITING_HUMAN','ESCALATED','ACCEPTED','FAILED'];
+const color = s => getComputedStyle(document.documentElement).getPropertyValue('--'+s).trim() || '#888';
+let S = null, selected = null, tab = 'gates', docSel = null;
+$('#approver').value = localStorage.approver || '';
+$('#optoken').value = localStorage.optoken || '';
+$('#approver').onchange = e => localStorage.approver = e.target.value;
+$('#optoken').onchange = e => localStorage.optoken = e.target.value;
+
+async function api(path, body) {
+  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json','X-Operator-Token':$('#optoken').value}, body:JSON.stringify(body)} : {};
+  const r = await fetch(path, opt);
+  const ct = r.headers.get('content-type') || '';
+  const data = ct.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(data.error || data);
+  return data;
+}
+
+async function refresh() {
+  S = await api('/api/state');
+  renderHeader(); renderPipeline(); renderGraph(); renderLive(); renderDetail(); renderTab();
+}
+
+function badge(s) { return `<span class="badge" style="background:${color(s)}">${esc(s)}</span>`; }
+function short(sha) { return sha ? `<code>${sha.slice(0,10)}</code>` : '—'; }
+
+function renderHeader() {
+  const c = S.change;
+  $('#startbox').style.display = c ? 'none' : '';
+  if (!c) { $('#hdr').innerHTML = `${esc(S.project)} · repo <b>${esc(S.repo)}</b> · no active change`; return; }
+  $('#hdr').innerHTML = `${esc(S.project)} · <b>${esc(c.id)}</b> · ${badge(c.status)} · tier ${c.tier ? `<b>${c.tier}</b>` : '<i>unassessed</i>'}
+    · base ${short(c.base_sha)} · integration ${short(c.integration_head)} · <span class="muted" title="${esc(c.goal)}">${esc(c.goal.slice(0,90))}</span>`;
+}
+
+function renderPipeline() {
+  const stageNodes = S.nodes.filter(n => n.kind !== 'build');
+  const builds = S.nodes.filter(n => n.kind === 'build');
+  let html = '', insertedBuild = false;
+  for (const n of stageNodes) {
+    if (!insertedBuild && ['integration','release','H-3','ship'].includes(n.id) && builds.length) {
+      const acc = builds.filter(b => b.status === 'ACCEPTED').length;
+      html += `<span class="stage"><span class="dot" style="background:${color(acc===builds.length?'ACCEPTED':'RUNNING')}"></span>build ${acc}/${builds.length}</span><span class="arrow">→</span>`;
+      insertedBuild = true;
+    }
+    html += `<span class="stage" onclick="select('${n.id}')"><span class="dot" style="background:${color(n.status)}"></span>${esc(n.kind==='human'?n.id+' '+n.title:n.title.split(':')[0])}</span><span class="arrow">→</span>`;
+  }
+  $('#pipeline').innerHTML = html.replace(/<span class="arrow">→<\/span>$/, '') || '<span class="muted">—</span>';
+  const counts = {}; S.nodes.forEach(n => counts[n.status] = (counts[n.status]||0)+1);
+  const total = S.nodes.length || 1;
+  $('#progressbar').innerHTML = STATUSES.filter(s => counts[s]).map(s => `<div title="${s}: ${counts[s]}" style="width:${100*counts[s]/total}%;background:${color(s)}"></div>`).join('');
+  const acc = counts.ACCEPTED || 0;
+  $('#progresstext').innerHTML = `${acc}/${S.nodes.length} nodes accepted · ` + STATUSES.filter(s => counts[s]).map(s => `${s.toLowerCase()} ${counts[s]}`).join(' · ')
+    + ` · ${S.runs.length} run(s), ${S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status)).length} live`;
+}
+
+function layout(nodes) {
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const depth = {};
+  const d = id => { if (depth[id] !== undefined) return depth[id]; depth[id] = 0;
+    const n = byId[id]; depth[id] = n ? Math.max(0, ...n.depends_on.filter(x => byId[x]).map(x => d(x)+1)) : 0; return depth[id]; };
+  nodes.forEach(n => d(n.id));
+  const cols = {}; nodes.forEach(n => (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n));
+  const W = 178, H = 46, GX = 54, GY = 14, pos = {};
+  let maxRows = 0;
+  Object.entries(cols).forEach(([c, list]) => { maxRows = Math.max(maxRows, list.length);
+    list.forEach((n, i) => pos[n.id] = {x: 12 + c*(W+GX), y: 12 + i*(H+GY)}); });
+  const ncol = Object.keys(cols).length;
+  Object.entries(cols).forEach(([c, list]) => { const off = (maxRows - list.length) * (H+GY) / 2;
+    list.forEach(n => pos[n.id].y += off); });
+  return {pos, W, H, width: 24 + ncol*(W+GX), height: 24 + maxRows*(H+GY)};
+}
+
+function renderGraph() {
+  const svg = $('#graph');
+  if (!S.nodes.length) { svg.innerHTML = ''; svg.setAttribute('width', 10); svg.setAttribute('height', 10); return; }
+  const {pos, W, H, width, height} = layout(S.nodes);
+  svg.setAttribute('width', width); svg.setAttribute('height', height);
+  let edges = '', boxes = '';
+  const byId = Object.fromEntries(S.nodes.map(n => [n.id, n]));
+  for (const n of S.nodes) for (const dep of n.depends_on) {
+    if (!pos[dep]) continue;
+    const a = pos[dep], b = pos[n.id], x1 = a.x+W, y1 = a.y+H/2, x2 = b.x, y2 = b.y+H/2, mx = (x1+x2)/2;
+    edges += `<path class="edge ${byId[dep].status==='ACCEPTED'?'done':''}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
+  }
+  for (const n of S.nodes) {
+    const p = pos[n.id], c = color(n.status);
+    const live = S.runs.filter(r => r.node_id === n.id && ['STARTING','ACTIVE'].includes(r.status));
+    const sub = `${n.status.toLowerCase()}${n.cycle>1?' · cycle '+n.cycle:''}${live.length?' · '+live.map(r=>r.role).join('+'):''}`;
+    const title = n.kind==='human' ? `${n.id} · ${n.title}` : n.title;
+    boxes += `<g class="node ${n.status} ${selected===n.id?'sel':''}" onclick="select('${n.id}')">
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="7" fill="${c}22" stroke="${c}"/>
+      <rect x="${p.x}" y="${p.y}" width="5" height="${H}" rx="2" fill="${c}"/>
+      <text x="${p.x+12}" y="${p.y+18}" font-weight="600">${esc(title.length>26?title.slice(0,25)+'…':title)}</text>
+      <text x="${p.x+12}" y="${p.y+35}" fill="${c}" style="fill:${c}">${esc(sub)}</text>
+      <title>${esc(n.title)}\n${n.status}</title></g>`;
+  }
+  svg.innerHTML = edges + boxes;
+  $('#legend').innerHTML = STATUSES.map(s => `<span style="margin-right:10px"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color(s)}"></span> ${s.toLowerCase()}</span>`).join('');
+}
+
+function renderLive() {
+  const live = S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status));
+  $('#livebody').innerHTML = live.length ? live.map(r => {
+    const p = r.progress[r.progress.length-1];
+    return `<div class="card"><div class="row"><b>${esc(r.id)}</b> ${badge(r.status)} <span>${esc(r.role)}</span> <a onclick="select('${r.node_id}')">${esc(r.node_id)}</a></div>
+      <div class="muted">soul ${esc(r.soul)} · sandbox <code>${esc(r.sandbox)}</code> · reports ${r.attempts}</div>
+      ${p ? `<div>${p.percent!=null?`<b>${Math.round(p.percent)}%</b> `:''}${esc(p.message)}</div>` : '<div class="muted">starting…</div>'}</div>`;
+  }).join('') : '<span class="muted">none</span>';
+}
+
+function select(id) { selected = id; renderGraph(); renderDetail(); }
+
+function findingsHtml(fs) {
+  if (!fs || !fs.length) return '<div class="muted">no findings</div>';
+  return fs.map(f => `<div class="card"><b class="sev-${esc(f.severity)}">${esc(f.severity)}</b> <span class="pill">${esc(f.confidence)}</span> <b>${esc(f.title)}</b>
+    <div>${esc(f.observation||'')}</div><div class="muted">impact: ${esc(f.impact||'')}</div><div>fix: ${esc(f.fix||'')}</div>
+    <div class="mono muted">${(f.attestations||[]).map(esc).join('<br>')}</div></div>`).join('');
+}
+
+function actionForm(n) {
+  const c = S.change;
+  if (n.status === 'ESCALATED') {
+    const e = n.escalation || {};
+    return `<div class="card" style="border-color:var(--ESCALATED)"><b>Escalation: ${esc(e.type)}</b><div>${esc(e.reason)}</div>
+      ${e.missing_decision ? `<div><b>Decision needed:</b> ${esc(e.missing_decision)}</div>` : ''}
+      ${e.log_tail ? `<pre>${esc(e.log_tail)}</pre>` : ''}
+      <textarea id="f_text" placeholder="answer / decision (attested as feedback)"></textarea>
+      <input id="f_reason" placeholder="override reason (≥24 chars, build tasks only)">
+      <button class="act" onclick="act('${n.id}','answer',{answer:$('#f_text').value})">Answer &amp; resume</button>
+      <button class="act warn" onclick="act('${n.id}','retry',{})">Retry</button>
+      ${n.kind==='build'?`<button class="act warn" onclick="act('${n.id}','override_accept',{reason:$('#f_reason').value})">Override accept</button>`:''}
+      <button class="act danger" onclick="if(confirm('Abandon the change?'))act('${n.id}','abandon',{})">Abandon</button></div>`;
+  }
+  if (n.status !== 'AWAITING_HUMAN' && !(n.kind==='release' && c.tier==='R3' && n.status!=='ACCEPTED') && !(n.kind==='ship' && n.status==='ACCEPTED')) return '';
+  if (n.id === 'H-1') {
+    const r = c.risk || {};
+    return `<div class="card"><b>Accept requirements</b><div class="muted">derived tier <b>${r.tier}</b> (score ${r.total}; threshold ${r.threshold_tier}; floors ${(r.floors||[]).map(f=>f.signal+'→'+f.tier).join(', ')||'none'})</div>
+      <table>${Object.entries(r.scores||{}).map(([k,v])=>`<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+      <div class="grid2"><select id="f_tier"><option value="">keep ${r.tier}</option>${['R0','R1','R2','R3'].map(t=>`<option>${t}</option>`).join('')}</select>
+      <input id="f_reason" placeholder="reason (required to lower)"></div>
+      <a onclick="openDoc('intake/requirements.md')">view requirements</a> · <a onclick="openDoc('intake/risk.json')">risk.json</a> · <a onclick="openDoc('intake/questions.md')">questions</a>
+      <textarea id="f_text" placeholder="feedback for revision"></textarea>
+      <button class="act ok" onclick="act('H-1','accept',{tier:$('#f_tier').value||null,reason:$('#f_reason').value})">Accept</button>
+      <button class="act warn" onclick="act('H-1','revise',{feedback:$('#f_text').value})">Request revision</button></div>`;
+  }
+  if (n.id === 'H-2') return `<div class="card"><b>Approve spec &amp; oracle</b> <span class="muted">(pins current versions; must precede build)</span><br>
+      <a onclick="openDoc('plan/spec.md')">spec.md</a> · <a onclick="openDoc('plan/oracle.json')">oracle.json</a> · <a onclick="openDoc('plan/taskgraph.json')">taskgraph.json</a> · oracle commit ${short(c.oracle_sha)}
+      <textarea id="f_text" placeholder="feedback for revision"></textarea>
+      <button class="act ok" onclick="act('H-2','approve',{})">Approve</button>
+      <button class="act warn" onclick="act('H-2','revise',{feedback:$('#f_text').value})">Request revision</button></div>`;
+  if (n.id === 'H-3') return `<div class="card"><b>Accept the whole change</b> at integration head ${short(c.integration_head)}
+      <textarea id="f_text" placeholder="note"></textarea>
+      <button class="act ok" onclick="act('H-3','accept',{feedback:$('#f_text').value})">Accept change</button>
+      <button class="act danger" onclick="act('H-3','reject',{})">Reject</button></div>`;
+  if (n.kind === 'release') return `<div class="card"><b>Waive release observation plan</b> (audited)
+      <input id="f_reason" placeholder="waiver reason (≥24 chars)"><input id="f_src" placeholder="source attestation file:path@version">
+      <button class="act warn" onclick="act('release','waive',{reason:$('#f_reason').value,source:$('#f_src').value})">Waive</button></div>`;
+  if (n.kind === 'ship') return `<button class="act" onclick="act('ship','recheck',{})">Re-run readiness check</button>`;
+  return '';
+}
+
+function renderDetail() {
+  const n = S.nodes.find(x => x.id === selected);
+  if (!n) { $('#detail').innerHTML = '<span class="muted">Select a node in the graph.</span>'; return; }
+  const runs = S.runs.filter(r => r.node_id === n.id).reverse();
+  let h = `<div class="row"><b style="font-size:14px">${esc(n.title)}</b> ${badge(n.status)}</div>
+    <div class="kv" style="margin:6px 0"><div>id</div><div><code>${esc(n.id)}</code> · ${esc(n.kind)}${n.wave?` · wave ${n.wave}`:''}</div>
+    <div>depends on</div><div>${n.depends_on.map(d=>`<a onclick="select('${d}')">${esc(d)}</a>`).join(', ')||'—'}</div>
+    <div>cycle</div><div>${n.cycle}${n.extra_cycles?` (+${n.extra_cycles} granted)`:''}</div>
+    ${n.base_sha?`<div>base</div><div>${short(n.base_sha)}</div>`:''}
+    ${n.candidate_sha?`<div>candidate</div><div>${short(n.candidate_sha)}</div>`:''}
+    ${n.accepted_sha?`<div>accepted</div><div>${short(n.accepted_sha)}</div>`:''}
+    ${n.sandbox?`<div>sandbox</div><div><code>${esc(n.sandbox)}</code></div>`:''}</div>`;
+  h += actionForm(n);
+  if (n.task) h += `<details><summary>Task contract</summary><pre>${esc(JSON.stringify(n.task, null, 2))}</pre></details>`;
+  const ver = Object.entries(n.verification||{});
+  if (ver.length) h += `<h2 style="margin-top:10px">Verification</h2>` + ver.map(([k,v]) => `<div class="card">${k==='integration'?'integration':'cycle '+k}: ${v.ok?'<b class="gate-satisfied">PASS</b>':'<b class="gate-unsatisfied">FAIL</b>'} at ${short(v.sha)} ${v.infra_error?`<span class="err">${esc(v.infra_error)}</span>`:''}
+      <div class="mono">${(v.results||[]).map(r=>`${r.exit_code===0?'✓':'✗'} ${esc(r.command)} → ${r.exit_code}`).join('<br>')}</div>
+      ${v.attestation?`<a onclick="openAtt('${v.attestation}')">${esc(v.attestation)}</a>`:''}</div>`).join('');
+  const rev = Object.entries(n.reviews||{});
+  if (rev.length) h += `<h2 style="margin-top:10px">Reviews</h2>` + rev.map(([k,r]) => `<div class="card"><b>${esc(k)}</b> ${r.verdict==='PASS'?'<b class="gate-satisfied">PASS</b>':'<b class="gate-unsatisfied">'+esc(r.verdict)+'</b>'} at ${short(r.sha)} ${r.doc?`<a onclick="openAtt('${r.doc}')">${esc(r.doc)}</a>`:''}
+      ${findingsHtml(r.findings)}</div>`).join('');
+  if (n.feedback.length) h += `<h2 style="margin-top:10px">Feedback (attested)</h2>` + n.feedback.map(f => `<div class="card"><span class="pill">cycle ${f.cycle}</span> <span class="pill">${esc(f.source)}</span> ${esc(f.text)}
+      <div class="mono muted">${(f.attestations||[]).map(a=>`<a onclick="openAtt('${a}')">${esc(a)}</a>`).join('<br>')}</div></div>`).join('');
+  if (runs.length) h += `<h2 style="margin-top:10px">Runs</h2>` + runs.map(r => `<div class="card"><div class="row"><b>${r.id}</b> ${badge(r.status)} ${esc(r.role)} · cycle ${r.cycle} · ${esc(r.soul)}</div>
+      <div class="muted mono">sandbox ${esc(r.sandbox)}${r.sandbox_deleted?' (deleted)':''} · pin ${esc((r.prompt_pin||'').slice(7,19))} · branch ${esc(r.branch)}</div>
+      ${r.progress.slice(-4).map(p=>`<div>· ${p.percent!=null?Math.round(p.percent)+'% ':''}${esc(p.message)}</div>`).join('')}
+      ${r.report?`<div><b>${esc(r.report.status)}</b>: ${esc(r.report.summary)}</div><div class="mono muted">${r.report.attestations.map(a=>`<a onclick="openAtt('${a}')">${esc(a)}</a>`).join('<br>')}</div>`:''}
+      ${r.violations.length?`<details><summary class="err">${r.violations.length} rejected report(s)</summary><pre>${esc(r.violations.map(v=>v.join('\n')).join('\n---\n'))}</pre></details>`:''}
+      <a onclick="showLog('${r.id}')">agent log</a> · <a onclick="showPrompt('${r.id}')">soul + prompt</a></div>`).join('');
+  $('#detail').innerHTML = h;
+}
+
+async function act(node, action, payload) {
+  const approver = $('#approver').value.trim();
+  if (!approver) { alert('Enter your approver id (top right).'); return; }
+  try { await api(`/api/nodes/${encodeURIComponent(node)}/action`, {action, approver, payload}); await refresh(); }
+  catch (e) { alert(e.message); }
+}
+async function startChange() {
+  try { await api('/api/change', {goal: $('#goal').value}); $('#starterr').textContent=''; await refresh(); }
+  catch (e) { $('#starterr').textContent = e.message; }
+}
+
+const TABS = {gates:'Ship gates', plan:'Plan', docs:'Documents', events:'Events', workflow:'WORKFLOW.md'};
+function renderTabs() { $('#tabs').innerHTML = Object.entries(TABS).map(([k,v]) => `<button class="${tab===k?'on':''}" onclick="tab='${k}';renderTabs();renderTab(true)">${v}</button>`).join(''); }
+let tabCache = {};
+async function renderTab(force) {
+  const body = $('#tabbody');
+  if (tab === 'gates') {
+    const c = S.change; if (!c || !c.tier) { body.innerHTML = '<span class="muted">Tier not assessed yet.</span>'; return; }
+    const res = c.ship;
+    body.innerHTML = `<div>Tier <b>${c.tier}</b>: ${S.gates.length} gates. ${res?`Verdict <b class="${res.verdict==='READY'?'gate-satisfied':'gate-unsatisfied'}">${res.verdict}</b> at ${short(res.integration_head)} on <code>${esc(res.integration_branch)}</code>`:'<span class="muted">not evaluated yet (runs at the ship node)</span>'}</div>
+      <table><tr><th>gate</th><th>status</th><th>detail</th></tr>${S.gates.map(g => { const r = res && res.gates[g];
+        return `<tr><td><code>${g}</code></td><td class="gate-${r?r.status:''}">${r?r.status:'—'}${r&&r.human_judgement?' (human)':''}</td><td>${r?esc(r.detail):''}</td></tr>`; }).join('')}</table>
+      ${res?`<div class="muted">${esc(res.note)}</div>`:''}`;
+  } else if (tab === 'plan') {
+    try {
+      const tg = await api('/api/doc?path=plan/taskgraph.json');
+      const spec = await api('/api/doc?path=plan/spec.md');
+      const tasks = JSON.parse(tg.content).tasks || [];
+      body.innerHTML = `<div class="muted">${esc(tg.attestation)} · ${esc(spec.attestation)}</div>
+        <table><tr><th>task</th><th>soul</th><th>deps</th><th>files</th><th>reqs</th><th>verification</th></tr>${tasks.map(t=>`<tr><td><a onclick="select('build:${t.id}')">${esc(t.id)}</a> ${esc(t.title)}</td><td>${esc(t.soul)}</td><td>${esc((t.depends_on||[]).join(', '))}</td><td class="mono">${(t.files_modified||[]).map(esc).join('<br>')}</td><td>${esc((t.requirements||[]).join(', '))}</td><td class="mono">${(t.verification||[]).map(esc).join('<br>')}</td></tr>`).join('')}</table>
+        <pre>${esc(spec.content)}</pre>`;
+    } catch (e) { body.innerHTML = '<span class="muted">No plan yet.</span>'; }
+  } else if (tab === 'docs') {
+    const list = await api('/api/docs');
+    let viewer = '';
+    if (docSel) { try { const d = await api(`/api/doc?path=${encodeURIComponent(docSel.path)}${docSel.version?'&version='+docSel.version:''}`);
+      viewer = `<div class="card"><b>${esc(d.attestation)}</b> <span class="muted">by ${esc(d.author)} (${esc(d.role)}) · ${esc(d.created_at)} · ${esc(d.sha256.slice(0,19))}</span>
+        <div>versions: ${d.history.map(h=>`<a onclick="openDoc('${d.path}',${h.version})">v${h.version}</a>`).join(' ')}</div><pre>${esc(d.content)}</pre></div>`; } catch(e) { viewer = `<div class="err">${esc(e.message)}</div>`; } }
+    body.innerHTML = viewer + `<table><tr><th>path</th><th>latest</th><th>author</th><th>written</th></tr>${list.map(d=>`<tr><td><a onclick="openDoc('${d.path}')">${esc(d.path)}</a></td><td>v${d.version}</td><td>${esc(d.author)} <span class="muted">${esc(d.role)}</span></td><td class="muted">${esc(d.created_at)}</td></tr>`).join('')}</table>`;
+  } else if (tab === 'events') {
+    const ev = await api('/api/events');
+    body.innerHTML = `<table><tr><th>time</th><th>kind</th><th>node</th><th>run</th><th>message</th></tr>${ev.slice().reverse().map(e=>`<tr><td class="muted mono">${esc(e.ts.slice(11,19))}</td><td>${esc(e.kind)}</td><td>${e.node?`<a onclick="select('${e.node}')">${esc(e.node)}</a>`:''}</td><td>${esc(e.run||'')}</td><td>${esc(e.message)}</td></tr>`).join('')}</table>`;
+  } else if (tab === 'workflow') {
+    if (!tabCache.wf || force) tabCache.wf = await api('/api/workflow');
+    body.innerHTML = `<div class="muted">pin ${esc(S.workflow_sha)}</div><pre style="max-height:600px">${esc(tabCache.wf)}</pre>`;
+  }
+}
+function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }
+function openAtt(a) { const m = /^file:(.+)@(\d+)$/.exec(a); if (m) openDoc(m[1], +m[2]); else alert(a); }
+async function showLog(id) { const t = await api(`/api/runs/${id}/log`); popup(`agent log ${id}`, t || '(empty)'); }
+async function showPrompt(id) { const p = await api(`/api/runs/${id}/prompt`); popup(`soul + prompt ${id} (${p.pin})`, p.soul + '\n\n=====\n\n' + p.prompt); }
+function popup(title, text) { $('#tabbody').innerHTML = `<div class="card"><b>${esc(title)}</b> <a onclick="renderTab()">close</a><pre style="max-height:600px">${esc(text)}</pre></div>`; }
+
+renderTabs();
+refresh();
+let lastVersion = -1, pending = false;
+const es = new EventSource('/api/stream');
+es.onmessage = async ev => { const v = JSON.parse(ev.data).version; if (v !== lastVersion && !pending) { lastVersion = v; pending = true;
+  try { S = await api('/api/state'); renderHeader(); renderPipeline(); renderGraph(); renderLive();
+    if (!document.activeElement || !['TEXTAREA','INPUT','SELECT'].includes(document.activeElement.tagName)) renderDetail();
+    if (['gates','events'].includes(tab)) renderTab(); } finally { pending = false; } } };
+</script>
+</body>
+</html>

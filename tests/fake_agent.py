@@ -1,0 +1,182 @@
+"""Scripted stand-in for an LLM agent, used by the end-to-end test.
+
+Talks to the controller exactly like a real agent: MCP JSON-RPC over HTTP with the run token,
+git clone/push against the controller remote. Deliberately makes mistakes in places to exercise
+the guards and rework loops:
+
+* critic: REWORK on cycle 1, PASS on cycle 2
+* T1 reviewer: FAIL on cycle 1 (HIGH finding), PASS afterwards
+* T2 implementer: wrong content on cycle 1 -> deterministic verification fails -> rework
+* T3 implementer: first report touches an out-of-scope file -> G-B3 rejection -> fixes + re-reports
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+SB = os.environ.get("SANDBOX_ROOT", "/sandbox")
+URL = os.environ["LEGION_MCP_URL"]
+TOKEN = os.environ["LEGION_TOKEN"]
+REPO = "app"
+_id = 0
+
+
+def call(name, **args):
+    global _id
+    _id += 1
+    body = json.dumps({"jsonrpc": "2.0", "id": _id, "method": "tools/call",
+                       "params": {"name": name, "arguments": args}}).encode()
+    req = urllib.request.Request(URL, data=body, method="POST", headers={
+        "Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18"})
+    with urllib.request.urlopen(req) as r:
+        res = json.loads(r.read())["result"]
+    text = res["content"][0]["text"] if res.get("content") else "null"
+    if res.get("isError"):
+        raise RuntimeError(f"{name}: {text}")
+    if "structuredContent" in res and res["structuredContent"] is not None:
+        sc = res["structuredContent"]
+        return sc.get("result", sc) if isinstance(sc, dict) and set(sc) == {"result"} else sc
+    return json.loads(text)
+
+
+def git(*args):
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def write(path, content):
+    try:
+        base = call("docs_read", path=path)["version"]
+    except RuntimeError:
+        base = None
+    return call("docs_write", path=path, content=content, base_version=base)["attestation"]
+
+
+def wfile(path, content):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
+
+def commit_push(msg, branch):
+    git("add", "-A")
+    git("commit", "-q", "-m", msg)
+    git("push", "-q", "--force", "origin", f"HEAD:refs/heads/{branch}")
+    return git("rev-parse", "HEAD")
+
+
+def main():
+    a = call("get_assignment")
+    role, cycle = a["role"], a["cycle"]
+    call("progress", message=f"{role} starting cycle {cycle}", percent=5)
+    if role == "intake":
+        req = write("intake/requirements.md",
+                    "# Requirements\n\n- REQ-1: greet.txt says hello\n- REQ-2: bye.txt says goodbye\n")
+        signals = [{"name": n, "score": 0, "rationale": "not affected"} for n in (
+            "security", "authorization", "data_migration", "external_side_effect", "ui",
+            "performance", "infrastructure", "irreversible_action", "novelty_uncertainty",
+            "verification_quality")]
+        signals += [{"name": "public_api", "score": 2, "rationale": "files are the public API"},
+                    {"name": "scope_breadth", "score": 1, "rationale": "two files"}]
+        risk = write("intake/risk.json", json.dumps({"signals": signals}))
+        print(call("report", status="DONE", summary="requirements captured", attestations=[req, risk]))
+    elif role == "planner":
+        spec = write("plan/spec.md", f"# Spec (cycle {cycle})\n\nWrite greet/bye files and docs.\n")
+        oracle = write("plan/oracle.json", json.dumps({
+            "acceptance_tests": ["tests/acceptance/test_greet.sh"],
+            "acceptance_commands": ["sh tests/acceptance/test_greet.sh"],
+            "integration_commands": ["test -f docs/README.md"],
+            "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "hello"},
+                         {"id": "AC-2", "requirement": "REQ-2", "text": "goodbye"}]}))
+        tasks = [
+            {"id": "T1", "title": "greet", "soul": "backend-engineer", "requirements": ["REQ-1"],
+             "depends_on": [], "files_modified": ["src/greet.txt"], "instructions": "write hello",
+             "acceptance": ["contains hello"], "verification": ["grep -q hello src/greet.txt"]},
+            {"id": "T2", "title": "bye", "soul": "senior-developer", "requirements": ["REQ-2"],
+             "depends_on": [], "files_modified": ["src/bye.txt"], "instructions": "write goodbye",
+             "acceptance": ["contains goodbye"], "verification": ["grep -q goodbye src/bye.txt"]},
+            {"id": "T3", "title": "docs", "soul": "senior-developer", "requirements": ["REQ-1"],
+             "depends_on": ["T1", "T2"], "files_modified": ["docs/"], "instructions": "document",
+             "acceptance": ["docs exist"], "verification": ["test -f docs/README.md"]},
+        ]
+        tg = write("plan/taskgraph.json", json.dumps({"tasks": tasks}))
+        print(call("report", status="DONE", summary="plan written", attestations=[spec, oracle, tg]))
+    elif role == "critic":
+        plan = [call("docs_read", path=p)["attestation"] for p in
+                ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
+        head = a["base_sha"]
+        if cycle == 1:
+            data = {"verdict": "REWORK", "findings": [{
+                "severity": "WARNING", "confidence": "HIGH", "title": "spec too thin",
+                "fix": "expand spec", "attestations": [plan[0]]}]}
+        else:
+            data = {"verdict": "PASS", "findings": [], "checked": ["traceability"]}
+        doc = write(f"critique/cycle-{cycle}.md", f"critique {data['verdict']}")
+        print(call("report", status="DONE", summary="critique", attestations=plan + [doc], data=data))
+    elif role == "oracle":
+        wfile("tests/acceptance/test_greet.sh",
+              "grep -q hello src/greet.txt && grep -q goodbye src/bye.txt\n")
+        sha = commit_push("oracle: acceptance tests", a["git"]["branch"])
+        doc = write("oracle/tests.md", "AC-1, AC-2 -> tests/acceptance/test_greet.sh")
+        print(call("report", status="DONE", summary="oracle", attestations=[f"git:{REPO}@{sha}", doc]))
+    elif role == "implementer":
+        tid = a["task"]["id"]
+        if tid == "T1":
+            wfile("src/greet.txt", "hello\n" if cycle == 1 else "hello\n\n")
+        elif tid == "T2":
+            wfile("src/bye.txt", "goodbye\n" if cycle > 1 else "farewell\n")
+        else:
+            wfile("docs/README.md", "# Docs\nhello and goodbye\n")
+            if a["attempts_left"] == 3 and cycle == 1:
+                wfile("src/greet.txt", "hello world\n")   # out of scope -> G-B3
+        sha = commit_push(f"{tid}: implement", a["git"]["branch"])
+        cmds = a["task"]["verification"]
+        ev = write(f"evidence/{tid}/cycle-{cycle}.md",
+                   "\n".join(f"- `{c}` -> exit 0" for c in cmds))
+        res = call("report", status="DONE", summary=f"{tid} done", attestations=[f"git:{REPO}@{sha}", ev])
+        print(res)
+        if not res["accepted"]:
+            assert any(v.startswith("G-B3") for v in res["violations"]), res
+            git("checkout", "HEAD~1", "--", "src/greet.txt")
+            git("commit", "-q", "--amend", "--no-edit", "-a")
+            git("push", "-q", "--force", "origin", f"HEAD:refs/heads/{a['git']['branch']}")
+            sha = git("rev-parse", "HEAD")
+            ev = write(f"evidence/{tid}/cycle-{cycle}.md",
+                       "\n".join(f"- `{c}` -> exit 0" for c in cmds) + "\n(fixed scope)")
+            print(call("report", status="DONE", summary=f"{tid} fixed scope",
+                       attestations=[f"git:{REPO}@{sha}", ev]))
+    elif role in ("reviewer", "security"):
+        tid = a["task"]["id"]
+        cand = a["candidate_sha"]
+        catt = f"git:{REPO}@{cand}"
+        if tid == "T1" and cycle == 1:
+            data = {"verdict": "FAIL", "checked": ["diff"], "findings": [{
+                "severity": "BLOCKER", "confidence": "HIGH", "dimension": "correctness",
+                "title": "missing newline handling", "observation": "x", "impact": "y",
+                "fix": "rewrite", "attestations": [catt]}]}
+        else:
+            data = {"verdict": "PASS", "checked": ["diff", "tests"], "findings": []}
+        doc = write(f"reviews/{tid}/{role}-cycle-{cycle}.md", f"{data['verdict']}")
+        print(call("report", status="DONE", summary="reviewed", attestations=[catt, doc], data=data))
+    elif role == "integration":
+        head = a["head_sha"]
+        orc = json.loads(call("docs_read", path="plan/oracle.json")["content"])
+        results = []
+        for c in orc["acceptance_commands"] + orc["integration_commands"]:
+            results.append({"command": c, "exit_code": subprocess.run(["sh", "-c", c]).returncode})
+        ok = all(r["exit_code"] == 0 for r in results)
+        doc = write("integration/report.md", f"results: {results}")
+        print(call("report", status="DONE", summary="integration", attestations=[f"git:{REPO}@{head}", doc],
+                   data={"verdict": "PASS" if ok else "FAIL", "results": results, "findings": []}))
+    else:
+        call("report", status="BLOCKED", summary="unknown role", attestations=[],
+             blocked_reason="fake agent has no script", missing_decision=f"how to act as {role}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("fake agent error:", e, file=sys.stderr)
+        raise

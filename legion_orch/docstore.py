@@ -1,0 +1,142 @@
+"""Immutable, versioned document store backed by SQLite.
+
+Documents are append-only: a write creates version N+1 of a path and nothing is ever updated or
+deleted (enforced by SQLite triggers as well as by the API). Every version is addressable as
+``file:<path>@<version>``.
+"""
+from __future__ import annotations
+
+import hashlib
+import re
+import sqlite3
+import threading
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+
+PATH_RE = re.compile(r"^(?!/)(?!.*//)(?!.*(?:^|/)\.\.?(?:/|$))[A-Za-z0-9._@+=:,~-]+(?:/[A-Za-z0-9._@+=:,~-]+)*$")
+MAX_DOC_BYTES = 2 * 1024 * 1024
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS documents (
+  path TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  author TEXT NOT NULL,          -- run id, 'controller' or 'human:<id>'
+  role TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (path, version)
+);
+CREATE TRIGGER IF NOT EXISTS documents_no_update BEFORE UPDATE ON documents
+BEGIN SELECT RAISE(ABORT, 'documents are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS documents_no_delete BEFORE DELETE ON documents
+BEGIN SELECT RAISE(ABORT, 'documents are immutable'); END;
+"""
+
+
+class DocStoreError(Exception):
+    pass
+
+
+class VersionConflict(DocStoreError):
+    pass
+
+
+@dataclass
+class DocVersion:
+    path: str
+    version: int
+    content: str
+    sha256: str
+    author: str
+    role: str
+    created_at: str
+
+    @property
+    def attestation(self) -> str:
+        return f"file:{self.path}@{self.version}"
+
+    def meta(self) -> dict:
+        d = asdict(self)
+        d.pop("content")
+        d["attestation"] = self.attestation
+        return d
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+class DocStore:
+    def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
+        self.conn = conn
+        self.lock = lock
+        with self.lock:
+            self.conn.executescript(SCHEMA)
+            self.conn.commit()
+
+    def write(self, path: str, content: str, *, author: str, role: str,
+              base_version: int | None = None) -> DocVersion:
+        """Create a new version. ``base_version`` must equal the current latest version
+        (``None`` only for a new path) – optimistic concurrency (guard G-W2)."""
+        if not PATH_RE.match(path) or len(path) > 512:
+            raise DocStoreError(f"invalid document path {path!r}")
+        data = content.encode()
+        if len(data) > MAX_DOC_BYTES:
+            raise DocStoreError("document too large")
+        with self.lock:
+            latest = self._latest_version(path)
+            if latest != base_version:
+                raise VersionConflict(
+                    f"G-W2: base_version {base_version} != latest {latest} for {path}")
+            v = DocVersion(path=path, version=(latest or 0) + 1, content=content,
+                           sha256="sha256:" + hashlib.sha256(data).hexdigest(),
+                           author=author, role=role, created_at=now_iso())
+            self.conn.execute(
+                "INSERT INTO documents VALUES (?,?,?,?,?,?,?)",
+                (v.path, v.version, v.content, v.sha256, v.author, v.role, v.created_at))
+            self.conn.commit()
+            return v
+
+    def read(self, path: str, version: int | None = None) -> DocVersion:
+        with self.lock:
+            if version is None:
+                row = self.conn.execute(
+                    "SELECT * FROM documents WHERE path=? ORDER BY version DESC LIMIT 1",
+                    (path,)).fetchone()
+            else:
+                row = self.conn.execute(
+                    "SELECT * FROM documents WHERE path=? AND version=?", (path, version)).fetchone()
+        if row is None:
+            raise DocStoreError(f"no such document {path}@{version or 'latest'}")
+        return DocVersion(*row)
+
+    def exists(self, path: str, version: int) -> bool:
+        with self.lock:
+            return self.conn.execute(
+                "SELECT 1 FROM documents WHERE path=? AND version=?", (path, version)
+            ).fetchone() is not None
+
+    def latest_version(self, path: str) -> int | None:
+        with self.lock:
+            return self._latest_version(path)
+
+    def _latest_version(self, path: str) -> int | None:
+        row = self.conn.execute("SELECT MAX(version) FROM documents WHERE path=?", (path,)).fetchone()
+        return row[0]
+
+    def history(self, path: str) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT * FROM documents WHERE path=? ORDER BY version", (path,)).fetchall()
+        return [DocVersion(*r).meta() for r in rows]
+
+    def list(self, prefix: str = "") -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT d.* FROM documents d JOIN (SELECT path, MAX(version) v FROM documents "
+                "WHERE path LIKE ? ESCAPE '\\' GROUP BY path) m ON d.path=m.path AND d.version=m.v "
+                "ORDER BY d.path",
+                (prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
+            ).fetchall()
+        return [DocVersion(*r).meta() for r in rows]

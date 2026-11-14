@@ -1,0 +1,145 @@
+import re
+import sqlite3
+import threading
+from pathlib import Path
+
+import pytest
+
+from legion_orch import guards, risk
+from legion_orch.assets import AssetError, Assets
+from legion_orch.attest import AttestationError, parse
+from legion_orch.docstore import DocStore, DocStoreError, VersionConflict
+
+ROOT = Path(__file__).resolve().parent.parent
+SHA = "a" * 40
+
+
+# ------------------------------------------------------------------ WORKFLOW.md <-> code
+def test_workflow_doc_guard_ids_match_code():
+    a = Assets(ROOT / "WORKFLOW.md")
+    assert a.documented_guard_ids() == set(guards.GUARDS)
+
+
+def test_every_guard_is_referenced_outside_the_registry():
+    src = "".join(p.read_text() for p in (ROOT / "legion_orch").glob("*.py")
+                  if p.name != "guards.py")
+    src += re.sub(r"GUARDS: dict.*?\n}\n", "", (ROOT / "legion_orch/guards.py").read_text(), flags=re.S)
+    missing = [g for g in guards.GUARDS if g not in src and not g.startswith("H-")]
+    assert not missing, missing
+
+
+def test_assets_render_and_pin():
+    a = Assets(ROOT / "WORKFLOW.md")
+    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
+                              "branch", "task_id", "task_title", "task_json", "cycle", "role",
+                              "context_refs", "feedback", "candidate_sha", "write_scope",
+                              "required_docs", "workdir")}
+    vars_["task_soul"] = "backend-engineer"
+    r = a.render_role("implementer", vars_)
+    assert "Backend Engineer" in r.soul and "Harness contract" in r.prompt
+    assert r.pin.startswith("sha256:")
+    vars_["task_soul"] = "code-reviewer"
+    with pytest.raises(AssetError):
+        a.render_role("implementer", vars_)
+    del vars_["goal"]
+    with pytest.raises(AssetError, match="G-D2"):
+        a.render_role("intake", vars_)
+
+
+# ------------------------------------------------------------------ document store
+def _store():
+    return DocStore(sqlite3.connect(":memory:"), threading.RLock())
+
+
+def test_docstore_versions_are_immutable():
+    d = _store()
+    v1 = d.write("plan/spec.md", "one", author="r1", role="planner")
+    assert v1.attestation == "file:plan/spec.md@1"
+    with pytest.raises(VersionConflict):
+        d.write("plan/spec.md", "two", author="r1", role="planner")            # base missing
+    v2 = d.write("plan/spec.md", "two", author="r1", role="planner", base_version=1)
+    with pytest.raises(VersionConflict):
+        d.write("plan/spec.md", "three", author="r2", role="planner", base_version=1)  # stale
+    assert d.read("plan/spec.md", 1).content == "one" and v2.version == 2
+    with pytest.raises(sqlite3.DatabaseError):
+        d.conn.execute("UPDATE documents SET content='x'")
+    with pytest.raises(sqlite3.DatabaseError):
+        d.conn.execute("DELETE FROM documents")
+    with pytest.raises(DocStoreError):
+        d.write("../etc/passwd", "x", author="r", role="r")
+
+
+# ------------------------------------------------------------------ attestations
+def test_attestation_parsing():
+    assert parse("file:plan/spec.md@3", ["app"]).version == 3
+    a = parse(f"git:org/app/src/x.py@{SHA}", ["org/app", "org"])
+    assert (a.repo, a.path) == ("org/app", "src/x.py")
+    assert parse(f"git:app@{SHA}", ["app"]).path is None
+    for bad in ("file:x", "file:x@0", f"git:other@{SHA}", "git:app@abc", "http://x"):
+        with pytest.raises(AttestationError):
+            parse(bad, ["app"])
+
+
+# ------------------------------------------------------------------ risk
+def _signals(**scores):
+    return {"signals": [{"name": n, "score": scores.get(n, 0), "rationale": "r"} for n in risk.SIGNALS]}
+
+
+def test_risk_tiers_and_floors():
+    assert risk.derive_tier(_signals())["tier"] == "R0"
+    assert risk.derive_tier(_signals(ui=1, performance=1, scope_breadth=1))["tier"] == "R1"
+    assert risk.derive_tier(_signals(public_api=2))["tier"] == "R2"            # hard floor
+    assert risk.derive_tier(_signals(novelty_uncertainty=2))["tier"] == "R0"   # no floor at 2
+    assert risk.derive_tier(_signals(security=3))["tier"] == "R3"
+    assert risk.validate_signals({"signals": []})
+    assert risk.review_panel("R2", {"security": 2}) == ["reviewer", "security"]
+    assert not risk.valid_reason("short") and risk.valid_reason("this change deploys nothing at all")
+
+
+# ------------------------------------------------------------------ plan guards
+def _task(tid, files, deps=(), reqs=("REQ-1",)):
+    return {"id": tid, "title": tid, "soul": "senior-developer", "requirements": list(reqs),
+            "depends_on": list(deps), "files_modified": files, "instructions": "i",
+            "acceptance": ["a"], "verification": ["true"]}
+
+
+ORACLE = {"acceptance_tests": ["tests/acc/test_a.py"], "acceptance_commands": ["pytest tests/acc"],
+          "integration_commands": [], "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "t"}]}
+SOULS = ["senior-developer", "backend-engineer"]
+
+
+def check(tasks, reqs=("REQ-1",), tier="R2", oracle=ORACLE):
+    return guards.plan({"tasks": tasks}, oracle, list(reqs), tier, [".github/"], SOULS)
+
+
+def test_plan_guards():
+    assert check([_task("T1", ["src/a.py"]), _task("T2", ["src/b.py"], ["T1"])]) == []
+    ids = lambda v: {x.split(":")[0] for x in v}
+    assert "G-P2" in ids(check([_task("T1", ["a"], ["T2"]), _task("T2", ["b"], ["T1"])]))
+    assert "G-P3" in ids(check([_task("T1", ["a"])], reqs=("REQ-1", "REQ-2")))
+    assert "G-P6" in ids(check([_task("T1", ["src/"]), _task("T2", ["src/b.py"])]))   # parallel overlap
+    assert check([_task("T1", ["src/"]), _task("T2", ["src/b.py"], ["T1"])]) == []    # ordered: fine
+    assert "G-P7" in ids(check([_task("T1", ["tests/acc/test_a.py"])]))
+    assert "G-P7" in ids(check([_task("T1", [".github/workflows/ci.yml"])]))
+    assert "G-P6" in ids(check([_task("T1", ["../x"])]))
+    assert "G-P8" in ids(check([_task("T1", ["a"])], oracle={"acceptance_tests": []}))
+    assert check([_task("T1", ["a"])], tier="R1", oracle={}) == []
+    bad = _task("T1", ["a"]); bad["soul"] = "code-reviewer"
+    assert "G-P5" in ids(check([bad]))
+
+
+def test_review_and_report_guards():
+    att = f"git:app@{SHA}"
+    high = {"severity": "BLOCKER", "confidence": "HIGH", "title": "t", "fix": "f", "attestations": [att]}
+    kw = dict(pass_word="PASS", fail_word="FAIL", gid="G-RV3", cycle=1, require_checked=True)
+    assert guards.verdict({"verdict": "PASS", "findings": [high]}, **kw)[0].startswith("G-RV3")
+    assert guards.verdict({"verdict": "FAIL", "findings": []}, **kw)[0].startswith("G-RV3")
+    assert guards.verdict({"verdict": "PASS", "findings": []}, **kw)[0].startswith("G-RV4")
+    assert guards.verdict({"verdict": "PASS", "findings": [], "checked": ["x"]}, **kw) == []
+    assert guards.findings({"findings": [high]}, {att}) == []
+    assert guards.findings({"findings": [high]}, set())[0].startswith("G-RV2")
+    assert guards.report_shape("PARTIAL", None, None)[0].startswith("G-R1")
+    assert guards.report_shape("BLOCKED", "x", "")[0].startswith("G-R2")
+    assert guards.scoped_diff(["src/a.py", "tests/acc/t.py"], ["src/"], [], ["tests/acc/"], "G-B3") \
+        == ["G-B3: tests/acc/t.py is outside the allowed paths", "G-B3: tests/acc/t.py is a protected path"]
+    assert guards.intake("- REQ-1: x\n", _signals(), "- [ ] Q1: which db?", "DONE")[0].startswith("G-I3")

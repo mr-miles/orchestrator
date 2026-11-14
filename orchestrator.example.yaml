@@ -1,0 +1,30 @@
+project: demo
+repo:
+  name: app                      # used in attestations: git:app/<path>@<sha>
+  path: /path/to/your/repo       # local path or URL the controller clones (bare) once
+  base_branch: main
+decision_owners: [miles]         # humans allowed to approve (H-1/H-2/H-3, escalations)
+state_dir: .legion-orch          # one change per state_dir
+workflow_doc: WORKFLOW.md
+protected_paths: [".github/", "WORKFLOW.md"]
+server:
+  host: 0.0.0.0                  # sandboxes must reach this
+  port: 8765
+  public_url: http://host.openshell.internal:8765
+  # operator_token: set LEGION_OPERATOR_TOKEN instead of committing it
+limits:
+  max_parallel: 4
+  review_max_cycles: 3
+  critique_max_cycles: 2
+  max_report_attempts: 3
+  run_timeout_s: 3600
+  verify_timeout_s: 1800
+sandbox:
+  runner: openshell              # or `local` for development (NO isolation)
+  openshell_bin: openshell
+  image: registry.example.com/your-org/claude-agent:latest
+  verifier_image: registry.example.com/your-org/toolchain:latest
+  providers: [claude-code]
+  policy_template: policies/agent-policy.template.yaml
+  verifier_policy_template: policies/verifier-policy.template.yaml
+  keep_failed: true
