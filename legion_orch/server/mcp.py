@@ -8,7 +8,7 @@ sandbox itself holds no credential. The document tools come from
 * paths are relative to the run's change (``plan/spec.md``) unless they start with ``changes/``;
   returned paths and attestations are fully qualified;
 * agents may read every change except ``*/control/logs/``;
-* writes go through :meth:`ChangeEngine.docs_write` (write scope, controller-owned paths, G-W1),
+* writes go through :meth:`ChangeEngine.agent_write` (write scope, controller-owned paths, G-W1),
   then the store's own checks (G-W2, G-W3).
 
 Refusals are raised as :class:`ToolError` so the agent sees the reason; the MCP SDK hides the
@@ -63,13 +63,10 @@ def build_mcp(ctl: Controller) -> MCPServer:
         ce, run = current(ctx)
 
         async def write(path: str, content: str, base_version: int | None) -> DocVersion:
-            async with ctl.lock:
-                try:
-                    v = ce.docs_write(run, path, content, base_version)  # G-W1 → store G-W2/G-W3
-                except (WorkflowError, DocStoreError) as e:
-                    raise ToolError(str(e)) from None
-                ce._save()
-                return v
+            try:
+                return await ce.agent_write(run, path, content, base_version)
+            except (WorkflowError, DocStoreError) as e:
+                raise ToolError(str(e)) from None
 
         return StoreSession(docs=ctl.docs, resolve=ce.p, readable=lambda p: not _hidden(p),
                             write=write)
@@ -136,5 +133,5 @@ def build_mcp(ctl: Controller) -> MCPServer:
     registered = {t.name for t in server._tool_manager.list_tools()}
     if registered != set(MCP_TOOLS):   # the gateway's MCP allowlist must match exactly
         raise RuntimeError(f"MCP tools {sorted(registered)} != policy allowlist {sorted(MCP_TOOLS)}")
-    ctl.mcp_tools = list(MCP_TOOLS)    # used when rendering sandbox network policies
+    ctl.set_mcp_tools(MCP_TOOLS)       # used when rendering sandbox network policies
     return server

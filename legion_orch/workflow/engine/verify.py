@@ -25,6 +25,7 @@ from ..model import (
     Resume,
     Verification,
 )
+from .auth import VerifierGrant
 from .common import _slug
 
 
@@ -36,7 +37,7 @@ class VerifyMixin:
     async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
         """G-V1: run commands at ``sha`` in a fresh sandbox. Never raises."""
         name = f"lg-{self.change.id}-v{secrets.token_hex(3)}".lower()
-        base = self.ctl.tmp / "verify" / name
+        base = self.svc.tmp / "verify" / name
         payload = base / "payload"
         payload.mkdir(parents=True, exist_ok=True)
         (payload / "run.env").write_text(
@@ -49,8 +50,8 @@ class VerifyMixin:
             ref = await self.runner.create(SandboxSpec(
                 name=name, payload_dir=payload, policy_file=policy, agent=False,
                 change=self.cid, task=label, role="verifier", run=name))
-            self.ctl.verifier_refs[ref] = {"id": f"verifier:{name}", "change": self.cid,
-                                           "task": label}         # read-only git grant
+            self.svc.auth.register_verifier(      # read-only git grant while it lives
+                ref, VerifierGrant(id=f"verifier:{name}", change=self.cid, task=label))
             created = True
             rc, out = await self.runner.exec(name, ["bash", "/sandbox/payload/verify-setup.sh", sha],
                                              timeout=600)
@@ -69,7 +70,7 @@ class VerifyMixin:
             result.infra_error = str(e)
         finally:
             if ref:
-                self.ctl.verifier_refs.pop(ref, None)
+                self.svc.auth.unregister_verifier(ref)
             shutil.rmtree(base, ignore_errors=True)
             if created:
                 try:

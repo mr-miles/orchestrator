@@ -28,6 +28,7 @@ from ..identity import make_token_endpoint
 from ..store import DocStoreError
 from ..util import bearer
 from ..workflow.engine import Controller, WorkflowError
+from . import views
 from .mcp import build_mcp
 
 STATIC = Path(__file__).parent / "static"
@@ -54,15 +55,15 @@ def build_mcp_app(ctl: Controller) -> Starlette:
 
 def build_git_app(ctl: Controller) -> Starlette:
     endpoint = make_git_endpoint(
-        ctl.git, lambda request: ctl.git_grant(bearer(request.headers.get("authorization", ""))),
+        ctl.git, lambda request: ctl.auth.git_grant(bearer(request.headers.get("authorization", ""))),
         max_request_bytes=ctl.cfg.limits.git_max_push_bytes,
         max_concurrency=ctl.cfg.limits.git_max_concurrency)
     return Starlette(routes=[Route("/git/{path:path}", endpoint, methods=["GET", "POST"])])
 
 
 def build_token_app(ctl: Controller) -> Starlette:
-    return Starlette(routes=[Route("/oauth/token", make_token_endpoint(ctl.identity, ctl.sandbox_binding),
-                                   methods=["POST"])])
+    endpoint = make_token_endpoint(ctl.auth.identity, ctl.auth.sandbox_binding)
+    return Starlette(routes=[Route("/oauth/token", endpoint, methods=["POST"])])
 
 
 def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
@@ -118,11 +119,11 @@ def build_app(ctl: Controller) -> Starlette:
             body = await request.json()
             ce = await ctl.start_change(body.get("goal", ""))
             return JSONResponse({"ok": True, "change": ce.cid})
-        return JSONResponse(ctl.list_changes())
+        return JSONResponse(views.change_list(ctl))
 
     @guarded
     async def state(request: Request):
-        return JSONResponse(ctl.get(request.path_params["cid"]).snapshot())
+        return JSONResponse(views.change_state(ctl, ctl.get(request.path_params["cid"])))
 
     @guarded
     async def action(request: Request):

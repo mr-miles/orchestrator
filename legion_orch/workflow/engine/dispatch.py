@@ -94,7 +94,7 @@ class DispatchMixin:
             node.base_sha = ch.integration_head
         if h.judges_head:
             judged_sha = ch.integration_head
-        run_id = self.ctl.next_run_id()
+        run_id = self.host.next_run_id()
         branch = f"legion/{ch.id}/{_slug(node.id)}" if h.pushes \
             else f"legion/{ch.id}/{run_id}-{role}"
         task = node.task
@@ -161,16 +161,16 @@ class DispatchMixin:
 
     def _run_dir(self, run_id: str) -> Path:
         """Scratch only: payload (deleted after upload) and the live agent log."""
-        return self.ctl.tmp / "runs" / run_id
+        return self.svc.tmp / "runs" / run_id
 
     def _policy(self, dest: Path, *, agent: bool, push: bool) -> Path:
         """Sandbox policy from policies/{agent,verifier}-policy.template.yaml: MCP vetted by the
         gateway (protocol: mcp, tool allowlist), git push only if the role may push."""
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if self.ctl.mcp_tools is None:
+        if self.svc.mcp_tools is None:
             raise RuntimeError("MCP server not built: no tool allowlist for the sandbox policy")
         dest.write_text(render_policy(self.cfg, agent=agent, push=push,
-                                      mcp_tools=self.ctl.mcp_tools))
+                                      mcp_tools=self.svc.mcp_tools))
         return dest
 
     def _payload(self, run: Run, rendered) -> None:

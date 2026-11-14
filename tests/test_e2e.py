@@ -12,6 +12,7 @@ import pytest
 
 from legion_orch.config import load_config
 from legion_orch.server import build_servers
+from legion_orch.server.views import change_state
 from legion_orch.workflow.engine import Controller, WorkflowError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,7 +89,7 @@ async def _full_workflow(tmp_path):
         b = await ctl.start_change("Say hello and goodbye, again")
         assert a.cid != b.cid
         await asyncio.gather(_drive(a), _drive(b))
-        old_token = ctl.identity.tokens.issue(
+        old_token = ctl.auth.identity.tokens.issue(
             {"sandbox": "s", "change": a.cid, "task": "intake", "role": "intake"}, "x")
         await _identity_checks(ctl, cfg)
     finally:
@@ -108,13 +109,13 @@ async def _full_workflow(tmp_path):
         new = ctl2.changes[old.cid]
         assert new.change.ship.verdict == "READY"
         assert new.change.model_dump() == old.change.model_dump()      # typed records round-trip
-        json.dumps(new.snapshot())                                      # the UI state serialises
+        json.dumps(change_state(ctl2, new))                             # the UI state serialises
         assert list(new.nodes) == list(old.nodes)
         assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
         assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
         assert ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
-    assert ctl2.identity.tokens.verify(old_token) is None     # signing key never persisted
+    assert ctl2.auth.identity.tokens.verify(old_token) is None     # signing key never persisted
     assert all(r.sandbox_ref for _, r in ctl2.all_runs())
     assert not ctl2.docs.list("changes/" + a.cid + "/control/prompts/")
 
@@ -249,6 +250,7 @@ async def _identity_checks(ctl, cfg):
     import httpx
 
     from legion_orch.identity import JWT_SPIFFE
+    from legion_orch.workflow.engine import VerifierGrant
     token_url, git = cfg.server.token_url, cfg.server.git_base_url
     operator = f"http://127.0.0.1:{cfg.server.port}"
     ic = cfg.identity
@@ -267,21 +269,21 @@ async def _identity_checks(ctl, cfg):
         assert "script-src 'self'" in csp and "unsafe-inline" not in csp.split("script-src")[1].split(";")[0]
         assert "<script>" not in ui.text and " onclick=" not in ui.text
         assert (await c.get(f"{operator}/app.js")).headers["content-type"].startswith("text/javascript")
-        unknown = ctl.dev_spire.mint("not-a-managed-sandbox", ic.svid_audience)
+        unknown = ctl.auth.dev_spire.mint("not-a-managed-sandbox", ic.svid_audience)
         r = await c.post(token_url, data=form(unknown))
         assert r.status_code == 401 and r.json()["error"] == "invalid_client"
         deleted = next(r.sandbox_ref for _, r in ctl.all_runs())
-        r = await c.post(token_url, data=form(ctl.dev_spire.mint(deleted, ic.svid_audience)))
+        r = await c.post(token_url, data=form(ctl.auth.dev_spire.mint(deleted, ic.svid_audience)))
         assert r.status_code == 401                               # deleted sandboxes get nothing
         known = "lg-test-verifier"
-        ctl.verifier_refs[known] = {"id": "verifier:test", "change": "c", "task": "build:T1"}
-        r = await c.post(token_url, data=form(ctl.dev_spire.mint(known, "wrong-aud")))
+        ctl.auth.register_verifier(known, VerifierGrant(id="verifier:test", change="c", task="build:T1"))
+        r = await c.post(token_url, data=form(ctl.auth.dev_spire.mint(known, "wrong-aud")))
         assert r.status_code == 401
         from legion_orch.identity import DevSpire
-        forged = DevSpire(ic.trust_prefix, kid=ctl.dev_spire.kid).mint(known, ic.svid_audience)
+        forged = DevSpire(ic.trust_prefix, kid=ctl.auth.dev_spire.kid).mint(known, ic.svid_audience)
         r = await c.post(token_url, data=form(forged))
         assert r.status_code == 401                               # signed by the wrong key
-        r = await c.post(token_url, data=form(ctl.dev_spire.mint(known, ic.svid_audience)))
+        r = await c.post(token_url, data=form(ctl.auth.dev_spire.mint(known, ic.svid_audience)))
         assert r.status_code == 200 and r.json()["token_type"] == "Bearer"
         tok = r.json()["access_token"]
         # valid identity but no live run (all runs finished) -> MCP refuses, with a visible reason
@@ -296,7 +298,7 @@ async def _identity_checks(ctl, cfg):
         assert r.status_code == 200                               # verifier: read-only fetch
         r = await c.get(f"{git}/app.git/info/refs?service=git-receive-pack", headers=auth)
         assert r.status_code == 403                               # ...but never push
-        del ctl.verifier_refs[known]
+        ctl.auth.unregister_verifier(known)
         r = await c.get(f"{git}/app.git/info/refs?service=git-upload-pack", headers=auth)
         assert r.status_code == 401                               # grant ends with the sandbox
 
@@ -307,10 +309,10 @@ async def _identity_checks(ctl, cfg):
                            status="ACTIVE", sandbox="lg-x", sandbox_ref="lg-x")
     try:
         good = {"sandbox": "lg-x", "change": ce.cid, "task": "build:T1", "role": "implementer"}
-        assert ctl.run_for_bearer(ctl.identity.tokens.issue(good, "x"))[1].id == "r9999"
+        assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(good, "x"))[1].id == "r9999"
         for wrong in ({"task": "build:T2"}, {"role": "reviewer"}, {"change": "c-other"},
                       {"sandbox": "lg-y"}):
-            assert ctl.run_for_bearer(ctl.identity.tokens.issue(good | wrong, "x")) is None, wrong
-        assert ctl.sandbox_binding("lg-x") == good
+            assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(good | wrong, "x")) is None, wrong
+        assert ctl.auth.sandbox_binding("lg-x") == good
     finally:
         del ce.runs["r9999"]

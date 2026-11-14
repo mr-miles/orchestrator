@@ -56,12 +56,21 @@ class ReportsMixin:
         self.event("doc", f"{v.attestation} written", run.node_id, run.id)
         return v
 
+    async def agent_write(self, run: Run, path: str, content: str,
+                          base_version: int | None) -> DocVersion:
+        """An agent's ``docs_write``: the guards above, then the store's own (G-W2, G-W3); the
+        run's quota counters are saved with it."""
+        async with self.lock:
+            v = self.docs_write(run, path, content, base_version)
+            self._save()
+            return v
+
     def progress(self, run: Run, message: str, percent: float | None) -> None:
         run.progress.append(Progress(message=message[:500], percent=percent))
         run.progress = run.progress[-50:]
         if run.status == R_STARTING:
             run.status = R_ACTIVE
-        self.ctl.version += 1
+        self.host.touch()
 
     def _run_lock(self, run_id: str) -> asyncio.Lock:
         locks = self.__dict__.setdefault("_report_locks", {})

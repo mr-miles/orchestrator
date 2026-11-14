@@ -8,11 +8,8 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 
-import httpx
-
 from ...config import Config
-from ...git import GitGrant, GitRemote
-from ...identity import JWT_SPIFFE, AccessTokens, DevSpire, IdentityService, SvidVerifier
+from ...git import GitRemote
 from ...sandbox import (
     LocalRunner,
     Runner,
@@ -21,23 +18,19 @@ from ...sandbox import (
 from ...store import DocStore
 from ..assets import Assets
 from ..model import (
-    ACCEPTED,
-    H_REQUIREMENTS,
-    HUMAN,
-    INTAKE,
     LIVE_RUN,
-    Change,
-    Node,
     Run,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
-from ..roles import handler_for
+from .auth import WorkloadAuth
 from .change import ChangeEngine
 from .common import WorkflowError, log
+from .services import Services
 
 
 class Controller:
-    """Shared resources and the scheduler loop. Holds one ChangeEngine per change.
+    """Owns the shared :class:`Services`, one :class:`ChangeEngine` per change, and the scheduler
+    loop. Implements :class:`EngineHost` for the engines.
 
     Durable state lives only in the document store (``state.db``) and the git remote; ``tmp/``
     holds transient sandbox payloads and live agent logs and is wiped on start.
@@ -46,64 +39,54 @@ class Controller:
     def __init__(self, cfg: Config, runner: Runner | None = None):
         self.cfg = cfg
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
-        self.tmp = cfg.state_dir / "tmp"
-        self.dblock = threading.RLock()
-        self.conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
-        self.assets = Assets(cfg.assets_dir)
-        unhandled = set(self.assets.roles) - set(ROLE_HANDLERS)
+        conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
+        assets = Assets(cfg.assets_dir)
+        unhandled = set(assets.roles) - set(ROLE_HANDLERS)
         if unhandled:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
-        self.docs = DocStore(self.conn, self.dblock, self.assets.schemas)
-        self.git = GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path,
-                             cfg.repo.base_branch, max_push_bytes=cfg.limits.git_max_push_bytes)
-        self.runner = runner or make_runner(cfg)
-        self.lock = asyncio.Lock()
-        self.procs: dict[str, asyncio.subprocess.Process] = {}
-        self.verifier_refs: dict[str, dict] = {}  # verifier sandbox ref -> {id, change, task}
-        self.identity, self.dev_spire = self._identity()
-        if isinstance(self.runner, LocalRunner):
-            self.runner.gateway = self._dev_gateway
-        self.tasks: set[asyncio.Task] = set()
+        runner = runner or make_runner(cfg)
         self.changes: dict[str, ChangeEngine] = {}
-        self.mcp_tools: list[str] | None = None   # set by the MCP server (gateway allowlist)
-        self.version = 0
+        self.auth = WorkloadAuth(cfg, self._runs_by_change)
+        if isinstance(runner, LocalRunner):
+            runner.gateway = self.auth.dev_gateway
+        self.svc = Services(
+            cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
+            git=GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path, cfg.repo.base_branch,
+                          max_push_bytes=cfg.limits.git_max_push_bytes),
+            assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp")
+        self.version = 0                  # bumped on every visible change (UI polling)
+        self._tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
 
-    def _identity(self) -> tuple[IdentityService, DevSpire | None]:
-        ic = self.cfg.identity
-        dev = DevSpire(ic.trust_prefix) if ic.dev_spire else None
-        verifier = SvidVerifier(issuer=dev.issuer if dev else ic.issuer, audience=ic.svid_audience,
-                                trust_prefix=ic.trust_prefix, jwks_uri=None if dev else ic.jwks_uri,
-                                static_jwks=dev.jwks() if dev else None, ca_file=ic.jwks_ca_file)
-        return IdentityService(verifier, AccessTokens(ic.token_audience, ic.access_ttl_s),
-                               ic.scope, dev), dev
+    # The pieces the HTTP layer reads.
+    @property
+    def docs(self) -> DocStore:
+        return self.svc.docs
 
-    async def _dev_gateway(self, sandbox_ref: str) -> str:
-        """LocalRunner only: do what the OpenShell supervisor does – mint the sandbox's JWT-SVID
-        (dev SPIRE) and exchange it at our own /oauth/token endpoint."""
-        if self.dev_spire is None:
-            raise RuntimeError("dev gateway requires identity.dev_spire")
-        ic = self.cfg.identity
-        form = {"grant_type": "client_credentials", "client_assertion_type": JWT_SPIFFE,
-                "client_assertion": self.dev_spire.mint(sandbox_ref, ic.svid_audience),
-                "audience": ic.token_audience, "scope": ic.scope}
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.post(self.cfg.server.token_url, data=form)
-            r.raise_for_status()
-            return r.json()["access_token"]
+    @property
+    def git(self) -> GitRemote:
+        return self.svc.git
+
+    @property
+    def assets(self) -> Assets:
+        return self.svc.assets
 
     @property
     def git_url(self) -> str:
-        return f"{self.cfg.server.git_base_url}/{self.cfg.repo.name}.git"
+        return self.svc.git_url
 
-    @property
-    def mcp_url(self) -> str:
-        return self.cfg.server.mcp_url
+    def set_mcp_tools(self, tools: list[str]) -> None:
+        """The MCP server's tool list: the gateway allowlist in every sandbox policy."""
+        self.svc.mcp_tools = list(tools)
 
-    def bump(self) -> None:
+    # ------------------------------------------------------------------ EngineHost
+    def changed(self) -> None:
         self.version += 1
         self._wake.set()
+
+    def touch(self) -> None:
+        self.version += 1
 
     def spawn(self, coro, on_error=None) -> None:
         async def wrapper():
@@ -114,8 +97,8 @@ class Controller:
                 if on_error:
                     on_error(e)
         t = asyncio.create_task(wrapper())
-        self.tasks.add(t)
-        t.add_done_callback(self.tasks.discard)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
 
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:
@@ -123,16 +106,16 @@ class Controller:
         for m in self.docs.list("changes/"):
             parts = m["path"].split("/")
             if len(parts) == 4 and parts[2:] == ["control", "change.json"]:
-                ce = ChangeEngine(self, parts[1])
-                ce.st.load()
+                ce = ChangeEngine(self.svc, self, parts[1])
+                ce.load()
                 self.changes[ce.cid] = ce
 
     async def start(self) -> None:
         await self.git.ensure()
-        shutil.rmtree(self.tmp, ignore_errors=True)   # stale payloads may contain old tokens
-        self.tmp.mkdir(parents=True)
+        shutil.rmtree(self.svc.tmp, ignore_errors=True)   # stale payloads may contain old tokens
+        self.svc.tmp.mkdir(parents=True)
         self.load()
-        async with self.lock:
+        async with self.svc.lock:
             for ce in self.changes.values():
                 ce.recover()
         self._loop_task = asyncio.create_task(self._loop())
@@ -140,7 +123,7 @@ class Controller:
     async def stop(self) -> None:
         if self._loop_task:
             self._loop_task.cancel()
-        for p in self.procs.values():
+        for p in self.svc.procs.values():
             if p.returncode is None:
                 p.kill()
 
@@ -163,22 +146,16 @@ class Controller:
         goal = goal.strip()
         if not goal:
             raise WorkflowError("goal is required")
-        async with self.lock:
+        async with self.svc.lock:
             base = await self.git.resolve_base()
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:
                     break
             await self.git.init_integration(cid, base)
-            ce = ChangeEngine(self, cid)
-            ce.st.change = Change(id=cid, goal=goal, base_sha=base, integration_head=base)
+            ce = ChangeEngine(self.svc, self, cid)
             self.changes[cid] = ce
-            ce.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
-            ce._add(Node(id=INTAKE, kind=INTAKE, title="Intake: requirements & risk"))
-            ce._add(Node(id=H_REQUIREMENTS, kind=HUMAN, title="Accept requirements & tier",
-                         depends_on=[INTAKE]))
-            ce.event("change", f"change {cid} started at {base[:12]}", data={"goal": goal})
-            ce._save()
+            ce.start(goal, base)
             return ce
 
     def get(self, cid: str) -> ChangeEngine:
@@ -186,17 +163,6 @@ class Controller:
             return self.changes[cid]
         except KeyError:
             raise WorkflowError(f"unknown change {cid}") from None
-
-    def list_changes(self) -> list[dict]:
-        out = []
-        for ce in self.changes.values():
-            c = ce.change
-            out.append({"id": c.id, "goal": c.goal, "status": c.status, "tier": c.tier,
-                        "created_at": c.created_at,
-                        "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
-                        "nodes": len(ce.nodes),
-                        "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values())})
-        return sorted(out, key=lambda c: c["created_at"], reverse=True)
 
     # ------------------------------------------------------------------ runs / tokens
     def all_runs(self):
@@ -217,43 +183,12 @@ class Controller:
                 return ce, r
         raise WorkflowError(f"unknown run {run_id}")
 
-    def sandbox_binding(self, ref: str) -> dict[str, str] | None:
-        """The one task (and role) a live, managed sandbox serves – None if unknown or deleted.
-        A sandbox serves exactly one task for its whole life (an implementer sandbox is reused
-        across that task's rework cycles; judges and verifiers always get their own)."""
-        if ref in self.verifier_refs:
-            v = self.verifier_refs[ref]
-            return {"sandbox": ref, "change": v["change"], "task": v["task"], "role": "verifier"}
-        for ce, r in self.all_runs():
-            if r.sandbox_ref == ref and not r.sandbox_deleted:
-                return {"sandbox": ref, "change": ce.cid, "task": r.node_id, "role": r.role}
-        return None
+    def _runs_by_change(self):
+        for ce in self.changes.values():
+            for r in ce.runs.values():
+                yield ce.cid, r
 
     def run_for_bearer(self, token: str | None) -> tuple[ChangeEngine, Run] | None:
-        """Bind a gateway-injected, task-scoped token to the sandbox's live run, per request.
-        The run must match the token's change, task and role exactly."""
-        claims = self.identity.tokens.verify(token) if token else None
-        if not claims:
-            return None
-        for ce, r in self.all_runs():
-            if r.sandbox_ref == claims["sandbox"] and r.status in LIVE_RUN:
-                if (ce.cid, r.node_id, r.role) == (claims["change"], claims["task"], claims["role"]):
-                    return ce, r
-                log.warning("token for %s does not match live run %s", claims, r.id)
-                return None
-        return None
-
-    def git_grant(self, token: str) -> GitGrant | None:
-        claims = self.identity.tokens.verify(token) if token else None
-        if not claims:
-            return None
-        if claims["role"] == "verifier":
-            v = self.verifier_refs.get(claims["sandbox"])
-            if v and (v["change"], v["task"]) == (claims["change"], claims["task"]):
-                return GitGrant(v["id"], None)          # read-only
-            return None
-        found = self.run_for_bearer(token)
-        if found is None:
-            return None
-        run = found[1]
-        return GitGrant(run.id, f"refs/heads/{run.branch}" if handler_for(run.role).pushes else None)
+        """The change and live run a gateway-injected bearer acts for (see WorkloadAuth)."""
+        found = self.auth.live_run(token)
+        return (self.changes[found[0]], found[1]) if found else None

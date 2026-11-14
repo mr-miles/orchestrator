@@ -205,9 +205,10 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     from legion_orch.workflow.model import Run
     docs = _store()
     limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
-    ctl = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None, assets=None,
-                                runner=None, lock=None, procs={}, read_tokens={}, version=0)
-    ce = ChangeEngine(ctl, "c1")
+    svc = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None,
+                                assets=None, runner=None, lock=None, procs={})
+    host = types.SimpleNamespace(touch=lambda: None, changed=lambda: None)
+    ce = ChangeEngine(svc, host, "c1")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
     ce.st.event = lambda *a, **k: 0
@@ -440,6 +441,20 @@ def test_generated_policy_and_provider_profile(tmp_path):
                for c in setup_commands(cfg, "p.yaml"))
 
 
+def test_engine_boundaries():
+    """Only the controller knows the Controller; nothing outside the engine package touches an
+    engine's private members (saving, state store, helpers)."""
+    eng = ROOT / "legion_orch/workflow/engine"
+    for f in eng.glob("*.py"):
+        if f.name not in ("controller.py", "__init__.py"):
+            src = f.read_text()
+            assert not re.search(r"from \.controller|\bctl\b", src), f"{f.name} reaches the Controller"
+    outside = [p for p in (ROOT / "legion_orch").rglob("*.py") if eng not in p.parents]
+    for f in outside + [eng / "controller.py"]:
+        bad = re.findall(r"\b(?:ce|engine)\.(?:_\w+|st\b)", f.read_text())
+        assert not bad, f"{f.name} uses engine internals {bad}"
+
+
 def test_governance_and_ship_use_only_the_change_view():
     """They depend on the ChangeView protocol, never on engine internals."""
     from legion_orch.workflow.view import ChangeView
@@ -575,9 +590,9 @@ def test_transition_rollback_keeps_identity():
 
     from legion_orch.workflow.engine import ChangeEngine
     from legion_orch.workflow.model import Change, Node, Run
-    ctl = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None, lock=None,
-                                procs={}, read_tokens={}, version=0)
-    ce = ChangeEngine(ctl, "c1")
+    svc = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None,
+                                lock=None, procs={})
+    ce = ChangeEngine(svc, types.SimpleNamespace(), "c1")
     ce.st.change = Change(id="c1", goal="g", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")

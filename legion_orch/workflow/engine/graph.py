@@ -125,7 +125,7 @@ class GraphMixin:
                     else:
                         node.status = READY
             self._check_timeouts()
-            capacity = self.cfg.limits.max_parallel - self.ctl.live_count()
+            capacity = self.cfg.limits.max_parallel - self.host.live_count()
             for node in list(self.nodes.values()):
                 if capacity <= 0:
                     break
