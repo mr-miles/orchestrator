@@ -26,6 +26,7 @@ GUARDS: dict[str, str] = {
     "G-W1": "docs_write: inside write scope, never control/",
     "G-W2": "docs_write: base_version equals latest",
     "G-W3": "store write: content matches the schema bound to the path",
+    "G-W4": "docs_write: per-run write quota (document versions and bytes)",
     "G-R7": "report: data matches the role's report schema",
     "G-R8": "report: size limits (summary, reasons, attestations, data) and check time limit",
     # intake

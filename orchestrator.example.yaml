@@ -26,6 +26,8 @@ limits:
   verify_timeout_s: 1800
   git_max_push_bytes: 268435456   # largest accepted push (HTTP body and unpacked pack)
   git_max_concurrency: 8
+  max_docs_per_run: 200           # per-run document write quota (G-W4)
+  max_doc_bytes_per_run: 52428800
 sandbox:
   runner: openshell              # or `local` for development (NO isolation)
   openshell_bin: openshell

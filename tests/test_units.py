@@ -206,8 +206,9 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     from legion_orch.workflow.engine import ChangeEngine, WorkflowError
     from legion_orch.workflow.model import Run
     docs = _store()
-    ctl = types.SimpleNamespace(cfg=None, docs=docs, git=None, assets=None, runner=None, lock=None,
-                                procs={}, read_tokens={}, version=0)
+    limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
+    ctl = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None, assets=None,
+                                runner=None, lock=None, procs={}, read_tokens={}, version=0)
     ce = ChangeEngine(ctl, "c1")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
@@ -218,6 +219,14 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
                 "tasks/T1/verification.json", "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
+    # G-W4: per-run quota (limits: 3 versions, 10 bytes in this test)
+    with pytest.raises(WorkflowError, match="G-W4.*bytes"):
+        ce.docs_write(run, "plan/big.md", "x" * 10, None)
+    ce.docs_write(run, "plan/a.md", "y", None)
+    ce.docs_write(run, "plan/b.md", "z", None)
+    assert (run.docs_written, run.doc_bytes) == (3, 3)
+    with pytest.raises(WorkflowError, match="G-W4.*versions"):
+        ce.docs_write(run, "plan/c.md", "w", None)
 
 
 def test_review_panels():

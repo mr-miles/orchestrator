@@ -30,7 +30,8 @@ from .common import WorkflowError, log
 
 class ReportsMixin:
     def docs_write(self, run: Run, path: str, content: str, base_version: int | None) -> DocVersion:
-        """Guards G-W1 and G-W2. ``path`` may be relative to the change namespace."""
+        """Guards G-W1, G-W4 (then the store's G-W2, G-W3). ``path`` may be relative to the
+        change namespace."""
         path = self.p(path)
         rel = path[len(self.p("")):]
         controller_owned = rel.startswith("control/") or (
@@ -38,7 +39,16 @@ class ReportsMixin:
                                                                   ["decisions"])))
         if controller_owned or not any(path.startswith(w) for w in run.write_scope):
             raise WorkflowError(f"G-W1: {path} is outside your write scope {run.write_scope}")
+        lim, size = self.cfg.limits, len(content.encode())
+        if run.docs_written + 1 > lim.max_docs_per_run:
+            raise WorkflowError(f"G-W4: write quota exhausted: this run has written "
+                                f"{run.docs_written} document versions (limit {lim.max_docs_per_run})")
+        if run.doc_bytes + size > lim.max_doc_bytes_per_run:
+            raise WorkflowError(f"G-W4: write quota exhausted: this run has written {run.doc_bytes} "
+                                f"bytes; this write needs {size} more (limit {lim.max_doc_bytes_per_run})")
         v = self.docs.write(path, content, author=run.id, role=run.role, base_version=base_version)
+        run.docs_written += 1
+        run.doc_bytes += size
         self.event("doc", f"{v.attestation} written", run.node_id, run.id)
         return v
 

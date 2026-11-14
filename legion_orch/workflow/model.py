@@ -79,6 +79,8 @@ class Run:
     context_refs: list[str] = field(default_factory=list)
     assignment: dict = field(default_factory=dict)
     attempts: int = 0
+    docs_written: int = 0                # document versions written by this run (G-W4 quota)
+    doc_bytes: int = 0
     violations: list[list[str]] = field(default_factory=list)
     report: dict | None = None
     progress: list[dict] = field(default_factory=list)

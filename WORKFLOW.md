@@ -260,6 +260,7 @@ Universal guards apply to every task and are listed once.
 | G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). |
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
+| G-W4 | docs_write | Per-run quota: at most `limits.max_docs_per_run` document versions (default 200) and `limits.max_doc_bytes_per_run` bytes (default 50 MB). Refused writes say which limit was hit. |
 
 ### 5.1 `intake` – start
 

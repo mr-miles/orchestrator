@@ -62,6 +62,9 @@ class LimitsConfig:
     git_max_concurrency: int = 8
     # time limit for checking one report (attestations, git checks, role guards)
     report_check_timeout_s: int = 120
+    # per-run document write quota (G-W4): versions and total bytes an agent run may write
+    max_docs_per_run: int = 200
+    max_doc_bytes_per_run: int = 50 * 1024 * 1024
 
 
 @dataclass
