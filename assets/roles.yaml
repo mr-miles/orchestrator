@@ -50,7 +50,7 @@ implementer:
 reviewer:
   soul: code-reviewer
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
-  write: ["tasks/{{task_id}}/reviews/"]
+  write: ["tasks/{{task_id}}/reviews/reviewer-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md"]
   git: candidate
   report_schema: report-review
@@ -58,7 +58,7 @@ reviewer:
 security:
   soul: security-reviewer
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, security-checklist]
-  write: ["tasks/{{task_id}}/reviews/"]
+  write: ["tasks/{{task_id}}/reviews/security-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/security-cycle-{{cycle}}.md"]
   git: candidate
   report_schema: report-review
@@ -82,7 +82,7 @@ release:
 architecture:
   soul: architecture-reviewer
   skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, architecture-checklist]
-  write: ["tasks/{{task_id}}/reviews/"]
+  write: ["tasks/{{task_id}}/reviews/architecture-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md"]
   git: candidate
   report_schema: report-review

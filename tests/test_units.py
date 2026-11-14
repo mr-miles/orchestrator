@@ -501,3 +501,14 @@ sandbox: {{runner: local}}
 """)
     with pytest.raises(ValueError, match="distinct"):
         load_config(tmp_path / "c.yaml")
+
+
+
+def test_panel_members_cannot_write_each_others_reviews():
+    a = Assets(ROOT / "assets")
+    v = {"task_id": "T1", "cycle": 1}
+    scopes = {r: a.role_paths(r, v)[0] for r in ("reviewer", "security", "architecture")}
+    for role, scope in scopes.items():
+        for other in scopes:
+            path = f"tasks/T1/reviews/{other}-cycle-1.md"
+            assert any(path.startswith(w) for w in scope) == (role == other), (role, path)

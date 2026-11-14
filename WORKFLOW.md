@@ -366,7 +366,7 @@ The architecture reviewer uses skill `architecture-checklist` and writes
 `tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md`.
 
 * **Souls:** `code-reviewer`, `security-reviewer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format` (+ `security-checklist`)
-* **Writes:** `tasks/{{task_id}}/reviews/**`  **Required:** `tasks/{{task_id}}/reviews/{{role}}-cycle-{{cycle}}.md`, git `candidate`
+* **Writes:** `tasks/{{task_id}}/reviews/{{role}}-*` (each panel member only its own files)  **Required:** `tasks/{{task_id}}/reviews/{{role}}-cycle-{{cycle}}.md`, git `candidate`
 
 | ID | Rule |
 | --- | --- |
