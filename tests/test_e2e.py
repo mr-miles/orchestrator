@@ -316,3 +316,32 @@ async def _identity_checks(ctl, cfg):
         assert ctl.auth.sandbox_binding("lg-x") == good
     finally:
         del ce.runs["r9999"]
+
+
+def test_operator_api_errors(tmp_path):
+    """Writes need the operator token; malformed input is a 400, never a 500."""
+    import httpx
+
+    from legion_orch.server.web import build_app
+    _make_repo(tmp_path / "src-repo")
+    cfg = _config(tmp_path, _free_port())
+    cfg.server.operator_token = "op-secret"
+    app = build_app(Controller(cfg))          # no lifespan: the controller is not started
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://op") as c:
+            assert (await c.get("/api/changes")).json() == []
+            r = await c.post("/api/changes", json={"goal": "x"})
+            assert r.status_code == 403
+            tok = {"X-Operator-Token": "op-secret"}
+            r = await c.post("/api/changes", content=b"{not json", headers=tok)
+            assert r.status_code == 400 and "JSON" in r.json()["error"]
+            r = await c.post("/api/changes", json=["a"], headers=tok)
+            assert r.status_code == 400
+            r = await c.post("/api/changes/nope/action", json={"action": "attest"}, headers=tok)
+            assert r.status_code == 400 and "unknown change" in r.json()["error"]
+            assert (await c.get("/api/doc")).status_code == 400
+            assert (await c.get("/api/doc?path=nope.md")).status_code == 404
+            assert (await c.get("/api/doc?path=x&version=abc")).status_code == 400
+    asyncio.run(go())

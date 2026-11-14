@@ -20,7 +20,13 @@ from urllib.parse import urlparse
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.routing import Route
 
 from ..git import make_git_endpoint
@@ -81,66 +87,105 @@ async def serve(ctl: Controller) -> None:
     await asyncio.gather(*(srv.serve() for srv in build_servers(ctl)))
 
 
+class BadRequest(Exception):
+    """The request is malformed (400)."""
+
+
+async def _json_object(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        raise BadRequest("request body must be JSON") from None
+    if not isinstance(body, dict):
+        raise BadRequest("request body must be a JSON object")
+    return body
+
+
 def build_app(ctl: Controller) -> Starlette:
-    """The operator app: UI and JSON API only."""
+    """The operator app: UI and JSON API only. Reads are open to whoever can reach the listener;
+    writes (human decisions) need the operator token when one is configured."""
     op_token = ctl.cfg.server.operator_token
 
-    def operator(request: Request) -> None:
+    def check_operator(request: Request) -> None:
         if op_token and not secrets.compare_digest(request.headers.get("x-operator-token", ""), op_token):
             raise PermissionError("operator token required")
 
-    def guarded(fn):
-        async def wrapper(request: Request):
-            try:
-                return await fn(request)
-            except PermissionError as e:
-                return JSONResponse({"error": str(e)}, status_code=403)
-            except WorkflowError as e:
-                return JSONResponse({"error": str(e)}, status_code=400)
-        return wrapper
+    def api(*, write: bool = False):
+        """JSON endpoint: ``fn(request)`` (or ``fn(request, body)`` for writes, after the operator
+        check) returns the response data; errors map to 400/403/404."""
+        def deco(fn):
+            async def endpoint(request: Request) -> Response:
+                try:
+                    if write:
+                        check_operator(request)
+                        data = await fn(request, await _json_object(request))
+                    else:
+                        data = await fn(request)
+                except PermissionError as e:
+                    return JSONResponse({"error": str(e)}, status_code=403)
+                except (WorkflowError, BadRequest) as e:
+                    return JSONResponse({"error": str(e)}, status_code=400)
+                except DocStoreError as e:
+                    return JSONResponse({"error": str(e)}, status_code=404)
+                return data if isinstance(data, Response) else JSONResponse(data)
+            return endpoint
+        return deco
 
+    def int_param(request: Request, name: str, default: int | None) -> int | None:
+        raw = request.query_params.get(name)
+        if raw is None:
+            return default
+        if not raw.isdigit():
+            raise BadRequest(f"{name} must be a non-negative integer")
+        return int(raw)
+
+    # ---- static
     async def index(_: Request):
         return FileResponse(STATIC / "index.html", headers=SECURITY_HEADERS)
 
     async def app_js(_: Request):
         return FileResponse(STATIC / "app.js", media_type="text/javascript", headers=SECURITY_HEADERS)
 
+    async def workflow(_: Request):
+        p = ctl.cfg.workflow_doc
+        return PlainTextResponse(p.read_text() if p.is_file() else "(WORKFLOW.md not found)",
+                                 media_type="text/markdown")
+
+    # ---- reads
+    @api()
     async def meta(_: Request):
-        return JSONResponse({"project": ctl.cfg.project, "repo": ctl.cfg.repo.name,
-                             "decision_owners": ctl.cfg.decision_owners,
-                             "assets_sha": ctl.assets.sha, "version": ctl.version,
-                             "live_runs": ctl.live_count(),
-                             "max_parallel": ctl.cfg.limits.max_parallel})
+        return {"project": ctl.cfg.project, "repo": ctl.cfg.repo.name,
+                "decision_owners": ctl.cfg.decision_owners, "assets_sha": ctl.assets.sha,
+                "version": ctl.version, "live_runs": ctl.live_count(),
+                "max_parallel": ctl.cfg.limits.max_parallel}
 
-    @guarded
-    async def changes(request: Request):
-        if request.method == "POST":
-            operator(request)
-            body = await request.json()
-            ce = await ctl.start_change(body.get("goal", ""))
-            return JSONResponse({"ok": True, "change": ce.cid})
-        return JSONResponse(views.change_list(ctl))
+    @api()
+    async def list_changes(_: Request):
+        return views.change_list(ctl)
 
-    @guarded
+    @api()
     async def state(request: Request):
-        return JSONResponse(views.change_state(ctl, ctl.get(request.path_params["cid"])))
+        return views.change_state(ctl, ctl.get(request.path_params["cid"]))
 
-    @guarded
-    async def action(request: Request):
-        operator(request)
-        body = await request.json()
-        ce = ctl.get(request.path_params["cid"])
-        return JSONResponse(await ce.human_action(
-            request.path_params["node_id"], body.get("action", ""), body.get("approver", ""),
-            body.get("payload") or {}))
+    @api()
+    async def docs(request: Request):
+        items = ctl.docs.list(request.query_params.get("prefix", ""))
+        if request.query_params.get("all") != "1":
+            items = [d for d in items if not any(n in "/" + d["path"] for n in NOISY)]
+        return items
 
-    @guarded
-    async def change_action(request: Request):
-        operator(request)
-        body = await request.json()
-        ce = ctl.get(request.path_params["cid"])
-        return JSONResponse(await ce.change_action(body.get("action", ""), body.get("approver", ""),
-                                                   body.get("payload") or {}))
+    @api()
+    async def doc(request: Request):
+        path = request.query_params.get("path")
+        if not path:
+            raise BadRequest("path is required")
+        d = ctl.docs.read(path, int_param(request, "version", None))
+        return d.meta() | {"content": d.content, "history": ctl.docs.history(path)}
+
+    @api()
+    async def run_log(request: Request):
+        ce, run = ctl.find_run(request.path_params["run_id"])
+        return PlainTextResponse(ce.log_tail(run.id, int_param(request, "lines", 300)))
 
     async def stream(request: Request):
         async def gen():
@@ -153,31 +198,23 @@ def build_app(ctl: Controller) -> Starlette:
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
 
-    async def docs(request: Request):
-        prefix = request.query_params.get("prefix", "")
-        items = ctl.docs.list(prefix)
-        if request.query_params.get("all") != "1":
-            items = [d for d in items if not any(n in "/" + d["path"] for n in NOISY)]
-        return JSONResponse(items)
+    # ---- writes (human decisions)
+    @api(write=True)
+    async def start_change(_: Request, body: dict):
+        ce = await ctl.start_change(str(body.get("goal", "")))
+        return {"ok": True, "change": ce.cid}
 
-    async def doc(request: Request):
-        path = request.query_params["path"]
-        ver = request.query_params.get("version")
-        try:
-            d = ctl.docs.read(path, int(ver) if ver else None)
-        except DocStoreError as e:
-            return JSONResponse({"error": str(e)}, status_code=404)
-        return JSONResponse(d.meta() | {"content": d.content, "history": ctl.docs.history(path)})
+    @api(write=True)
+    async def node_action(request: Request, body: dict):
+        ce = ctl.get(request.path_params["cid"])
+        return await ce.human_action(request.path_params["node_id"], body.get("action", ""),
+                                     body.get("approver", ""), body.get("payload") or {})
 
-    @guarded
-    async def run_log(request: Request):
-        ce, run = ctl.find_run(request.path_params["run_id"])
-        return PlainTextResponse(ce.log_tail(run.id, int(request.query_params.get("lines", 300))))
-
-    async def workflow(_: Request):
-        p = ctl.cfg.workflow_doc
-        return PlainTextResponse(p.read_text() if p.is_file() else "(WORKFLOW.md not found)",
-                                 media_type="text/markdown")
+    @api(write=True)
+    async def change_action(request: Request, body: dict):
+        ce = ctl.get(request.path_params["cid"])
+        return await ce.change_action(body.get("action", ""), body.get("approver", ""),
+                                      body.get("payload") or {})
 
     @contextlib.asynccontextmanager
     async def lifespan(app):
@@ -190,14 +227,15 @@ def build_app(ctl: Controller) -> Starlette:
     return Starlette(routes=[
         Route("/", index),
         Route("/app.js", app_js),
+        Route("/api/workflow", workflow),
         Route("/api/meta", meta),
-        Route("/api/changes", changes, methods=["GET", "POST"]),
+        Route("/api/changes", list_changes, methods=["GET"]),
+        Route("/api/changes", start_change, methods=["POST"]),
         Route("/api/changes/{cid}/state", state),
-        Route("/api/changes/{cid}/nodes/{node_id}/action", action, methods=["POST"]),
+        Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/stream", stream),
         Route("/api/docs", docs),
         Route("/api/doc", doc),
         Route("/api/runs/{run_id}/log", run_log),
-        Route("/api/workflow", workflow),
     ], lifespan=lifespan)
