@@ -455,6 +455,13 @@ def test_generated_policy_and_provider_profile(tmp_path):
             return set(o) | {k for v in o.values() for k in keys(v)}
         return {k for v in o for k in keys(v)} if isinstance(o, list) else set()
     assert all("tls" not in keys(doc) for doc in (prof, agent, judge, ver))
+    # model hosts come only from the model provider's profile (inspected, with the credential);
+    # a plain L4 rule for them is refused by the gateway as an uninspected credential path
+    hosts = {e["host"] for doc in (agent, judge, ver) for r in doc["network_policies"].values()
+             for e in r["endpoints"]}
+    assert not any("anthropic" in h for h in hosts), hosts
+    assert all(e.get("protocol") for doc in (agent, judge, ver)
+               for r in doc["network_policies"].values() for e in r["endpoints"])
     assert all(e["port"] != 8765 for e in prof["endpoints"])          # operator port never exposed
     assert [e["protocol"] for e in prof["endpoints"]] == ["mcp", "rest"]
     assert "Bearer" not in _y.safe_dump(agent) and "token" not in _y.safe_dump(agent).lower()

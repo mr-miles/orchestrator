@@ -13,13 +13,10 @@ process:
   run_as_user: sandbox
   run_as_group: sandbox
 network_policies:
-  # Model provider (credentials come from the model providers attached to the sandbox).
-  claude_anthropic:
-    name: claude_anthropic
-    endpoints:
-      - { host: api.anthropic.com, port: 443 }
-      - { host: statsig.anthropic.com, port: 443 }
-    binaries: ${AGENT_BINARIES}
+  # No model endpoint here: the model provider attached to the sandbox (sandbox.providers, e.g.
+  # claude-code or claude-subscription) contributes its own inspected endpoint with the
+  # credential. A plain L4 rule for the same host is refused by the gateway as an uninspected
+  # credential path.
 
   # Controller MCP, vetted by the gateway: only the handshake methods and the controller's tools.
   # Own port: OpenShell does not allow MCP to share a host:port with another protocol.
