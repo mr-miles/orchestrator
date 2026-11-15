@@ -25,9 +25,11 @@ endpoints:
     path: ${MCP_PATH}
     protocol: mcp
     enforcement: enforce
+    # Profiles set the body limit on the endpoint (policies: mcp.max_body_bytes); both are the
+    # same JSON-RPC limit inside OpenShell and must be equal (it compares overlapping endpoints).
+    json_rpc_max_body_bytes: ${MCP_MAX_BODY_BYTES}
     mcp:
       versions: ${MCP_VERSIONS}
-      max_body_bytes: ${MCP_MAX_BODY_BYTES}   # the same in policy and profile (OpenShell compares them)
     rules:
       - allow: { method: initialize }
       - allow: { method: notifications/initialized }

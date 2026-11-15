@@ -30,7 +30,7 @@ network_policies:
         enforcement: enforce
         mcp:
           versions: ${MCP_VERSIONS}
-          max_body_bytes: ${MCP_MAX_BODY_BYTES}   # the same in policy and profile (OpenShell compares them)
+          max_body_bytes: ${MCP_MAX_BODY_BYTES}   # = json_rpc_max_body_bytes in the provider profile
         rules:
           - allow: { method: initialize }
           - allow: { method: notifications/initialized }

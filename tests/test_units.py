@@ -907,7 +907,10 @@ def test_gateway_inspects_mcp_requests_as_large_as_the_largest_document(tmp_path
     prof_ep = next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
                    if e["protocol"] == "mcp")
     limit = cfg.server.mcp_max_body_bytes
-    assert pol_ep["mcp"]["max_body_bytes"] == prof_ep["mcp"]["max_body_bytes"] == limit
+    # the same limit, spelled as each schema requires: policy mcp.max_body_bytes, profile
+    # endpoint json_rpc_max_body_bytes (a profile's mcp block may not carry it)
+    assert pol_ep["mcp"]["max_body_bytes"] == prof_ep["json_rpc_max_body_bytes"] == limit
+    assert set(prof_ep["mcp"]) <= {"versions", "strict_tool_names", "allow_all_known_mcp_methods"}
     row = {"id": "REQ-1", "command": 'pytest -k "greet and not slow"', "path": "src\\greet.txt"}
     doc = _j.dumps({"tests": [row] * (MAX_DOC_BYTES // len(_j.dumps(row)))})[:MAX_DOC_BYTES]
     body = _j.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
