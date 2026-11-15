@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import secrets
+import signal
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -40,6 +42,7 @@ from ..workflow.model import LIVE_RUN
 from . import views
 from .mcp import build_mcp
 
+log = logging.getLogger("legion.server")
 STATIC = Path(__file__).parent / "static"
 # The UI renders agent-authored text. Scripts may only come from this origin (no inline script or
 # inline event handlers), so injected markup cannot execute; responses are never sniffed or framed.
@@ -75,19 +78,59 @@ def build_token_app(ctl: Controller) -> Starlette:
     return Starlette(routes=[Route("/oauth/token", endpoint, methods=["POST"])])
 
 
+class _Server(uvicorn.Server):
+    """A listener that leaves signals to :func:`serve`: uvicorn installs its own handlers per
+    server, so with several in one process only the last one started would see Ctrl+C."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        yield
+
+
+GRACEFUL_SHUTDOWN_S = 5
+
+
 async def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
     """All listeners; run them together (see :func:`serve`). The operator app starts the controller."""
     s = ctl.cfg.server
-    cfg = lambda app, host, port: uvicorn.Server(uvicorn.Config(app, host=host, port=port,
-                                                                log_level=log_level))
+    cfg = lambda app, host, port: _Server(uvicorn.Config(
+        app, host=host, port=port, log_level=log_level,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S))
     return [cfg(build_app(ctl), s.host, s.port),
             cfg(await build_mcp_app(ctl), s.agent_host, s.mcp_port),
             cfg(build_git_app(ctl), s.agent_host, s.git_port),
             cfg(build_token_app(ctl), s.agent_host, s.token_port)]
 
 
+def request_shutdown(ctl: Controller, servers: list[uvicorn.Server]) -> None:
+    """First Ctrl+C/SIGTERM: every listener shuts down gracefully (open UI streams end at once,
+    other requests get GRACEFUL_SHUTDOWN_S). Again: stop without waiting."""
+    if ctl.stopping.is_set():
+        log.warning("forcing shutdown")
+        for srv in servers:
+            srv.force_exit = True
+    else:
+        log.info("shutting down (Ctrl+C again to force)")
+    ctl.stopping.set()
+    for srv in servers:
+        srv.should_exit = True
+
+
 async def serve(ctl: Controller) -> None:
-    await asyncio.gather(*(srv.serve() for srv in await build_servers(ctl)))
+    servers = await build_servers(ctl)
+    loop = asyncio.get_running_loop()
+    handled = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, request_shutdown, ctl, servers)
+            handled.append(sig)
+        except (NotImplementedError, RuntimeError):     # e.g. Windows, or not the main thread
+            pass
+    try:
+        await asyncio.gather(*(srv.serve() for srv in servers))
+    finally:
+        for sig in handled:
+            loop.remove_signal_handler(sig)
 
 
 class BadRequest(Exception):
@@ -204,11 +247,12 @@ def build_app(ctl: Controller) -> Starlette:
     async def stream(request: Request):
         async def gen():
             last = -1
-            while not await request.is_disconnected():
+            while not ctl.stopping.is_set() and not await request.is_disconnected():
                 if ctl.version != last:
                     last = ctl.version
                     yield f"data: {json.dumps({'version': last})}\n\n"
-                await asyncio.sleep(0.5)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(ctl.stopping.wait(), 0.5)
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
 

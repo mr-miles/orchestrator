@@ -52,6 +52,7 @@ class Controller:
                           max_push_bytes=cfg.limits.git_max_push_bytes),
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp")
         self.version = 0                  # bumped on every visible change (UI polling)
+        self.stopping = asyncio.Event()   # set on shutdown: long-lived responses end
         self._tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None

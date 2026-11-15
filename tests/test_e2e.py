@@ -349,3 +349,36 @@ def test_operator_api_errors(tmp_path):
             assert (await c.get("/api/doc?path=nope.md")).status_code == 404
             assert (await c.get("/api/doc?path=x&version=abc")).status_code == 400
     asyncio.run(go())
+
+
+def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
+    """One Ctrl+C stops every listener, even with the UI's event stream connected (uvicorn's own
+    per-server signal handlers left all but one listener running and waited on the stream)."""
+    import signal
+    import subprocess
+    import time
+
+    import httpx
+    _make_repo(tmp_path / "src-repo")
+    port = _free_port()
+    _config(tmp_path, port)
+    proc = subprocess.Popen([sys.executable, "-m", "legion_orch.cli", "-c",
+                             str(tmp_path / "orchestrator.yaml"), "serve"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        for _ in range(100):
+            try:
+                httpx.get(f"http://127.0.0.1:{port}/api/meta", timeout=1)
+                break
+            except httpx.TransportError:
+                time.sleep(0.1)
+        with httpx.stream("GET", f"http://127.0.0.1:{port}/api/stream", timeout=10) as s:
+            next(s.iter_lines())                          # the stream is live
+            proc.send_signal(signal.SIGINT)
+            start = time.monotonic()
+            assert proc.wait(timeout=8) == 0, proc.stdout.read()
+            assert time.monotonic() - start < 4           # did not sit out the graceful timeout
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
