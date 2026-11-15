@@ -98,35 +98,78 @@ function renderPipeline() {
     + ` · ${S.runs.length} run(s), ${S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status)).length} live`;
 }
 
+// Layered DAG layout (Sugiyama-style). Columns are dependency depth. Edges implied through
+// another dependency are not drawn (transitive reduction); an edge spanning several columns gets
+// a thin lane of its own in each column it crosses, so no edge is drawn through a box; rows are
+// ordered by barycenter sweeps to reduce crossings.
 function layout(nodes) {
   const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
-  const depth = {};
+  const deps = id => (byId[id] ? byId[id].depends_on : []).filter(x => byId[x] && x !== id);
+  const depth = {}, anc = {};
   const d = id => { if (depth[id] !== undefined) return depth[id]; depth[id] = 0;
-    const n = byId[id]; depth[id] = n ? Math.max(0, ...n.depends_on.filter(x => byId[x]).map(x => d(x)+1)) : 0; return depth[id]; };
+    return depth[id] = Math.max(0, ...deps(id).map(x => d(x) + 1)); };
+  const ancestors = id => { if (anc[id]) return anc[id]; anc[id] = new Set();
+    for (const x of deps(id)) { anc[id].add(x); ancestors(x).forEach(a => anc[id].add(a)); } return anc[id]; };
   nodes.forEach(n => d(n.id));
-  const cols = {}; nodes.forEach(n => (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n));
-  const W = 178, H = 46, GX = 54, GY = 14, pos = {};
-  let maxRows = 0;
-  Object.entries(cols).forEach(([c, list]) => { maxRows = Math.max(maxRows, list.length);
-    list.forEach((n, i) => pos[n.id] = {x: 12 + c*(W+GX), y: 12 + i*(H+GY)}); });
-  const ncol = Object.keys(cols).length;
-  Object.entries(cols).forEach(([c, list]) => { const off = (maxRows - list.length) * (H+GY) / 2;
-    list.forEach(n => pos[n.id].y += off); });
-  return {pos, W, H, width: 24 + ncol*(W+GX), height: 24 + maxRows*(H+GY)};
+  // transitive reduction: drop dep x of n when another dep of n already depends on x
+  const kept = [];
+  for (const n of nodes) { const ds = deps(n.id);
+    for (const x of ds) if (!ds.some(o => o !== x && ancestors(o).has(x))) kept.push([x, n.id]); }
+  // layers of real and virtual items; long edges become chains of virtual items
+  const ncol = Math.max(...nodes.map(n => depth[n.id])) + 1;
+  const layers = Array.from({length: ncol}, () => []);
+  const item = {};                              // id -> {id, layer, virtual, up: [], down: []}
+  const add = (id, layer, virtual) => { item[id] = {id, layer, virtual, up: [], down: []}; layers[layer].push(id); };
+  nodes.forEach(n => add(n.id, depth[n.id], false));
+  const chains = [];
+  kept.forEach(([a, b], k) => {
+    const chain = [a];
+    for (let L = depth[a] + 1; L < depth[b]; L++) { const v = `~${k}:${L}`; add(v, L, true); chain.push(v); }
+    chain.push(b);
+    for (let i = 0; i + 1 < chain.length; i++) { item[chain[i]].down.push(chain[i+1]); item[chain[i+1]].up.push(chain[i]); }
+    chains.push({from: a, to: b, chain});
+  });
+  // order rows: barycenter sweeps down and up (ties keep the current order)
+  const rank = () => { const r = {}; layers.forEach(l => l.forEach((id, i) => r[id] = i)); return r; };
+  const sweep = (L, side) => { const r = rank();
+    const bc = id => { const ns = item[id][side]; return ns.length ? ns.reduce((s, x) => s + r[x], 0) / ns.length : r[id]; };
+    layers[L] = layers[L].map((id, i) => [bc(id), i, id]).sort((p, q) => p[0] - q[0] || p[1] - q[1]).map(x => x[2]); };
+  for (let it = 0; it < 6; it++) {
+    for (let L = 1; L < ncol; L++) sweep(L, 'up');
+    for (let L = ncol - 2; L >= 0; L--) sweep(L, 'down');
+  }
+  // coordinates: boxes H tall, lanes VH tall; each column centred on the tallest
+  const W = 178, H = 46, GX = 54, GY = 14, VH = 8, GV = 6, pos = {};
+  const tall = id => item[id].virtual ? VH : H, gap = id => item[id].virtual ? GV : GY;
+  const colH = layers.map(l => l.reduce((s, id) => s + tall(id) + gap(id), 0));
+  const maxH = Math.max(...colH);
+  layers.forEach((l, L) => { let y = 12 + (maxH - colH[L]) / 2;
+    l.forEach(id => { pos[id] = {x: 12 + L * (W + GX), y}; y += tall(id) + gap(id); }); });
+  // edge routes: box right-middle -> through each lane (straight across the column) -> box left-middle
+  const edges = chains.map(({from, to, chain}) => {
+    const pts = [[pos[from].x + W, pos[from].y + H / 2]];
+    chain.slice(1, -1).forEach(v => { const cy = pos[v].y + VH / 2; pts.push([pos[v].x, cy], [pos[v].x + W, cy]); });
+    pts.push([pos[to].x, pos[to].y + H / 2]);
+    let path = `M${pts[0][0]},${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = pts[i-1], [x1, y1] = pts[i];
+      path += (i % 2) ? ` C${(x0+x1)/2},${y0} ${(x0+x1)/2},${y1} ${x1},${y1}` : ` L${x1},${y1}`;
+    }
+    return {from, to, path};
+  });
+  const real = Object.fromEntries(nodes.map(n => [n.id, pos[n.id]]));
+  return {pos: real, W, H, edges, width: 24 + ncol * (W + GX), height: 24 + maxH};
 }
 
 function renderGraph() {
   const svg = $('#graph');
   if (!S.nodes.length) { svg.innerHTML = ''; svg.setAttribute('width', 10); svg.setAttribute('height', 10); return; }
-  const {pos, W, H, width, height} = layout(S.nodes);
+  const {pos, W, H, edges: routes, width, height} = layout(S.nodes);
   svg.setAttribute('width', width); svg.setAttribute('height', height);
   let edges = '', boxes = '';
   const byId = Object.fromEntries(S.nodes.map(n => [n.id, n]));
-  for (const n of S.nodes) for (const dep of n.depends_on) {
-    if (!pos[dep]) continue;
-    const a = pos[dep], b = pos[n.id], x1 = a.x+W, y1 = a.y+H/2, x2 = b.x, y2 = b.y+H/2, mx = (x1+x2)/2;
-    edges += `<path class="edge ${byId[dep].status==='ACCEPTED'?'done':''}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
-  }
+  for (const e of routes)
+    edges += `<path class="edge ${byId[e.from].status==='ACCEPTED'?'done':''}" d="${e.path}"/>`;
   for (const n of S.nodes) {
     const p = pos[n.id], c = color(n.status);
     const live = S.runs.filter(r => r.node_id === n.id && ['STARTING','ACTIVE'].includes(r.status));
