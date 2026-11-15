@@ -38,7 +38,9 @@ endpoints:
       - allow: { method: tools/list }
       - allow: { method: server/discover }
       - allow: { method: subscriptions/listen }      # 2026-07-28: server events (SEP-2575)
-      # advertised by the MCP SDK's server, which has no resources or prompts (empty lists)
+      # Always empty. The MCP SDK (mcp 2.3) advertises resources and prompts even when none
+      # exist (python-sdk issue #2473), so clients call these. Remove once fixed: the
+      # policy test compares this list with the methods the server answers.
       - allow: { method: resources/list }
       - allow: { method: resources/templates/list }
       - allow: { method: resources/read }
