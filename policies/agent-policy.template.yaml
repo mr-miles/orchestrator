@@ -47,12 +47,23 @@ network_policies:
     endpoints:
       - host: ${GIT_HOST}
         port: ${GIT_PORT}
-        path: /git/*.git/**
         protocol: rest
         enforcement: enforce
         rules:
-          - allow: { method: GET, path: /git/*.git/info/refs }
-          - allow: { method: POST, path: /git/*.git/git-upload-pack }
-          - allow: { method: POST, path: /git/*.git/git-receive-pack }
+          - allow:
+              method: GET
+              path: "/git/*.git/**"
+          - allow:
+              method: HEAD
+              path: "/git/*.git/**"
+          - allow:
+              method: OPTIONS
+              path: "/git/*.git/**"
+          - allow:
+              method: POST
+              path: "/git/*.git/git-upload-pack"
+          - allow:
+              method: POST
+              path: "/git/*.git/git-receive-pack"
         deny_rules: ${GIT_PUSH_DENY_RULES}
     binaries: ${GIT_BINARIES}

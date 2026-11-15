@@ -37,11 +37,22 @@ endpoints:
       - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
   - host: ${GIT_HOST}
     port: ${GIT_PORT}
-    path: /git/*.git/**
     protocol: rest
     enforcement: enforce
     rules:
-      - allow: { method: GET, path: /git/*.git/info/refs }
-      - allow: { method: POST, path: /git/*.git/git-upload-pack }
-      - allow: { method: POST, path: /git/*.git/git-receive-pack }
+      - allow:
+          method: GET
+          path: "/git/*.git/**"
+      - allow:
+          method: HEAD
+          path: "/git/*.git/**"
+      - allow:
+          method: OPTIONS
+          path: "/git/*.git/**"
+      - allow:
+          method: POST
+          path: "/git/*.git/git-upload-pack"
+      - allow:
+          method: POST
+          path: "/git/*.git/git-receive-pack"
 binaries: ${PROFILE_BINARIES}
