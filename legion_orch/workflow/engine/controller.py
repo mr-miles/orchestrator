@@ -12,6 +12,7 @@ from ...config import Config
 from ...git import GitRemote
 from ...sandbox import (
     Runner,
+    human_name,
     make_runner,
 )
 from ...store import DocStore
@@ -52,6 +53,7 @@ class Controller:
                           max_push_bytes=cfg.limits.git_max_push_bytes),
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp")
         self.version = 0                  # bumped on every visible change (UI polling)
+        self._reserved_names: set[str] = set()   # sandbox names handed out this process
         self.stopping = asyncio.Event()   # set on shutdown: long-lived responses end
         self._tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
@@ -170,6 +172,22 @@ class Controller:
 
     def live_count(self) -> int:
         return sum(1 for _, r in self.all_runs() if r.status in LIVE_RUN)
+
+    def used_sandbox_names(self) -> set[str]:
+        """Every sandbox name in the store's history (runs and verifications) or reserved for a
+        sandbox being created: a name is never reused, so logs and events stay unambiguous."""
+        names = set(self._reserved_names)
+        for ce in self.changes.values():
+            names.update(r.sandbox for r in ce.runs.values() if r.sandbox)
+            for node in ce.nodes.values():
+                names.update(v.sandbox for v in node.verification.values() if v.sandbox)
+        return names
+
+    def new_sandbox_name(self, prefix: str) -> str:
+        used = self.used_sandbox_names()
+        name = human_name(prefix, used.__contains__)
+        self._reserved_names.add(name)
+        return name
 
     def next_run_id(self) -> str:
         n = max((int(r.id[1:]) for _, r in self.all_runs()), default=0)

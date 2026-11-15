@@ -66,7 +66,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 
 * **Sandbox per task.** A sandbox serves exactly one task in one role for its whole life: an
   implementer sandbox is reused across that task's rework cycles; critics, reviewers and verifiers
-  always get their own (`openshell sandbox create --detach --name lg-<change>-<run>
+  always get their own (`openshell sandbox create --detach --name lg-<first name>
   --provider legion-controller --policy … --upload payload:/sandbox`). The payload contains only
   `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and `run-agent.sh`.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**

@@ -756,19 +756,33 @@ def test_repo_path_is_optional(tmp_path):
     assert load_config(tmp_path / "c.yaml").repo.path == str(tmp_path / "src")
 
 
-def test_sandbox_names_fit_the_gateway_limit():
-    """OpenShell: a DNS label of at most 19 characters without '--' (NVIDIA/OpenShell#2651)."""
-    from legion_orch.sandbox import MAX_NAME, agent_sandbox_name, check_name, verifier_sandbox_name
-    a = agent_sandbox_name("c261114-a16e", "r0001")
-    assert len(a) == MAX_NAME == 19 and a.startswith("lg-r0001-") and check_name(a) == a
-    assert a == agent_sandbox_name("c261114-a16e", "r0001")             # stable for a run
-    assert a != agent_sandbox_name("c261114-b2c3", "r0001")             # unique across changes
-    assert len(agent_sandbox_name("c1", "r123456")) == 19
-    v = verifier_sandbox_name()
-    assert len(v) <= 19 and v.startswith("lg-v") and v != verifier_sandbox_name()
+def test_sandbox_names_are_first_names_and_fit_the_gateway_limit():
+    """lg-<name> / lgv-<name>; OpenShell: a DNS label of at most 19 characters without '--'
+    (NVIDIA/OpenShell#2651). Every name fits with the longer prefix and a 4-digit suffix."""
+    import re as _re
+
+    from legion_orch.sandbox import AGENT_PREFIX, MAX_NAME, VERIFIER_PREFIX, check_name, human_name
+    from legion_orch.sandbox.names import NAMES
+    assert len(VERIFIER_PREFIX) + 1 + max(map(len, NAMES)) + len("-9999") <= MAX_NAME
+    assert len(set(NAMES)) == len(NAMES) and all(_re.fullmatch(r"[a-z]+", w) for w in NAMES)
+    for prefix in (AGENT_PREFIX, VERIFIER_PREFIX):
+        n = human_name(prefix, lambda _: False)
+        assert n.removeprefix(prefix + "-") in NAMES and check_name(n) == n
     for bad in ("lg-c261114-a16e-r0001", "lg--x", "Lg-x", "-lg", "lg-x-", "lg_x"):
         with pytest.raises(ValueError, match="at most 19"):
             check_name(bad)
+
+
+def test_names_are_not_reused_and_get_numbers_once_all_are_used():
+    from legion_orch.sandbox import human_name
+    from legion_orch.sandbox.names import NAMES
+    taken = {f"lg-{n}" for n in NAMES} - {"lg-ada"}
+    assert human_name("lg", taken.__contains__) == "lg-ada"          # the one left
+    taken.add("lg-ada")
+    second = human_name("lg", taken.__contains__)
+    assert second.endswith("-2") and second.removeprefix("lg-").removesuffix("-2") in NAMES
+    taken |= {f"lg-{n}-2" for n in NAMES}
+    assert human_name("lg", taken.__contains__).endswith("-3")
 
 
 @pytest.mark.parametrize("exists", [False, True])

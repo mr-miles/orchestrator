@@ -63,5 +63,8 @@ class EngineHost(Protocol):
 
     def next_run_id(self) -> str: ...
 
+    def new_sandbox_name(self, prefix: str) -> str:
+        """A readable sandbox name this controller has never used (agents and verifiers)."""
+
     def live_count(self) -> int:
         """Live runs across all changes (the parallel limit is global)."""

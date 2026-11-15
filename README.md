@@ -67,7 +67,7 @@ JWT-SVID at `/oauth/token` and injects the bearer into requests to the controlle
 
 ### OpenShell
 
-Each agent run gets `openshell sandbox create --detach --name lg-<change>-<run> --from <image>
+Each agent run gets `openshell sandbox create --detach --name lg-<first name> --from <image>
 --provider … --policy <rendered policy> --upload <payload>:/sandbox`. The payload holds only `soul.md`,
 `prompt.md`, `mcp.json`, `run.env` and `run-agent.sh`. The agent clones from and pushes to the controller,
 and writes documents over MCP. Nothing is downloaded from a sandbox. Deterministic verification runs

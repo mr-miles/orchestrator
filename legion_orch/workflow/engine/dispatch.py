@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...sandbox import (
+    AGENT_PREFIX,
     RUN_AGENT_SH,
     SandboxSpec,
-    agent_sandbox_name,
     agentlog,
+    is_name_clash,
 )
 from ...util import now_iso
 from .. import governance
@@ -167,7 +168,7 @@ class Dispatcher:
             run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
                                     if r.sandbox == node.sandbox and r.sandbox_ref), None)
         else:
-            run.sandbox = agent_sandbox_name(self.c.change.id, run.id)
+            run.sandbox = self.c.host.new_sandbox_name(AGENT_PREFIX)
         if h.judge and node.current_run:
             judged = self.c.runs.get(node.current_run)
             if judged and (judged.sandbox == run.sandbox or judged.id == run.id):
@@ -230,9 +231,7 @@ class Dispatcher:
                 await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
                 policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
                                                  agent=True, push=h.pushes)
-                run.sandbox_ref = await self.c.runner.create(SandboxSpec(
-                    name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
-                    change=self.c.cid, task=run.node_id, role=run.role, run=run.id))
+                run.sandbox_ref = await self._create(run, payload, policy)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
             proc = await self.c.runner.start_agent(run.sandbox, self.c.run_dir(run_id) / "agent.log")
         except Exception as e:
@@ -261,6 +260,25 @@ class Dispatcher:
             run.stage = RunStage.EXITED
             self.lifecycle.archive_log(run)
             self.c.save()
+
+    async def _create(self, run: Run, payload, policy, attempts: int = 3) -> str:
+        """Create the run's sandbox. If the gateway already has a sandbox of that name (another
+        controller on the same gateway), take a new name and try again."""
+        for attempt in range(attempts):
+            try:
+                return await self.c.runner.create(SandboxSpec(
+                    name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
+                    change=self.c.cid, task=run.node_id, role=run.role, run=run.id))
+            except Exception as e:
+                if not is_name_clash(e) or attempt == attempts - 1:
+                    raise
+                old, run.sandbox = run.sandbox, self.c.host.new_sandbox_name(AGENT_PREFIX)
+                node = self.c.nodes.get(run.node_id)
+                if node and node.sandbox == old:
+                    node.sandbox = run.sandbox
+                self.c.event("sandbox", f"name {old} is taken on the gateway; using {run.sandbox}",
+                             run.node_id, run.id)
+        raise AssertionError("unreachable")
 
     def _exit_reason(self, run: Run, rc: int) -> tuple[str, FailureSource]:
         """Why a live run's process ended. The agent CLI's own result event means the agent ran

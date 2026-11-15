@@ -61,7 +61,7 @@ VOCABULARY: dict[str, str] = {
     "GIT_BINARIES": "policy binaries [{path}] of git and its HTTP remote helpers",
     "PROFILE_BINARIES": "plain paths of agent and git binaries, for the provider profile",
     # per sandbox (from the controller at creation time)
-    "SANDBOX_NAME": "sandbox name (lg-<change>-<run>)",
+    "SANDBOX_NAME": "readable sandbox name: lg-<first name> (agents), lgv-<first name> (verifiers)",
     "POLICY_FILE": "path of the rendered sandbox policy",
     "PAYLOAD_UPLOAD": "upload spec <local payload dir>:<sandbox.root>",
     "SANDBOX_WRITABLE": "paths the sandbox may write: sandbox.root, /tmp, /dev/null",

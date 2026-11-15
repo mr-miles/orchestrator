@@ -61,8 +61,12 @@ class FakeRunner(Runner):
         self.setup_rc = 0
         self.fail_create: str | None = None              # role whose sandbox creation fails
         self.fail_delete = False
+        self.clash = 0             # the next N creates find the name taken on the gateway
 
     async def create(self, spec):
+        if self.clash:
+            self.clash -= 1
+            raise SandboxError(f"sandbox '{spec.name}' already exists")
         if self.fail_create == spec.role:
             raise SandboxError("openshell sandbox create failed (quota)")
         self.created.append(spec.name)

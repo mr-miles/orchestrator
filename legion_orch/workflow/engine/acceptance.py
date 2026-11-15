@@ -8,11 +8,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from ...sandbox import (
+    VERIFIER_PREFIX,
     VERIFY_SETUP_SH,
     Runner,
     SandboxError,
     SandboxSpec,
-    verifier_sandbox_name,
+    is_name_clash,
 )
 from ..model import (
     ACCEPTED,
@@ -67,19 +68,24 @@ class Acceptance:
         self.c.spawn(self.verify_node(node_id))
 
     async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
-        """G-V1: run commands at ``sha`` in a fresh verifier sandbox. Never raises."""
-        name = verifier_sandbox_name()
-        result = Verification(sha=sha, sandbox=name)
+        """G-V1: run commands at ``sha`` in a fresh verifier sandbox. Never raises. A name the
+        gateway already has (another controller) is replaced and the sandbox created again."""
+        result = Verification(sha=sha, sandbox=self.c.host.new_sandbox_name(VERIFIER_PREFIX))
         if not commands:
             result.infra_error = "no commands to verify"
             return result
-        try:
-            async with self._verifier_sandbox(name, label, sha) as box:
-                for cmd in commands:
-                    result.results.append(await box.run(cmd))
-            result.ok = all(r.exit_code == 0 for r in result.results)
-        except Exception as e:
-            result.infra_error = str(e)
+        for attempt in range(3):
+            try:
+                async with self._verifier_sandbox(result.sandbox, label, sha) as box:
+                    for cmd in commands:
+                        result.results.append(await box.run(cmd))
+                result.ok = all(r.exit_code == 0 for r in result.results)
+            except Exception as e:
+                if is_name_clash(e) and not result.results and attempt < 2:
+                    result.sandbox = self.c.host.new_sandbox_name(VERIFIER_PREFIX)
+                    continue
+                result.infra_error = str(e)
+            return result
         return result
 
     @contextlib.asynccontextmanager
@@ -131,7 +137,7 @@ class Acceptance:
             # The node keeps a compact copy (the stored record has the command output).
             key = "integration" if node.kind == INTEGRATION else str(node.cycle)
             node.verification[key] = res.model_copy(update={
-                "attestation": att, "sandbox": None,
+                "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
             fails = [r for r in res.results if r.exit_code != 0]
             if res.infra_error:

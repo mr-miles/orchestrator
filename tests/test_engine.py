@@ -340,7 +340,7 @@ async def test_verifier_infrastructure_failure_escalates_and_retry_reverifies(f:
     node = f.ce.nodes["build:T1"]
     assert node.status == ESCALATED and node.escalation.kind == "verify_infra"
     assert "verifier setup failed" in node.escalation.reason
-    verifiers = [n for n in f.runner.created if n.rsplit("-", 1)[-1].startswith("v")]
+    verifiers = [n for n in f.runner.created if n.startswith("lgv-")]
     assert verifiers and set(verifiers) <= set(f.runner.deleted), "verifier deleted on failure"
     f.runner.setup_rc = 0
     await f.human("build:T1", "retry")
@@ -640,6 +640,51 @@ async def test_timeout_is_its_own_source(f: Flow):
     r.created_at = "2020-01-01T00:00:00.000Z"
     await f.settle()
     assert r.failure.source == FailureSource.TIMEOUT
+
+
+# ---------------------------------------------------------------------- sandbox names
+@scenario()
+async def test_sandboxes_get_readable_names_never_reused(f: Flow):
+    import re
+    await f.to_build()
+    await f.implement()
+    await f.review()
+    agents = [r.sandbox for r in f.ce.runs.values()]
+    verifiers = [v.sandbox for n in f.ce.nodes.values() for v in n.verification.values()]
+    assert agents and verifiers
+    assert all(re.fullmatch(r"lg-[a-z]+", n) for n in agents), agents
+    assert all(re.fullmatch(r"lgv-[a-z]+", n) for n in verifiers), verifiers
+    assert len(set(agents)) == len(agents) and not set(agents) & set(verifiers)
+    assert set(agents) <= f.ctl.used_sandbox_names()
+    other = await f.ctl.start_change("Another goal")       # names stay unique across changes
+    await other.tick()
+    await f.settle()
+    assert [r.sandbox for r in other.runs.values()] and not (
+        {r.sandbox for r in other.runs.values()} & set(agents + verifiers))
+
+
+@scenario()
+async def test_a_name_taken_on_the_gateway_is_replaced(f: Flow):
+    await f.intake()
+    f.runner.clash = 2                     # two names in a row already exist on the gateway
+    await f.human("H-1", "accept")
+    run = f.run("plan")
+    assert run.sandbox in f.runner.created and len(f.runner.created) == 2   # intake + plan
+    await f.plan()
+    f.runner.clash = 3                     # never free: the run fails as a system error
+    await f.critique("REWORK")
+    rework = f.runs("plan")[-1]
+    assert rework.failure and rework.failure.source == FailureSource.SYSTEM
+    assert "already exists" in rework.failure.reason
+
+
+@scenario()
+async def test_a_verifier_name_taken_on_the_gateway_is_replaced(f: Flow):
+    await f.to_build()
+    f.runner.clash = 1
+    await f.implement()
+    ver = f.ce.nodes["build:T1"].current_verification()
+    assert ver.ok and ver.sandbox in f.runner.created
 
 
 # ---------------------------------------------------------------------- retry
