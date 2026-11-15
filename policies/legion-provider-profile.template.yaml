@@ -38,6 +38,12 @@ endpoints:
       - allow: { method: tools/list }
       - allow: { method: server/discover }
       - allow: { method: subscriptions/listen }      # 2026-07-28: server events (SEP-2575)
+      # advertised by the MCP SDK's server, which has no resources or prompts (empty lists)
+      - allow: { method: resources/list }
+      - allow: { method: resources/templates/list }
+      - allow: { method: resources/read }
+      - allow: { method: prompts/list }
+      - allow: { method: prompts/get }
       - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
   - host: ${GIT_HOST}
     port: ${GIT_PORT}

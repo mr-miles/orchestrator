@@ -865,10 +865,10 @@ def test_sandbox_root_and_user_follow_the_image(tmp_path):
 
 
 def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
-    """The gateway refuses MCP methods the policy does not list. Every protocol method our
-    server answers – except the prompt/resource surfaces it deliberately does not offer – must
-    be allowed in both the sandbox policy and the provider profile, and nothing else.
-    (subscriptions/listen, a 2026-07-28 core method, was once missing and denied.)"""
+    """The gateway refuses MCP methods the policy does not list. Every method our server answers
+    (and so advertises: the SDK derives capabilities from its handlers) must be allowed in both
+    the sandbox policy and the provider profile, and nothing else. Clients call what is
+    advertised – subscriptions/listen and resources/list were each once missing and denied."""
     import yaml as _y
     from mcp.server.mcpserver import MCPServer
 
@@ -881,11 +881,10 @@ def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
                  next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
                       if e["protocol"] == "mcp")]
     served = set(MCPServer("probe")._lowlevel_server._request_handlers)
-    not_offered = {m for m in served if m.split("/")[0] in ("prompts", "resources")}
     lifecycle = {"initialize", "notifications/initialized", "notifications/cancelled"}
     for ep in endpoints:
         allowed = {r["allow"]["method"] for r in ep["rules"]}
-        assert allowed == (served - not_offered) | lifecycle, ep.get("path")
+        assert allowed == served | lifecycle, sorted(served ^ (allowed - lifecycle))
         assert ep["mcp"]["versions"] == MCP_VERSIONS
 
 

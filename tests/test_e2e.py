@@ -404,3 +404,20 @@ def test_document_listing_hides_controller_records_unless_asked(tmp_path):
                                      "control/goal.md")} <= control
         assert any("/control/runs/" in p for p in control) and any("/control/logs/" in p for p in control)
     asyncio.run(go())
+
+
+def test_mcp_server_offers_no_resources_or_prompts(tmp_path):
+    """The policy allows resources/* and prompts/* because the SDK advertises them; that is only
+    safe while they stay empty (documents are reached through the docs_* tools and their scope
+    checks, never as resources)."""
+    from engine_harness import Flow
+
+    from legion_orch.server.mcp import build_mcp
+
+    async def go():
+        f = await Flow.create(tmp_path)
+        server = await build_mcp(f.ctl)
+        assert await server.list_resources() == []
+        assert await server.list_resource_templates() == []
+        assert await server.list_prompts() == []
+    asyncio.run(go())
