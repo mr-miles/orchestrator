@@ -37,6 +37,24 @@ async function refresh() {
   renderHeader(); renderPipeline(); renderGraph(); renderLive(); renderDetail(); renderTab();
 }
 
+// Regions redrawn on every state update keep what the operator opened: unchanged HTML is not
+// rewritten at all, and when it does change, expanded <details> (by data-key, else summary text)
+// and scroll positions of keyed elements are restored.
+function setHtml(el, html) {
+  if (el._html === html && el._first === el.firstChild) return;   // (others may write el too)
+  const keyOf = d => d.dataset.key || d.querySelector('summary')?.textContent || '';
+  const open = new Set([...el.querySelectorAll('details')].filter(d => d.open).map(keyOf));
+  const scroll = Object.fromEntries([...el.querySelectorAll('[data-key]')].filter(x => x.scrollTop).map(x => [x.dataset.key, x.scrollTop]));
+  el.innerHTML = html;
+  el._html = html; el._first = el.firstChild;
+  el.querySelectorAll('details').forEach(d => { if (open.has(keyOf(d))) d.open = true; });
+  el.querySelectorAll('[data-key]').forEach(x => { if (scroll[x.dataset.key]) x.scrollTop = scroll[x.dataset.key]; });
+}
+// A form field in this region has focus (redrawing would drop what is being typed).
+function typingIn(sel) {
+  const a = document.activeElement;
+  return !!a && ['TEXTAREA','INPUT','SELECT'].includes(a.tagName) && !!a.closest(sel);
+}
 function badge(s) { return `<span class="badge" style="background:${color(s)}">${esc(s)}</span>`; }
 const STAGE_COLORS = {PREPARING:'#a78bfa', LAUNCHING:'#fbbf24', RUNNING:'#3b82f6', EXITED:'#6b7280'};
 const STAGE_TEXT = {PREPARING:'preparing sandbox', LAUNCHING:'launching agent', RUNNING:'agent connected', EXITED:'exited'};
@@ -127,12 +145,12 @@ function renderGraph() {
 
 function renderLive() {
   const live = S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status));
-  $('#livebody').innerHTML = live.length ? live.map(r => {
+  setHtml($('#livebody'), live.length ? live.map(r => {
     const p = r.progress[r.progress.length-1];
     return `<div class="card"><div class="row"><b>${esc(r.id)}</b> ${stageBadge(r) || badge(r.status)} <span>${esc(r.role)}</span> <a ${on('select', r.node_id)}>${esc(r.node_id)}</a> <span style="flex:1"></span><a ${on('showLog', r.id)}>log</a></div>
       <div class="muted">soul ${esc(r.soul)} · sandbox <code>${esc(r.sandbox)}</code> · reports ${r.attempts}</div>
       ${p ? `<div>${p.percent!=null?`<b>${Math.round(p.percent)}%</b> `:''}${esc(p.message)}</div>` : `<div class="muted">${esc(STAGE_TEXT[r.stage]||'starting')}…</div>`}</div>`;
-  }).join('') : '<span class="muted">none</span>';
+  }).join('') : '<span class="muted">none</span>');
 }
 
 function select(id) { selected = id; renderGraph(); renderDetail(); }
@@ -152,7 +170,7 @@ function actionForm(n) {
     return `<div class="card" style="border-color:var(--ESCALATED)"><b>Escalation: ${esc(e.kind)}</b> ${sourceBadge(e.source)}<div>${esc(e.reason)}</div>
       ${e.run ? `<a ${on('showLog', e.run)}>agent log of ${esc(e.run)}</a>` : ''}
       ${e.missing_decision ? `<div><b>Decision needed:</b> ${esc(e.missing_decision)}</div>` : ''}
-      ${e.log_tail ? `<details><summary class="muted">last log lines</summary><pre>${esc(e.log_tail)}</pre></details>` : ''}
+      ${e.log_tail ? `<details data-key="esc-log"><summary class="muted">last log lines</summary><pre data-key="esc-log-pre">${esc(e.log_tail)}</pre></details>` : ''}
       <textarea id="f_text" placeholder="answer / decision (attested as feedback)"></textarea>
       <input id="f_reason" placeholder="override reason (≥24 chars, build tasks only)">
       <button class="act" ${on('act', n.id, 'answer', 'answer')}>Answer &amp; resume</button>
@@ -192,7 +210,7 @@ function actionForm(n) {
 
 function renderDetail() {
   const n = S.nodes.find(x => x.id === selected);
-  if (!n) { $('#detail').innerHTML = '<span class="muted">Select a node in the graph.</span>'; return; }
+  if (!n) { setHtml($('#detail'), '<span class="muted">Select a node in the graph.</span>'); return; }
   const runs = S.runs.filter(r => r.node_id === n.id).reverse();
   let h = `<div class="row"><b style="font-size:14px">${esc(n.title)}</b> ${badge(n.status)}</div>
     <div class="kv" style="margin:6px 0"><div>id</div><div><code>${esc(n.id)}</code> · ${esc(n.kind)}${n.wave?` · wave ${n.wave}`:''}</div>
@@ -203,7 +221,7 @@ function renderDetail() {
     ${n.accepted_sha?`<div>accepted</div><div>${short(n.accepted_sha)}</div>`:''}
     ${n.sandbox?`<div>sandbox</div><div><code>${esc(n.sandbox)}</code></div>`:''}</div>`;
   h += actionForm(n);
-  if (n.task) h += `<details><summary>Task contract</summary><pre>${esc(JSON.stringify(n.task, null, 2))}</pre></details>`;
+  if (n.task) h += `<details data-key="task"><summary>Task contract</summary><pre data-key="task-pre">${esc(JSON.stringify(n.task, null, 2))}</pre></details>`;
   const ver = Object.entries(n.verification||{});
   if (ver.length) h += `<h2 style="margin-top:10px">Verification</h2>` + ver.map(([k,v]) => `<div class="card">${k==='integration'?'integration':'cycle '+k}: ${v.ok?'<b class="gate-satisfied">PASS</b>':'<b class="gate-unsatisfied">FAIL</b>'} at ${short(v.sha)} ${v.infra_error?`<span class="err">${esc(v.infra_error)}</span>`:''}
       <div class="mono">${(v.results||[]).map(r=>`${r.exit_code===0?'✓':'✗'} ${esc(r.command)} → ${r.exit_code}`).join('<br>')}</div>
@@ -218,10 +236,10 @@ function renderDetail() {
       <div class="muted mono">sandbox ${esc(r.sandbox)}${r.sandbox_deleted?' (deleted)':''} · pin ${esc((r.prompt_pin||'').slice(7,19))} · branch ${esc(r.branch)}</div>
       ${r.progress.slice(-4).map(p=>`<div>· ${p.percent!=null?Math.round(p.percent)+'% ':''}${esc(p.message)}</div>`).join('')}
       ${r.report?`<div><b>${esc(r.report.status)}</b>: ${esc(r.report.summary)}</div><div class="mono muted">${r.report.attestations.map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div>`:''}
-      ${r.violations.length?`<details><summary class="err">${r.violations.length} rejected report(s)</summary><pre>${esc(r.violations.map(v=>v.join('\n')).join('\n---\n'))}</pre></details>`:''}
+      ${r.violations.length?`<details data-key="viol-${esc(r.id)}"><summary class="err">${r.violations.length} rejected report(s)</summary><pre data-key="viol-pre-${esc(r.id)}">${esc(r.violations.map(v=>v.join('\n')).join('\n---\n'))}</pre></details>`:''}
       <div class="muted mono">assets ${esc((r.assets_sha||'').slice(7,19))} · prompt ${esc((r.prompt_pin||'').slice(7,19))}</div>
       <a ${on('showLog', r.id)}>agent log</a></div>`).join('');
-  $('#detail').innerHTML = h;
+  setHtml($('#detail'), h);
 }
 
 // Payloads read the form at click time; keyed so handlers need no inline code.
@@ -261,12 +279,12 @@ let tabCache = {};
 async function renderTab(force) {
   const body = $('#tabbody');
   if (tab === 'gates') {
-    const c = S.change; if (!c || !c.tier) { body.innerHTML = '<span class="muted">Tier not assessed yet.</span>'; return; }
+    const c = S.change; if (!c || !c.tier) { setHtml(body, '<span class="muted">Tier not assessed yet.</span>'); return; }
     const res = c.ship;
-    body.innerHTML = `<div>Tier <b>${c.tier}</b>: ${S.gates.length} gates. ${res?`Verdict <b class="${res.verdict==='READY'?'gate-satisfied':'gate-unsatisfied'}">${res.verdict}</b> at ${short(res.integration_head)} on <code>${esc(res.integration_branch)}</code>`:'<span class="muted">not evaluated yet (runs at the ship node)</span>'}</div>
+    setHtml(body, `<div>Tier <b>${c.tier}</b>: ${S.gates.length} gates. ${res?`Verdict <b class="${res.verdict==='READY'?'gate-satisfied':'gate-unsatisfied'}">${res.verdict}</b> at ${short(res.integration_head)} on <code>${esc(res.integration_branch)}</code>`:'<span class="muted">not evaluated yet (runs at the ship node)</span>'}</div>
       <table><tr><th>gate</th><th>status</th><th>detail</th></tr>${S.gates.map(g => { const r = res && res.gates[g];
         return `<tr><td><code>${g}</code></td><td class="gate-${r?r.status:''}">${r?r.status:'—'}${r&&r.human_judgement?' (human)':''}</td><td>${r?esc(r.detail):''}</td></tr>`; }).join('')}</table>
-      ${res?`<div class="muted">${esc(res.note)}</div>`:''}` + governanceHtml(c);
+      ${res?`<div class="muted">${esc(res.note)}</div>`:''}` + governanceHtml(c));
   } else if (tab === 'plan') {
     try {
       const tg = await api('/api/doc?path=' + encodeURIComponent(docPath('plan/taskgraph.json')));
@@ -410,6 +428,6 @@ let lastVersion = -1, pending = false;
 const es = new EventSource('/api/stream');
 es.onmessage = async ev => { const v = JSON.parse(ev.data).version; if (v !== lastVersion && !pending) { lastVersion = v; pending = true;
   try { S = await loadState(); renderHeader(); renderPipeline(); renderGraph(); renderLive();
-    if (!document.activeElement || !['TEXTAREA','INPUT','SELECT'].includes(document.activeElement.tagName)) renderDetail();
-    if (tab === 'gates') renderTab();
+    if (!typingIn('#detail')) renderDetail();
+    if (tab === 'gates' && !typingIn('#tabbody')) renderTab();
     if (LOG) pollLog(); } finally { pending = false; } } };
