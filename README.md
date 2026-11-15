@@ -75,6 +75,12 @@ in a separate, read-only sandbox through `openshell sandbox exec`. Adjust `polic
 to match your image's binary paths. The default agent command is the native `claude` CLI baked into
 the image.
 
+The image is the agent's whole toolset: sandboxes reach no package registry, so nothing can be
+installed at run time. Claude Code expects `python3` and `node`; `images/agent/Dockerfile` adds them
+to an existing Debian/Ubuntu-based agent image (`--build-arg BASE=<image>`). Bake in any packages
+the project's agents and verification commands need as well (`sandbox.verifier_image` runs the
+verification commands).
+
 `sandbox.runner: local` runs everything as local processes. It provides **no isolation** and is for
 development and tests only.
 
