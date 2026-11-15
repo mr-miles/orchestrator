@@ -42,7 +42,8 @@ if [ "$LEGION_NEEDS_REPO" = "1" ]; then
 else
   mkdir -p "$SB/work"; cd "$SB/work"
 fi
-export LEGION_MCP_CONFIG="$P/mcp.json"
+# The agent command finds its inputs through these, under any runner (/sandbox in OpenShell).
+export LEGION_PAYLOAD="$P" LEGION_MCP_CONFIG="$P/mcp.json"
 exec bash -lc "$LEGION_AGENT_COMMAND"
 """
 

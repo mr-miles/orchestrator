@@ -801,3 +801,32 @@ def test_setup_workspace_imports_or_updates(tmp_path, exists):
     else:
         assert [s[:2] for s in steps] == [["profile", "import"], ["provider", "create"]]
         assert written == {"id": "legion-controller"}
+
+
+def test_default_agent_command_finds_the_payload(tmp_path):
+    """run-agent.sh exports the payload location, so the default command works under any runner
+    (here a payload that is not at /sandbox) – with a stub `claude` on PATH."""
+    import os
+    import shlex
+    import subprocess
+
+    from legion_orch.config import SandboxConfig
+    from legion_orch.sandbox import RUN_AGENT_SH
+    sb, bin_dir = tmp_path / "sb", tmp_path / "bin"
+    (sb / "payload").mkdir(parents=True)
+    bin_dir.mkdir()
+    for name, text in (("soul.md", "SOUL"), ("prompt.md", "PROMPT"), ("mcp.json", "{}")):
+        (sb / "payload" / name).write_text(text)
+    cmd = SandboxConfig().agent_command
+    assert cmd.startswith("claude ")
+    cmd = str(bin_dir / "claude") + cmd[len("claude"):]      # `bash -lc` may reset PATH
+    (sb / "payload" / "run.env").write_text(f"LEGION_NEEDS_REPO=0\nLEGION_AGENT_COMMAND={shlex.quote(cmd)}\n")
+    (sb / "payload" / "run-agent.sh").write_text(RUN_AGENT_SH)
+    (bin_dir / "claude").write_text('#!/bin/sh\nprintf "%s\\n" "$@"; echo "stdin=$(cat)"\n')
+    (bin_dir / "claude").chmod(0o755)
+    env = {**os.environ, "SANDBOX_ROOT": str(sb)}
+    out = subprocess.run(["bash", str(sb / "payload" / "run-agent.sh")], env=env, check=True,
+                         capture_output=True, text=True).stdout.splitlines()
+    assert out[out.index("--mcp-config") + 1] == str(sb / "payload" / "mcp.json")
+    assert out[out.index("--append-system-prompt") + 1] == "SOUL"
+    assert out[-1] == "stdin=PROMPT"

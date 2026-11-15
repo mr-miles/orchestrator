@@ -96,13 +96,14 @@ class SandboxConfig:
     # provider profile, provider); see policies/README.md for the placeholder vocabulary.
     templates_dir: str = "policies"
     keep_failed: bool = True
-    # Command run inside the sandbox to start the agent. Executed via `bash -lc` from
-    # /sandbox/work, with the payload in /sandbox/payload.
+    # Command run inside the sandbox to start the agent, via `bash -lc` from the working copy.
+    # $LEGION_PAYLOAD is the payload directory (/sandbox/payload in OpenShell) and
+    # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner.
     agent_command: str = (
-        "claude -p --mcp-config /sandbox/payload/mcp.json --strict-mcp-config "
-        "--append-system-prompt \"$(cat /sandbox/payload/soul.md)\" "
+        'claude -p --mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
+        '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '
         "--permission-mode bypassPermissions --output-format stream-json --verbose "
-        "< /sandbox/payload/prompt.md"
+        '< "$LEGION_PAYLOAD/prompt.md"'
     )
     extra_create_args: list[str] = field(default_factory=list)
 
