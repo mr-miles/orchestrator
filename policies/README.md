@@ -43,6 +43,7 @@ controller only fills in placeholders.
 | `${MCP_PORT}` | MCP listener port (server.mcp_port) |
 | `${MCP_PATH}` | MCP endpoint path, e.g. /mcp |
 | `${MCP_VERSIONS}` | MCP protocol revisions the gateway accepts |
+| `${MCP_MAX_BODY_BYTES}` | largest MCP request the gateway inspects (`server.mcp_max_body_bytes`); larger ones are dropped with a connection reset |
 | `${MCP_TOOLS}` | tool names the controller's MCP server registers (the tools/call allowlist) |
 | `${GIT_PUSH_DENY_RULES}` | deny rules for git-receive-pack: [] for roles that push, else a POST deny |
 | `${TOKEN_ENDPOINT}` | the controller's OAuth token endpoint (server.token_port, /oauth/token) |

@@ -29,6 +29,12 @@ class ServerConfig:
     mcp_port: int = 8766
     git_port: int = 8767
     token_port: int = 8768
+    # Largest MCP request the OpenShell gateway will inspect (mcp.max_body_bytes in the policy and
+    # provider profile). The gateway drops bigger requests without a response (the agent sees a
+    # connection reset), so the controller itself refuses requests over half of this with a 413;
+    # that must still fit the largest docs_write (2 MiB of content, JSON-escaped). OpenShell's
+    # default is 64 KiB.
+    mcp_max_body_bytes: int = 8 * 1024 * 1024
     # How sandboxes reach the agent-facing listeners.
     public_host: str = "host.openshell.internal"
     public_scheme: str = "http"

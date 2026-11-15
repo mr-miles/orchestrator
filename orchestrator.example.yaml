@@ -14,6 +14,7 @@ server:
   port: 8765
   agent_host: 0.0.0.0            # agent-facing listeners (sandboxes must reach these)
   mcp_port: 8766                 # /mcp – vetted by the gateway as protocol: mcp
+  mcp_max_body_bytes: 8388608    # largest MCP request the gateway inspects (OpenShell default 64 KiB)
   git_port: 8767                 # /git/<repo>.git only
   token_port: 8768               # /oauth/token only (gateway supervisor)
   public_host: host.openshell.internal   # how sandboxes reach the agent-facing listeners

@@ -63,7 +63,8 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
     @server.tool(description="Write a new immutable version of a document. base_version must equal "
                              "the current latest version (omit for a new document). The content "
                              "must match the schema bound to the path (see docs_schema). Returns "
-                             "the attestation file:<path>@<version> to cite.")
+                             "the attestation file:<path>@<version> to cite. At most 2 MiB of "
+                             "content per version.")
     async def docs_write(ctx: Context, path: str, content: str, base_version: int | None = None) -> dict:
         s = session(ctx)
         try:

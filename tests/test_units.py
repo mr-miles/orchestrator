@@ -887,3 +887,31 @@ def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
         allowed = {r["allow"]["method"] for r in ep["rules"]}
         assert allowed == (served - not_offered) | lifecycle, ep.get("path")
         assert ep["mcp"]["versions"] == MCP_VERSIONS
+
+
+def test_gateway_inspects_mcp_requests_as_large_as_the_largest_document(tmp_path):
+    """OpenShell drops MCP requests over mcp.max_body_bytes (default 64 KiB) with no response, which
+    agents see as connection resets on docs_write. Policy and profile render the same limit, and a
+    docs_write of the largest document the store accepts – JSON content, so heavily escaped –
+    fits in it."""
+    import json as _j
+
+    import yaml as _y
+
+    from legion_orch.sandbox import provider_profile, render_policy
+    from legion_orch.server import MCP_TOOLS
+    from legion_orch.store.docstore import MAX_DOC_BYTES
+    cfg = _os_cfg(tmp_path)
+    policy = _y.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=list(MCP_TOOLS)))
+    pol_ep = policy["network_policies"]["legion_mcp"]["endpoints"][0]
+    prof_ep = next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
+                   if e["protocol"] == "mcp")
+    limit = cfg.server.mcp_max_body_bytes
+    assert pol_ep["mcp"]["max_body_bytes"] == prof_ep["mcp"]["max_body_bytes"] == limit
+    row = {"id": "REQ-1", "command": 'pytest -k "greet and not slow"', "path": "src\\greet.txt"}
+    doc = _j.dumps({"tests": [row] * (MAX_DOC_BYTES // len(_j.dumps(row)))})[:MAX_DOC_BYTES]
+    body = _j.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "docs_write", "arguments": {"path": "plan/oracle.json", "content": doc}}})
+    from legion_orch.server.web import mcp_request_limit
+    served = mcp_request_limit(cfg)
+    assert len(body.encode()) < served < limit, (len(body), served, limit)

@@ -32,6 +32,7 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
+from ..config import Config
 from ..git import make_git_endpoint
 from ..identity import make_token_endpoint
 from ..sandbox import agentlog
@@ -59,11 +60,18 @@ SECURITY_HEADERS = {
 CONTROL = "/control/"
 
 
+def mcp_request_limit(cfg: Config) -> int:
+    """The controller refuses MCP requests over this with a 413 the agent can read. It is half
+    the gateway's inspection limit, so the gateway – which drops oversize requests without any
+    response – never sees one the controller would not answer."""
+    return cfg.server.mcp_max_body_bytes // 2
+
+
 async def build_mcp_app(ctl: Controller) -> Starlette:
     path = urlparse(ctl.cfg.server.mcp_url).path or "/mcp"
     return (await build_mcp(ctl)).streamable_http_app(
         streamable_http_path=path, stateless_http=True, json_response=True,
-        host=ctl.cfg.server.agent_host)
+        host=ctl.cfg.server.agent_host, max_request_body_size=mcp_request_limit(ctl.cfg))
 
 
 def build_git_app(ctl: Controller) -> Starlette:
