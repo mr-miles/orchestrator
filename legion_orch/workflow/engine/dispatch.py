@@ -144,7 +144,7 @@ class Dispatcher:
             "task_title": task.title if task else node.title,
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
-            "workdir": "/sandbox/work", "task_soul": task.soul if task else "",
+            "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
         }
         write, required = self.c.assets.role_paths(role, variables)
         write, required = [self.c.p(w) for w in write], [self.c.p(d) for d in required]

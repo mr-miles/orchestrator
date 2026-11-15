@@ -42,13 +42,14 @@ from .runs import RunLifecycle
 
 @dataclass
 class VerifierSandbox:
-    """A live verifier sandbox with the candidate checked out in /sandbox/work."""
+    """A live verifier sandbox with the candidate checked out in <sandbox root>/work."""
     name: str
     runner: Runner
     timeout_s: int
+    workdir: str
 
     async def run(self, cmd: str) -> CommandResult:
-        rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir="/sandbox/work",
+        rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir=self.workdir,
                                          timeout=self.timeout_s)
         return CommandResult(command=cmd, exit_code=rc, output=out[-4000:])
 
@@ -99,11 +100,12 @@ class Acceptance:
                 change=self.c.cid, task=label, role="verifier", run=name))
             self.c.svc.auth.register_verifier(
                 ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
-            rc, out = await self.c.runner.exec(name, ["bash", "/sandbox/payload/verify-setup.sh", sha],
+            root = self.c.cfg.sandbox.root
+            rc, out = await self.c.runner.exec(name, ["bash", f"{root}/payload/verify-setup.sh", sha],
                                                timeout=600)
             if rc != 0:
                 raise SandboxError(f"verifier setup failed ({rc}): {out[-1500:]}")
-            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s)
+            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s, f"{root}/work")
         finally:
             if ref:
                 self.c.svc.auth.unregister_verifier(ref)

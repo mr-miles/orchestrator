@@ -44,6 +44,9 @@ sandbox:
   #   allowed to reach the controller's git remote; Fedora/RHEL/Alpine use /usr/libexec/git-core/
   templates_dir: policies         # templates for everything created in OpenShell (see policies/README.md)
   keep_failed: true
+  # root: /sandbox                 # payload and working copy inside the sandbox; match your image,
+  # run_as_user: sandbox           # e.g. root: /home/agent, run_as_user: agent, run_as_group: agent
+  # run_as_group: sandbox
 identity:                        # SPIFFE/SPIRE workload identity (see legion_orch/identity.py)
   provider: legion-controller    # created once per workspace: legion-orch setup-openshell --apply
   jwks_uri: https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys

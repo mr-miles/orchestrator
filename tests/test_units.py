@@ -830,3 +830,35 @@ def test_default_agent_command_finds_the_payload(tmp_path):
     assert out[out.index("--mcp-config") + 1] == str(sb / "payload" / "mcp.json")
     assert out[out.index("--append-system-prompt") + 1] == "SOUL"
     assert out[-1] == "stdin=PROMPT"
+
+
+def test_sandbox_root_and_user_follow_the_image(tmp_path):
+    """An image without /sandbox: payload, working copy, policy paths and the run-as user all come
+    from sandbox.root / run_as_user / run_as_group."""
+    import asyncio
+
+    import yaml as _y
+
+    from legion_orch.sandbox import LocalRunner, OpenShellRunner, SandboxSpec, render_policy
+    from legion_orch.server import MCP_TOOLS
+    cfg = _os_cfg(tmp_path)
+    cfg.sandbox.root, cfg.sandbox.run_as_user, cfg.sandbox.run_as_group = "/home/agent", "agent", "agent"
+    for agent in (True, False):
+        pol = _y.safe_load(render_policy(cfg, agent=agent, push=agent, mcp_tools=list(MCP_TOOLS)))
+        assert pol["filesystem_policy"]["read_write"] == ["/home/agent", "/tmp", "/dev/null"]
+        assert (pol["process"]["run_as_user"], pol["process"]["run_as_group"]) == ("agent", "agent")
+    calls = []
+
+    async def fake_os(*args, timeout=0):
+        calls.append(list(args))
+        return '{"id": "sb-1"}' if args[:2] == ("sandbox", "get") else ""
+    r = OpenShellRunner(cfg)
+    r._os = fake_os
+    asyncio.run(r.create(SandboxSpec(name="lg-r0001-0123456789", payload_dir=tmp_path / "payload",
+                                     policy_file=tmp_path / "p.yaml", change="c1", task="t",
+                                     role="implementer", run="r0001")))
+    create = calls[0]
+    assert create[create.index("--upload") + 1] == f"{tmp_path / 'payload'}:/home/agent"
+    local = LocalRunner(cfg, gateway=None)
+    assert local._map("sb", "/home/agent/work") == str(local._root("sb") / "work")
+    assert local._map("sb", "/home/agentx") == "/home/agentx"          # only the root itself

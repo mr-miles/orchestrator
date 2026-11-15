@@ -6,12 +6,12 @@ version: 1
 filesystem_policy:
   include_workdir: true
   read_only: [/usr, /lib, /lib64, /proc, /dev/urandom, /app, /etc, /var/log]
-  read_write: [/sandbox, /tmp, /dev/null]
+  read_write: ${SANDBOX_WRITABLE}
 landlock:
   compatibility: best_effort
 process:
-  run_as_user: sandbox
-  run_as_group: sandbox
+  run_as_user: ${RUN_AS_USER}
+  run_as_group: ${RUN_AS_GROUP}
 network_policies:
   # No model endpoint here: the model provider attached to the sandbox (sandbox.providers, e.g.
   # claude-code or claude-subscription) contributes its own inspected endpoint with the

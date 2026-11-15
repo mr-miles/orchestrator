@@ -16,7 +16,7 @@ sandbox's SPIFFE JWT-SVID at the controller and inject the bearer into requests 
 **no isolation** and exists for development and tests only. It also stands in for the gateway:
 before starting a process it obtains a bearer through ``gateway(sandbox_ref)`` (dev SPIRE → real
 ``/oauth/token``) and passes it in the process environment, never in a file. Inside payload
-scripts the sandbox root is ``${SANDBOX_ROOT:-/sandbox}``.
+scripts the sandbox root is the directory above the script's own (``sandbox.root`` in OpenShell).
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ class OpenShellRunner(Runner):
         check_name(spec.name)
         values = base_values(self.cfg) | {
             "SANDBOX_NAME": spec.name, "POLICY_FILE": str(spec.policy_file),
-            "PAYLOAD_UPLOAD": f"{spec.payload_dir}:/sandbox", "CHANGE_ID": spec.change,
+            "PAYLOAD_UPLOAD": f"{spec.payload_dir}:{self.cfg.sandbox.root}", "CHANGE_ID": spec.change,
             "TASK_ID": spec.task, "ROLE": spec.role, "RUN_ID": spec.run or spec.name}
         tmpl = render(self.cfg, "agent_sandbox" if spec.agent else "verifier_sandbox", values)
         await self._os("sandbox", "create", *spec_to_args(tmpl), *self.cfg.sandbox.extra_create_args,
@@ -111,7 +111,8 @@ class OpenShellRunner(Runner):
         return str(ref)
 
     async def upload(self, name: str, payload_dir: Path) -> None:
-        await self._os("sandbox", "upload", name, f"{payload_dir}", "/sandbox", "--no-git-ignore")
+        await self._os("sandbox", "upload", name, f"{payload_dir}", self.cfg.sandbox.root,
+                       "--no-git-ignore")
 
     async def exec(self, name, argv, *, workdir=None, timeout=600):
         args = [*self.cli, "sandbox", "exec", name, "--no-tty"]
@@ -124,7 +125,7 @@ class OpenShellRunner(Runner):
         try:
             return await asyncio.create_subprocess_exec(
                 *self.cli, "sandbox", "exec", name, "--no-tty", "--",
-                "bash", "/sandbox/payload/run-agent.sh",
+                "bash", f"{self.cfg.sandbox.root}/payload/run-agent.sh",
                 stdout=log, stderr=asyncio.subprocess.STDOUT)
         finally:
             log.close()
@@ -147,7 +148,8 @@ class LocalRunner(Runner):
         return self.root / name
 
     def _map(self, name: str, s: str) -> str:
-        return str(self._root(name)) + s[len("/sandbox"):] if s.startswith("/sandbox") else s
+        root = self.cfg.sandbox.root
+        return str(self._root(name)) + s[len(root):] if s == root or s.startswith(root + "/") else s
 
     async def _env(self, name: str) -> dict:
         env = dict(os.environ)

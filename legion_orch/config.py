@@ -96,6 +96,11 @@ class SandboxConfig:
     # provider profile, provider); see policies/README.md for the placeholder vocabulary.
     templates_dir: str = "policies"
     keep_failed: bool = True
+    # Where the payload and working copy live inside a sandbox (<root>/payload, <root>/work), and
+    # the user the sandbox's processes run as: match the agent image (e.g. /home/agent, agent).
+    root: str = "/sandbox"
+    run_as_user: str = "sandbox"
+    run_as_group: str = "sandbox"
     # Command run inside the sandbox to start the agent, via `bash -lc` from the working copy.
     # $LEGION_PAYLOAD is the payload directory (/sandbox/payload in OpenShell) and
     # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner.

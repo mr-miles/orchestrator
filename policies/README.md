@@ -61,7 +61,10 @@ controller only fills in placeholders.
 | `${PROFILE_BINARIES}` | plain paths of agent and git binaries, for the provider profile |
 | `${SANDBOX_NAME}` | sandbox name (lg-<change>-<run>) |
 | `${POLICY_FILE}` | path of the rendered sandbox policy |
-| `${PAYLOAD_UPLOAD}` | upload spec <local payload dir>:/sandbox |
+| `${PAYLOAD_UPLOAD}` | upload spec <local payload dir>:<sandbox.root> |
+| `${SANDBOX_WRITABLE}` | paths the sandbox may write: sandbox.root, /tmp, /dev/null |
+| `${RUN_AS_USER}` | user the sandbox processes run as (sandbox.run_as_user) |
+| `${RUN_AS_GROUP}` | group the sandbox processes run as (sandbox.run_as_group) |
 | `${CHANGE_ID}` | change id the sandbox works for |
 | `${RUN_ID}` | run id that created the sandbox (verifiers: the verifier name) |
 | `${ROLE}` | role the sandbox serves (implementer, reviewer, ..., verifier) |

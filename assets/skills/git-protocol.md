@@ -1,6 +1,6 @@
 ## Skill: Git protocol
 
-- Your working copy is `/sandbox/work`, cloned from the controller's remote (`origin`) and checked
+- Your working copy is the `workdir` in your assignment (your current directory), cloned from the controller's remote (`origin`) and checked
   out on branch `{{branch}}` at base `{{base_sha}}`. Credentials are already configured.
 - Commit with clear messages: `<task-id>: <imperative summary>`. Do not rewrite `{{base_sha}}` or
   anything before it, and do not create merge commits.
