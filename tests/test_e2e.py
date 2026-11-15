@@ -451,3 +451,49 @@ def test_mcp_server_offers_tools_only(tmp_path):
             srv.should_exit = True
             await task
     asyncio.run(go())
+
+
+def test_agent_listeners_keep_idle_connections_open(tmp_path):
+    """The gateway relays each agent connection to one controller connection; if the controller
+    closes it while the model is busy writing (uvicorn's default is 5 s idle), the agent's next
+    request fails with ECONNRESET. The agent listeners use server.agent_keep_alive_s."""
+    import http.client
+    import time
+
+    from engine_harness import Flow
+
+    from legion_orch.config import ServerConfig
+    from legion_orch.server.web import build_servers
+    assert ServerConfig().agent_keep_alive_s >= 300
+
+    async def go():
+        f = await Flow.create(tmp_path)
+        f.cfg.server.agent_keep_alive_s = 1            # short, to see the setting take effect
+        servers = await build_servers(f.ctl)
+        assert [s.config.timeout_keep_alive for s in servers[1:]] == [1, 1, 1]
+        mcp = servers[1]
+        mcp.config.port = port = _free_port()
+        task = asyncio.create_task(mcp.serve())
+        while not mcp.started:
+            await asyncio.sleep(0.02)
+
+        def ping_twice(idle):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            hdr = {"Content-Type": "application/json", "Mcp-Protocol-Version": "2025-11-25",
+                   "Accept": "application/json, text/event-stream"}
+            body = '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+            c.request("POST", "/mcp", body, hdr)
+            c.getresponse().read()
+            time.sleep(idle)
+            try:
+                c.request("POST", "/mcp", body, hdr)
+                return c.getresponse().status
+            except OSError as e:
+                return type(e).__name__
+        try:
+            assert await asyncio.to_thread(ping_twice, 0.2) == 200       # within the keep-alive
+            assert await asyncio.to_thread(ping_twice, 2) != 200         # closed after 1 s idle
+        finally:
+            mcp.should_exit = True
+            await task
+    asyncio.run(go())

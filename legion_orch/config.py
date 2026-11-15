@@ -35,6 +35,11 @@ class ServerConfig:
     # that must still fit the largest docs_write (2 MiB of content, JSON-escaped). OpenShell's
     # default is 64 KiB.
     mcp_max_body_bytes: int = 8 * 1024 * 1024
+    # How long the agent-facing listeners keep an idle connection open. The gateway relays each
+    # agent connection to one controller connection, so when the controller closes an idle one
+    # the agent's next request on it fails (ECONNRESET) - typically after the model has spent a
+    # while writing a large document. uvicorn's default is 5 s.
+    agent_keep_alive_s: int = 600
     # How sandboxes reach the agent-facing listeners.
     public_host: str = "host.openshell.internal"
     public_scheme: str = "http"

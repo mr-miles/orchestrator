@@ -102,13 +102,15 @@ GRACEFUL_SHUTDOWN_S = 5
 async def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicorn.Server]:
     """All listeners; run them together (see :func:`serve`). The operator app starts the controller."""
     s = ctl.cfg.server
-    cfg = lambda app, host, port: _Server(uvicorn.Config(
+    cfg = lambda app, host, port, **kw: _Server(uvicorn.Config(
         app, host=host, port=port, log_level=log_level,
-        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S))
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S, **kw))
+    # agent-facing: idle connections stay open while the model works (see agent_keep_alive_s)
+    agent = {"timeout_keep_alive": s.agent_keep_alive_s}
     return [cfg(build_app(ctl), s.host, s.port),
-            cfg(await build_mcp_app(ctl), s.agent_host, s.mcp_port),
-            cfg(build_git_app(ctl), s.agent_host, s.git_port),
-            cfg(build_token_app(ctl), s.agent_host, s.token_port)]
+            cfg(await build_mcp_app(ctl), s.agent_host, s.mcp_port, **agent),
+            cfg(build_git_app(ctl), s.agent_host, s.git_port, **agent),
+            cfg(build_token_app(ctl), s.agent_host, s.token_port, **agent)]
 
 
 def request_shutdown(ctl: Controller, servers: list[uvicorn.Server]) -> None:
