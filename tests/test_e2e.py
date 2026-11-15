@@ -382,3 +382,25 @@ def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_document_listing_hides_controller_records_unless_asked(tmp_path):
+    import httpx
+    from engine_harness import Flow
+
+    from legion_orch.server.web import build_app
+
+    async def go():
+        f = await Flow.create(tmp_path)
+        await f.intake()
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(f.ctl)),
+                                     base_url="http://op") as c:
+            prefix = f"changes/{f.ce.cid}/"
+            default = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}")).json()]
+            every = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}&all=1")).json()]
+        assert default == [prefix + "intake/requirements.md", prefix + "intake/risk.json"]
+        control = set(every) - set(default)
+        assert {prefix + p for p in ("control/change.json", "control/graph.json",
+                                     "control/goal.md")} <= control
+        assert any("/control/runs/" in p for p in control) and any("/control/logs/" in p for p in control)
+    asyncio.run(go())

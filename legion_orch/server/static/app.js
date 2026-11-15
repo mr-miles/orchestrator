@@ -299,7 +299,7 @@ async function renderTab(force) {
     const showAll = $('#docall') && $('#docall').checked;
     const list = await api(`/api/docs?prefix=${encodeURIComponent(scope==='change'?docPath(''):'')}${showAll?'&all=1':''}`);
     const controls = `<div class="row" style="margin-bottom:6px"><select id="docscope" style="width:auto" data-onchange="renderTab"><option value="change" ${scope==='change'?'selected':''}>this change</option><option value="all" ${scope==='all'?'selected':''}>all changes</option></select>
-      <label class="muted"><input id="docall" type="checkbox" style="width:auto" ${showAll?'checked':''} data-onchange="renderTab"> include controller records (nodes, runs)</label></div>`;
+      <label class="muted"><input id="docall" type="checkbox" style="width:auto" ${showAll?'checked':''} data-onchange="renderTab"> include controller records (control/: state, runs, logs)</label></div>`;
     let viewer = '';
     if (docSel) { try { const d = await api(`/api/doc?path=${encodeURIComponent(docSel.path)}${docSel.version?'&version='+docSel.version:''}`);
       viewer = `<div class="card"><b>${esc(d.attestation)}</b> <span class="muted">by ${esc(d.author)} (${esc(d.role)}) · ${esc(d.created_at)} · ${esc(d.sha256.slice(0,19))} · schema <code>${esc(d.schema)}</code> ${esc((d.schema_sha||'').slice(7,15))}</span>

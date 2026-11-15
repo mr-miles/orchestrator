@@ -54,8 +54,9 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
 }
-# Bulky controller records hidden from the default document listing (still readable).
-NOISY = ("/control/nodes/", "/control/runs/")
+# The controller's own records (changes/<cid>/control/: state, graph, logs, verification) are
+# hidden from the default document listing; they stay readable, and ?all=1 lists them.
+CONTROL = "/control/"
 
 
 async def build_mcp_app(ctl: Controller) -> Starlette:
@@ -221,7 +222,7 @@ def build_app(ctl: Controller) -> Starlette:
     async def docs(request: Request):
         items = ctl.docs.list(request.query_params.get("prefix", ""))
         if request.query_params.get("all") != "1":
-            items = [d for d in items if not any(n in "/" + d.path for n in NOISY)]
+            items = [d for d in items if CONTROL not in "/" + d.path]
         return [d.to_json() for d in items]
 
     @api()
