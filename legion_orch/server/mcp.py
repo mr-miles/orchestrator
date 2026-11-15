@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from mcp import MCPError
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import METHOD_NOT_FOUND
 
 from ..store import DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
@@ -48,8 +50,28 @@ def _hidden(path: str) -> bool:
     return any(h in "/" + path for h in AGENT_HIDDEN)
 
 
+# MCPServer always registers (empty) prompt and resource handlers and so advertises both
+# capabilities (python-sdk issue #2473), which makes clients call methods the gateway policy
+# does not allow. The server offers tools only: these are neither advertised nor served.
+NOT_OFFERED = ("prompts", "resources")
+ADVERTISING = ("initialize", "server/discover")
+
+
+async def tools_only(ctx, call_next):
+    """Server middleware (the SDK's public hook): refuse prompts/* and resources/* as unknown
+    methods, and drop their capabilities from the initialize / server/discover results."""
+    if ctx.method.split("/", 1)[0] in NOT_OFFERED:
+        raise MCPError(METHOD_NOT_FOUND, f"Method not found: {ctx.method}")
+    result = await call_next(ctx)
+    caps = result.get("capabilities") if ctx.method in ADVERTISING and isinstance(result, dict) else None
+    if isinstance(caps, dict):
+        for name in NOT_OFFERED:
+            caps.pop(name, None)
+    return result
+
+
 async def build_mcp(ctl: Controller) -> MCPServer:
-    server = MCPServer("legion", instructions=INSTRUCTIONS)
+    server = MCPServer("legion", instructions=INSTRUCTIONS, middleware=[tools_only])
 
     def current(ctx: Context) -> tuple[ChangeEngine, Run]:
         req = ctx.request_context.request

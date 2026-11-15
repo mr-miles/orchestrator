@@ -866,21 +866,23 @@ def test_sandbox_root_and_user_follow_the_image(tmp_path):
 
 def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
     """The gateway refuses MCP methods the policy does not list. Every method our server answers
-    (and so advertises: the SDK derives capabilities from its handlers) must be allowed in both
-    the sandbox policy and the provider profile, and nothing else. Clients call what is
-    advertised – subscriptions/listen and resources/list were each once missing and denied."""
+    must be allowed in both the sandbox policy and the provider profile, and nothing else.
+    (subscriptions/listen was once missing and denied.) Prompts and resources are not offered:
+    the tools_only middleware refuses them although the SDK registers handlers."""
     import yaml as _y
     from mcp.server.mcpserver import MCPServer
 
     from legion_orch.sandbox import provider_profile, render_policy
     from legion_orch.sandbox.templates import MCP_VERSIONS
     from legion_orch.server import MCP_TOOLS
+    from legion_orch.server.mcp import NOT_OFFERED
     cfg = _os_cfg(tmp_path)
     policy = _y.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=list(MCP_TOOLS)))
     endpoints = [policy["network_policies"]["legion_mcp"]["endpoints"][0],
                  next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
                       if e["protocol"] == "mcp")]
-    served = set(MCPServer("probe")._lowlevel_server._request_handlers)
+    handlers = set(MCPServer("probe")._lowlevel_server._request_handlers)
+    served = {m for m in handlers if m.split("/", 1)[0] not in NOT_OFFERED}
     lifecycle = {"initialize", "notifications/initialized", "notifications/cancelled"}
     for ep in endpoints:
         allowed = {r["allow"]["method"] for r in ep["rules"]}

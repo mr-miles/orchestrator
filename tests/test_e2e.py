@@ -406,18 +406,48 @@ def test_document_listing_hides_controller_records_unless_asked(tmp_path):
     asyncio.run(go())
 
 
-def test_mcp_server_offers_no_resources_or_prompts(tmp_path):
-    """The policy allows resources/* and prompts/* because the SDK advertises them; that is only
-    safe while they stay empty (documents are reached through the docs_* tools and their scope
-    checks, never as resources)."""
+def test_mcp_server_offers_tools_only(tmp_path):
+    """The SDK's MCPServer always advertises prompts and resources (python-sdk #2473), so
+    clients call methods the gateway policy denies. Over HTTP, on both handshakes (initialize
+    for 2025 revisions, server/discover for 2026-07-28), only tools are advertised, and
+    prompts/resources methods are unknown."""
+    import httpx
+    import uvicorn
     from engine_harness import Flow
+    from mcp import Client, MCPError
 
-    from legion_orch.server.mcp import build_mcp
+    from legion_orch.server import MCP_TOOLS
+    from legion_orch.server.web import build_mcp_app
 
     async def go():
         f = await Flow.create(tmp_path)
-        server = await build_mcp(f.ctl)
-        assert await server.list_resources() == []
-        assert await server.list_resource_templates() == []
-        assert await server.list_prompts() == []
+        port = _free_port()
+        srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
+                                            port=port, log_level="warning"))
+        task = asyncio.create_task(srv.serve())
+        while not srv.started:
+            await asyncio.sleep(0.02)
+        url = f"http://127.0.0.1:{port}/mcp"
+        hdr = {"Accept": "application/json, text/event-stream"}
+        try:
+            async with httpx.AsyncClient() as c:
+                init = await c.post(url, headers=hdr, json={
+                    "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                        "protocolVersion": "2025-11-25", "capabilities": {},
+                        "clientInfo": {"name": "t", "version": "1"}}})
+                assert set(init.json()["result"]["capabilities"]) == {"tools"}
+                for method in ("resources/list", "resources/read", "prompts/list"):
+                    r = await c.post(url, headers=hdr | {"Mcp-Protocol-Version": "2025-11-25"},
+                                     json={"jsonrpc": "2.0", "id": 2, "method": method, "params": {}})
+                    assert r.json()["error"]["code"] == -32601, method
+            async with Client(url) as cl:
+                assert cl.protocol_version == "2026-07-28"          # server/discover handshake
+                caps = cl.server_capabilities.model_dump(exclude_none=True)
+                assert set(caps) == {"tools"}, caps
+                with pytest.raises(MCPError, match="Method not found"):
+                    await cl.list_resources()
+                assert {t.name for t in (await cl.list_tools()).tools} == set(MCP_TOOLS)
+        finally:
+            srv.should_exit = True
+            await task
     asyncio.run(go())
