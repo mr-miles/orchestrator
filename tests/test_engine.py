@@ -3,6 +3,7 @@ their resolution, run failures, restarts. Driven in-process by tests/engine_harn
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from engine_harness import REPO, TASKS, Flow, scenario, signals
@@ -17,13 +18,16 @@ from legion_orch.workflow.model import (
     R_ACCEPTED,
     R_ACTIVE,
     R_FAILED,
+    R_STARTING,
     R_SUPERSEDED,
     READY,
     REVIEWING,
     RUNNING,
     VERIFYING,
     ChangeStatus,
+    FailureSource,
     Resume,
+    RunStage,
 )
 
 
@@ -539,6 +543,180 @@ async def test_sandbox_launch_failure_escalates(f: Flow):
     f.runner.fail_create = None
     await f.human("plan", "retry")
     assert f.run("plan")
+
+
+# ---------------------------------------------------------------------- sandbox stages
+def agent_log(f: Flow, run, *lines) -> None:
+    """Append lines to a live run's agent log (as the sandbox would)."""
+    with open(f.ce.run_dir(run.id) / "agent.log", "a") as fh:
+        fh.write("".join((ln if isinstance(ln, str) else json.dumps(ln)) + "\n" for ln in lines))
+
+
+@scenario()
+async def test_run_stages_preparing_launching_running(f: Flow):
+    seen = []
+    real_create, real_start = f.runner.create, f.runner.start_agent
+
+    async def create(spec):
+        seen.append(("create", f.ce.runs[spec.run].stage))
+        return await real_create(spec)
+
+    async def start(name, log_file):
+        seen.append(("start", next(r.stage for r in f.ce.runs.values() if r.sandbox == name)))
+        return await real_start(name, log_file)
+    f.runner.create, f.runner.start_agent = create, start
+    await f.intake()
+    await f.human("H-1", "accept")
+    run = f.run("plan")
+    assert seen[-2:] == [("create", RunStage.PREPARING), ("start", RunStage.LAUNCHING)]
+    assert run.stage == RunStage.LAUNCHING and run.status == R_STARTING   # not connected yet
+    f.ce.connected(run)                         # the agent's first MCP call
+    assert run.stage == RunStage.RUNNING and run.status == R_ACTIVE
+    await f.plan()
+    assert run.stage == RunStage.EXITED and run.failure is None
+
+
+@scenario()
+async def test_launch_failure_is_a_system_error_while_preparing(f: Flow):
+    await f.intake()
+    f.runner.fail_create = "planner"
+    await f.human("H-1", "accept")
+    run = f.runs("plan")[0]
+    assert run.failure.source == FailureSource.SYSTEM and run.failure.stage == RunStage.PREPARING
+    esc = f.ce.nodes["plan"].escalation
+    assert esc.source == FailureSource.SYSTEM and "system error while preparing" in esc.reason
+
+
+@scenario()
+async def test_process_exit_before_connecting_is_a_system_error(f: Flow):
+    r = f.run("intake")
+    agent_log(f, r, "fatal: unable to access 'http://host/git/app.git/': 403")
+    await f.exit_agent(r, rc=128)
+    assert (r.failure.source, r.failure.stage, r.failure.exit_code) == (
+        FailureSource.SYSTEM, RunStage.LAUNCHING, 128)
+    assert "before connecting" in r.failure.reason and "403" in r.failure.reason
+    assert r.stage == RunStage.EXITED
+
+
+@scenario()
+async def test_process_exit_after_connecting_says_so(f: Flow):
+    r = f.run("intake")
+    f.ce.connected(r)
+    await f.exit_agent(r, rc=137)
+    assert r.failure.source == FailureSource.SYSTEM and r.failure.stage == RunStage.RUNNING
+    assert "exited with code 137 after connecting" in r.failure.reason
+    assert "system error while running" in f.ce.nodes["intake"].escalation.reason
+
+
+@scenario()
+async def test_agent_ending_with_an_error_is_an_agent_error(f: Flow):
+    r = f.run("intake")
+    agent_log(f, r, {"type": "system", "subtype": "init", "model": "m", "tools": []},
+              {"type": "result", "subtype": "success", "is_error": True,
+               "result": "API Error: 401 invalid OAuth token"})
+    await f.exit_agent(r, rc=1)
+    assert r.failure.source == FailureSource.AGENT and "API Error: 401" in r.failure.reason
+    assert f.ce.nodes["intake"].escalation.source == FailureSource.AGENT
+
+
+@scenario()
+async def test_agent_finishing_without_report_is_an_agent_error(f: Flow):
+    r = f.run("intake")
+    agent_log(f, r, {"type": "result", "subtype": "success", "is_error": False, "result": "All done!"})
+    await f.exit_agent(r, rc=0)
+    assert r.failure.source == FailureSource.AGENT and "without an accepted report" in r.failure.reason
+
+
+@scenario(max_report_attempts=1)
+async def test_rejected_reports_are_an_agent_error(f: Flow):
+    r = f.run("intake")
+    await f.report(r, atts=["file:nope.md@1"])
+    assert r.failure.source == FailureSource.AGENT and "G-R6" in r.failure.reason
+
+
+@scenario(run_timeout_s=1)
+async def test_timeout_is_its_own_source(f: Flow):
+    r = f.run("intake")
+    r.created_at = "2020-01-01T00:00:00.000Z"
+    await f.settle()
+    assert r.failure.source == FailureSource.TIMEOUT
+
+
+# ---------------------------------------------------------------------- retry
+@scenario()
+async def test_retry_removes_the_old_sandbox_before_the_new_run(f: Flow):
+    r = f.run("intake")
+    await f.exit_agent(r, rc=1)
+    assert r.sandbox not in f.runner.deleted                # kept for debugging until the retry
+    real_delete = f.runner.delete
+    order = []
+
+    async def delete(name):
+        order.append(("delete", name, len(f.runs("intake"))))
+        await real_delete(name)
+    f.runner.delete = delete
+    res = await f.human("intake", "retry")
+    assert "removing sandbox" in res.note
+    r2 = f.run("intake")
+    assert order == [("delete", r.sandbox, 1)], "deleted before the new run was dispatched"
+    assert r.sandbox_deleted and r2.sandbox != r.sandbox and r2.sandbox in f.runner.created
+
+
+@scenario()
+async def test_retry_goes_ahead_when_the_sandbox_cannot_be_removed(f: Flow):
+    r = f.run("intake")
+    await f.exit_agent(r, rc=1)
+    f.runner.fail_delete = True
+    await f.human("intake", "retry")
+    assert f.run("intake").id != r.id and not r.sandbox_deleted
+
+
+@scenario()
+async def test_retry_of_an_implementer_starts_a_fresh_sandbox(f: Flow):
+    await f.to_build()
+    impl = f.run("build:T1", "implementer")
+    node = f.ce.nodes["build:T1"]
+    assert node.sandbox == impl.sandbox
+    await f.exit_agent(impl, rc=1)
+    await f.human("build:T1", "retry")
+    impl2 = f.run("build:T1", "implementer")
+    assert impl.sandbox in f.runner.deleted and impl2.sandbox != impl.sandbox
+    assert node.sandbox == impl2.sandbox
+    await f.implement()
+    await f.review()
+    assert node.status == ACCEPTED
+
+
+@scenario()
+async def test_retry_in_progress_blocks_a_second_retry_and_yields_to_abandon(f: Flow):
+    r = f.run("intake")
+    await f.exit_agent(r, rc=1)
+    gate = asyncio.Event()
+    real_delete = f.runner.delete
+
+    async def slow_delete(name):
+        await gate.wait()
+        await real_delete(name)
+    f.runner.delete = slow_delete
+    await f.ce.human_action("intake", "retry", "miles", {})
+    assert f.ce.nodes["intake"].escalation.retrying
+    with pytest.raises(WorkflowError, match="already in progress"):
+        await f.ce.human_action("intake", "retry", "miles", {})
+    await f.ce.human_action("intake", "abandon", "miles", {})
+    gate.set()
+    await f.settle()
+    assert f.status("intake") == FAILED and len(f.runs("intake")) == 1
+
+
+@scenario()
+async def test_retry_interrupted_by_a_restart_completes(f: Flow):
+    r = f.run("intake")
+    await f.exit_agent(r, rc=1)
+    f.ce.nodes["intake"].escalation.retrying = True        # as if the controller stopped here
+    f.ce.save()
+    f.ce._gates.resume_retries()
+    await f.settle()
+    assert r.sandbox in f.runner.deleted and f.run("intake").id != r.id
 
 
 @scenario()

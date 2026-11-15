@@ -57,6 +57,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         if found is None:
             raise ToolError("no live run for this sandbox identity (runs end when their report is "
                             "accepted; check the legion-controller provider is attached)")
+        found[0].connected(found[1])
         return found
 
     # ------------------------------------------------------------------ store tools

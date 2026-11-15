@@ -57,6 +57,23 @@
   .kv div:nth-child(odd) { color:var(--muted); }
   a { color:#93c5fd; cursor:pointer; text-decoration:none; }
   .gate-satisfied { color:#4ade80; } .gate-unsatisfied { color:#f87171; } .gate-unevaluable { color:#fbbf24; }
+  /* agent log drawer: outside every re-rendered region, so state updates never blank it */
+  #logview { position:fixed; top:0; right:0; bottom:0; width:min(900px, 96vw); background:var(--panel); border-left:1px solid var(--line); box-shadow:-8px 0 24px rgba(0,0,0,.45); display:none; flex-direction:column; z-index:10; }
+  #logview.open { display:flex; }
+  #loghead { padding:10px 12px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #logbody { flex:1; overflow:auto; padding:8px 12px; }
+  #logbody pre { max-height:none; margin:0; }
+  .le { border-left:3px solid var(--line); padding:3px 8px; margin:4px 0; }
+  .le .lk { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin-right:6px; }
+  .le .lt { white-space:pre-wrap; word-break:break-word; }
+  .le.sandbox { border-color:#4b5563; } .le.sandbox .lt { font-family:ui-monospace, Menlo, monospace; font-size:12px; color:#c3c8d1; }
+  .le.init { border-color:#06b6d4; } .le.text { border-color:#22c55e; } .le.prompt { border-color:#6b7280; }
+  .le.thinking { border-color:#6b7280; } .le.thinking .lt { color:var(--muted); font-style:italic; }
+  .le.tool_call { border-color:#3b82f6; } .le.tool_call .lt, .le.tool_result .lt { font-family:ui-monospace, Menlo, monospace; font-size:12px; }
+  .le.tool_result { border-color:#334155; } .le.tool_result .lt { color:#aab1bd; }
+  .le.result { border-color:#22c55e; background:var(--panel2); }
+  .le.error { border-color:#ef4444 !important; } .le.error .lt { color:#fca5a5; }
+  .src-AGENT { background:#f59e0b; } .src-SYSTEM, .src-CONTROLLER { background:#ef4444; } .src-TIMEOUT { background:#a855f7; }
 </style>
 </head>
 <body>
@@ -97,6 +114,10 @@
     <section><h2>Details</h2><div id="detail" class="muted">Select a node in the graph.</div></section>
   </div>
 </main>
+<aside id="logview">
+  <div id="loghead"></div>
+  <div id="logbody"></div>
+</aside>
 <script src="/app.js"></script>
 </body>
 </html>

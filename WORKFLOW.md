@@ -235,6 +235,25 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
 `ACTIVE -> FAILED` on crash, timeout or `max_report_attempts` rejected reports.
 On `ACCEPTED` the run's sandbox is deleted.
 
+A live run's **stage** records how far its sandbox got: `PREPARING` (OpenShell is creating the
+sandbox) -> `LAUNCHING` (the payload is in place; the setup script clones the working copy and
+starts the agent) -> `RUNNING` (the agent's first MCP call: it is up and reaches the
+controller) -> `EXITED`.
+
+A failed run records its **failure source** and the stage it had reached:
+
+| Source | When |
+| --- | --- |
+| `AGENT` | The agent failed: its CLI ended with an error result (API error, turn limit), it finished without an accepted report, or `max_report_attempts` reports were rejected. |
+| `SYSTEM` | What the agent runs on failed: sandbox creation or upload, the setup script, or the process exited with no result from the agent (crash, command not found, killed). |
+| `TIMEOUT` | The run exceeded `limits.run_timeout_s`. |
+| `CONTROLLER` | The controller restarted during the run, or failed while applying its report. |
+
+The escalation carries the same source. **Retry** first deletes the failed run's sandbox, then
+resumes, so the new run always starts in a fresh sandbox. If OpenShell will not delete it, the
+retry still goes ahead and the failure is reported. A fresh implementer sandbox continues from
+the task branch as pushed to the controller; work that was never pushed is lost.
+
 ---
 
 ## 5. Task catalogue: guards, prompt, skills, soul

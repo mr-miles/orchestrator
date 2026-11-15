@@ -12,9 +12,11 @@ from ..model import (
     R_FAILED,
     R_REPORTED,
     R_SUPERSEDED,
+    FailureSource,
     Node,
     Resume,
     Run,
+    RunFailure,
 )
 from ..roles import handler_for
 from .common import _parse_ts
@@ -41,28 +43,31 @@ class RunLifecycle:
                 proc = c.procs.get(run.id)
                 if proc and proc.returncode is None:
                     proc.kill()
-                self.fail_run(run, f"timed out after {limit}s")
+                self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
 
     def delete_sandbox_later(self, name: str) -> None:
         """Delete a sandbox in the background (its work has been accepted)."""
         self.c.spawn(self.delete_sandbox(name))
 
-    def fail_run(self, run: Run, reason: str) -> None:
-        """No automatic retries (principle 5): a failed run escalates to a human."""
+    def fail_run(self, run: Run, reason: str, source: FailureSource,
+                 exit_code: int | None = None) -> None:
+        """No automatic retries (principle 5): a failed run escalates to a human. ``source``
+        says whether the agent failed or what it runs on (see :class:`FailureSource`)."""
         run.status = R_FAILED
         run.ended_at = now_iso()
+        run.failure = RunFailure(source=source, stage=run.stage, reason=reason, exit_code=exit_code)
         node = self.c.nodes.get(run.node_id)
-        self.c.event("run_failed", reason, run.node_id, run.id)
+        where = f" while {run.stage.lower()}" if run.stage and run.stage != "EXITED" else ""
+        label = f"{source.lower()} error{where}"
+        self.c.event("run_failed", f"{label}: {reason}", run.node_id, run.id)
         if node is None:
             return
         tail = self.log_tail(run.id, 40)
-        if handler_for(run.role).panel:
-            self.c.escalate(node, "run_failed", f"{run.role} run {run.id}: {reason}",
-                            resume=Resume.REVIEWING, run=run.id, log_tail=tail)
-        else:
-            resume = Resume.REWORK if node.kind == BUILD else Resume.READY
-            self.c.escalate(node, "run_failed", f"run {run.id}: {reason}", resume=resume,
-                            run=run.id, log_tail=tail)
+        who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
+        resume = (Resume.REVIEWING if handler_for(run.role).panel
+                  else Resume.REWORK if node.kind == BUILD else Resume.READY)
+        self.c.escalate(node, "run_failed", f"{who} ({label}): {reason}", resume=resume,
+                        run=run.id, log_tail=tail, source=source)
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             self.c.spawn(self.delete_sandbox(run.sandbox))
 
@@ -88,18 +93,20 @@ class RunLifecycle:
             return ""
         return "\n".join(text.splitlines()[-lines:])
 
-    async def delete_sandbox(self, name: str) -> None:
+    async def delete_sandbox(self, name: str) -> bool:
+        """Delete a sandbox; False (and an event) if OpenShell refused."""
         try:
             await self.c.runner.delete(name)
         except Exception as e:
             self.c.event("sandbox", f"delete of {name} failed: {e}")
-            return
+            return False
         async with self.c.lock:
             for r in self.c.runs.values():
                 if r.sandbox == name:
                     r.sandbox_deleted = True
             self.c.event("sandbox", f"sandbox {name} deleted")
             self.c.save()
+        return True
 
     def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
         """Mark the node's reported runs ACCEPTED and delete their sandboxes (principle 8)."""

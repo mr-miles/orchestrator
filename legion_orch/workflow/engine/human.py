@@ -15,6 +15,7 @@ from ..model import (
     H_SPEC,
     HUMAN,
     INTAKE,
+    LIVE_RUN,
     MERGING,
     ORACLE,
     PENDING,
@@ -42,13 +43,15 @@ from .acceptance import Acceptance
 from .common import WorkflowError, _slug
 from .core import ChangeCore
 from .graph import StageGraph
+from .runs import RunLifecycle
 
 
 class HumanGates:
     """What a decision owner may do to a change, checked and applied under the lock."""
 
-    def __init__(self, core: ChangeCore, graph: StageGraph, acceptance: Acceptance):
-        self.c, self.graph, self.acceptance = core, graph, acceptance
+    def __init__(self, core: ChangeCore, graph: StageGraph, acceptance: Acceptance,
+                 lifecycle: RunLifecycle):
+        self.c, self.graph, self.acceptance, self.lifecycle = core, graph, acceptance, lifecycle
 
     def _check_approver(self, approver: str) -> None:
         if approver not in self.c.cfg.decision_owners:
@@ -207,7 +210,15 @@ class HumanGates:
             return self._override_accept(node, approver, payload)
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
+        if node.escalation and node.escalation.retrying:
+            raise WorkflowError("a retry is already in progress (removing the old sandbox)")
         resume = node.escalation.resume if node.escalation else Resume.READY
+        if action == "retry":
+            old = self._sandbox_to_remove(node)
+            if old:
+                node.escalation.retrying = True
+                self.c.spawn(self._retry_after_removing(node.id, old))
+                return ActionResult(note=f"removing sandbox {old}, then retrying")
         if action == "answer":
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
@@ -219,6 +230,42 @@ class HumanGates:
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)
+
+    def _sandbox_to_remove(self, node: Node) -> str | None:
+        """The escalated run's sandbox, if it still exists and no live run uses it."""
+        run = self.c.runs.get(node.escalation.run) if node.escalation and node.escalation.run else None
+        if not run or not run.sandbox or run.sandbox_deleted:
+            return None
+        if any(r.sandbox == run.sandbox and r.status in LIVE_RUN for r in self.c.runs.values()):
+            return None
+        return run.sandbox
+
+    async def _retry_after_removing(self, node_id: str, sandbox: str) -> None:
+        """Retry: delete the failed run's sandbox first (a failed delete is reported and the
+        retry goes ahead in a new sandbox), then resume where the escalation said."""
+        ok = await self.lifecycle.delete_sandbox(sandbox) if sandbox else True
+        async with self.c.lock:
+            node = self.c.nodes.get(node_id)
+            esc = node.escalation if node else None
+            if node is None or node.status != ESCALATED or esc is None or not esc.retrying:
+                return                  # abandoned or otherwise resolved meanwhile
+            if not ok:
+                self.c.event("sandbox", f"could not remove {sandbox}; retrying in a new sandbox",
+                             node_id)
+            if node.sandbox == sandbox:
+                node.sandbox = None     # the next run gets a fresh sandbox
+            node.escalation = None
+            self._resume(node, esc.resume)
+            self.c.event("human_action", f"retry: resumed {esc.resume}", node_id)
+            self.c.save()
+
+    def resume_retries(self) -> None:
+        """After a restart: finish retries that were removing their old sandbox."""
+        for node in self.c.nodes.values():
+            esc = node.escalation
+            if node.status == ESCALATED and esc and esc.retrying:
+                run = self.c.runs.get(esc.run) if esc.run else None
+                self.c.spawn(self._retry_after_removing(node.id, run.sandbox if run else ""))
 
     def _override_accept(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """Accept a build task without a full panel PASS. Deterministic verification at the

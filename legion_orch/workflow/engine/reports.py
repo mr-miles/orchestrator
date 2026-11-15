@@ -15,12 +15,14 @@ from ..model import (
     R_ACTIVE,
     R_REPORTED,
     R_STARTING,
+    FailureSource,
     Node,
     Progress,
     ReportStatus,
     Resume,
     Run,
     RunReport,
+    RunStage,
 )
 from ..results import ReportOutcome
 from ..roles import Report, handler_for
@@ -90,6 +92,15 @@ class Reports:
             v = self.docs_write(run, path, content, base_version)
             self.c.save()
             return v
+
+    def connected(self, run: Run) -> None:
+        """Any MCP call from the run's sandbox: the agent is up and reaches the controller.
+        (In memory like progress; the next save persists it.)"""
+        if run.status in LIVE_RUN and run.stage != RunStage.RUNNING:
+            run.stage = RunStage.RUNNING
+            if run.status == R_STARTING:
+                run.status = R_ACTIVE
+            self.c.event("sandbox", f"agent connected from sandbox {run.sandbox}", run.node_id, run.id)
 
     def progress(self, run: Run, message: str, percent: float | None) -> None:
         run.progress.append(Progress(message=message[:500], percent=percent))
@@ -191,7 +202,8 @@ class Reports:
         except Exception as e:
             log.exception("applying report of %s failed", run.id)
             self.lifecycle.fail_run(run, f"controller error while applying the report: {e!r} "
-                                    "(external effects such as git merges may already exist)")
+                                    "(external effects such as git merges may already exist)",
+                                    FailureSource.CONTROLLER)
             with contextlib.suppress(Exception):
                 self.c.save()
             return ReportOutcome.reject("controller error while applying the report; escalated")
@@ -203,7 +215,7 @@ class Reports:
         self.c.event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
                      node.id, run.id)
         if left <= 0:
-            self.lifecycle.fail_run(run, "G-R6: too many rejected reports")
+            self.lifecycle.fail_run(run, "G-R6: too many rejected reports", FailureSource.AGENT)
         self.c.save()
         return ReportOutcome.reject(*v, attempts_left=max(left, 0))
 

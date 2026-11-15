@@ -51,6 +51,22 @@ class RunStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class RunStage(StrEnum):
+    """How far a run's sandbox got (independent of :class:`RunStatus`, which is the outcome)."""
+    PREPARING = "PREPARING"      # OpenShell is creating the sandbox
+    LAUNCHING = "LAUNCHING"      # the payload is in place; the setup script and agent are starting
+    RUNNING = "RUNNING"          # the agent has connected to the controller (first MCP call)
+    EXITED = "EXITED"            # the agent process has ended
+
+
+class FailureSource(StrEnum):
+    """Who a run's failure came from: the agent itself, or what it runs on."""
+    AGENT = "AGENT"              # the agent reported or ended with an error (API error, gave up)
+    SYSTEM = "SYSTEM"            # sandbox, OS or process failure (create, setup script, crash)
+    TIMEOUT = "TIMEOUT"          # the run exceeded limits.run_timeout_s
+    CONTROLLER = "CONTROLLER"    # the controller failed (restart, error applying a report)
+
+
 class ChangeStatus(StrEnum):
     ACTIVE = "ACTIVE"
     READY = "READY"
@@ -265,6 +281,8 @@ class Escalation(Record):
     run: str | None = None
     missing_decision: str | None = None
     log_tail: str | None = None
+    source: FailureSource | None = None   # run failures: agent error or system error
+    retrying: bool = False                # retry chosen: the old sandbox is being removed
 
 
 class Override(Record):
@@ -327,6 +345,13 @@ class Progress(Record):
     at: str = Field(default_factory=now_iso)
 
 
+class RunFailure(Record):
+    source: FailureSource
+    stage: RunStage | None = None    # how far the run had got when it failed
+    reason: str
+    exit_code: int | None = None
+
+
 class Run(Record):
     id: str
     node_id: str
@@ -334,6 +359,8 @@ class Run(Record):
     soul: str
     cycle: int
     status: RunStatus = R_STARTING
+    stage: RunStage | None = None
+    failure: RunFailure | None = None
     sandbox: str | None = None
     sandbox_ref: str | None = None        # workload id in the sandbox's SPIFFE ID
     base_sha: str | None = None

@@ -32,9 +32,11 @@ from starlette.routing import Route
 
 from ..git import make_git_endpoint
 from ..identity import make_token_endpoint
+from ..sandbox import agentlog
 from ..store import DocStoreError
 from ..util import bearer
 from ..workflow.engine import Controller, WorkflowError
+from ..workflow.model import LIVE_RUN
 from . import views
 from .mcp import build_mcp
 
@@ -189,8 +191,15 @@ def build_app(ctl: Controller) -> Starlette:
 
     @api()
     async def run_log(request: Request):
+        """The agent log: plain text, or ``?format=entries`` – the run's stage and failure with
+        the log parsed into display entries (sandbox output and agent events)."""
         ce, run = ctl.find_run(request.path_params["run_id"])
-        return PlainTextResponse(ce.log_tail(run.id, int_param(request, "lines", 300)))
+        text = ce.log_tail(run.id, int_param(request, "lines", 300))
+        if request.query_params.get("format") != "entries":
+            return PlainTextResponse(text)
+        return {"run": run.id, "status": run.status, "stage": run.stage,
+                "failure": run.failure.model_dump(mode="json") if run.failure else None,
+                "live": run.status in LIVE_RUN, "entries": agentlog.entries(text)}
 
     async def stream(request: Request):
         async def gen():

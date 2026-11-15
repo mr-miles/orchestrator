@@ -11,6 +11,7 @@ from ...sandbox import (
     RUN_AGENT_SH,
     SandboxSpec,
     agent_sandbox_name,
+    agentlog,
 )
 from ...util import now_iso
 from .. import governance
@@ -22,13 +23,13 @@ from ..model import (
     LIVE_RUN,
     ORACLE,
     PLAN,
-    R_ACTIVE,
-    R_STARTING,
     REWORK,
     RUNNING,
+    FailureSource,
     Node,
     Resume,
     Run,
+    RunStage,
 )
 from ..roles import handler_for
 from ..view import RoleContext
@@ -206,7 +207,16 @@ class Dispatcher:
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
         (d / "run-agent.sh").write_text(RUN_AGENT_SH)
 
+    async def _stage(self, run: Run, stage: RunStage, message: str) -> None:
+        async with self.c.lock:
+            if run.status in LIVE_RUN and run.stage != RunStage.RUNNING:
+                run.stage = stage
+                self.c.event("sandbox", message, run.node_id, run.id)
+                self.c.save()
+
     async def launch(self, run_id: str) -> None:
+        """PREPARING (OpenShell creates the sandbox) -> LAUNCHING (payload in place, setup script
+        and agent starting) -> RUNNING (set by the agent's first MCP call) -> EXITED."""
         run = self.c.runs[run_id]
         payload = self.c.run_dir(run_id) / "payload"
         try:
@@ -214,35 +224,57 @@ class Dispatcher:
             reuse = h.reuses_sandbox and any(
                 r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values())
             if reuse:
+                await self._stage(run, RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
                 await self.c.runner.upload(run.sandbox, payload)
             else:
+                await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
                 policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
                                                  agent=True, push=h.pushes)
                 run.sandbox_ref = await self.c.runner.create(SandboxSpec(
                     name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
                     change=self.c.cid, task=run.node_id, role=run.role, run=run.id))
+                await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
             proc = await self.c.runner.start_agent(run.sandbox, self.c.run_dir(run_id) / "agent.log")
         except Exception as e:
             shutil.rmtree(payload, ignore_errors=True)
             async with self.c.lock:
-                self.lifecycle.fail_run(run, f"sandbox launch failed: {e}")
+                if run.status in LIVE_RUN:
+                    self.lifecycle.fail_run(run, f"sandbox launch failed: {e}", FailureSource.SYSTEM)
                 self.c.save()
             return
-        shutil.rmtree(payload, ignore_errors=True)            # contains the run token
+        shutil.rmtree(payload, ignore_errors=True)
         (self.c.run_dir(run_id) / "policy.yaml").unlink(missing_ok=True)
         async with self.c.lock:
             self.c.procs[run_id] = proc
-            if run.status == R_STARTING:
-                run.status = R_ACTIVE
-            self.c.event("sandbox", f"agent started in sandbox {run.sandbox}", run.node_id, run_id)
+            self.c.event("sandbox", f"agent process started in sandbox {run.sandbox}",
+                         run.node_id, run_id)
             self.c.save()
         rc = await proc.wait()
         async with self.c.lock:
             self.c.procs.pop(run_id, None)
             run.exit_code = rc
             if run.status in LIVE_RUN:
-                self.lifecycle.fail_run(run, f"agent exited with code {rc} without an accepted report")
+                reason, source = self._exit_reason(run, rc)
+                self.lifecycle.fail_run(run, reason, source, exit_code=rc)
             else:
                 self.c.event("agent", f"agent process exited ({rc})", run.node_id, run_id)
+            run.stage = RunStage.EXITED
             self.lifecycle.archive_log(run)
             self.c.save()
+
+    def _exit_reason(self, run: Run, rc: int) -> tuple[str, FailureSource]:
+        """Why a live run's process ended. The agent CLI's own result event means the agent ran
+        and ended (an agent error); without one the process or its setup failed (a system
+        error)."""
+        log = self.lifecycle.log_tail(run.id, 2000)
+        result = agentlog.agent_result(log)
+        if result is not None:
+            if result.is_error:
+                return f"the agent ended with an error ({result.subtype}): {result.message[:500]}", \
+                    FailureSource.AGENT
+            return (f"the agent finished without an accepted report: {result.message[:300]}",
+                    FailureSource.AGENT)
+        when = "after connecting" if run.stage == RunStage.RUNNING else "before connecting"
+        last = agentlog.last_output(log)
+        return (f"agent process exited with code {rc} {when}" + (f": {last}" if last else ""),
+                FailureSource.SYSTEM)

@@ -12,7 +12,17 @@ from pydantic import BaseModel
 
 from ...store import DocVersion
 from .. import attest, governance
-from ..model import BUILD, ESCALATED, Change, Escalation, Node, Oracle, Resume, Run
+from ..model import (
+    BUILD,
+    ESCALATED,
+    Change,
+    Escalation,
+    FailureSource,
+    Node,
+    Oracle,
+    Resume,
+    Run,
+)
 from .common import log
 from .services import EngineHost, Services
 from .state import StateStore
@@ -54,11 +64,12 @@ class ChangeCore:
 
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
                  run: str | None = None, missing_decision: str | None = None,
-                 log_tail: str | None = None) -> None:
+                 log_tail: str | None = None, source: FailureSource | None = None) -> None:
         """Stop the node for a human; ``resume`` says where it continues once resolved."""
         node.status = ESCALATED
         node.escalation = Escalation(kind=kind, reason=reason, resume=resume, run=run,
-                                     missing_decision=missing_decision, log_tail=log_tail)
+                                     missing_decision=missing_decision, log_tail=log_tail,
+                                     source=source)
         self.event("escalation", f"{kind}: {reason}", node.id, run)
 
     def oracle_commands(self) -> list[str]:

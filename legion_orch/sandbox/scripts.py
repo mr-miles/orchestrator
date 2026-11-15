@@ -20,8 +20,10 @@ SB="$(cd "$(dirname "$0")/.." && pwd)"   # <sandbox root>/payload/<this script>
 P="$SB/payload"
 set -a; source "$P/run.env"; set +a
 """ + GIT_AUTH + r"""
+echo "[legion] setup: run ${LEGION_RUN_ID:-?} (${LEGION_ROLE:-?}) in $SB"
 if [ "$LEGION_NEEDS_REPO" = "1" ]; then
   if [ ! -d "$SB/work/.git" ]; then
+    echo "[legion] cloning $LEGION_GIT_URL"
     git_auth clone --quiet "$LEGION_GIT_URL" "$SB/work"
   fi
   cd "$SB/work"
@@ -36,6 +38,9 @@ if [ "$LEGION_NEEDS_REPO" = "1" ]; then
   git cat-file -e "$LEGION_BASE_SHA^{commit}" 2>/dev/null || git fetch --quiet origin "$LEGION_BASE_SHA"
   if git rev-parse --verify --quiet "refs/heads/$LEGION_BRANCH" >/dev/null; then
     git checkout --quiet "$LEGION_BRANCH"
+  elif git rev-parse --verify --quiet "refs/remotes/origin/$LEGION_BRANCH" >/dev/null; then
+    # a fresh sandbox (e.g. after a retry) continues from what earlier runs pushed
+    git checkout --quiet -B "$LEGION_BRANCH" "origin/$LEGION_BRANCH"
   else
     git checkout --quiet -B "$LEGION_BRANCH" "$LEGION_BASE_SHA"
   fi
@@ -44,6 +49,7 @@ else
 fi
 # The agent command finds its inputs through these, under any runner (/sandbox in OpenShell).
 export LEGION_PAYLOAD="$P" LEGION_MCP_CONFIG="$P/mcp.json"
+echo "[legion] starting the agent in $PWD"
 exec bash -lc "$LEGION_AGENT_COMMAND"
 """
 

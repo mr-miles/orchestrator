@@ -25,6 +25,7 @@ from ..model import (
     SHIP,
     VERIFYING,
     Change,
+    FailureSource,
     Node,
     Run,
 )
@@ -55,7 +56,7 @@ class ChangeEngine(ChangeCore):
         self._acceptance = Acceptance(self, self._lifecycle)
         self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
         self._reports = Reports(self, self._lifecycle, roles=self)
-        self._gates = HumanGates(self, self._graph, self._acceptance)
+        self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
                                     self._acceptance)
 
@@ -79,7 +80,8 @@ class ChangeEngine(ChangeCore):
         interrupted verification, merge and ship steps resume."""
         for run in self.runs.values():
             if run.status in LIVE_RUN:
-                self._lifecycle.fail_run(run, "controller restarted while the run was live")
+                self._lifecycle.fail_run(run, "controller restarted while the run was live",
+                                         FailureSource.CONTROLLER)
         for node in self.nodes.values():
             if node.status == VERIFYING:
                 self.spawn(self._acceptance.verify_node(node.id))
@@ -87,6 +89,7 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.merge_node(node.id))
             elif node.kind == SHIP and node.status == RUNNING:
                 self.spawn(self._acceptance.ship())
+        self._gates.resume_retries()
         self.save()
 
     async def tick(self) -> None:
@@ -96,6 +99,9 @@ class ChangeEngine(ChangeCore):
     async def agent_write(self, run: Run, path: str, content: str,
                           base_version: int | None) -> DocVersion:
         return await self._reports.agent_write(run, path, content, base_version)
+
+    def connected(self, run: Run) -> None:
+        self._reports.connected(run)
 
     def progress(self, run: Run, message: str, percent: float | None) -> None:
         self._reports.progress(run, message, percent)

@@ -38,6 +38,16 @@ async function refresh() {
 }
 
 function badge(s) { return `<span class="badge" style="background:${color(s)}">${esc(s)}</span>`; }
+const STAGE_COLORS = {PREPARING:'#a78bfa', LAUNCHING:'#fbbf24', RUNNING:'#3b82f6', EXITED:'#6b7280'};
+const STAGE_TEXT = {PREPARING:'preparing sandbox', LAUNCHING:'launching agent', RUNNING:'agent connected', EXITED:'exited'};
+function stageBadge(r) { return r.stage ? `<span class="badge" title="${esc(r.stage)}" style="background:${STAGE_COLORS[r.stage]||'#888'}">${esc(STAGE_TEXT[r.stage]||r.stage)}</span>` : ''; }
+const SOURCE_TEXT = {AGENT:'agent error', SYSTEM:'system error', TIMEOUT:'timeout', CONTROLLER:'controller error'};
+function sourceBadge(src) { return src ? `<span class="badge src-${esc(src)}">${esc(SOURCE_TEXT[src]||src)}</span>` : ''; }
+function failureHtml(f) {
+  if (!f) return '';
+  return `<div>${sourceBadge(f.source)} ${f.stage?`<span class="muted">while ${esc(STAGE_TEXT[f.stage]||f.stage)}</span>`:''}${f.exit_code!=null?` <span class="muted">exit ${f.exit_code}</span>`:''}
+    <div class="${f.source==='AGENT'?'':'err'}">${esc(f.reason)}</div></div>`;
+}
 function short(sha) { return sha ? `<code>${sha.slice(0,10)}</code>` : '—'; }
 
 function renderHeader() {
@@ -119,9 +129,9 @@ function renderLive() {
   const live = S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status));
   $('#livebody').innerHTML = live.length ? live.map(r => {
     const p = r.progress[r.progress.length-1];
-    return `<div class="card"><div class="row"><b>${esc(r.id)}</b> ${badge(r.status)} <span>${esc(r.role)}</span> <a ${on('select', r.node_id)}>${esc(r.node_id)}</a></div>
+    return `<div class="card"><div class="row"><b>${esc(r.id)}</b> ${stageBadge(r) || badge(r.status)} <span>${esc(r.role)}</span> <a ${on('select', r.node_id)}>${esc(r.node_id)}</a> <span style="flex:1"></span><a ${on('showLog', r.id)}>log</a></div>
       <div class="muted">soul ${esc(r.soul)} · sandbox <code>${esc(r.sandbox)}</code> · reports ${r.attempts}</div>
-      ${p ? `<div>${p.percent!=null?`<b>${Math.round(p.percent)}%</b> `:''}${esc(p.message)}</div>` : '<div class="muted">starting…</div>'}</div>`;
+      ${p ? `<div>${p.percent!=null?`<b>${Math.round(p.percent)}%</b> `:''}${esc(p.message)}</div>` : `<div class="muted">${esc(STAGE_TEXT[r.stage]||'starting')}…</div>`}</div>`;
   }).join('') : '<span class="muted">none</span>';
 }
 
@@ -138,13 +148,15 @@ function actionForm(n) {
   const c = S.change;
   if (n.status === 'ESCALATED') {
     const e = n.escalation || {};
-    return `<div class="card" style="border-color:var(--ESCALATED)"><b>Escalation: ${esc(e.kind)}</b><div>${esc(e.reason)}</div>
+    if (e.retrying) return `<div class="card" style="border-color:var(--ESCALATED)"><b>Retrying</b> <span class="muted">removing the old sandbox, then dispatching a new run…</span></div>`;
+    return `<div class="card" style="border-color:var(--ESCALATED)"><b>Escalation: ${esc(e.kind)}</b> ${sourceBadge(e.source)}<div>${esc(e.reason)}</div>
+      ${e.run ? `<a ${on('showLog', e.run)}>agent log of ${esc(e.run)}</a>` : ''}
       ${e.missing_decision ? `<div><b>Decision needed:</b> ${esc(e.missing_decision)}</div>` : ''}
-      ${e.log_tail ? `<pre>${esc(e.log_tail)}</pre>` : ''}
+      ${e.log_tail ? `<details><summary class="muted">last log lines</summary><pre>${esc(e.log_tail)}</pre></details>` : ''}
       <textarea id="f_text" placeholder="answer / decision (attested as feedback)"></textarea>
       <input id="f_reason" placeholder="override reason (≥24 chars, build tasks only)">
       <button class="act" ${on('act', n.id, 'answer', 'answer')}>Answer &amp; resume</button>
-      <button class="act warn" ${on('act', n.id, 'retry', 'none')}>Retry</button>
+      <button class="act warn" title="removes the failed run's sandbox, then starts a new run" ${on('act', n.id, 'retry', 'none')}>Retry</button>
       ${n.kind==='build'?`<button class="act warn" ${on('act', n.id, 'override_accept', 'override')}>Override accept</button>`:''}
       <button class="act danger" ${on('act', n.id, 'abandon', 'none', null, 'Abandon the change?')}>Abandon</button></div>`;
   }
@@ -201,7 +213,8 @@ function renderDetail() {
       ${findingsHtml(r.findings)}</div>`).join('');
   if (n.feedback.length) h += `<h2 style="margin-top:10px">Feedback (attested)</h2>` + n.feedback.map(f => `<div class="card"><span class="pill">cycle ${f.cycle}</span> <span class="pill">${esc(f.source)}</span> ${esc(f.text)}
       <div class="mono muted">${(f.attestations||[]).map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div></div>`).join('');
-  if (runs.length) h += `<h2 style="margin-top:10px">Runs</h2>` + runs.map(r => `<div class="card"><div class="row"><b>${r.id}</b> ${badge(r.status)} ${esc(r.role)} · cycle ${r.cycle} · ${esc(r.soul)}</div>
+  if (runs.length) h += `<h2 style="margin-top:10px">Runs</h2>` + runs.map(r => `<div class="card"><div class="row"><b>${r.id}</b> ${badge(r.status)} ${['STARTING','ACTIVE'].includes(r.status)?stageBadge(r):''} ${esc(r.role)} · cycle ${r.cycle} · ${esc(r.soul)}</div>
+      ${failureHtml(r.failure)}
       <div class="muted mono">sandbox ${esc(r.sandbox)}${r.sandbox_deleted?' (deleted)':''} · pin ${esc((r.prompt_pin||'').slice(7,19))} · branch ${esc(r.branch)}</div>
       ${r.progress.slice(-4).map(p=>`<div>· ${p.percent!=null?Math.round(p.percent)+'% ':''}${esc(p.message)}</div>`).join('')}
       ${r.report?`<div><b>${esc(r.report.status)}</b>: ${esc(r.report.summary)}</div><div class="mono muted">${r.report.attestations.map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div>`:''}
@@ -314,16 +327,73 @@ async function govern(action, payload) {
 }
 function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }
 function openAtt(a) { const m = /^file:(.+)@(\d+)$/.exec(a); if (m) openDoc(m[1], +m[2]); else alert(a); }
-async function showLog(id) { const t = await api(`/api/runs/${id}/log`); popup(`agent log ${id}`, t || '(empty)'); }
-function popup(title, text) { $('#tabbody').innerHTML = `<div class="card"><b>${esc(title)}</b> <a ${on('closePopup')}>close</a><pre style="max-height:600px">${esc(text)}</pre></div>`; }
+// ---- agent log drawer. It lives outside every re-rendered region; while open it polls (the
+// log grows without state changes) and patches entries in place, keeping the scroll position
+// (or following the end when scrolled to the bottom) and any expanded entries.
+let LOG = null;   // {id, raw, data, timer}
+const LOG_KIND = {sandbox:'sandbox', init:'agent start', text:'agent', prompt:'input', thinking:'thinking',
+                  tool_call:'tool', tool_result:'result', result:'final result', event:'event'};
+function entryHtml(e) {
+  const body = e.text ? `<div class="lt">${esc(e.text)}</div>` : '';
+  const head = `<span class="lk">${esc(LOG_KIND[e.kind]||e.kind)}</span>${e.title?`<b>${esc(e.title)}</b>`:''}`;
+  if (e.kind === 'tool_result' && e.text.length > 300)
+    return `<details><summary>${head} <span class="muted">${esc(e.text.slice(0,120))}…</span></summary>${body}</details>`;
+  return head + body;
+}
+async function showLog(id) {
+  if (LOG && LOG.timer) clearInterval(LOG.timer);
+  LOG = {id, raw: false, data: null, timer: setInterval(pollLog, 2000)};
+  $('#logbody').innerHTML = '<span class="muted">loading…</span>';
+  $('#logview').classList.add('open');
+  await pollLog(true);
+}
+function closeLog() { if (LOG && LOG.timer) clearInterval(LOG.timer); LOG = null; $('#logview').classList.remove('open'); }
+function toggleRaw() { if (LOG) { LOG.raw = !LOG.raw; LOG.data = null; pollLog(true); } }
+async function pollLog(force) {
+  if (!LOG) return;
+  const id = LOG.id;
+  if (!force && LOG.data && !LOG.data.live) return;          // finished runs do not change
+  let data, raw;
+  try {
+    data = await api(`/api/runs/${id}/log?format=entries&lines=5000`);
+    if (LOG && LOG.raw) raw = await api(`/api/runs/${id}/log?lines=5000`);
+  } catch (e) { if (LOG && LOG.id === id) $('#logbody').innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+  if (!LOG || LOG.id !== id) return;
+  $('#loghead').innerHTML = `<b>agent log ${esc(id)}</b> ${badge(data.status)} ${data.live?stageBadge(data):''} ${data.failure?sourceBadge(data.failure.source):''}
+    <span style="flex:1"></span><label class="muted"><input type="checkbox" style="width:auto" ${LOG.raw?'checked':''} data-onchange="toggleRaw"> raw</label>
+    <button class="act" style="margin:0" ${on('closeLog')}>close</button>
+    ${data.failure?`<div style="flex-basis:100%">${failureHtml(data.failure)}</div>`:''}`;
+  const box = $('#logbody');
+  const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  if (LOG.raw) {
+    const pre = box.querySelector('pre') || (box.innerHTML = '<pre></pre>', box.querySelector('pre'));
+    if (pre.textContent !== raw) pre.textContent = raw || '(empty)';
+  } else {
+    const old = LOG.data ? LOG.data.entries : null;
+    const ents = data.entries;
+    if (!old || !old.length || JSON.stringify(old[0]) !== JSON.stringify(ents[0]) || ents.length < old.length || !box.querySelector('.le')) {
+      box.innerHTML = ents.length ? ents.map(e => `<div class="le ${esc(e.kind)}${e.error?' error':''}">${entryHtml(e)}</div>`).join('') : '<span class="muted">(empty)</span>';
+    } else {     // patch: changed entries in place, new ones appended
+      const nodes = box.querySelectorAll('.le');
+      ents.forEach((e, i) => {
+        if (i < old.length && JSON.stringify(old[i]) === JSON.stringify(e)) return;
+        const html = `<div class="le ${esc(e.kind)}${e.error?' error':''}">${entryHtml(e)}</div>`;
+        if (i < nodes.length) nodes[i].outerHTML = html; else box.insertAdjacentHTML('beforeend', html);
+      });
+    }
+  }
+  LOG.data = data;
+  if (atEnd || force) box.scrollTop = box.scrollHeight;
+}
 
 const HANDLERS = {
   select, openDoc, openAtt, showLog, startChange, act: actClick, govern: governClick,
   setTab: k => { tab = k; renderTabs(); renderTab(true); },
   newChange: () => { showStart = true; renderHeader(); },
-  closePopup: () => renderTab(),
+  closeLog,
 };
-const CHANGE_HANDLERS = { renderTab: () => renderTab(), pickChange: el => pickChange(el.value) };
+const CHANGE_HANDLERS = { renderTab: () => renderTab(), pickChange: el => pickChange(el.value), toggleRaw };
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && LOG) closeLog(); });
 document.addEventListener('click', ev => {
   const el = ev.target.closest('[data-on]');
   if (!el || !Object.hasOwn(HANDLERS, el.dataset.on)) return;
@@ -341,4 +411,5 @@ const es = new EventSource('/api/stream');
 es.onmessage = async ev => { const v = JSON.parse(ev.data).version; if (v !== lastVersion && !pending) { lastVersion = v; pending = true;
   try { S = await loadState(); renderHeader(); renderPipeline(); renderGraph(); renderLive();
     if (!document.activeElement || !['TEXTAREA','INPUT','SELECT'].includes(document.activeElement.tagName)) renderDetail();
-    if (tab === 'gates') renderTab(); } finally { pending = false; } } };
+    if (tab === 'gates') renderTab();
+    if (LOG) pollLog(); } finally { pending = false; } } };
