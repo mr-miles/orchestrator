@@ -71,15 +71,26 @@ async def tools_only(ctx, call_next):
 
 
 async def build_mcp(ctl: Controller) -> MCPServer:
-    server = MCPServer("legion", instructions=INSTRUCTIONS, middleware=[tools_only])
+    def caller(req) -> tuple[ChangeEngine, Run] | None:
+        """The live run behind a request's bearer, marked connected: any MCP message from its
+        sandbox (initialize and tools/list included, which the agent CLI sends at start-up,
+        long before its first tool call) shows the agent is up and reaches the controller."""
+        found = ctl.run_for_bearer(bearer(req.headers.get("authorization", "")) if req else None)
+        if found is not None:
+            found[0].connected(found[1])
+        return found
+
+    async def mark_connected(ctx, call_next):
+        caller(ctx.request)
+        return await call_next(ctx)
+
+    server = MCPServer("legion", instructions=INSTRUCTIONS, middleware=[mark_connected, tools_only])
 
     def current(ctx: Context) -> tuple[ChangeEngine, Run]:
-        req = ctx.request_context.request
-        found = ctl.run_for_bearer(bearer(req.headers.get("authorization", "")) if req else None)
+        found = caller(ctx.request_context.request)
         if found is None:
             raise ToolError("no live run for this sandbox identity (runs end when their report is "
                             "accepted; check the legion-controller provider is attached)")
-        found[0].connected(found[1])
         return found
 
     # ------------------------------------------------------------------ store tools

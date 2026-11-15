@@ -453,6 +453,44 @@ def test_mcp_server_offers_tools_only(tmp_path):
     asyncio.run(go())
 
 
+def test_agent_connects_at_start_up_not_first_tool_call(tmp_path):
+    """The agent CLI connects (initialize, tools/list) as it starts and may think for minutes
+    before its first tool call. Any MCP message from the run's sandbox marks it RUNNING."""
+    import httpx
+    import uvicorn
+    from engine_harness import Flow
+
+    from legion_orch.server.web import build_mcp_app
+
+    async def go():
+        f = await Flow.create(tmp_path)
+        run = f.run("intake")
+        assert (run.status, run.stage) == ("STARTING", "LAUNCHING")
+        token = f.ctl.auth.identity.tokens.issue(WorkloadBinding(
+            sandbox=run.sandbox, change=f.ce.cid, task=run.node_id, role=run.role), "x")
+        port = _free_port()
+        srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
+                                            port=port, log_level="warning"))
+        task = asyncio.create_task(srv.serve())
+        while not srv.started:
+            await asyncio.sleep(0.02)
+        hdr = {"Accept": "application/json, text/event-stream"}
+        body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "1"}}}
+        try:
+            async with httpx.AsyncClient() as c:
+                await c.post(f"http://127.0.0.1:{port}/mcp", headers=hdr, json=body)
+                assert (run.status, run.stage) == ("STARTING", "LAUNCHING")   # no identity
+                await c.post(f"http://127.0.0.1:{port}/mcp", json=body,
+                             headers=hdr | {"Authorization": f"Bearer {token}"})
+        finally:
+            srv.should_exit = True
+            await task
+        assert (run.status, run.stage) == ("ACTIVE", "RUNNING")
+    asyncio.run(go())
+
+
 def test_agent_listeners_keep_idle_connections_open(tmp_path):
     """The gateway relays each agent connection to one controller connection; if the controller
     closes it while the model is busy writing (uvicorn's default is 5 s idle), the agent's next

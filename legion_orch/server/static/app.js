@@ -58,6 +58,11 @@ function typingIn(sel) {
 function badge(s) { return `<span class="badge" style="background:${color(s)}">${esc(s)}</span>`; }
 const STAGE_COLORS = {PREPARING:'#a78bfa', LAUNCHING:'#fbbf24', RUNNING:'#3b82f6', EXITED:'#6b7280'};
 const STAGE_TEXT = {PREPARING:'preparing sandbox', LAUNCHING:'launching agent', RUNNING:'agent connected', EXITED:'exited'};
+// A node is RUNNING from dispatch; until its live runs' agents connect, say how far they got.
+function nodeState(n, live) {
+  const waiting = live.find(r => r.stage === 'PREPARING') || live.find(r => r.stage === 'LAUNCHING');
+  return n.status === 'RUNNING' && waiting ? waiting.stage.toLowerCase() : n.status.toLowerCase();
+}
 function stageBadge(r) { return r.stage ? `<span class="badge" title="${esc(r.stage)}" style="background:${STAGE_COLORS[r.stage]||'#888'}">${esc(STAGE_TEXT[r.stage]||r.stage)}</span>` : ''; }
 const SOURCE_TEXT = {AGENT:'agent error', SYSTEM:'system error', TIMEOUT:'timeout', CONTROLLER:'controller error'};
 function sourceBadge(src) { return src ? `<span class="badge src-${esc(src)}">${esc(SOURCE_TEXT[src]||src)}</span>` : ''; }
@@ -173,7 +178,7 @@ function renderGraph() {
   for (const n of S.nodes) {
     const p = pos[n.id], c = color(n.status);
     const live = S.runs.filter(r => r.node_id === n.id && ['STARTING','ACTIVE'].includes(r.status));
-    const sub = `${n.status.toLowerCase()}${n.cycle>1?' · cycle '+n.cycle:''}${live.length?' · '+live.map(r=>r.role).join('+'):''}`;
+    const sub = `${nodeState(n, live)}${n.cycle>1?' · cycle '+n.cycle:''}${live.length?' · '+live.map(r=>r.role).join('+'):''}`;
     const title = n.kind==='human' ? `${n.id} · ${n.title}` : n.title;
     boxes += `<g class="node ${n.status} ${selected===n.id?'sel':''}" ${on('select', n.id)}>
       <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="7" fill="${c}22" stroke="${c}"/>
