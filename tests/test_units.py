@@ -862,3 +862,28 @@ def test_sandbox_root_and_user_follow_the_image(tmp_path):
     local = LocalRunner(cfg, gateway=None)
     assert local._map("sb", "/home/agent/work") == str(local._root("sb") / "work")
     assert local._map("sb", "/home/agentx") == "/home/agentx"          # only the root itself
+
+
+def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
+    """The gateway refuses MCP methods the policy does not list. Every protocol method our
+    server answers – except the prompt/resource surfaces it deliberately does not offer – must
+    be allowed in both the sandbox policy and the provider profile, and nothing else.
+    (subscriptions/listen, a 2026-07-28 core method, was once missing and denied.)"""
+    import yaml as _y
+    from mcp.server.mcpserver import MCPServer
+
+    from legion_orch.sandbox import provider_profile, render_policy
+    from legion_orch.sandbox.templates import MCP_VERSIONS
+    from legion_orch.server import MCP_TOOLS
+    cfg = _os_cfg(tmp_path)
+    policy = _y.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=list(MCP_TOOLS)))
+    endpoints = [policy["network_policies"]["legion_mcp"]["endpoints"][0],
+                 next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
+                      if e["protocol"] == "mcp")]
+    served = set(MCPServer("probe")._lowlevel_server._request_handlers)
+    not_offered = {m for m in served if m.split("/")[0] in ("prompts", "resources")}
+    lifecycle = {"initialize", "notifications/initialized", "notifications/cancelled"}
+    for ep in endpoints:
+        allowed = {r["allow"]["method"] for r in ep["rules"]}
+        assert allowed == (served - not_offered) | lifecycle, ep.get("path")
+        assert ep["mcp"]["versions"] == MCP_VERSIONS

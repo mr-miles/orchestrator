@@ -37,6 +37,7 @@ network_policies:
           - allow: { method: ping }
           - allow: { method: tools/list }
           - allow: { method: server/discover }
+          - allow: { method: subscriptions/listen }      # 2026-07-28: server events (SEP-2575)
           - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
     binaries: ${AGENT_BINARIES}
 
