@@ -769,3 +769,35 @@ def test_sandbox_names_fit_the_gateway_limit():
     for bad in ("lg-c261114-a16e-r0001", "lg--x", "Lg-x", "-lg", "lg-x-", "lg_x"):
         with pytest.raises(ValueError, match="at most 19"):
             check_name(bad)
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_setup_workspace_imports_or_updates(tmp_path, exists):
+    """A fresh workspace imports the profile and creates the provider; a configured one updates
+    the profile (with its resource_version) and keeps the provider."""
+    import subprocess
+
+    import yaml as _y
+
+    from legion_orch.sandbox import setup_workspace
+    cfg = _os_cfg(tmp_path)
+    calls = []
+
+    def run(cmd, probe):
+        calls.append((cmd[5:], probe))
+        if cmd[5:7] == ["profile", "export"]:
+            out = '{"id": "legion-controller", "resource_version": "42"}' if exists else ""
+            return subprocess.CompletedProcess(cmd, 0 if exists else 1, out, "")
+        if cmd[5:7] == ["provider", "get"]:
+            return subprocess.CompletedProcess(cmd, 0 if exists else 1, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    out = tmp_path / "profile.yaml"
+    assert setup_workspace(cfg, {"id": "legion-controller"}, out, run, say=lambda _: None) == 0
+    steps = [c for c, probe in calls if not probe]
+    written = _y.safe_load(out.read_text())
+    if exists:
+        assert steps == [["profile", "update", "-f", str(out), "legion-controller"]]
+        assert written == {"id": "legion-controller", "resource_version": "42"}
+    else:
+        assert [s[:2] for s in steps] == [["profile", "import"], ["provider", "create"]]
+        assert written == {"id": "legion-controller"}

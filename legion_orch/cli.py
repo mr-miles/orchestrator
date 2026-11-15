@@ -100,22 +100,23 @@ def cmd_serve(cfg: Config, args) -> int:
 
 def cmd_setup_openshell(cfg: Config, args) -> int:
     import subprocess
+    from pathlib import Path
 
     import yaml
 
-    from .sandbox import provider_profile, setup_commands
+    from .sandbox import provider_profile, setup_commands, setup_workspace
     from .server import MCP_TOOLS
+    profile = provider_profile(cfg, list(MCP_TOOLS))
+    if args.apply:       # import or update the profile; create the provider if missing
+        run = lambda cmd, probe: subprocess.run(cmd, capture_output=probe, text=True)
+        return setup_workspace(cfg, profile, Path(args.out), run)
     with open(args.out, "w") as f:
-        yaml.safe_dump(provider_profile(cfg, list(MCP_TOOLS)), f, sort_keys=False)
+        yaml.safe_dump(profile, f, sort_keys=False)
     print(f"wrote {args.out}")
     for cmd in setup_commands(cfg, args.out):
         print("$", " ".join(cmd))
-        if args.apply:
-            r = subprocess.run(cmd)
-            if r.returncode != 0:
-                return r.returncode
-    if not args.apply:
-        print("(re-run with --apply to execute; this is done once per workspace, not per sandbox)")
+    print("(re-run with --apply to execute; it updates an existing profile and keeps an existing "
+          "provider, so it is safe to re-run after a change)")
     return 0
 
 
