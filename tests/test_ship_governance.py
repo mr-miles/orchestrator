@@ -223,6 +223,22 @@ async def test_integration_fail_verdict_and_failing_oracle_commands(f: Flow):
 
 
 @scenario()
+async def test_oracle_command_not_found_escalates_and_retry_reverifies(f: Flow):
+    """G-V2 at integration: retry re-runs the oracle commands, no new integration run."""
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    f.runner.commands["sh tests/acceptance/test_greet.sh"] = (127, "sh: not found\n")
+    await f.integration(verdict="PASS")
+    node = f.ce.nodes["integration"]
+    assert node.status == "ESCALATED" and node.escalation.kind == "verify_unrunnable"
+    runs = len(f.runs("integration"))
+    del f.runner.commands["sh tests/acceptance/test_greet.sh"]
+    await f.human("integration", "retry")
+    assert node.status == "ACCEPTED" and len(f.runs("integration")) == runs
+
+
+@scenario()
 async def test_higher_tier_gates_added_to_an_r1_change(f: Flow):
     """R2/R3 gates added by override evaluate (unevaluable / unsatisfied / satisfied) on R1."""
     await f.to_build()

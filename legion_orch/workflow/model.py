@@ -274,7 +274,7 @@ class Verification(Record):
 
 
 class Escalation(Record):
-    kind: str                        # blocked | run_failed | cycle_budget | stale_loop | ...
+    kind: str                        # blocked | run_failed | cycle_budget | verify_unrunnable | ...
     reason: str
     resume: Resume
     at: str = Field(default_factory=now_iso)

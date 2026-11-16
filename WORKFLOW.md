@@ -377,6 +377,7 @@ Results are written by the controller to `tasks/{{task_id}}/verification.json` (
 | ID | Rule |
 | --- | --- |
 | G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
+| G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the node escalates `verify_unrunnable` instead of spending a rework cycle (oracle commands at integration likewise). **Retry** re-runs verification at the same candidate, e.g. after the image is fixed. |
 
 Exit codes are only as trustworthy as the code a command runs: a test process that imports the
 code under test can be made to exit 0. So the protected acceptance tests must be **black-box and

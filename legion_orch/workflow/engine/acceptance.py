@@ -40,6 +40,8 @@ from .common import _slug
 from .core import ChangeCore
 from .runs import RunLifecycle
 
+EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
+
 
 @dataclass
 class VerifierSandbox:
@@ -140,8 +142,17 @@ class Acceptance:
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
             fails = [r for r in res.results if r.exit_code != 0]
+            unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND]
             if res.infra_error:
                 c.escalate(node, "verify_infra", res.infra_error, resume=Resume.VERIFYING)
+            elif unrunnable:
+                # G-V2: the verifier image lacks a command – the agent cannot fix that, so no
+                # rework cycle is spent; a human fixes the image and retries (re-verifies).
+                c.escalate(node, "verify_unrunnable",
+                           "G-V2: command(s) not found in the verifier sandbox: "
+                           + ", ".join(f"`{r.command}`" for r in unrunnable),
+                           resume=Resume.VERIFYING,
+                           log_tail="\n".join(r.output[-800:] for r in unrunnable))
             elif not res.ok:
                 if node.kind == BUILD:
                     self.rework(node, [Feedback(cycle=node.cycle, source="verification",
