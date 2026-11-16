@@ -30,6 +30,7 @@ TEMPLATES = {
     "verifier_sandbox": "verifier-sandbox.template.yaml",
     "provider_profile": "legion-provider-profile.template.yaml",
     "provider": "legion-provider.template.yaml",
+    "sandbox_resources": "sandbox-resources.template.yaml",
 }
 
 # name -> description. Keep policies/README.md in sync (tests check both directions).
@@ -54,9 +55,12 @@ VOCABULARY: dict[str, str] = {
     "PROFILE_ID": "OpenShell provider profile id / provider type (legion-controller)",
     # OpenShell placement and images (from sandbox.*)
     "WORKSPACE": "OpenShell workspace (sandbox.workspace)",
-    "AGENT_IMAGE": "image for agent sandboxes (sandbox.image), null for the gateway default",
-    "VERIFIER_IMAGE": "image for verifier sandboxes (sandbox.verifier_image, else sandbox.image)",
-    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: PROVIDER + sandbox.providers",
+    "AGENT_IMAGE": "image for agent sandboxes: its environment image, else sandbox.image "
+                   "(null: gateway default)",
+    "VERIFIER_IMAGE": "image for verifier sandboxes: its environment image, else "
+                      "sandbox.verifier_image or sandbox.image",
+    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: PROVIDER + sandbox.providers + "
+                         "its environment's network providers",
     "AGENT_BINARIES": "policy binaries [{path}] of the agent CLI (sandbox.agent_binaries)",
     "GIT_BINARIES": "policy binaries [{path}] of git and its HTTP remote helpers",
     "PROFILE_BINARIES": "plain paths of agent and git binaries, for the provider profile",
@@ -71,6 +75,14 @@ VOCABULARY: dict[str, str] = {
     "RUN_ID": "run id that created the sandbox (verifiers: the verifier name)",
     "ROLE": "role the sandbox serves (implementer, reviewer, ..., verifier)",
     "TASK_ID": "node / task id the sandbox serves (sanitised automatically in labels)",
+    "VERIFIER_PROVIDERS": "providers attached to verifier sandboxes: PROVIDER + its environment's "
+                          "network providers",
+    "DRIVER_CONFIG": "--driver-config-json for the sandbox's resources (rendered "
+                     "sandbox-resources template), null for driver defaults",
+    # environment resources (sandbox-resources template; null when the spec leaves them out)
+    "VCPUS": "vCPUs requested by the sandbox's environment profile",
+    "MEMORY_MIB": "memory (MiB) requested by the sandbox's environment profile",
+    "DISK_MIB": "disk (MiB) requested by the sandbox's environment profile",
 }
 
 MCP_VERSIONS = ["2025-06-18", "2025-11-25", "2026-07-28"]
@@ -105,6 +117,7 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
         "PROVIDER": ic.provider, "PROFILE_ID": PROFILE_ID, "WORKSPACE": sc.workspace,
         "AGENT_IMAGE": sc.image, "VERIFIER_IMAGE": sc.verifier_image or sc.image,
         "SANDBOX_PROVIDERS": list(dict.fromkeys([ic.provider, *sc.providers])),
+        "VERIFIER_PROVIDERS": [ic.provider], "DRIVER_CONFIG": None,
         "SANDBOX_WRITABLE": [sc.root, "/tmp", "/dev/null"],
         "RUN_AS_USER": sc.run_as_user, "RUN_AS_GROUP": sc.run_as_group,
         "AGENT_BINARIES": [{"path": b} for b in sc.agent_binaries],

@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from ...config import Config
 from ...git import GitRemote
-from ...sandbox import Runner, render_policy
+from ...sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
 from ...store import DocStore
 from ..assets import Assets
 from .auth import WorkloadAuth
@@ -27,6 +27,8 @@ class Services:
     auth: WorkloadAuth
     tmp: Path                                   # transient payloads and live logs only
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Builds environment images and network providers (podman + openshell; no-op locally).
+    builder: EnvironmentBuilder = field(default_factory=NoBuilder)
     procs: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     # The gateway's MCP tool allowlist, set when the MCP server is built (sandbox policies).
     mcp_tools: list[str] | None = None

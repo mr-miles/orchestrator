@@ -1,0 +1,3 @@
+description: npm registry, read-only (npm, npx)
+endpoints:
+  - {host: registry.npmjs.org, port: 443, access: read-only}

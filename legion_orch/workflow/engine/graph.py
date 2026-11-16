@@ -9,16 +9,21 @@ from ..model import (
     BASELINE,
     BUILD,
     CRITIQUE,
+    ENVIRONMENT,
     H_CHANGE,
+    H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
     INTEGRATION,
     ORACLE,
+    PENDING,
     PLAN,
+    PROVISION,
     RELEASE,
     REWORK,
     SHIP,
+    Feedback,
     Node,
 )
 from .core import ChangeCore
@@ -38,11 +43,23 @@ class StageGraph:
         r = risk.rank(tier)
         c.add_node(Node(id=PLAN, kind=PLAN, title="Plan: spec, oracle, task graph",
                         depends_on=[H_REQUIREMENTS]))
-        c.add_node(Node(id=CRITIQUE, kind=CRITIQUE, title="Critique: pre-mortem", depends_on=[PLAN]))
-        h2_deps = [CRITIQUE]
+        critique_deps, after_critique = [PLAN], CRITIQUE
+        if c.cfg.environment is not None:          # sandbox environment stage (§5.3a)
+            c.add_node(Node(id=ENVIRONMENT, kind=ENVIRONMENT,
+                            title="Environment: sandbox tools, network, resources", depends_on=[PLAN]))
+            critique_deps = [ENVIRONMENT]
+        c.add_node(Node(id=CRITIQUE, kind=CRITIQUE, title="Critique: pre-mortem",
+                        depends_on=critique_deps))
+        if c.cfg.environment is not None:
+            c.add_node(Node(id=H_ENV, kind=HUMAN, title="Approve sandbox environment",
+                            depends_on=[CRITIQUE]))
+            c.add_node(Node(id=PROVISION, kind=PROVISION, title="Provision: images & network providers",
+                            depends_on=[H_ENV]))
+            after_critique = PROVISION
+        h2_deps = [after_critique]
         if r >= 2:
             c.add_node(Node(id=ORACLE, kind=ORACLE, title="Oracle: protected acceptance tests",
-                            depends_on=[CRITIQUE]))
+                            depends_on=[after_critique]))
             h2_deps = [ORACLE]
         if r >= 3:
             c.add_node(Node(id=BASELINE, kind=BASELINE, title="Independent baseline", depends_on=[ORACLE]))
@@ -81,6 +98,21 @@ class StageGraph:
         for nid in (INTEGRATION, RELEASE, H_CHANGE, SHIP):
             if nid in c.nodes:
                 c.nodes[nid] = c.nodes.pop(nid)
+
+    def reset_environment(self, feedback: list[Feedback]) -> None:
+        """The plan is being reworked: the environment re-runs with the feedback, and its
+        approval and build are dropped (H-E1 and provision follow it again)."""
+        c = self.c
+        if ENVIRONMENT not in c.nodes:
+            return
+        env = c.nodes[ENVIRONMENT]
+        env.cycle += 1
+        env.feedback += feedback
+        env.status = PENDING
+        for nid in (H_ENV, PROVISION):
+            c.nodes[nid].status = PENDING
+        c.change.approvals.pop(H_ENV, None)
+        c.change.environment = None
 
     def deps_accepted(self, node: Node) -> bool:
         """Guard G-D1."""

@@ -1,0 +1,4 @@
+description: Python Package Index, read-only (uv)
+endpoints:
+  - {host: pypi.org, port: 443, access: read-only}
+  - {host: files.pythonhosted.org, port: 443, access: read-only}

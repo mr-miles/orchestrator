@@ -348,6 +348,23 @@ async def test_verifier_infrastructure_failure_escalates_and_retry_reverifies(f:
 
 
 @scenario()
+async def test_command_not_found_escalates_without_spending_a_cycle(f: Flow):
+    """G-V2: exit 127 is the verifier image's problem, not the agent's: no rework run."""
+    await f.to_build()
+    f.runner.commands["grep -q hello src/greet.txt"] = (127, "bash: grep: command not found\n")
+    await f.implement()
+    node = f.ce.nodes["build:T1"]
+    assert node.status == ESCALATED and node.escalation.kind == "verify_unrunnable"
+    assert "grep -q hello src/greet.txt" in node.escalation.reason
+    assert "command not found" in node.escalation.log_tail
+    assert node.cycle == 1 and not [x for x in node.feedback if x.source == "verification"]
+    assert len(f.runs("build:T1")) == 1 and f.ce.latest("tasks/T1/verification.json")
+    del f.runner.commands["grep -q hello src/greet.txt"]       # the image is fixed
+    await f.human("build:T1", "retry")
+    assert node.status == REVIEWING and node.cycle == 1
+
+
+@scenario()
 async def test_task_without_verification_commands_never_passes(f: Flow):
     await f.intake()
     await f.human("H-1", "accept", tier="R0", reason="a trivial change with nothing at stake here")

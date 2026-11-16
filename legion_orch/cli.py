@@ -1,6 +1,7 @@
 """Command line: ``legion-orch serve -c orchestrator.yaml``.
 
-Local commands (``serve``, ``check``, ``setup-openshell``) work on the config; the others talk to a
+Local commands (``serve``, ``check``, ``setup-openshell``, ``library list``) work on the config;
+the others (including ``library promote``) talk to a
 running controller's operator API through :class:`OperatorClient`.
 """
 from __future__ import annotations
@@ -37,6 +38,16 @@ def _parser() -> argparse.ArgumentParser:
                                         "approve_protected_paths | approve_surface")
     gov.add_argument("change")
     gov.add_argument("action")
+    lib = sub.add_parser("library", help="the environment library: list | promote an approved "
+                                         "proposal into it")
+    lsub = lib.add_subparsers(dest="library_cmd", required=True)
+    lsub.add_parser("list", help="list the library's tools and network policies")
+    pr = lsub.add_parser("promote", help="copy a tool or network policy proposed in a change's "
+                                         "approved environment spec into the library")
+    pr.add_argument("change")
+    pr.add_argument("kind", choices=["tool", "policy"])
+    pr.add_argument("name")
+    pr.add_argument("--approver", required=True)
     for p in (act, gov):
         p.add_argument("--approver", required=True)
         p.add_argument("--payload", default="{}", type=json.loads, help="JSON payload")
@@ -86,6 +97,11 @@ def cmd_check(cfg: Config, args) -> int:
     from .workflow.assets import Assets
     a = Assets(cfg.assets_dir)
     print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
+    if cfg.environment is not None:
+        from .workflow.environment import Library
+        lib = Library.for_config(cfg, a.schemas)
+        print(f"environment library {lib.root}: tools={sorted(lib.tools)} "
+              f"policies={sorted(lib.policies)}")
     return 0
 
 
@@ -141,13 +157,27 @@ def cmd_govern(cfg: Config, args) -> int:
                                                    args.payload))
 
 
+def cmd_library(cfg: Config, args) -> int:
+    if cfg.environment is None:
+        print("no environment: section in the config", file=sys.stderr)
+        return 1
+    if args.library_cmd == "list":
+        from .workflow.assets import Assets
+        from .workflow.environment import Library
+        print(Library.for_config(cfg, Assets(cfg.assets_dir).schemas).catalogue())
+        return 0
+    return _show(OperatorClient(cfg).change_action(
+        args.change, "promote_proposal", args.approver, {"kind": args.kind, "name": args.name}))
+
+
 def _show(result: Any) -> int:
     print(json.dumps(result, indent=2))
     return 0
 
 
 COMMANDS = {"check": cmd_check, "serve": cmd_serve, "setup-openshell": cmd_setup_openshell,
-            "changes": cmd_changes, "start": cmd_start, "act": cmd_act, "govern": cmd_govern}
+            "changes": cmd_changes, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
+            "library": cmd_library}
 
 
 def main(argv: list[str] | None = None) -> int:

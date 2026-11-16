@@ -25,7 +25,7 @@ import json
 import os
 import shutil
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Config
@@ -34,6 +34,15 @@ from .templates import base_values, render, spec_to_args
 
 # Obtains a bearer for a sandbox ref (what the OpenShell gateway does for real sandboxes).
 Gateway = Callable[[str], Awaitable[str]]
+
+
+@dataclass
+class SandboxEnv:
+    """A sandbox's environment (from the approved environment spec): image, network providers
+    and resource driver config. None fields keep the configured defaults."""
+    image: str | None = None
+    providers: list[str] = field(default_factory=list)
+    driver_config: str | None = None    # --driver-config-json
 
 
 @dataclass
@@ -46,6 +55,7 @@ class SandboxSpec:
     task: str = ""
     role: str = ""
     run: str = ""
+    env: SandboxEnv | None = None
 
 
 class SandboxError(Exception):
@@ -64,6 +74,18 @@ async def _run(argv: list[str], timeout: float, env: dict | None = None,
         await proc.wait()
         return 124, f"timeout after {timeout}s"
     return proc.returncode, out.decode(errors="replace")
+
+
+def env_values(values: dict, env: SandboxEnv, *, agent: bool) -> dict:
+    """Template values for a sandbox with an environment: its image, providers and resources
+    (the agent or the verifier template's placeholders)."""
+    image, providers = ("AGENT_IMAGE", "SANDBOX_PROVIDERS") if agent else \
+        ("VERIFIER_IMAGE", "VERIFIER_PROVIDERS")
+    out = dict(values) | {"DRIVER_CONFIG": env.driver_config,
+                          providers: list(dict.fromkeys([*values[providers], *env.providers]))}
+    if env.image:
+        out[image] = env.image
+    return out
 
 
 class Runner:
@@ -100,6 +122,8 @@ class OpenShellRunner(Runner):
             "SANDBOX_NAME": spec.name, "POLICY_FILE": str(spec.policy_file),
             "PAYLOAD_UPLOAD": f"{spec.payload_dir}:{self.cfg.sandbox.root}", "CHANGE_ID": spec.change,
             "TASK_ID": spec.task, "ROLE": spec.role, "RUN_ID": spec.run or spec.name}
+        if spec.env:
+            values = env_values(values, spec.env, agent=spec.agent)
         tmpl = render(self.cfg, "agent_sandbox" if spec.agent else "verifier_sandbox", values)
         await self._os("sandbox", "create", *spec_to_args(tmpl), *self.cfg.sandbox.extra_create_args,
                        timeout=900)

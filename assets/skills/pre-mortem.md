@@ -15,4 +15,11 @@ Imagine the plan shipped and failed. For each plausible cause, check the plan:
    code under test), and every runner config/fixture they rely on is in `protected_support`.
    Otherwise an implementer could make the oracle pass without the behaviour – a BLOCKER.
 
+6. **Sandbox environment** (when `plan/environment.json` is among your inputs): every
+   verification, acceptance and integration command can run in the profile of the role that runs
+   it (the `verifier` profile for task verification commands) – each tool it calls is declared;
+   network policies are the least each role needs (judges and the verifier normally need none);
+   every proposed library entry and non-default resource is justified in `rationale`. A command
+   that cannot run in its sandbox is a BLOCKER.
+
 Verdict `REWORK` if any HIGH-confidence BLOCKER or WARNING exists, else `PASS`.

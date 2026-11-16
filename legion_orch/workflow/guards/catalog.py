@@ -41,6 +41,14 @@ GUARDS: dict[str, str] = {
     "G-O2": "acceptance tests exist at oracle commit",
     "G-BL1": "baseline results cover oracle commands at head",
     "H-2": "human approves spec and oracle (pinned)",
+    # sandbox environment
+    "G-E1": "environment spec resolves: library or proposed tools and policies, known profiles",
+    "G-E2": "environment network policies never target the controller host or loopback",
+    "G-E3": "environment resources within the configured caps",
+    "G-E4": "only roles that run after provisioning (and the verifier) are mapped",
+    "G-E5": "a mapped role is dispatched only while the environment approval is fresh",
+    "G-PV1": "provisioning builds every image and network provider the spec needs",
+    "H-E1": "human approves the sandbox environment (pinned)",
     # build
     "G-B1": "build dispatch requires fresh spec/oracle approval",
     "G-B2": "commit is the pushed tip of the run branch and descends from base",
@@ -48,6 +56,7 @@ GUARDS: dict[str, str] = {
     "G-B4": "evidence lists verification commands",
     "G-PP1": "protected paths changed only after a prior human approval for that task",
     "G-V1": "deterministic verification passes",
+    "G-V2": "a command not found in the verifier escalates instead of reworking",
     "G-RV1": "review attests candidate sha",
     "G-RV2": "finding format",
     "G-RV3": "verdict consistent with findings",

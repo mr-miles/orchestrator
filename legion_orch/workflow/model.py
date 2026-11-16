@@ -18,7 +18,9 @@ from ..util import now_iso
 class NodeKind(StrEnum):
     INTAKE = "intake"
     PLAN = "plan"
+    ENVIRONMENT = "environment"
     CRITIQUE = "critique"
+    PROVISION = "provision"
     ORACLE = "oracle"
     BASELINE = "baseline"
     BUILD = "build"
@@ -152,7 +154,9 @@ class Resume(StrEnum):
 INTAKE, PLAN, CRITIQUE, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.CRITIQUE, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.SHIP, NodeKind.HUMAN)
+ENVIRONMENT, PROVISION = NodeKind.ENVIRONMENT, NodeKind.PROVISION
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
+H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
     AWAITING_HUMAN = tuple(NodeStatus)
 ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, MERGING}
@@ -160,7 +164,8 @@ R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(Run
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
 # Which agent role executes each node kind
-ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", CRITIQUE: "critic", ORACLE: "oracle",
+ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ENVIRONMENT: "environment",
+                 CRITIQUE: "critic", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
                  RELEASE: "release"}
 
@@ -274,7 +279,7 @@ class Verification(Record):
 
 
 class Escalation(Record):
-    kind: str                        # blocked | run_failed | cycle_budget | stale_loop | ...
+    kind: str                        # blocked | run_failed | cycle_budget | verify_unrunnable | ...
     reason: str
     resume: Resume
     at: str = Field(default_factory=now_iso)
@@ -483,6 +488,23 @@ class Readiness(Record):
     attestation: str | None = None
 
 
+class RoleEnvironment(Record):
+    """The provisioned sandbox environment of one role (or the verifier) (G-PV1)."""
+    profile: str
+    image: str | None = None              # None: the configured default image
+    providers: list[str] = []             # network providers attached to the sandbox
+    driver_config: str | None = None      # --driver-config-json (resources)
+
+
+class EnvironmentBuild(Record):
+    """The provisioned environment: what each mapped role's sandboxes are created with."""
+    spec: str                             # attestation of the approved plan/environment.json
+    roles: dict[str, RoleEnvironment] = {}    # role (or "verifier") -> its environment
+    log: str | None = None                # attestation of the build log
+    at: str = Field(default_factory=now_iso)
+    attestation: str | None = None        # the stored build record
+
+
 class Change(Record):
     id: str
     goal: str
@@ -492,7 +514,7 @@ class Change(Record):
     tier: str | None = None
     risk: RiskAssessment | None = None
     tier_override: TierOverride | None = None
-    approvals: dict[str, Approval] = {}   # "H-1", "H-3", "oracle", "spec:<subject>"
+    approvals: dict[str, Approval] = {}   # "H-1", "H-E1", "H-3", "oracle", "spec:<subject>"
     oracle: Oracle | None = None          # plan/oracle.json as approved
     oracle_sha: str | None = None
     integration_head: str | None = None
@@ -504,6 +526,7 @@ class Change(Record):
     protected_approvals: list[ProtectedPathApproval] = []
     surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
     ship: Readiness | None = None
+    environment: EnvironmentBuild | None = None           # provisioned after H-E1
 
 
 def _parse_ts_safe(ts: str):

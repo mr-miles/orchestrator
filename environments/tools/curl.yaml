@@ -1,0 +1,4 @@
+description: curl (system package)
+apt: [curl]
+binaries: ["/usr/bin/curl"]
+# No network by default: a profile opts in with  network: {curl: [github-read]}

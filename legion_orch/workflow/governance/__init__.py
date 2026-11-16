@@ -2,6 +2,7 @@
 model; every record is a versioned document under changes/<id>/control/.
 
 * approvals.py    – H-2 per-subject approvals (plan, each delta spec, oracle) and freshness (G-B1),
+  and the environment approval's freshness (G-E5),
 * attestations.py – human attestations (G-AT1),
 * protected.py    – protected paths and per-task approvals to change them (G-PP1),
 * surfaces.py     – verification-surface pins and drift (G-SF1),
@@ -17,6 +18,7 @@ from .approvals import (
     h2_subjects,
     last_h2_approval_at,
     stale_approvals,
+    stale_environment,
 )
 from .attestations import ATTESTATION_KINDS, coverage_ok, record_attestation
 from .common import GovernanceError
@@ -36,5 +38,6 @@ __all__ = [
     "h2_status", "h2_subjects", "last_h2_approval_at", "pin_surfaces", "protected_paths",
     "protected_unchanged",
     "record_attestation", "record_override", "record_protected_approval", "stale_approvals",
+    "stale_environment",
     "surface_commands", "surface_drift", "surfaces", "waiver_for",
 ]

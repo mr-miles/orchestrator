@@ -11,12 +11,15 @@ from datetime import UTC, datetime
 from ...config import Config
 from ...git import GitRemote
 from ...sandbox import (
+    EnvironmentBuilder,
     Runner,
     human_name,
+    make_builder,
     make_runner,
 )
 from ...store import DocStore
 from ..assets import Assets
+from ..environment import Library
 from ..model import (
     LIVE_RUN,
     Run,
@@ -36,7 +39,8 @@ class Controller:
     holds transient sandbox payloads and live agent logs and is wiped on start.
     """
 
-    def __init__(self, cfg: Config, runner: Runner | None = None):
+    def __init__(self, cfg: Config, runner: Runner | None = None,
+                 builder: EnvironmentBuilder | None = None):
         self.cfg = cfg
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
@@ -51,7 +55,10 @@ class Controller:
             cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
             git=GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path, cfg.repo.base_branch,
                           max_push_bytes=cfg.limits.git_max_push_bytes),
-            assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp")
+            assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
+            builder=builder or make_builder(cfg))
+        if cfg.environment is not None:   # fail fast: every change would escalate on it
+            Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI polling)
         self._reserved_names: set[str] = set()   # sandbox names handed out this process
         self.stopping = asyncio.Event()   # set on shutdown: long-lived responses end

@@ -1,0 +1,4 @@
+description: Go module proxy and checksum database, read-only (go)
+endpoints:
+  - {host: proxy.golang.org, port: 443, access: read-only}
+  - {host: sum.golang.org, port: 443, access: read-only}

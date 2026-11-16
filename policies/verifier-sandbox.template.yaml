@@ -6,7 +6,8 @@ no_tty: true
 policy: ${POLICY_FILE}
 upload: ${PAYLOAD_UPLOAD}
 no_git_ignore: true
-provider: [${PROVIDER}]
+provider: ${VERIFIER_PROVIDERS}
+driver_config_json: ${DRIVER_CONFIG}   # environment resources (null: driver defaults)
 label:
   legion.change: ${CHANGE_ID}
   legion.task: ${TASK_ID}

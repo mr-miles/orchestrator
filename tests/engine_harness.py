@@ -19,7 +19,7 @@ import textwrap
 from pathlib import Path
 
 from legion_orch.config import load_config
-from legion_orch.sandbox import Runner, SandboxError
+from legion_orch.sandbox import BuildError, EnvironmentBuilder, Runner, SandboxError
 from legion_orch.server.mcp import MCP_TOOLS
 from legion_orch.workflow.engine import ChangeEngine, Controller
 from legion_orch.workflow.model import LIVE_RUN, Run
@@ -54,6 +54,7 @@ class FakeRunner(Runner):
 
     def __init__(self):
         self.created: list[str] = []
+        self.specs: dict[str, object] = {}               # sandbox name -> SandboxSpec
         self.uploads: list[str] = []
         self.deleted: list[str] = []
         self.started: list[str] = []
@@ -70,6 +71,7 @@ class FakeRunner(Runner):
         if self.fail_create == spec.role:
             raise SandboxError("openshell sandbox create failed (quota)")
         self.created.append(spec.name)
+        self.specs[spec.name] = spec
         return spec.name
 
     async def upload(self, name, payload_dir):
@@ -92,6 +94,31 @@ class FakeRunner(Runner):
         self.deleted.append(name)
 
 
+class FakeBuilder(EnvironmentBuilder):
+    """Records the images and network providers provisioning asks for; ``fail`` makes the
+    next build fail. Images are "built" once, then found (content-addressed reuse)."""
+
+    def __init__(self):
+        self.built: list[str] = []                 # image tags built
+        self.recipes: dict[str, object] = {}       # tag -> ImageRecipe
+        self.providers: dict[str, object] = {}     # provider id -> NetworkProvider
+        self.fail: str | None = None
+
+    async def ensure_image(self, recipe):
+        if self.fail:
+            msg, self.fail = self.fail, None
+            raise BuildError(msg)
+        self.recipes[recipe.tag] = recipe
+        if recipe.tag in self.built:
+            return recipe.tag, f"{recipe.tag} exists; reused"
+        self.built.append(recipe.tag)
+        return recipe.tag, f"built {recipe.tag}"
+
+    async def ensure_provider(self, provider):
+        self.providers[provider.id] = provider
+        return f"provider {provider.id}"
+
+
 def make_source_repo(path: Path) -> None:
     path.mkdir()
     git = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
@@ -105,7 +132,8 @@ def make_source_repo(path: Path) -> None:
     git("commit", "-q", "-m", "init")
 
 
-def make_config(tmp_path: Path, *, blank_repo: bool = False, **limits):
+def make_config(tmp_path: Path, *, blank_repo: bool = False, environment: dict | None = None,
+                **limits):
     lim = {"max_parallel": 4, "review_max_cycles": 3, "critique_max_cycles": 2,
            "run_timeout_s": 120} | limits
     cfg_path = tmp_path / "orchestrator.yaml"
@@ -122,6 +150,10 @@ def make_config(tmp_path: Path, *, blank_repo: bool = False, **limits):
           templates_dir: {ROOT / 'policies'}
           agent_command: "{sys.executable} -c pass"
     """))
+    if environment is not None:
+        env = {"library_dir": str(ROOT / "environments")} | environment
+        with cfg_path.open("a") as f:
+            f.write(f"environment: {json.dumps(env)}\n")
     return load_config(cfg_path)
 
 
@@ -147,6 +179,18 @@ ORACLE = {
 }
 
 
+ENVIRONMENT = {
+    "summary": "python project tested with uv",
+    "profiles": {
+        "dev": {"tools": ["python@3.12", "uv", "ruff"],          # uv brings pypi
+                "resources": {"memory_mib": 4096, "vcpus": 2}},
+        "check": {"tools": ["python@3.12", "uv", "ruff"], "offline": True},
+    },
+    "roles": {"implementer": "dev", "oracle": "dev", "verifier": "check", "reviewer": "check"},
+    "rationale": "pyproject pins 3.12; implementers add dependencies from pypi",
+}
+
+
 class Flow:
     """One change driven step by step. ``await Flow.create(tmp_path)`` to start."""
 
@@ -156,7 +200,8 @@ class Flow:
             make_source_repo(tmp_path / "src-repo")
         self.cfg = make_config(tmp_path, blank_repo=blank_repo, **limits)
         self.runner = FakeRunner()
-        self.ctl = Controller(self.cfg, runner=self.runner)
+        self.builder = FakeBuilder()
+        self.ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
         self.ctl.set_mcp_tools(list(MCP_TOOLS))
         self.ce: ChangeEngine = None   # type: ignore[assignment]
 
@@ -277,9 +322,16 @@ class Flow:
             atts.append(await self.write(r, f"plan/specs/{req}.md", spec))
         return await self.report(r, atts)
 
+    async def environment(self, spec: dict | None = None):
+        r = self.run("environment")
+        att = await self.write(r, "plan/environment.json", spec or ENVIRONMENT)
+        return await self.report(r, [att])
+
     async def critique(self, verdict: str = "PASS"):
         r = self.run("critique")
-        plan = [self.ce.latest_att(p) for p in ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
+        docs = ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json") + (
+            ("plan/environment.json",) if "environment" in self.ce.nodes else ())
+        plan = [self.ce.latest_att(p) for p in docs]
         findings = [] if verdict == "PASS" else [{
             "severity": "WARNING", "confidence": "HIGH", "title": "spec too thin",
             "fix": "expand the spec", "attestations": [plan[0]]}]
@@ -332,7 +384,12 @@ class Flow:
         await self.intake()
         await self.human("H-1", "accept", **({"tier": tier} if tier else {}))
         await self.plan(**plan_kw)
+        if "environment" in self.ce.nodes:
+            await self.environment()
         await self.critique("PASS")
+        if "H-E1" in self.ce.nodes:
+            await self.human("H-E1", "approve")
+            assert self.status("provision") == "ACCEPTED", self.status()
         if "oracle" in self.ce.nodes:
             await self.oracle()
 
