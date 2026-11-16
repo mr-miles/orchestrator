@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .. import governance, guards, risk
+from ..environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ..model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -22,7 +23,6 @@ from ..model import (
     ORACLE,
     PENDING,
     PLAN,
-    PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
     READY,
@@ -175,7 +175,7 @@ class HumanGates:
         oracle, baseline, build nodes, the integration branch and surface pins)."""
         ch = self.c.change
         self._send_back(self.c.nodes[PLAN], approver, payload)
-        self._reset_environment(self.c.nodes[PLAN].feedback[-1:])
+        self.graph.reset_environment(self.c.nodes[PLAN].feedback[-1:])
         for nid in (CRITIQUE, ORACLE, BASELINE):
             if nid in self.c.nodes:
                 n = self.c.nodes[nid]
@@ -205,19 +205,6 @@ class HumanGates:
         self._send_back(self.c.nodes[ENVIRONMENT], approver, payload)
         node.status = PENDING
         return ActionResult()
-
-    def _reset_environment(self, feedback: list[Feedback]) -> None:
-        """The plan is being reworked: the environment, its approval and its build follow."""
-        if ENVIRONMENT not in self.c.nodes:
-            return
-        env = self.c.nodes[ENVIRONMENT]
-        env.cycle += 1
-        env.feedback += feedback
-        env.status = PENDING
-        for nid in (H_ENV, PROVISION):
-            self.c.nodes[nid].status = PENDING
-        self.c.change.approvals.pop(H_ENV, None)
-        self.c.change.environment = None
 
     async def _accept_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-3: accept the whole change at the current integration head."""
@@ -329,7 +316,7 @@ class HumanGates:
             plan.cycle += 1
             plan.feedback += node.feedback[-1:]
             plan.status = REWORK
-            self._reset_environment(node.feedback[-1:])
+            self.graph.reset_environment(node.feedback[-1:])
             node.cycle += 1
             node.status = PENDING
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
@@ -350,8 +337,31 @@ class HumanGates:
         else:
             node.status = READY
 
+    def _promote(self, approver: str, payload: dict) -> str:
+        """Copy a proposal of the H-E1-approved spec version into the library."""
+        appr = self.c.change.approvals.get(H_ENV)
+        version = appr.pins.get(self.c.p(ENV_SPEC)) if appr else None
+        if version is None:
+            raise WorkflowError("the environment spec is not approved (H-E1)")
+        try:
+            kind = Kind(payload.get("kind"))
+        except ValueError:
+            raise WorkflowError(f"kind must be one of {[k.value for k in Kind]}") from None
+        spec = EnvironmentSpec.model_validate(self.c.json_doc(ENV_SPEC, version))
+        source = f"file:{self.c.p(ENV_SPEC)}@{version} (approved by {appr.approver}, " \
+                 f"promoted by {approver})"
+        try:
+            dest = promote(Library.for_config(self.c.cfg, self.c.assets.schemas), spec, kind,
+                           str(payload.get("name") or ""), source)
+            Library.for_config(self.c.cfg, self.c.assets.schemas)     # still valid as a whole
+        except LibraryError as e:
+            raise WorkflowError(str(e)) from None
+        self.c.event("library", f"{approver} promoted {kind} {payload.get('name')} into {dest}")
+        return f"wrote {dest}"
+
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
-        """Change-level governance: attest, override, approve_protected_paths, approve_surface."""
+        """Change-level governance: attest, override, approve_protected_paths, approve_surface,
+        promote_proposal (an approved environment proposal into the library)."""
         payload = payload or {}
         async with self.c.lock:
             self._check_approver(approver)
@@ -366,6 +376,8 @@ class HumanGates:
                     p = governance.record_protected_approval(self.c, approver, payload)
                     res = ActionResult(attestation=p.attestation,
                                        note="applies only to runs of this task that start after now")
+                elif action == "promote_proposal":
+                    res = ActionResult(note=self._promote(approver, payload))
                 elif action == "approve_surface":
                     if not risk.valid_reason(payload.get("reason")):
                         raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")

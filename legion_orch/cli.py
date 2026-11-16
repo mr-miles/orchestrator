@@ -1,7 +1,7 @@
 """Command line: ``legion-orch serve -c orchestrator.yaml``.
 
-Local commands (``serve``, ``check``, ``setup-openshell``, ``library``) work on the config (and,
-for ``library promote``, read the controller's store); the others talk to a
+Local commands (``serve``, ``check``, ``setup-openshell``, ``library list``) work on the config;
+the others (including ``library promote``) talk to a
 running controller's operator API through :class:`OperatorClient`.
 """
 from __future__ import annotations
@@ -47,6 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     pr.add_argument("change")
     pr.add_argument("kind", choices=["tool", "policy"])
     pr.add_argument("name")
+    pr.add_argument("--approver", required=True)
     for p in (act, gov):
         p.add_argument("--approver", required=True)
         p.add_argument("--payload", default="{}", type=json.loads, help="JSON payload")
@@ -97,9 +98,8 @@ def cmd_check(cfg: Config, args) -> int:
     a = Assets(cfg.assets_dir)
     print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
     if cfg.environment is not None:
-        from .workflow.environment import load_library
-        lib = load_library(cfg.resolve(cfg.environment.library_dir),
-                           a.schemas.get("environment").body)
+        from .workflow.environment import Library
+        lib = Library.for_config(cfg, a.schemas)
         print(f"environment library {lib.root}: tools={sorted(lib.tools)} "
               f"policies={sorted(lib.policies)}")
     return 0
@@ -157,66 +157,17 @@ def cmd_govern(cfg: Config, args) -> int:
                                                    args.payload))
 
 
-def _library_schema(cfg: Config) -> dict:
-    from .workflow.assets import Assets
-    return Assets(cfg.assets_dir).schemas.get("environment").body
-
-
 def cmd_library(cfg: Config, args) -> int:
-    from .workflow.environment import load_library
     if cfg.environment is None:
         print("no environment: section in the config", file=sys.stderr)
         return 1
-    root = cfg.resolve(cfg.environment.library_dir)
-    schema = _library_schema(cfg)
     if args.library_cmd == "list":
-        print(load_library(root, schema).catalogue())
+        from .workflow.assets import Assets
+        from .workflow.environment import Library
+        print(Library.for_config(cfg, Assets(cfg.assets_dir).schemas).catalogue())
         return 0
-    return promote(cfg, root, schema, args.change, args.kind, args.name)
-
-
-def promote(cfg: Config, root, schema: dict, change: str, kind: str, name: str) -> int:
-    """Copy a proposal from the change's *approved* environment spec (the version H-E1 pinned)
-    into the library. Reads the controller's store; never overwrites a library entry."""
-    import sqlite3
-    import threading
-
-    from .store import DocStore
-    from .workflow.assets import Assets
-    from .workflow.environment import entry_yaml, load_library, proposal
-    db = cfg.state_dir / "state.db"
-    if not db.is_file():
-        print(f"no controller store at {db}", file=sys.stderr)
-        return 1
-    docs = DocStore(sqlite3.connect(f"file:{db}?mode=ro", uri=True), threading.RLock(),
-                    Assets(cfg.assets_dir).schemas)
-    rec = f"changes/{change}/control/change.json"
-    if docs.latest_version(rec) is None:
-        print(f"unknown change {change}", file=sys.stderr)
-        return 1
-    appr = (json.loads(docs.read(rec).content).get("approvals") or {}).get("H-E1")
-    pins = (appr or {}).get("pins") or {}
-    path = f"changes/{change}/plan/environment.json"
-    if path not in pins:
-        print(f"{change}: the environment spec is not approved (H-E1)", file=sys.stderr)
-        return 1
-    spec = json.loads(docs.read(path, pins[path]).content)
-    plural = "tools" if kind == "tool" else "policies"
-    body = proposal(spec, plural, name)
-    if body is None:
-        print(f"file:{path}@{pins[path]} proposes no {kind} {name!r}", file=sys.stderr)
-        return 1
-    lib = load_library(root, schema)
-    if name in lib.entries(plural):
-        print(f"the library already has {kind} {name!r}; not overwritten", file=sys.stderr)
-        return 1
-    dest = root / plural / f"{name}.yaml"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(f"# Promoted from file:{path}@{pins[path]} (approved by {appr['approver']})\n"
-                    + entry_yaml(body))
-    load_library(root, schema)          # still valid as a whole
-    print(f"wrote {dest}")
-    return 0
+    return _show(OperatorClient(cfg).change_action(
+        args.change, "promote_proposal", args.approver, {"kind": args.kind, "name": args.name}))
 
 
 def _show(result: Any) -> int:

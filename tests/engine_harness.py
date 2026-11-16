@@ -101,7 +101,7 @@ class FakeBuilder(EnvironmentBuilder):
     def __init__(self):
         self.built: list[str] = []                 # image tags built
         self.recipes: dict[str, object] = {}       # tag -> ImageRecipe
-        self.providers: dict[str, dict] = {}       # profile id -> profile
+        self.providers: dict[str, object] = {}     # provider id -> NetworkProvider
         self.fail: str | None = None
 
     async def ensure_image(self, recipe):
@@ -114,9 +114,9 @@ class FakeBuilder(EnvironmentBuilder):
         self.built.append(recipe.tag)
         return recipe.tag, f"built {recipe.tag}"
 
-    async def ensure_provider(self, profile):
-        self.providers[profile["id"]] = profile
-        return f"provider {profile['id']}"
+    async def ensure_provider(self, provider):
+        self.providers[provider.id] = provider
+        return f"provider {provider.id}"
 
 
 def make_source_repo(path: Path) -> None:

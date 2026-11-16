@@ -4,9 +4,10 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from ..governance.approvals import ENV_SPEC  # noqa: F401  (re-exported: the environment spec)
+
 log = logging.getLogger("legion")
 PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
-ENV_SPEC = "plan/environment.json"     # the sandbox environment spec (environment role)
 
 
 class WorkflowError(Exception):

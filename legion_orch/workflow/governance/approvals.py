@@ -1,10 +1,12 @@
 """H-2: per-subject approvals of the plan, each delta spec and the oracle, pinned to the
-exact document versions approved (guard G-B1 checks they are still current)."""
+exact document versions approved (guard G-B1 checks they are still current); and the freshness of
+the H-E1 environment approval behind a provisioned environment (G-E5)."""
 from __future__ import annotations
 
 from pydantic import BaseModel
 
 from ..model import (
+    H_ENV,
     Approval,
     ApprovalState,
     Oracle,
@@ -52,6 +54,19 @@ def h2_status(e: ChangeView) -> list[SubjectStatus]:
 def stale_approvals(e: ChangeView) -> list[str]:
     """Guard G-B1: every H-2 subject approved against the current bytes."""
     return [f"G-B1: {s.subject} {s.status}" for s in h2_status(e) if s.status != ApprovalState.APPROVED]
+
+
+ENV_SPEC = "plan/environment.json"
+
+
+def stale_environment(e: ChangeView) -> str | None:
+    """Guard G-E5: the provisioned environment's H-E1 approval still pins the latest spec."""
+    appr = e.change.approvals.get(H_ENV)
+    if e.change.environment is None:
+        return None
+    if appr is None or appr.pins != {e.p(ENV_SPEC): e.latest(ENV_SPEC)}:
+        return f"G-E5: {ENV_SPEC} changed since it was approved and provisioned"
+    return None
 
 
 async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: str) -> list[str]:

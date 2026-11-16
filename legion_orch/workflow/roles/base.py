@@ -53,6 +53,10 @@ class RoleHandler:
         """Role-specific context attestations beyond the common ones."""
         return []
 
+    def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
+        """Role-specific prompt template variables beyond the common ones."""
+        return {}
+
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         return []
 

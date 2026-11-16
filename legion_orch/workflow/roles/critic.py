@@ -46,10 +46,6 @@ class Critic(RoleHandler):
             plan.cycle += 1
             plan.feedback.append(fb)
             plan.status = REWORK
-            if ENVIRONMENT in e.nodes:            # the environment follows the reworked plan
-                env = e.nodes[ENVIRONMENT]
-                env.cycle += 1
-                env.feedback.append(fb)
-                env.status = PENDING
+            e.reset_environment([fb])            # the environment follows the reworked plan
             node.cycle += 1
             node.status = PENDING

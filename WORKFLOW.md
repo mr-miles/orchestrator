@@ -349,7 +349,9 @@ network policies that become credentialless OpenShell provider profiles. Selecti
 brings its network, open to that tool's binaries only; a profile adds per-tool extras or goes
 `offline`. The spec
 may propose new library entries inline; they apply to this change once approved, and an operator
-can promote them into the library (`legion-orch library promote`).
+can promote them into the library: the change-level action `promote_proposal` (`legion-orch library promote`,
+by a decision owner), which copies the entry from the H-E1-approved spec version and never
+overwrites a library entry.
 
 | ID | Rule |
 | --- | --- |

@@ -76,14 +76,15 @@ async def _run(argv: list[str], timeout: float, env: dict | None = None,
     return proc.returncode, out.decode(errors="replace")
 
 
-def env_values(values: dict, env: SandboxEnv) -> dict:
-    """Template values for a sandbox with an environment: its image, providers and resources."""
-    out = dict(values)
+def env_values(values: dict, env: SandboxEnv, *, agent: bool) -> dict:
+    """Template values for a sandbox with an environment: its image, providers and resources
+    (the agent or the verifier template's placeholders)."""
+    image, providers = ("AGENT_IMAGE", "SANDBOX_PROVIDERS") if agent else \
+        ("VERIFIER_IMAGE", "VERIFIER_PROVIDERS")
+    out = dict(values) | {"DRIVER_CONFIG": env.driver_config,
+                          providers: list(dict.fromkeys([*values[providers], *env.providers]))}
     if env.image:
-        out["AGENT_IMAGE"] = out["VERIFIER_IMAGE"] = env.image
-    out["SANDBOX_PROVIDERS"] = list(dict.fromkeys([*values["SANDBOX_PROVIDERS"], *env.providers]))
-    out["VERIFIER_PROVIDERS"] = list(dict.fromkeys([*values["VERIFIER_PROVIDERS"], *env.providers]))
-    out["DRIVER_CONFIG"] = env.driver_config
+        out[image] = env.image
     return out
 
 
@@ -122,7 +123,7 @@ class OpenShellRunner(Runner):
             "PAYLOAD_UPLOAD": f"{spec.payload_dir}:{self.cfg.sandbox.root}", "CHANGE_ID": spec.change,
             "TASK_ID": spec.task, "ROLE": spec.role, "RUN_ID": spec.run or spec.name}
         if spec.env:
-            values = env_values(values, spec.env)
+            values = env_values(values, spec.env, agent=spec.agent)
         tmpl = render(self.cfg, "agent_sandbox" if spec.agent else "verifier_sandbox", values)
         await self._os("sandbox", "create", *spec_to_args(tmpl), *self.cfg.sandbox.extra_create_args,
                        timeout=900)

@@ -15,6 +15,8 @@ from ...sandbox import (
     SandboxSpec,
     is_name_clash,
 )
+from .. import governance
+from ..environment import VERIFIER
 from ..model import (
     ACCEPTED,
     BUILD,
@@ -38,6 +40,7 @@ from ..ship import evaluate
 from .auth import VerifierGrant
 from .common import _slug
 from .core import ChangeCore
+from .provision import sandbox_env
 from .runs import RunLifecycle
 
 EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
@@ -103,12 +106,12 @@ class Acceptance:
         ref = None
         try:
             policy = self.c.svc.write_policy(base / "policy.yaml", agent=False, push=False)
-            if stale := self.c.environment_stale():
+            if stale := governance.stale_environment(self.c):
                 raise SandboxError(stale)
             ref = await self.c.runner.create(SandboxSpec(
                 name=name, payload_dir=payload, policy_file=policy, agent=False,
                 change=self.c.cid, task=label, role="verifier", run=name,
-                env=self.c.sandbox_env("verifier")))
+                env=sandbox_env(self.c.change, VERIFIER)))
             self.c.svc.auth.register_verifier(
                 ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
             root = self.c.cfg.sandbox.root

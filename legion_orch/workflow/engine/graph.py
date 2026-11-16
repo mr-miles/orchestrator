@@ -17,11 +17,13 @@ from ..model import (
     HUMAN,
     INTEGRATION,
     ORACLE,
+    PENDING,
     PLAN,
     PROVISION,
     RELEASE,
     REWORK,
     SHIP,
+    Feedback,
     Node,
 )
 from .core import ChangeCore
@@ -96,6 +98,21 @@ class StageGraph:
         for nid in (INTEGRATION, RELEASE, H_CHANGE, SHIP):
             if nid in c.nodes:
                 c.nodes[nid] = c.nodes.pop(nid)
+
+    def reset_environment(self, feedback: list[Feedback]) -> None:
+        """The plan is being reworked: the environment re-runs with the feedback, and its
+        approval and build are dropped (H-E1 and provision follow it again)."""
+        c = self.c
+        if ENVIRONMENT not in c.nodes:
+            return
+        env = c.nodes[ENVIRONMENT]
+        env.cycle += 1
+        env.feedback += feedback
+        env.status = PENDING
+        for nid in (H_ENV, PROVISION):
+            c.nodes[nid].status = PENDING
+        c.change.approvals.pop(H_ENV, None)
+        c.change.environment = None
 
     def deps_accepted(self, node: Node) -> bool:
         """Guard G-D1."""

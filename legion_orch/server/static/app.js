@@ -290,8 +290,8 @@ function environmentCard() {
 function environmentBuildHtml() {
   const b = (S.change||{}).environment;
   if (!b) return '';
-  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>profile</th><th>image</th><th>verifier image</th><th>network providers</th><th>driver config</th></tr>
-    ${Object.entries(b.profiles).map(([p, x]) => `<tr><td><b>${esc(p)}</b></td><td class="mono">${esc(x.image||'—')}</td><td class="mono">${esc(x.verifier_image||'—')}</td>
+  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>role</th><th>profile</th><th>image</th><th>network providers</th><th>driver config</th></tr>
+    ${Object.entries(b.roles).map(([r, x]) => `<tr><td><b>${esc(r)}</b></td><td>${esc(x.profile)}</td><td class="mono">${esc(x.image||'default')}</td>
       <td class="mono">${(x.providers||[]).map(esc).join('<br>')||'—'}</td><td class="mono">${esc(x.driver_config||'—')}</td></tr>`).join('')}</table>
     <div class="mono muted">${[b.spec, b.log, b.attestation].filter(Boolean).map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div>`;
 }

@@ -17,7 +17,6 @@ from ...sandbox import (
 from ...util import now_iso
 from .. import governance
 from ..assets import AssetError
-from ..environment import LibraryError
 from ..model import (
     ACCEPTED,
     BUILD,
@@ -37,6 +36,7 @@ from ..roles import handler_for
 from ..view import RoleContext
 from .common import PLAN_DOCS, _slug
 from .core import ChangeCore
+from .provision import sandbox_env
 from .runs import RunLifecycle
 
 
@@ -108,7 +108,7 @@ class Dispatcher:
             if stale:
                 self.c.escalate(node, "approval", "; ".join(stale), resume=Resume.REWORK)
                 return None
-        if self.c.sandbox_env(role) and (stale_env := self.c.environment_stale()):
+        if sandbox_env(ch, role) and (stale_env := governance.stale_environment(self.c)):
             self.c.escalate(node, "approval", stale_env,
                             resume=Resume.REWORK if node.status == REWORK else Resume.READY)
             return None
@@ -152,8 +152,7 @@ class Dispatcher:
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
-            "environment_library": self._library_text(role),
-        }
+        } | handler_for(role).extra_variables(self.roles, node)
         write, required = self.c.assets.role_paths(role, variables)
         write, required = [self.c.p(w) for w in write], [self.c.p(d) for d in required]
         context = self._context_refs(node, role)
@@ -164,15 +163,6 @@ class Dispatcher:
             "feedback": self._feedback_text(node),
         })
         return Assignment(variables, write, required, context, task_json)
-
-    def _library_text(self, role: str) -> str:
-        """The library catalogue, for the environment role's prompt only."""
-        if role != "environment" or self.c.cfg.environment is None:
-            return "(not used by this role)"
-        try:
-            return self.c.environment_library().catalogue()
-        except LibraryError as e:          # reported to the agent; its guard rejects the spec
-            return f"(the library is invalid and an operator must fix it: {e})"
 
     def _place_in_sandbox(self, run: Run, node: Node) -> None:
         """Guard G-D4: judges always get a fresh sandbox; only roles that reuse theirs keep it
@@ -284,7 +274,7 @@ class Dispatcher:
                 return await self.c.runner.create(SandboxSpec(
                     name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
                     change=self.c.cid, task=run.node_id, role=run.role, run=run.id,
-                    env=self.c.sandbox_env(run.role)))
+                    env=sandbox_env(self.c.change, run.role)))
             except Exception as e:
                 if not is_name_clash(e) or attempt == attempts - 1:
                     raise

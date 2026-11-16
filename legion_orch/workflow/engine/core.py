@@ -10,14 +10,11 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ...sandbox import SandboxEnv
 from ...store import DocVersion
 from .. import attest, governance
-from ..environment import Library, load_library, sandbox_env
 from ..model import (
     BUILD,
     ESCALATED,
-    H_ENV,
     Change,
     Escalation,
     FailureSource,
@@ -26,7 +23,7 @@ from ..model import (
     Resume,
     Run,
 )
-from .common import ENV_SPEC, log
+from .common import log
 from .services import EngineHost, Services
 from .state import StateStore
 
@@ -74,27 +71,6 @@ class ChangeCore:
                                      missing_decision=missing_decision, log_tail=log_tail,
                                      source=source)
         self.event("escalation", f"{kind}: {reason}", node.id, run)
-
-    def environment_library(self) -> Library:
-        """The tool and network-policy library, read fresh (operators edit and promote into it)."""
-        env = self.cfg.environment
-        if env is None:
-            return Library(root=Path("."))
-        return load_library(self.cfg.resolve(env.library_dir),
-                            self.assets.schemas.get("environment").body)
-
-    def environment_stale(self) -> str | None:
-        """Guard G-E5: the provisioned environment's approval still matches the spec."""
-        build, appr = self.change.environment, self.change.approvals.get(H_ENV)
-        if build is None:
-            return None
-        if appr is None or appr.pins != {self.p(ENV_SPEC): self.latest(ENV_SPEC)}:
-            return f"G-E5: {ENV_SPEC} changed since it was approved and provisioned"
-        return None
-
-    def sandbox_env(self, role: str) -> SandboxEnv | None:
-        """The provisioned environment of a sandbox serving ``role`` ("verifier" for verifiers)."""
-        return sandbox_env(self.change.environment, role)
 
     def oracle_commands(self) -> list[str]:
         """The commands that verify the integration head (oracle and surfaces)."""

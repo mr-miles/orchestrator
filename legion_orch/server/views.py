@@ -4,7 +4,7 @@ from __future__ import annotations
 from ..workflow import governance
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.engine.common import ENV_SPEC
-from ..workflow.environment import LibraryError, resolve, used_proposals
+from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
 from ..workflow.model import ACCEPTED, ENVIRONMENT, LIVE_RUN
 
 
@@ -21,19 +21,22 @@ def change_list(ctl: Controller) -> list[dict]:
 
 
 def environment_spec(ce: ChangeEngine) -> dict | None:
-    """The latest environment spec for the H-E1 card, with the proposals its profiles use."""
+    """The latest environment spec for the H-E1 card: the proposals its profiles use and each
+    profile's effective network (what its tools bring plus extras), or the problems."""
     if ENVIRONMENT not in ce.nodes or not ce.latest(ENV_SPEC):
         return None
-    spec = ce.json_doc(ENV_SPEC)
-    try:                        # each profile's effective network: what its tools bring + extras
-        profiles, problems = resolve(spec, ce.environment_library())
+    raw = ce.json_doc(ENV_SPEC)
+    spec = EnvironmentSpec.model_validate(raw)
+    try:
+        profiles, problems = resolve(spec, Library.for_config(ce.cfg, ce.assets.schemas))
         network = {p: [{"policy": x.name, "tools": list(x.tools),
-                        "hosts": [f"{e['host']}:{e['port']}" for e in x.endpoints]}
+                        "hosts": [f"{e.host}:{e.port}" for e in x.endpoints]}
                        for x in rp.policies] for p, rp in profiles.items()}
     except LibraryError as e:
         network, problems = {}, [str(e)]
-    return {"path": ce.p(ENV_SPEC), "version": ce.latest(ENV_SPEC), "spec": spec,
-            "proposals": used_proposals(spec), "network": network, "problems": problems}
+    return {"path": ce.p(ENV_SPEC), "version": ce.latest(ENV_SPEC), "spec": raw,
+            "proposals": {k.plural: v for k, v in spec.used_proposals().items()},
+            "network": network, "problems": problems}
 
 
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:

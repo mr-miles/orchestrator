@@ -488,19 +488,18 @@ class Readiness(Record):
     attestation: str | None = None
 
 
-class ProfileBuild(Record):
-    """One environment profile as provisioned (G-PV1)."""
-    image: str | None = None              # agent sandboxes (None: sandbox.image)
-    verifier_image: str | None = None     # verifier sandboxes (None: the default verifier image)
+class RoleEnvironment(Record):
+    """The provisioned sandbox environment of one role (or the verifier) (G-PV1)."""
+    profile: str
+    image: str | None = None              # None: the configured default image
     providers: list[str] = []             # network providers attached to the sandbox
     driver_config: str | None = None      # --driver-config-json (resources)
 
 
 class EnvironmentBuild(Record):
-    """The provisioned environment: which role runs in which profile, and what each profile is."""
+    """The provisioned environment: what each mapped role's sandboxes are created with."""
     spec: str                             # attestation of the approved plan/environment.json
-    roles: dict[str, str] = {}            # role (or "verifier") -> profile
-    profiles: dict[str, ProfileBuild] = {}
+    roles: dict[str, RoleEnvironment] = {}    # role (or "verifier") -> its environment
     log: str | None = None                # attestation of the build log
     at: str = Field(default_factory=now_iso)
     attestation: str | None = None        # the stored build record

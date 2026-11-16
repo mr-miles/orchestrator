@@ -7,12 +7,13 @@ this library so later changes reuse it:
 
 ```bash
 legion-orch -c orchestrator.yaml library list
-legion-orch -c orchestrator.yaml library promote <change-id> tool ruff
-legion-orch -c orchestrator.yaml library promote <change-id> policy internal-pypi
+legion-orch -c orchestrator.yaml library promote <change-id> tool taplo --approver miles
+legion-orch -c orchestrator.yaml library promote <change-id> policy internal-pypi --approver miles
 ```
 
-Promotion copies the entry from the approved spec version and never overwrites an existing
-entry. Review promoted files like code: every change can then use them. The controller and
+Promotion is an action on the running controller (by a decision owner, like the other
+change-level actions): it copies the entry from the approved spec version and never overwrites
+an existing entry. Review promoted files like code: every change can then use them. The controller and
 `legion-orch check` validate the whole library at start-up.
 
 ## `tools/<name>.yaml` – installed with mise (or apt)

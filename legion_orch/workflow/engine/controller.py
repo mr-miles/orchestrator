@@ -19,6 +19,7 @@ from ...sandbox import (
 )
 from ...store import DocStore
 from ..assets import Assets
+from ..environment import Library
 from ..model import (
     LIVE_RUN,
     Run,
@@ -56,20 +57,14 @@ class Controller:
                           max_push_bytes=cfg.limits.git_max_push_bytes),
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
             builder=builder or make_builder(cfg))
-        if cfg.environment is not None:
-            self._check_library()
+        if cfg.environment is not None:   # fail fast: every change would escalate on it
+            Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI polling)
         self._reserved_names: set[str] = set()   # sandbox names handed out this process
         self.stopping = asyncio.Event()   # set on shutdown: long-lived responses end
         self._tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
-
-    def _check_library(self) -> None:
-        """Fail fast on an invalid environment library (every change would escalate on it)."""
-        from ..environment import load_library
-        load_library(self.cfg.resolve(self.cfg.environment.library_dir),
-                     self.svc.assets.schemas.get("environment").body)
 
     # The pieces the HTTP layer reads.
     @property

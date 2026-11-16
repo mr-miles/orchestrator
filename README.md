@@ -93,7 +93,8 @@ profile (`FROM sandbox.image`, or `sandbox.verifier_image` for the verifier) tag
 reused when identical, `openshell profile import` + `provider create` per network policy, and the
 resources rendered from `policies/sandbox-resources.template.yaml` into `--driver-config-json`.
 Every later sandbox of a mapped role gets its profile's image, providers and resources. Proposed
-library entries can be promoted with `legion-orch library promote <change> tool|policy <name>`.
+library entries can be promoted with `legion-orch library promote <change> tool|policy <name> --approver <you>`
+(a change-level action on the running controller).
 Without the section the workflow is unchanged.
 
 `sandbox.runner: local` runs everything as local processes. It provides **no isolation** and is for

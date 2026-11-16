@@ -490,7 +490,8 @@ def test_engine_collaborators_are_acyclic():
     """Each collaborator gets the parts it uses; only change.py composes them, nothing imports
     the facade, and the imports between the parts form a DAG."""
     eng = ROOT / "legion_orch/workflow/engine"
-    parts = {"core", "graph", "runs", "dispatch", "acceptance", "reports", "human", "schedule"}
+    parts = {"core", "graph", "runs", "dispatch", "acceptance", "reports", "human", "schedule",
+             "provision"}
     deps = {}
     for name in parts:
         src = (eng / f"{name}.py").read_text()
