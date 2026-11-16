@@ -126,8 +126,8 @@ class SandboxConfig:
 
 @dataclass
 class EnvironmentConfig:
-    """The sandbox-environment stage (§5.3a of WORKFLOW.md): an agent specifies the tools, network
-    policies and resources sandboxes need; after approval (H-E1) the controller builds them.
+    """The sandbox-environment stage (§5.3a of WORKFLOW.md): the planner specifies the tools,
+    network policies and resources sandboxes need; after approval (H-E1) the controller builds them.
     Leave the ``environment:`` section out of the config to run without the stage."""
     # Library of reusable tools (tools/<name>.yaml) and network policies (policies/<name>.yaml)
     library_dir: str = "environments"

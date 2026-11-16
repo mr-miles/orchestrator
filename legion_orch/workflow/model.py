@@ -18,7 +18,6 @@ from ..util import now_iso
 class NodeKind(StrEnum):
     INTAKE = "intake"
     PLAN = "plan"
-    ENVIRONMENT = "environment"
     CRITIQUE = "critique"
     PROVISION = "provision"
     ORACLE = "oracle"
@@ -154,7 +153,7 @@ class Resume(StrEnum):
 INTAKE, PLAN, CRITIQUE, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.CRITIQUE, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.SHIP, NodeKind.HUMAN)
-ENVIRONMENT, PROVISION = NodeKind.ENVIRONMENT, NodeKind.PROVISION
+PROVISION = NodeKind.PROVISION
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
@@ -164,8 +163,7 @@ R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(Run
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
 # Which agent role executes each node kind
-ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ENVIRONMENT: "environment",
-                 CRITIQUE: "critic", ORACLE: "oracle",
+ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", CRITIQUE: "critic", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
                  RELEASE: "release"}
 
@@ -493,7 +491,9 @@ class RoleEnvironment(Record):
     profile: str
     image: str | None = None              # None: the configured default image
     providers: list[str] = []             # network providers attached to the sandbox
-    driver_config: str | None = None      # --driver-config-json (resources)
+    cpu: str | None = None                # sandbox create --cpu
+    memory: str | None = None             # sandbox create --memory
+    driver_config: str | None = None      # --driver-config-json (disk)
 
 
 class EnvironmentBuild(Record):

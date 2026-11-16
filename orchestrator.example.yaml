@@ -56,9 +56,9 @@ environment:                     # sandbox-environment stage (WORKFLOW.md §5.3a
   # registry: registry.example.com/your-org   # push images here if the gateway cannot see
   #                                            # this host's local podman images
   build_timeout_s: 1800
-  max_memory_mib: 32768          # caps on what a spec may request per sandbox (G-E3); resources
-  max_vcpus: 16                  # are passed as --driver-config-json from
-  max_disk_mib: 204800           # policies/sandbox-resources.template.yaml
+  max_memory_mib: 32768          # caps on what a spec may request per sandbox (G-E3): memory and
+  max_vcpus: 16                  # vCPUs become sandbox create --memory / --cpu, disk is
+  max_disk_mib: 204800           # --driver-config-json (policies/sandbox-resources.template.yaml)
 identity:                        # SPIFFE/SPIRE workload identity (see legion_orch/identity.py)
   provider: legion-controller    # created once per workspace: legion-orch setup-openshell --apply
   jwks_uri: https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys

@@ -28,7 +28,6 @@ from ..model import (
     VERIFYING,
     Change,
     FailureSource,
-    Feedback,
     Node,
     Run,
 )
@@ -147,5 +146,5 @@ class ChangeEngine(ChangeCore):
     def materialize_builds(self, taskgraph: dict) -> None:
         self._graph.materialize_builds(taskgraph)
 
-    def reset_environment(self, feedback: list[Feedback]) -> None:
-        self._graph.reset_environment(feedback)
+    def reset_environment(self) -> None:
+        self._graph.reset_environment()

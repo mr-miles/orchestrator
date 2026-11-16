@@ -7,7 +7,9 @@ policy: ${POLICY_FILE}
 upload: ${PAYLOAD_UPLOAD}
 no_git_ignore: true
 provider: ${VERIFIER_PROVIDERS}
-driver_config_json: ${DRIVER_CONFIG}   # environment resources (null: driver defaults)
+cpu: ${SANDBOX_CPU}                    # environment resources (null: driver defaults)
+memory: ${SANDBOX_MEMORY}
+driver_config_json: ${DRIVER_CONFIG}   # disk (sandbox-resources template)
 label:
   legion.change: ${CHANGE_ID}
   legion.task: ${TASK_ID}

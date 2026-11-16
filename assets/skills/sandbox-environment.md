@@ -1,9 +1,12 @@
 ## Skill: Sandbox environment spec
 
-`plan/environment.json` declares the sandboxes that run or work with the code. It is critiqued,
-approved by a human (gate H-E1), then built by the controller: one container image per profile
-(the base agent or verifier image plus your tools, installed with **mise**), one OpenShell
-network provider per network policy, and the resources as driver config.
+When your assignment asks for it, `plan/environment.json` declares the sandboxes that run or work
+with the code; it is part of the plan, so the commands you plan decide what it needs. It is
+critiqued with the plan, approved by a human (gate H-E1), then built by the controller: one
+container image per profile (the base agent or verifier image plus your tools, installed with
+**mise**), one OpenShell network provider per network policy, and the resources (`--cpu`,
+`--memory`; disk as driver config). On a rework, leave it as it is (attest its latest version)
+unless the plan's needs changed.
 
 ```json
 {
@@ -49,7 +52,7 @@ network provider per network policy, and the resources as driver config.
 Map each role that runs or reads code to a profile: `implementer`, `oracle`, `baseline`,
 `reviewer`, `security`, `architecture`, `integration`, `release`, and `verifier` (the
 deterministic sandbox that runs every verification command). Unmapped roles get the default
-sandbox. `intake`, `planner`, `environment` and `critic` run before the environment exists and
+sandbox. `intake`, `planner` and `critic` run before the environment exists and
 cannot be mapped. Give judges and the verifier the same tools as the implementer when they run
 the same commands (e.g. `uv run pytest` installs the locked dependencies, so it needs what uv
 brings); give judges that only read or lint a smaller or `offline` profile.
@@ -67,7 +70,7 @@ be promoted into the library for every change, so keep it minimal and general.
   – any tool mise can install (`python`, `node`, `go`, `npm:<pkg>`, `pipx:<pkg>`,
   `cargo:<crate>`, `aqua:<owner/repo>`, `ubi:<owner/repo>`); `apt` only for system libraries mise
   cannot provide. `binaries` are the executables that make network requests – relative to the
-  tool's mise install directory (`<data>/installs/<tool>/<version>/`, e.g. `bin/node`) or
+  tool's mise install directory (`<data>/installs/<tool>/<version>/`, e.g. `bin/*`) or
   absolute for system packages; globs allowed; the only place a tool's paths are written.
   `network` lists the policies the tool needs to work. `env` sets variables in the image so the
   tool behaves offline or reproducibly (the library's `uv` sets `UV_PYTHON_DOWNLOADS=never`).

@@ -1,7 +1,6 @@
-# `--driver-config-json` for a sandbox whose environment profile requests resources (memory,
-# vCPUs, disk). Rendered per sandbox; null values are dropped and an empty result passes no flag.
-# The top-level key is the gateway's compute driver; adjust the field names to your driver.
+# `--driver-config-json` for a sandbox whose environment profile requests disk (CPU and memory
+# are `sandbox create --cpu / --memory`, see the sandbox templates). Rendered per sandbox; null
+# values are dropped and an empty result passes no flag. The top-level key is the gateway's
+# compute driver; adjust the field names to your driver.
 firecracker:
-  vcpus: ${VCPUS}
-  mem_mib: ${MEMORY_MIB}
   disk_mib: ${DISK_MIB}

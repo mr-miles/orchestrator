@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from ..config import Config
 from ..git import GitRemote
 from ..store import DocStore, DocVersion
-from .model import Change, Feedback, Node, Resume, Run
+from .model import Change, Node, Resume, Run
 
 
 class ChangeView(Protocol):
@@ -77,5 +77,5 @@ class RoleContext(ChangeView, Protocol):
 
     def oracle_commands(self) -> list[str]: ...
 
-    def reset_environment(self, feedback: list[Feedback]) -> None:
-        """The plan is reworked: the environment re-runs; its approval and build are dropped."""
+    def reset_environment(self) -> None:
+        """The plan is reworked: the environment's approval and build are dropped."""

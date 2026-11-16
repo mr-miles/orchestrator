@@ -1,4 +1,5 @@
-"""Sandbox resources, passed to the compute driver as ``--driver-config-json`` rendered from
+"""Sandbox resources: CPU and memory are ``openshell sandbox create --cpu / --memory``; disk has
+no CLI flag and goes to the compute driver as ``--driver-config-json`` rendered from
 ``policies/sandbox-resources.template.yaml`` (the driver's own field names live there)."""
 from __future__ import annotations
 
@@ -23,6 +24,16 @@ class Resources(BaseModel):
         return [(k, v, getattr(caps, k)) for k, v in self.model_dump(exclude_none=True).items()
                 if getattr(caps, k) is not None and v > getattr(caps, k)]
 
+    @property
+    def cpu(self) -> str | None:
+        """``sandbox create --cpu`` (None: driver default)."""
+        return None if self.vcpus is None else str(self.vcpus)
+
+    @property
+    def memory(self) -> str | None:
+        """``sandbox create --memory`` (None: driver default)."""
+        return None if self.memory_mib is None else f"{self.memory_mib}Mi"
+
 
 def _drop_nulls(v: Any) -> Any:
     if isinstance(v, dict):
@@ -32,9 +43,8 @@ def _drop_nulls(v: Any) -> Any:
 
 
 def driver_config(cfg: Config, res: Resources) -> str | None:
-    """``--driver-config-json`` for a sandbox's resources (None: driver defaults)."""
-    if res == Resources():
+    """``--driver-config-json`` for a sandbox's disk (None: driver default)."""
+    if res.disk_mib is None:
         return None
-    doc = _drop_nulls(render(cfg, "sandbox_resources", base_values(cfg) | {
-        "VCPUS": res.vcpus, "MEMORY_MIB": res.memory_mib, "DISK_MIB": res.disk_mib}))
+    doc = _drop_nulls(render(cfg, "sandbox_resources", base_values(cfg) | {"DISK_MIB": res.disk_mib}))
     return json.dumps(doc, sort_keys=True) if doc else None

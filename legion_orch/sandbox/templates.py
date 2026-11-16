@@ -77,11 +77,11 @@ VOCABULARY: dict[str, str] = {
     "TASK_ID": "node / task id the sandbox serves (sanitised automatically in labels)",
     "VERIFIER_PROVIDERS": "providers attached to verifier sandboxes: PROVIDER + its environment's "
                           "network providers",
-    "DRIVER_CONFIG": "--driver-config-json for the sandbox's resources (rendered "
-                     "sandbox-resources template), null for driver defaults",
-    # environment resources (sandbox-resources template; null when the spec leaves them out)
-    "VCPUS": "vCPUs requested by the sandbox's environment profile",
-    "MEMORY_MIB": "memory (MiB) requested by the sandbox's environment profile",
+    # environment resources (null when the spec leaves them out: driver defaults)
+    "SANDBOX_CPU": "--cpu: vCPUs requested by the sandbox's environment profile",
+    "SANDBOX_MEMORY": "--memory: memory requested by the sandbox's environment profile (<n>Mi)",
+    "DRIVER_CONFIG": "--driver-config-json for the sandbox's disk (the rendered sandbox-resources "
+                     "template)",
     "DISK_MIB": "disk (MiB) requested by the sandbox's environment profile",
 }
 
@@ -117,7 +117,8 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
         "PROVIDER": ic.provider, "PROFILE_ID": PROFILE_ID, "WORKSPACE": sc.workspace,
         "AGENT_IMAGE": sc.image, "VERIFIER_IMAGE": sc.verifier_image or sc.image,
         "SANDBOX_PROVIDERS": list(dict.fromkeys([ic.provider, *sc.providers])),
-        "VERIFIER_PROVIDERS": [ic.provider], "DRIVER_CONFIG": None,
+        "VERIFIER_PROVIDERS": [ic.provider],
+        "SANDBOX_CPU": None, "SANDBOX_MEMORY": None, "DRIVER_CONFIG": None,
         "SANDBOX_WRITABLE": [sc.root, "/tmp", "/dev/null"],
         "RUN_AS_USER": sc.run_as_user, "RUN_AS_GROUP": sc.run_as_group,
         "AGENT_BINARIES": [{"path": b} for b in sc.agent_binaries],

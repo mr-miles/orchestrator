@@ -11,6 +11,8 @@ Produce `plan/spec.md`, one delta spec `plan/specs/<REQ-id>.md` per accepted req
 schema skill. Every task must be decision-complete. Report `DONE` attesting all of these documents
 and the `git:` files your design depends on.
 
+Sandbox environment: {{environment}}
+
 Write scope: {{write_scope}}. Required documents: {{required_docs}}.
 
 Critique / human feedback to address (cycle {{cycle}}):

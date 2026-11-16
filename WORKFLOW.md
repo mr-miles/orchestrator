@@ -205,9 +205,9 @@ listed in the readiness result.
 ### 4.1 Change (stage) graph
 
 ```
- [map+intake] -> (H-1 accept requirements) -> [plan] -> {[environment]} -> [critique] --REWORK--> [plan]
-       ^ revise                                                                | PASS
-       +-----------------------------------------------------------------------+
+ [map+intake] -> (H-1 accept requirements) -> [plan] -> [critique] --REWORK--> [plan]
+       ^ revise                                                    | PASS
+       +-----------------------------------------------------------+
                          {(H-E1 approve sandbox environment, pinned) -> [provision]}
                                                              |
                                                   R2+: [oracle] -> R3: [baseline]
@@ -225,7 +225,8 @@ listed in the readiness result.
 
 Every box is a node in the **task graph** shown by the UI; human gates are nodes of kind `human`.
 Steps in `{…}` exist only when the controller is configured with an `environment:` section
-(§5.3a); without it the graph is unchanged.
+(§5.3a); the planner then also writes the sandbox environment spec. Without it the graph is
+unchanged.
 
 ### 4.2 Node status
 
@@ -304,8 +305,8 @@ Universal guards apply to every task and are listed once.
 
 ### 5.2 `plan`
 
-* **Soul:** `architect-planner`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `taskgraph-schema`, `blocked-protocol`, `language-preferences`
-* **Writes:** `plan/**`  **Required:** `plan/spec.md`, `plan/oracle.json`, `plan/taskgraph.json`
+* **Soul:** `architect-planner`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `taskgraph-schema`, `sandbox-environment`, `blocked-protocol`, `language-preferences`
+* **Writes:** `plan/**`  **Required:** `plan/spec.md`, `plan/oracle.json`, `plan/taskgraph.json`; with the environment stage also `plan/environment.json` (§5.3a)
 
 | ID | Rule |
 | --- | --- |
@@ -333,14 +334,16 @@ Universal guards apply to every task and are listed once.
 `REWORK` reopens `plan` with the critique attested as feedback, then re-runs `critique`.
 With the environment stage the critique also covers `plan/environment.json` (it must attest the
 latest version, and the `pre-mortem` skill checks that every command can run in its role's
-sandbox); `REWORK` then re-runs `environment` after the reworked plan as well.
+sandbox); `REWORK` sends both back to the planner.
 
-### 5.3a `environment` – sandbox environment (when configured)
+### 5.3a Sandbox environment (when configured)
 
-* **Soul:** `environment-engineer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `sandbox-environment`, `blocked-protocol`, `language-preferences`
-* **Writes:** `plan/environment.json`  **Required:** `plan/environment.json` (schema [`environment`](assets/schemas/environment.json))
+Part of `plan`: the planner also writes `plan/environment.json` (schema
+[`environment`](assets/schemas/environment.json)), given the library catalogue in its
+assignment (`{{environment}}`). The report must attest the spec's latest version; a rework may
+leave it as an earlier planner run wrote it. The guards below are checked with the plan's.
 
-The agent specifies the sandboxes for everyone who runs or works with the code: named
+The planner specifies the sandboxes for everyone who runs or works with the code: named
 **profiles** (tools, optional extra network per tool, optional memory/vCPU/disk), and which
 role (or the deterministic `verifier`) runs in which profile. Profiles are composed from the
 **library** (`environment.library_dir`, default [`environments/`](environments/README.md)):
@@ -355,11 +358,11 @@ overwrites a library entry.
 
 | ID | Rule |
 | --- | --- |
-| G-E1 | Every profile's tools, and the network policies they bring or the profile adds per tool, resolve to a library entry or a proposal (proposals may not shadow library names; `name@version` only for single-tool entries); every policy in use is reachable by at least one binary of the tools using it; every mapped profile exists; no two tools of a profile set the same environment variable to different values. |
+| G-E1 | The planner's report attests the latest `plan/environment.json`. Every profile's tools, and the network policies they bring or the profile adds per tool, resolve to a library entry or a proposal (proposals may not shadow library names; `name@version` only for single-tool entries); every policy in use is reachable by at least one binary of the tools using it; every mapped profile exists; no two tools of a profile set the same environment variable to different values. |
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
-| G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `environment`, `critic` always use the default sandbox). |
-| H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `environment` re-runs with the feedback attested, then `critique`. H-2 revise and a critique-budget rework reset the environment, its approval and its build. |
+| G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
+| H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `plan` is reworked with the feedback attested, then `critique` runs again. H-2 revise and a critique-budget rework drop the approval and the build. |
 
 ### `provision` – build the environment (controller, no agent)
 
@@ -369,7 +372,8 @@ verifier – with the profile's tools installed by mise under `/usr/local/share/
 every sandbox) and their `env` settings as image `ENV`, via `podman build`, tagged by content (`localhost/legion-env:<hash>`, or pushed to
 `environment.registry`), and one provider per network policy (`legion-net-<name>-<hash>`,
 imported and created in `sandbox.workspace`). Identical images and profiles are reused, across
-changes too. Resources are rendered through `policies/sandbox-resources.template.yaml` into
+changes too. CPU and memory become `sandbox create --cpu <vcpus>` and `--memory <n>Mi`; disk,
+which has no CLI flag, is rendered through `policies/sandbox-resources.template.yaml` into
 `--driver-config-json`. The result is recorded in `control/environment/build.json` and the
 change record; the build log in `control/logs/provision.log`.
 
@@ -529,8 +533,8 @@ assets/
   addition.
 * Templates use `{{var}}` placeholders. Available variables: `change_id, goal, tier, repo_name,
   base_sha, head_sha, branch, task_id, task_title, task_json, cycle, role, context_refs, feedback,
-  candidate_sha, write_scope, required_docs, workdir, task_soul, environment_library` (the
-  library catalogue; only the `environment` role is given it). An unknown or unbound variable
+  candidate_sha, write_scope, required_docs, workdir, task_soul, environment` (the planner's
+  environment instructions with the library catalogue; only the planner is given it). An unknown or unbound variable
   fails G-D2. Load-time validation rejects unknown variables, missing files, and files not referenced
   by any role.
 * The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.
@@ -546,7 +550,6 @@ assets/
 | --- | --- |
 | `intake` | [`prompts/intake.md`](assets/prompts/intake.md) |
 | `planner` | [`prompts/planner.md`](assets/prompts/planner.md) |
-| `environment` | [`prompts/environment.md`](assets/prompts/environment.md) |
 | `critic` | [`prompts/critic.md`](assets/prompts/critic.md) |
 | `oracle` | [`prompts/oracle.md`](assets/prompts/oracle.md) |
 | `baseline` | [`prompts/baseline.md`](assets/prompts/baseline.md) |
@@ -561,7 +564,6 @@ assets/
 
 * [`intake-analyst`](assets/souls/intake-analyst.md)
 * [`architect-planner`](assets/souls/architect-planner.md)
-* [`environment-engineer`](assets/souls/environment-engineer.md)
 * [`plan-critic`](assets/souls/plan-critic.md)
 * [`test-engineer`](assets/souls/test-engineer.md)
 * [`baseline-verifier`](assets/souls/baseline-verifier.md)
@@ -620,7 +622,7 @@ guards, because a per-file schema cannot express them.
 * [`sandbox-environment`](assets/skills/sandbox-environment.md)
 * [`language-preferences`](assets/skills/language-preferences.md) – the house conventions per
   language (Python: uv, ruff, pytest), shared by every role that plans, writes, tests or judges
-  code and by the environment role; edit it to steer what the orchestrator produces
+  code; edit it to steer what the orchestrator produces
 * [`pre-mortem`](assets/skills/pre-mortem.md)
 * [`finding-format`](assets/skills/finding-format.md)
 * [`security-checklist`](assets/skills/security-checklist.md)

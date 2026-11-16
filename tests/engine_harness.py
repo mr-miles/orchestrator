@@ -311,7 +311,10 @@ class Flow:
                 await self.write(r, "intake/risk.json", risk or signals())]
         return await self.report(r, atts)
 
-    async def plan(self, tasks=None, oracle=None):
+    async def plan(self, tasks=None, oracle=None, environment: dict | None = None,
+                   keep_environment: bool = False):
+        """With the environment stage the plan includes ``plan/environment.json``
+        (``environment``, default ENVIRONMENT), or attests the existing one (``keep_environment``)."""
         r = self.run("plan")
         atts = [await self.write(r, "plan/spec.md", f"# Spec (cycle {r.cycle})\n"),
                 await self.write(r, "plan/oracle.json", oracle or ORACLE),
@@ -320,17 +323,15 @@ class Flow:
             spec = (f"# {req} delta (cycle {r.cycle})\n\n## Current behaviour\nmissing\n\n"
                     "## Change\nadd it\n\n## Acceptance criteria\n- works\n")
             atts.append(await self.write(r, f"plan/specs/{req}.md", spec))
+        if "H-E1" in self.ce.nodes:
+            atts.append(self.ce.latest_att("plan/environment.json") if keep_environment else
+                        await self.write(r, "plan/environment.json", environment or ENVIRONMENT))
         return await self.report(r, atts)
-
-    async def environment(self, spec: dict | None = None):
-        r = self.run("environment")
-        att = await self.write(r, "plan/environment.json", spec or ENVIRONMENT)
-        return await self.report(r, [att])
 
     async def critique(self, verdict: str = "PASS"):
         r = self.run("critique")
         docs = ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json") + (
-            ("plan/environment.json",) if "environment" in self.ce.nodes else ())
+            ("plan/environment.json",) if "H-E1" in self.ce.nodes else ())
         plan = [self.ce.latest_att(p) for p in docs]
         findings = [] if verdict == "PASS" else [{
             "severity": "WARNING", "confidence": "HIGH", "title": "spec too thin",
@@ -384,8 +385,6 @@ class Flow:
         await self.intake()
         await self.human("H-1", "accept", **({"tier": tier} if tier else {}))
         await self.plan(**plan_kw)
-        if "environment" in self.ce.nodes:
-            await self.environment()
         await self.critique("PASS")
         if "H-E1" in self.ce.nodes:
             await self.human("H-E1", "approve")

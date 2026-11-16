@@ -290,9 +290,9 @@ function environmentCard() {
 function environmentBuildHtml() {
   const b = (S.change||{}).environment;
   if (!b) return '';
-  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>role</th><th>profile</th><th>image</th><th>network providers</th><th>driver config</th></tr>
+  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>role</th><th>profile</th><th>image</th><th>network providers</th><th>resources</th></tr>
     ${Object.entries(b.roles).map(([r, x]) => `<tr><td><b>${esc(r)}</b></td><td>${esc(x.profile)}</td><td class="mono">${esc(x.image||'default')}</td>
-      <td class="mono">${(x.providers||[]).map(esc).join('<br>')||'—'}</td><td class="mono">${esc(x.driver_config||'—')}</td></tr>`).join('')}</table>
+      <td class="mono">${(x.providers||[]).map(esc).join('<br>')||'—'}</td><td class="mono">${[x.cpu && `--cpu ${x.cpu}`, x.memory && `--memory ${x.memory}`, x.driver_config && `driver ${x.driver_config}`].filter(Boolean).map(esc).join('<br>')||'—'}</td></tr>`).join('')}</table>
     <div class="mono muted">${[b.spec, b.log, b.attestation].filter(Boolean).map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div>`;
 }
 
@@ -309,7 +309,7 @@ function renderDetail() {
     ${n.accepted_sha?`<div>accepted</div><div>${short(n.accepted_sha)}</div>`:''}
     ${n.sandbox?`<div>sandbox</div><div><code>${esc(n.sandbox)}</code></div>`:''}</div>`;
   h += actionForm(n);
-  if (n.kind === 'environment' && n.status === 'ACCEPTED') h += `<h2 style="margin-top:10px">Environment spec</h2>` + environmentSpecHtml();
+  if (n.kind === 'plan' && S.environment) h += `<h2 style="margin-top:10px">Environment spec</h2>` + environmentSpecHtml();
   if (n.kind === 'provision') h += environmentBuildHtml();
   if (n.task) h += `<details data-key="task"><summary>Task contract</summary><pre data-key="task-pre">${esc(JSON.stringify(n.task, null, 2))}</pre></details>`;
   const ver = Object.entries(n.verification||{});

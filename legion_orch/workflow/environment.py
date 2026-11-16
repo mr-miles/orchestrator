@@ -28,7 +28,7 @@ from ..sandbox import Endpoint, Policy, Resources, Tool
 from ..sandbox.images import install_dir, merged_env
 
 # Roles that run before the environment exists (they always use the default sandbox).
-PRE_PROVISION_ROLES = {"intake", "planner", "environment", "critic"}
+PRE_PROVISION_ROLES = {"intake", "planner", "critic"}
 VERIFIER = "verifier"           # the deterministic verifier sandbox, mappable like a role
 
 
@@ -182,7 +182,7 @@ class Library:
         return errors
 
     def catalogue(self) -> str:
-        """Markdown list of the library for the environment agent's prompt."""
+        """Markdown list of the library for the planner's prompt."""
         if not self.tools and not self.policies:
             return "(the library is empty)"
         lines = ["Tools (`environments/tools/`):"]
