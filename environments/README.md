@@ -1,7 +1,7 @@
 # Environment library
 
-Reusable building blocks for sandbox environments (WORKFLOW.md §5.3a). The `environment` agent
-composes a change's sandbox profiles from these by name; it may propose new entries in its spec,
+Reusable building blocks for sandbox environments (WORKFLOW.md §5.3a). The planner
+composes a change's sandbox profiles from these by name; it may propose new entries in the spec,
 which apply to that change once a human approves the spec (H-E1). Promote a useful proposal into
 this library so later changes reuse it:
 
@@ -19,7 +19,7 @@ an existing entry. Review promoted files like code: every change can then use th
 ## `tools/<name>.yaml` – installed with mise (or apt)
 
 ```yaml
-description: CPython (python, python3, pip)      # shown to the environment agent
+description: CPython (python, python3, pip)      # shown to the planner
 mise: {python: "3.12"}                            # mise tool id -> default version
 apt: [libpq-dev]                                  # optional Debian packages mise cannot provide
 binaries: ["bin/python*", "bin/pip*"]             # the executables that use the network

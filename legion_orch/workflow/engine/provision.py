@@ -43,8 +43,8 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
     env = change.environment.roles.get(role) if change.environment else None
     if env is None:
         return None
-    return SandboxEnv(image=env.image, providers=list(env.providers),
-                      driver_config=env.driver_config)
+    return SandboxEnv(image=env.image, providers=list(env.providers), cpu=env.cpu,
+                      memory=env.memory, driver_config=env.driver_config)
 
 
 class Provisioner:
@@ -85,6 +85,7 @@ class Provisioner:
             plan.providers[role] = [NetworkProvider.of(p) for p in prof.policies]
             plan.roles[role] = RoleEnvironment(
                 profile=pname, providers=[p.id for p in plan.providers[role]],
+                cpu=prof.resources.cpu, memory=prof.resources.memory,
                 driver_config=driver_config(c.cfg, prof.resources))
         return plan
 

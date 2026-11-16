@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .. import guards
 from ..engine.common import ENV_SPEC, PLAN_DOCS
-from ..model import ACCEPTED, ENVIRONMENT, PENDING, PLAN, REWORK, Feedback, Node, Resume, Verdict
+from ..model import ACCEPTED, H_ENV, PENDING, PLAN, REWORK, Feedback, Node, Resume, Verdict
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -16,12 +16,12 @@ class Critic(RoleHandler):
     sees_oracle_commit = False
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
-        att = e.latest_att(ENV_SPEC) if ENVIRONMENT in e.nodes else None
+        att = e.latest_att(ENV_SPEC) if H_ENV in e.nodes else None
         return [att] if att else []
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         plan_atts = {a.path: a.version for a in r.parsed if a.kind == "file"}
-        docs = PLAN_DOCS + ([ENV_SPEC] if ENVIRONMENT in e.nodes else [])
+        docs = PLAN_DOCS + ([ENV_SPEC] if H_ENV in e.nodes else [])
         latest = {e.p(p): e.latest(p) for p in docs}
         return guards.critique(r.data, plan_atts, latest, r.repo_atts)
 
@@ -46,6 +46,5 @@ class Critic(RoleHandler):
             plan.cycle += 1
             plan.feedback.append(fb)
             plan.status = REWORK
-            e.reset_environment([fb])            # the environment follows the reworked plan
             node.cycle += 1
             node.status = PENDING

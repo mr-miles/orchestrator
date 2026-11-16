@@ -83,15 +83,15 @@ verification commands).
 
 ### Sandbox environments
 
-With an `environment:` section in the config, planning gains a step: the `environment` agent
-writes `plan/environment.json`, naming sandbox **profiles** (tools, network policies, and
+With an `environment:` section in the config, the planner also writes `plan/environment.json`, naming sandbox **profiles** (tools, network policies, and
 memory/vCPU/disk if non-default) and which role runs in which profile. Profiles are composed from
 a library in [`environments/`](environments/README.md): tools installed with **mise**, and network
 policies that become credentialless OpenShell provider profiles. The spec is critiqued with the
 plan and approved at **H-E1**. The controller then provisions it: `podman build` of one image per
 profile (`FROM sandbox.image`, or `sandbox.verifier_image` for the verifier) tagged by content and
 reused when identical, `openshell profile import` + `provider create` per network policy, and the
-resources rendered from `policies/sandbox-resources.template.yaml` into `--driver-config-json`.
+resources as `sandbox create --cpu` / `--memory` (disk, which has no flag, rendered from
+`policies/sandbox-resources.template.yaml` into `--driver-config-json`).
 Every later sandbox of a mapped role gets its profile's image, providers and resources. Proposed
 library entries can be promoted with `legion-orch library promote <change> tool|policy <name> --approver <you>`
 (a change-level action on the running controller).

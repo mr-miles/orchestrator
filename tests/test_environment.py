@@ -1,4 +1,4 @@
-"""The sandbox-environment stage: spec, critique, H-E1, provisioning and attaching the
+"""The sandbox environment: the planner's spec, critique, H-E1, provisioning and attaching the
 environment to sandboxes (WORKFLOW.md §5.3a)."""
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import shutil
 
 import pytest
 import yaml
-from engine_harness import ENVIRONMENT, ROOT, Flow, make_config, scenario
+from engine_harness import ENVIRONMENT, ORACLE, ROOT, TASKS, Flow, make_config, scenario
 
 from legion_orch.config import load_config
 from legion_orch.sandbox import (
@@ -64,10 +64,10 @@ def sandboxes(f: Flow, role: str, task: str | None = None) -> list[SandboxSpec]:
             if sp.role == role and (task is None or sp.task == task)]
 
 
-async def to_environment(f: Flow) -> None:
+async def to_plan(f: Flow) -> None:
+    """Up to the planner's run."""
     await f.intake()
     await f.human("H-1", "accept")
-    await f.plan()
 
 
 # ====================================================================== graph and flow
@@ -83,12 +83,10 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     f.cfg.sandbox.image, f.cfg.sandbox.verifier_image = "reg/agent:1", "reg/verifier:1"
     await f.intake()
     await f.human("H-1", "accept")
-    assert f.ce.nodes["critique"].depends_on == ["environment"]
+    assert f.ce.nodes["critique"].depends_on == ["plan"] and "environment" not in f.ce.nodes
+    assert "`pypi` – Python Package Index" in f.run("plan").assignment["environment"]
     await f.plan()
-    assert f.status("environment") == "RUNNING" and f.status("critique") == "PENDING"
-    assert "`pypi` – Python Package Index" in f.run("environment").assignment["environment_library"]
-    await f.environment()
-    assert "environment_library" not in f.run("critique").assignment     # only the environment role
+    assert any("plan/environment.json" in r for r in f.run("critique").context_refs)
     await f.critique("PASS")
     assert f.status("H-E1") == "AWAITING_HUMAN" and f.status("provision") == "PENDING"
     await f.human("H-E1", "approve")
@@ -100,8 +98,8 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     assert rev.image != ver.image                    # same profile, agent vs verifier base image
     assert impl.providers and impl.providers[0].startswith("legion-net-pypi-")
     assert ver.providers == rev.providers == []      # check is offline
-    assert json.loads(impl.driver_config) == {"firecracker": {"mem_mib": 4096, "vcpus": 2}}
-    assert ver.driver_config is None
+    assert (impl.cpu, impl.memory, impl.driver_config) == ("2", "4096Mi", None)
+    assert (ver.cpu, ver.memory, ver.driver_config) == (None, None, None)
     assert f.ce.latest("control/environment/build.json") and f.ce.latest("control/logs/provision.log")
     recipe = f.builder.recipes[impl.image]
     assert "COPY mise.toml /etc/mise/config.toml" in recipe.files["Dockerfile"]
@@ -111,8 +109,8 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
 
     await f.human("H-2", "approve")
     sp = f.runner.specs[f.run("build:T1", "implementer").sandbox]
-    assert sp.env == SandboxEnv(image=impl.image, providers=impl.providers,
-                                driver_config=impl.driver_config)
+    assert sp.env == SandboxEnv(image=impl.image, providers=impl.providers, cpu="2",
+                                memory="4096Mi")
     await f.implement()
     verifiers = sandboxes(f, "verifier")
     assert verifiers and all(v.env.image == ver.image and v.env.providers == [] for v in verifiers)
@@ -120,7 +118,7 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     assert all(r.env.image == rev.image for r in sandboxes(f, "reviewer"))
     assert f.status("build:T1") == "ACCEPTED"
     assert all(sp.env is None for sp in f.runner.specs.values()
-               if sp.role in ("intake", "planner", "environment", "critic"))
+               if sp.role in ("intake", "planner", "critic"))
 
 
 @scenario(**ENV)
@@ -153,10 +151,10 @@ async def test_identical_environments_reuse_images_and_providers(f: Flow):
 # ====================================================================== guards
 @scenario(**ENV)
 async def test_unknown_tool_and_policy_are_rejected(f: Flow):
-    await to_environment(f)
+    await to_plan(f)
     bad = spec(profiles={"dev": {"tools": ["python", "cobol"], "network": {"python": ["everything"]}}},
                roles={"implementer": "dev", "reviewer": "nope"})
-    out = await f.environment(bad)
+    out = await f.plan(environment=bad)
     assert not out.accepted
     text = " | ".join(out.violations)
     assert "G-E1: profile dev: unknown tool 'cobol'" in text
@@ -166,52 +164,52 @@ async def test_unknown_tool_and_policy_are_rejected(f: Flow):
 
 @scenario(**ENV)
 async def test_proposals_are_usable_but_cannot_target_the_controller_or_shadow(f: Flow):
-    await to_environment(f)
+    await to_plan(f)
     bad = spec(proposed={
         "tools": {"python": {"description": "shadow", "mise": {"python": "3.9"}}},
         "policies": {"home": {"description": "controller",
                               "endpoints": [{"host": "host.openshell.internal", "port": 8766}]}}},
         profiles={"dev": {"tools": ["python", "uv"], "network": {"uv": ["home"]}}},
         roles={"implementer": "dev"})
-    text = " | ".join((await f.environment(bad)).violations)
+    text = " | ".join((await f.plan(environment=bad)).violations)
     assert "G-E1: proposed tool 'python' shadows" in text
     assert "G-E2: network policy home: host.openshell.internal:8766" in text
     good = spec(proposed={"tools": {"taplo": {"description": "taplo", "mise": {"taplo": "0.9"}}}},
                 profiles={"dev": {"tools": ["python", "taplo"]}}, roles={"implementer": "dev"})
-    run = f.run("environment")
-    assert (await f.report(run, [await f.write(run, "plan/environment.json", good)])).accepted
+    assert (await f.plan(environment=good)).accepted
 
 
 @scenario(environment={"max_memory_mib": 1024})
 async def test_resources_over_the_cap_and_early_roles_are_rejected(f: Flow):
-    await to_environment(f)
-    text = " | ".join((await f.environment(spec(roles={"implementer": "dev", "planner": "dev"}))).violations)
+    await to_plan(f)
+    out = await f.plan(environment=spec(roles={"implementer": "dev", "planner": "dev"}))
+    text = " | ".join(out.violations)
     assert "G-E3: profile dev: memory_mib 4096 exceeds environment.max_memory_mib (1024)" in text
     assert "G-E4: role 'planner' cannot be given an environment" in text
 
 
 @scenario(**ENV)
 async def test_tool_env_credentials_and_conflicts_are_rejected(f: Flow):
-    await to_environment(f)
+    await to_plan(f)
     bad = spec(proposed={"tools": {
         "gh-cli": {"description": "gh", "mise": {"gh": "2"}, "env": {"GH_TOKEN": "abc"}},
         "uv-online": {"description": "uv", "mise": {"ruff": "0.14"},
                       "env": {"UV_PYTHON_DOWNLOADS": "automatic"}}}},
         profiles={"dev": {"tools": ["uv", "uv-online", "gh-cli"]}}, roles={"implementer": "dev"})
-    text = " | ".join((await f.environment(bad)).violations)
+    text = " | ".join((await f.plan(environment=bad)).violations)
     assert "G-E2: tool gh-cli: environment variable GH_TOKEN looks like a credential" in text
     assert "conflicting tool environment: UV_PYTHON_DOWNLOADS is 'never' in uv but 'automatic'" in text
 
 
 @scenario(**ENV)
 async def test_network_extras_must_name_the_profiles_tools_and_reach_a_binary(f: Flow):
-    await to_environment(f)
+    await to_plan(f)
     bad = spec(proposed={"policies": {"pkgs": {"description": "x",
                                                "endpoints": [{"host": "pkgs.example.com", "port": 443}]}},
                          "tools": {"docs": {"description": "x", "apt": ["pandoc"], "network": ["pkgs"]}}},
                profiles={"dev": {"tools": ["node", "docs"], "network": {"uv": ["pkgs"]}}},
                roles={"implementer": "dev"})
-    text = " | ".join((await f.environment(bad)).violations)
+    text = " | ".join((await f.plan(environment=bad)).violations)
     assert "network extras for 'uv', which is not one of its tools" in text
     assert "network policy pkgs is for tools ['docs'], which declare no binaries" in text
 
@@ -220,9 +218,9 @@ async def test_network_extras_must_name_the_profiles_tools_and_reach_a_binary(f:
 async def test_an_invalid_library_is_reported_to_the_agent_and_rejects_its_spec(f: Flow):
     own_library(f)
     (f.tmp / "lib/tools/broken.yaml").write_text("description: [unclosed\n")
-    await to_environment(f)
-    assert "the library is invalid" in f.run("environment").assignment["environment_library"]
-    out = await f.environment()
+    await to_plan(f)
+    assert "the library is invalid" in f.run("plan").assignment["environment"]
+    out = await f.plan()
     assert not out.accepted and "G-E1: the environment library is invalid" in out.violations[0]
 
 
@@ -242,45 +240,77 @@ def test_schema_has_no_place_for_credentials_or_unsafe_env():
 
 # ====================================================================== gate, resets, failures
 @scenario(**ENV)
-async def test_h_e1_revise_reworks_the_environment_and_recritiques(f: Flow):
-    await to_environment(f)
-    await f.environment()
+async def test_the_planner_must_attest_the_environment_spec(f: Flow):
+    await to_plan(f)
+    r = f.run("plan")
+    atts = [await f.write(r, "plan/spec.md", "# Spec\n"),
+            await f.write(r, "plan/oracle.json", ORACLE),
+            await f.write(r, "plan/taskgraph.json", {"tasks": TASKS}),
+            await f.write(r, "plan/specs/REQ-1.md", "# REQ-1\n\n## Current behaviour\nx\n\n"
+                          "## Change\ny\n\n## Acceptance criteria\n- z\n")]
+    out = await f.report(r, atts)
+    assert not out.accepted and any("G-E1: " in v and "plan/environment.json not attested" in v
+                                    for v in out.violations)
+
+
+@scenario()
+async def test_without_the_stage_the_planner_is_told_not_to_write_a_spec(f: Flow):
+    await to_plan(f)
+    assert "do not write `plan/environment.json`" in f.run("plan").assignment["environment"]
+
+
+@scenario(**ENV)
+async def test_h_e1_revise_reworks_the_plan_and_recritiques(f: Flow):
+    await to_plan(f)
+    await f.plan()
     await f.critique("PASS")
     await f.human("H-E1", "revise", feedback="the verifier needs node for the lint step")
-    env = f.ce.nodes["environment"]
-    assert env.cycle == 2 and env.status == "RUNNING"
-    assert "node for the lint" in f.run("environment").assignment["feedback_items"][-1]["text"]
-    await f.environment(spec(profiles={**ENVIRONMENT["profiles"],
-                                       "check": {"tools": ["python", "uv", "node"]}}))
-    assert f.status("critique") == "RUNNING"         # the revised environment is critiqued again
+    plan, crit = f.ce.nodes["plan"], f.ce.nodes["critique"]
+    assert plan.cycle == 2 and plan.status == "RUNNING" and crit.status == "PENDING"
+    assert "node for the lint" in f.run("plan").assignment["feedback_items"][-1]["text"]
+    await f.plan(environment=spec(profiles={**ENVIRONMENT["profiles"],
+                                            "check": {"tools": ["python", "uv", "node"]}}))
+    assert f.status("critique") == "RUNNING" and f.run("critique").cycle == 2
     await f.critique("PASS")
     await f.human("H-E1", "approve")
     assert f.status("provision") == "ACCEPTED"
 
 
 @scenario(**ENV)
-async def test_critique_rework_reruns_plan_and_environment(f: Flow):
-    await to_environment(f)
-    await f.environment()
-    await f.critique("REWORK")
-    assert f.status("plan") == "RUNNING" and f.status("environment") == "PENDING"
+async def test_a_plan_rework_may_keep_the_environment_spec(f: Flow):
+    await to_plan(f)
     await f.plan()
-    assert f.status("environment") == "RUNNING" and f.ce.nodes["environment"].cycle == 2
-    await f.environment()
+    first = f.ce.latest("plan/environment.json")
+    await f.critique("REWORK")
+    assert f.status("plan") == "RUNNING"
+    assert (await f.plan(keep_environment=True)).accepted
+    assert f.ce.latest("plan/environment.json") == first     # not rewritten
     await f.critique("PASS")
     assert f.status("H-E1") == "AWAITING_HUMAN"
 
 
+@scenario(**ENV)
+async def test_a_rework_must_attest_the_latest_environment_spec(f: Flow):
+    await to_plan(f)
+    await f.plan()
+    old = f.ce.latest_att("plan/environment.json")
+    await f.critique("REWORK")
+    f.ce.write_record("plan/environment.json", json.dumps(spec(summary="newer")))
+    r = f.run("plan")
+    atts = [await f.write(r, p, f.ce.doc(p).content) for p in
+            ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json", "plan/specs/REQ-1.md")]
+    out = await f.report(r, [*atts, old])
+    assert not out.accepted and any("is not the latest version" in v for v in out.violations)
+
+
 @scenario(critique_max_cycles=1, **ENV)
-async def test_critique_budget_answer_reworks_plan_and_environment(f: Flow):
-    await to_environment(f)
-    await f.environment()
+async def test_critique_budget_answer_reworks_the_plan(f: Flow):
+    await to_plan(f)
+    await f.plan()
     await f.critique("REWORK")
     assert f.ce.nodes["critique"].escalation.kind == "critique_budget"
     await f.human("critique", "answer", answer="keep the single task")
-    env = f.ce.nodes["environment"]
-    assert f.status("plan") == "RUNNING" and env.status == "PENDING" and env.cycle == 2
-    assert env.feedback[-1].source == "critique"
+    assert f.status("plan") == "RUNNING" and f.status("H-E1") == "PENDING"
 
 
 @scenario(**ENV)
@@ -289,14 +319,14 @@ async def test_h2_revise_resets_environment_approval_and_build(f: Flow):
     assert f.ce.change.environment
     await f.human("H-2", "revise", feedback="split T1 in two")
     assert f.ce.change.environment is None and "H-E1" not in f.ce.change.approvals
-    assert f.status("environment") == "PENDING" and f.status("provision") == "PENDING"
-    assert f.ce.nodes["environment"].feedback[-1].text == "split T1 in two"
+    assert f.status("H-E1") == "PENDING" and f.status("provision") == "PENDING"
+    assert f.status("plan") == "RUNNING"
 
 
 @scenario(**ENV)
 async def test_provision_failure_escalates_and_retry_provisions_again(f: Flow):
-    await to_environment(f)
-    await f.environment()
+    await to_plan(f)
+    await f.plan()
     await f.critique("PASS")
     f.builder.fail = "podman build failed (1): mise: python 3.12 not found"
     await f.human("H-E1", "approve")
@@ -313,8 +343,8 @@ async def test_library_changed_after_approval_escalates_provisioning(f: Flow):
     """The approved spec is resolved again at provisioning: a library entry removed (or a
     library broken) since then stops the build instead of building something else."""
     own_library(f)
-    await to_environment(f)
-    await f.environment()
+    await to_plan(f)
+    await f.plan()
     await f.critique("PASS")
     (f.tmp / "lib/tools/uv.yaml").unlink()
     await f.human("H-E1", "approve")
@@ -355,8 +385,8 @@ async def test_stale_environment_approval_blocks_the_verifier(f: Flow):
 
 @scenario(**ENV)
 async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
-    await to_environment(f)
-    await f.environment()
+    await to_plan(f)
+    await f.plan()
     await f.critique("PASS")
     await f.ce.human_action("H-E1", "approve", "miles", {})
     async with f.ctl.svc.lock:                          # as if the controller died mid-build
@@ -381,7 +411,8 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
 # ====================================================================== sandbox create commands
 def test_openshell_create_attaches_the_environment(tmp_path):
     """What OpenShell is actually asked for: the profile's image, its providers after the
-    configured ones, and the resources as --driver-config-json – for agents and verifiers."""
+    configured ones, CPU and memory as --cpu / --memory and disk as --driver-config-json – for
+    agents and verifiers."""
     from legion_orch.sandbox.runner import OpenShellRunner
     cfg = make_config(tmp_path, environment={})
     cfg.sandbox.image, cfg.sandbox.providers = "reg/agent:1", ["claude-code"]
@@ -393,7 +424,7 @@ def test_openshell_create_attaches_the_environment(tmp_path):
     r = OpenShellRunner(cfg)
     r._os = fake_os
     env = SandboxEnv(image="localhost/legion-env:abc", providers=["legion-net-pypi-1234"],
-                     driver_config='{"firecracker": {"mem_mib": 4096}}')
+                     cpu="2", memory="4096Mi", driver_config='{"firecracker": {"disk_mib": 2048}}')
 
     def create(agent: bool, env: SandboxEnv | None) -> list[str]:
         calls.clear()
@@ -407,12 +438,15 @@ def test_openshell_create_attaches_the_environment(tmp_path):
     agent = create(True, env)
     assert flag(agent, "--from") == ["localhost/legion-env:abc"]
     assert flag(agent, "--provider") == ["legion-controller", "claude-code", "legion-net-pypi-1234"]
-    assert flag(agent, "--driver-config-json") == ['{"firecracker": {"mem_mib": 4096}}']
+    assert flag(agent, "--cpu") == ["2"] and flag(agent, "--memory") == ["4096Mi"]
+    assert flag(agent, "--driver-config-json") == ['{"firecracker": {"disk_mib": 2048}}']
     verifier = create(False, env)
     assert flag(verifier, "--from") == ["localhost/legion-env:abc"]
+    assert flag(verifier, "--cpu") == ["2"] and flag(verifier, "--memory") == ["4096Mi"]
     assert flag(verifier, "--provider") == ["legion-controller", "legion-net-pypi-1234"]
     plain = create(True, None)
-    assert flag(plain, "--from") == ["reg/agent:1"] and "--driver-config-json" not in plain
+    assert flag(plain, "--from") == ["reg/agent:1"]
+    assert not {"--cpu", "--memory", "--driver-config-json"} & set(plain)
     assert flag(create(True, SandboxEnv(providers=[])), "--from") == ["reg/agent:1"]  # no image: default
 
 
@@ -446,6 +480,8 @@ def test_every_seeded_tool_resolves_to_absolute_binaries():
         tool, err = resolve_tool(name, entry, None)
         assert err is None and all(b.startswith("/") for b in tool.binaries), name
         assert tool.binaries, f"{name} declares no binaries"
+    node, _ = resolve_tool("node", lib.tools["node"], None)       # node, npm and npx
+    assert node.binaries == ("/usr/local/share/mise/installs/node/*/bin/*",)
 
 
 def test_selected_tools_bring_their_network_for_their_own_binaries():
@@ -528,7 +564,10 @@ def test_network_provider_is_credentialless_and_content_addressed():
 def test_resources_caps_and_driver_config(tmp_path):
     cfg = make_config(tmp_path, environment={})
     assert driver_config(cfg, Resources()) is None
+    assert driver_config(cfg, Resources(memory_mib=4096, vcpus=2)) is None      # flags, not driver
     assert json.loads(driver_config(cfg, Resources(disk_mib=2048))) == {"firecracker": {"disk_mib": 2048}}
+    assert (Resources(memory_mib=4096, vcpus=2).cpu, Resources(memory_mib=4096).memory) == ("2", "4096Mi")
+    assert (Resources().cpu, Resources().memory) == (None, None)
     caps = Resources(memory_mib=1024, vcpus=4)
     assert Resources(memory_mib=2048, vcpus=4, disk_mib=9).over(caps) == [("memory_mib", 2048, 1024)]
 
@@ -589,10 +628,10 @@ def test_builder_runs_time_out():
 async def test_promote_copies_an_approved_proposal_into_the_library(f: Flow):
     from legion_orch.workflow.engine import WorkflowError
     own_library(f)
-    await to_environment(f)
+    await to_plan(f)
     s = spec(proposed={"tools": {"taplo": {"description": "taplo", "mise": {"taplo": "0.9"}}}},
              profiles={"dev": {"tools": ["python", "taplo"]}}, roles={"implementer": "dev"})
-    await f.environment(s)
+    await f.plan(environment=s)
     await f.critique("PASS")
     promote = lambda kind, name: f.change_action("promote_proposal", kind=kind, name=name)
     with pytest.raises(WorkflowError, match="not approved"):
@@ -611,9 +650,9 @@ async def test_promote_copies_an_approved_proposal_into_the_library(f: Flow):
 @scenario(**ENV)
 async def test_ui_view_shows_effective_network_and_problems(f: Flow):
     from legion_orch.server.views import change_state
-    await to_environment(f)
+    await to_plan(f)
     assert change_state(f.ctl, f.ce)["environment"] is None
-    await f.environment()
+    await f.plan()
     env = change_state(f.ctl, f.ce)["environment"]
     assert env["problems"] == [] and env["proposals"] == {"tools": [], "policies": []}
     assert env["network"]["dev"] == [{"policy": "pypi", "tools": ["uv"],
@@ -644,5 +683,5 @@ def test_config_without_environment_section(tmp_path):
 def test_language_preferences_reach_the_roles_that_plan_build_and_judge_code():
     a = Assets(ROOT / "assets")
     have = {r for r, role in a.roles.items() if "language-preferences" in role.skills}
-    assert have == {"planner", "environment", "critic", "oracle", "implementer", "reviewer"}
+    assert have == {"planner", "critic", "oracle", "implementer", "reviewer"}
     assert "uv" in a.skill("language-preferences") and "ruff" in a.skill("language-preferences")

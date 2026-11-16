@@ -12,7 +12,7 @@ controller only fills in placeholders.
 | `verifier-sandbox.template.yaml` | `sandbox create` flags for a verifier sandbox |
 | `legion-provider-profile.template.yaml` | provider profile imported once per workspace (`profile import -f`) |
 | `legion-provider.template.yaml` | `provider create` flags, once per workspace |
-| `sandbox-resources.template.yaml` | `--driver-config-json` for a sandbox whose environment profile requests memory, vCPUs or disk (see below) |
+| `sandbox-resources.template.yaml` | `--driver-config-json` for a sandbox whose environment profile requests disk (see below) |
 
 ## Rendering rules
 
@@ -59,10 +59,10 @@ controller only fills in placeholders.
 | `${VERIFIER_IMAGE}` | image for verifier sandboxes: its environment image, else sandbox.verifier_image or sandbox.image |
 | `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: PROVIDER + sandbox.providers + its environment's network providers |
 | `${VERIFIER_PROVIDERS}` | providers attached to verifier sandboxes: PROVIDER + its environment's network providers |
-| `${DRIVER_CONFIG}` | `--driver-config-json` for the sandbox's resources (the rendered `sandbox-resources` template), null for driver defaults |
-| `${VCPUS}` | vCPUs requested by the sandbox's environment profile (null if unset) |
-| `${MEMORY_MIB}` | memory in MiB requested by the sandbox's environment profile (null if unset) |
-| `${DISK_MIB}` | disk in MiB requested by the sandbox's environment profile (null if unset) |
+| `${SANDBOX_CPU}` | `--cpu`: vCPUs requested by the sandbox's environment profile (null: driver default) |
+| `${SANDBOX_MEMORY}` | `--memory`: memory requested by the sandbox's environment profile, `<n>Mi` (null: driver default) |
+| `${DRIVER_CONFIG}` | `--driver-config-json` for the sandbox's disk (the rendered `sandbox-resources` template), null for the driver default |
+| `${DISK_MIB}` | disk in MiB requested by the sandbox's environment profile (`sandbox-resources` template only) |
 | `${AGENT_BINARIES}` | policy binaries [{path}] of the agent CLI (sandbox.agent_binaries) |
 | `${GIT_BINARIES}` | policy binaries [{path}] of git and its HTTP remote helpers |
 | `${PROFILE_BINARIES}` | plain paths of agent and git binaries, for the provider profile |
@@ -82,11 +82,13 @@ controller only fills in placeholders.
 With the sandbox-environment stage (`environment:` in the config, WORKFLOW.md §5.3a) a sandbox
 of a role that the approved spec maps to a profile gets that profile's image (`${AGENT_IMAGE}` /
 `${VERIFIER_IMAGE}`), its network providers (appended to `${SANDBOX_PROVIDERS}` /
-`${VERIFIER_PROVIDERS}`) and its resources (`${DRIVER_CONFIG}`). The network providers are
+`${VERIFIER_PROVIDERS}`) and its resources (`${SANDBOX_CPU}`, `${SANDBOX_MEMORY}`,
+`${DRIVER_CONFIG}`). The network providers are
 credentialless provider profiles built from `environments/policies/` by the controller; OpenShell
 adds their endpoints to the sandbox's effective policy, so the policy templates here need no
 change.
 
-`sandbox-resources.template.yaml` is rendered with `${VCPUS}`, `${MEMORY_MIB}` and `${DISK_MIB}`;
-null values are dropped and an empty result passes no flag. Its top-level key is the compute
+CPU and memory are `sandbox create` flags (`--cpu`, `--memory`). Disk has no flag:
+`sandbox-resources.template.yaml` is rendered with `${DISK_MIB}`; null values are dropped and an
+empty result passes no flag. Its top-level key is the compute
 driver the gateway runs (the default is `firecracker`); match the field names to your driver.

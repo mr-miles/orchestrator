@@ -538,11 +538,10 @@ def test_role_dispatch_policy():
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
     assert roles_where("judges_head") == {"baseline", "integration", "release"}
     assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}
-    assert roles_where("sees_draft_plan") == {"environment", "critic", "oracle", "baseline"}
+    assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
     everyone = set(Assets(ROOT / "assets").roles)
     assert everyone - roles_where("sees_requirements") == {"intake"}
-    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "environment",
-                                                             "critic", "oracle"}
+    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle"}
 
 
 def test_role_handlers_use_only_the_role_context():

@@ -5,7 +5,7 @@ from ..workflow import governance
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.engine.common import ENV_SPEC
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
-from ..workflow.model import ACCEPTED, ENVIRONMENT, LIVE_RUN
+from ..workflow.model import ACCEPTED, H_ENV, LIVE_RUN
 
 
 def change_list(ctl: Controller) -> list[dict]:
@@ -23,7 +23,7 @@ def change_list(ctl: Controller) -> list[dict]:
 def environment_spec(ce: ChangeEngine) -> dict | None:
     """The latest environment spec for the H-E1 card: the proposals its profiles use and each
     profile's effective network (what its tools bring plus extras), or the problems."""
-    if ENVIRONMENT not in ce.nodes or not ce.latest(ENV_SPEC):
+    if H_ENV not in ce.nodes or not ce.latest(ENV_SPEC):
         return None
     raw = ce.json_doc(ENV_SPEC)
     spec = EnvironmentSpec.model_validate(raw)

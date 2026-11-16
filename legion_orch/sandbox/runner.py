@@ -39,10 +39,12 @@ Gateway = Callable[[str], Awaitable[str]]
 @dataclass
 class SandboxEnv:
     """A sandbox's environment (from the approved environment spec): image, network providers
-    and resource driver config. None fields keep the configured defaults."""
+    and resources. None fields keep the configured defaults."""
     image: str | None = None
     providers: list[str] = field(default_factory=list)
-    driver_config: str | None = None    # --driver-config-json
+    cpu: str | None = None              # --cpu
+    memory: str | None = None           # --memory
+    driver_config: str | None = None    # --driver-config-json (disk)
 
 
 @dataclass
@@ -81,7 +83,8 @@ def env_values(values: dict, env: SandboxEnv, *, agent: bool) -> dict:
     (the agent or the verifier template's placeholders)."""
     image, providers = ("AGENT_IMAGE", "SANDBOX_PROVIDERS") if agent else \
         ("VERIFIER_IMAGE", "VERIFIER_PROVIDERS")
-    out = dict(values) | {"DRIVER_CONFIG": env.driver_config,
+    out = dict(values) | {"SANDBOX_CPU": env.cpu, "SANDBOX_MEMORY": env.memory,
+                          "DRIVER_CONFIG": env.driver_config,
                           providers: list(dict.fromkeys([*values[providers], *env.providers]))}
     if env.image:
         out[image] = env.image

@@ -9,7 +9,6 @@ from ..model import (
     BASELINE,
     BUILD,
     CRITIQUE,
-    ENVIRONMENT,
     ESCALATED,
     FAILED,
     H_CHANGE,
@@ -175,7 +174,7 @@ class HumanGates:
         oracle, baseline, build nodes, the integration branch and surface pins)."""
         ch = self.c.change
         self._send_back(self.c.nodes[PLAN], approver, payload)
-        self.graph.reset_environment(self.c.nodes[PLAN].feedback[-1:])
+        self.graph.reset_environment()
         for nid in (CRITIQUE, ORACLE, BASELINE):
             if nid in self.c.nodes:
                 n = self.c.nodes[nid]
@@ -201,8 +200,11 @@ class HumanGates:
         return ActionResult()
 
     async def _revise_environment(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-E1 revise: the environment is reworked (and critiqued again) with the feedback."""
-        self._send_back(self.c.nodes[ENVIRONMENT], approver, payload)
+        """H-E1 revise: the planner reworks the plan's environment with the feedback; the plan
+        is then critiqued again."""
+        self._send_back(self.c.nodes[PLAN], approver, payload)
+        crit = self.c.nodes[CRITIQUE]
+        crit.status, crit.cycle = PENDING, crit.cycle + 1
         node.status = PENDING
         return ActionResult()
 
@@ -316,7 +318,7 @@ class HumanGates:
             plan.cycle += 1
             plan.feedback += node.feedback[-1:]
             plan.status = REWORK
-            self.graph.reset_environment(node.feedback[-1:])
+            self.graph.reset_environment()
             node.cycle += 1
             node.status = PENDING
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
