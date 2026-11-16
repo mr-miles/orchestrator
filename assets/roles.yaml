@@ -8,15 +8,23 @@ intake:
   repo: true
 planner:
   soul: architect-planner
-  skills: [harness-contract, docstore-protocol, attestation-format, taskgraph-schema, blocked-protocol]
+  skills: [harness-contract, docstore-protocol, attestation-format, taskgraph-schema, blocked-protocol, language-preferences]
   write: ["plan/"]
   required_docs: ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
   git: none
   report_schema: report-none
   repo: true
+environment:
+  soul: environment-engineer
+  skills: [harness-contract, docstore-protocol, attestation-format, sandbox-environment, blocked-protocol, language-preferences]
+  write: ["plan/environment.json"]
+  required_docs: ["plan/environment.json"]
+  git: none
+  report_schema: report-none
+  repo: true
 critic:
   soul: plan-critic
-  skills: [harness-contract, docstore-protocol, attestation-format, pre-mortem, finding-format]
+  skills: [harness-contract, docstore-protocol, attestation-format, pre-mortem, finding-format, language-preferences]
   write: ["critique/"]
   required_docs: ["critique/cycle-{{cycle}}.md"]
   git: none
@@ -24,7 +32,7 @@ critic:
   repo: true
 oracle:
   soul: test-engineer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
   write: ["oracle/"]
   required_docs: ["oracle/tests.md"]
   git: commit
@@ -41,7 +49,7 @@ baseline:
 implementer:
   soul: "{{task_soul}}"
   souls_allowed: [senior-developer, backend-engineer, frontend-engineer]
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
   write: ["tasks/{{task_id}}/evidence/"]
   required_docs: ["tasks/{{task_id}}/evidence/cycle-{{cycle}}.md"]
   git: commit
@@ -49,7 +57,7 @@ implementer:
   repo: true
 reviewer:
   soul: code-reviewer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, language-preferences]
   write: ["tasks/{{task_id}}/reviews/reviewer-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md"]
   git: candidate

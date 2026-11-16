@@ -5,6 +5,7 @@
 * :class:`RunLifecycle` – failure, timeouts, logs and sandbox deletion of runs
 * :class:`Dispatcher` – turning a ready node into a run and starting its agent
 * :class:`Acceptance` – verification, the review panel's decision, rework, merge, ship
+* :class:`Provisioner` – building the approved sandbox environment
 * :class:`Reports` – agent writes, progress and reports
 * :class:`HumanGates` – decision owners' actions
 * :class:`Scheduler` – the tick that moves the graph forward
@@ -21,6 +22,7 @@ from ..model import (
     INTAKE,
     LIVE_RUN,
     MERGING,
+    PROVISION,
     RUNNING,
     SHIP,
     VERIFYING,
@@ -35,6 +37,7 @@ from .core import ChangeCore
 from .dispatch import Dispatcher
 from .graph import StageGraph
 from .human import HumanGates
+from .provision import Provisioner
 from .reports import Reports
 from .runs import RunLifecycle
 from .schedule import Scheduler
@@ -54,11 +57,12 @@ class ChangeEngine(ChangeCore):
         self._graph = StageGraph(self)
         self._lifecycle = RunLifecycle(self)
         self._acceptance = Acceptance(self, self._lifecycle)
+        self._provisioner = Provisioner(self)
         self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
-                                    self._acceptance)
+                                    self._acceptance, self._provisioner)
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:
@@ -89,6 +93,8 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.merge_node(node.id))
             elif node.kind == SHIP and node.status == RUNNING:
                 self.spawn(self._acceptance.ship())
+            elif node.kind == PROVISION and node.status == RUNNING:
+                self.spawn(self._provisioner.provision())
         self._gates.resume_retries()
         self.save()
 

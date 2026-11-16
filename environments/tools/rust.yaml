@@ -1,0 +1,5 @@
+description: Rust toolchain (rustc, cargo) via rustup
+mise: {rust: "stable"}
+apt: [build-essential]
+binaries: ["bin/cargo", "bin/rustup"]
+network: [crates-io]                             # attached wherever this tool is used

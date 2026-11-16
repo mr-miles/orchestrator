@@ -125,6 +125,26 @@ class SandboxConfig:
 
 
 @dataclass
+class EnvironmentConfig:
+    """The sandbox-environment stage (§5.3a of WORKFLOW.md): an agent specifies the tools, network
+    policies and resources sandboxes need; after approval (H-E1) the controller builds them.
+    Leave the ``environment:`` section out of the config to run without the stage."""
+    # Library of reusable tools (tools/<name>.yaml) and network policies (policies/<name>.yaml)
+    library_dir: str = "environments"
+    podman_bin: str = "podman"
+    # mise installed into every environment image (pinned for reproducible images)
+    mise_version: str = "v2026.11.0"
+    # Push built images here (e.g. registry.example.com/legion) for gateways that cannot see
+    # this host's local podman images; None = local images (localhost/legion-env:<hash>).
+    registry: str | None = None
+    build_timeout_s: int = 1800
+    # Largest resources a spec may request per sandbox (guard G-E3)
+    max_memory_mib: int = 32768
+    max_vcpus: int = 16
+    max_disk_mib: int = 204800
+
+
+@dataclass
 class IdentityConfig:
     """Workload identity (SPIFFE/SPIRE via the OpenShell gateway). See legion_orch/identity.py."""
     # OpenShell provider created once per workspace from policies/legion-provider-profile.template.yaml
@@ -153,6 +173,7 @@ class Config:
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
+    environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -188,6 +209,7 @@ def load_config(path: str | Path) -> Config:
         limits=_build(LimitsConfig, raw.get("limits")),
         sandbox=_build(SandboxConfig, raw.get("sandbox")),
         identity=_build(IdentityConfig, raw.get("identity")),
+        environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )

@@ -9,6 +9,7 @@
 - {pattern: "plan/specs/REQ-*.md", schema: delta-spec}
 - {pattern: "plan/taskgraph.json", schema: taskgraph}
 - {pattern: "plan/oracle.json", schema: oracle}
+- {pattern: "plan/environment.json", schema: environment}
 - {pattern: "tasks/*/evidence/*.md", schema: evidence}
 - {pattern: "release/plan.md", schema: release-plan}
 # ---- controller documents

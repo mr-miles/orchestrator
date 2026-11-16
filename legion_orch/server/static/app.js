@@ -248,12 +248,52 @@ function actionForm(n) {
       <textarea id="f_text" placeholder="feedback for revision"></textarea>
       <button class="act warn" ${on('act', 'H-2', 'revise', 'feedback')}>Request revision</button></div>`;
   }
+  if (n.id === 'H-E1') return environmentCard();
   if (n.id === 'H-3') return `<div class="card"><b>Accept the whole change</b> at integration head ${short(c.integration_head)}
       <textarea id="f_text" placeholder="note"></textarea>
       <button class="act ok" ${on('act', 'H-3', 'accept', 'feedback')}>Accept change</button>
       <button class="act danger" ${on('act', 'H-3', 'reject', 'none')}>Reject</button></div>`;
   if (n.kind === 'ship') return `<button class="act" ${on('act', 'ship', 'recheck', 'none')}>Re-run readiness check</button>`;
   return '';
+}
+
+// The sandbox environment spec: profiles (tools, network, resources), the role map, and the
+// proposed library entries a profile uses (highlighted: they are new, reviewed here first).
+function environmentSpecHtml() {
+  const E = S.environment;
+  if (!E) return '<div class="muted">no environment spec yet</div>';
+  const s = E.spec, prop = E.proposals, isNew = (kind, name) => prop[kind].includes(name.split('@')[0]);
+  const tag = (kind, name) => `<code${isNew(kind, name)?' class="err" title="proposed: not in the library"':''}>${esc(name)}</code>`;
+  const res = r => r ? Object.entries(r).map(([k,v])=>`${esc(k)} ${v}`).join(', ') : '<span class="muted">defaults</span>';
+  const roles = p => Object.entries(s.roles).filter(([,x])=>x===p).map(([r])=>esc(r)).join(', ') || '<span class="muted">unused</span>';
+  const net = p => ((E.network||{})[p]||[]).map(x => `${tag('policies', x.policy)} <span class="muted">for ${x.tools.map(esc).join(', ')}: ${x.hosts.map(esc).join(', ')}</span>`).join('<br>')
+      || `<span class="muted">${s.profiles[p].offline?'offline':'none'}</span>`;
+  const profiles = Object.entries(s.profiles).map(([p, pr]) => `<tr><td><b>${esc(p)}</b></td><td>${roles(p)}</td>
+      <td>${pr.tools.map(t=>tag('tools', t)).join(' ')||'—'}</td><td>${net(p)}</td><td>${res(pr.resources)}</td></tr>`).join('');
+  const proposed = ['tools','policies'].flatMap(k => Object.entries((s.proposed||{})[k]||{}).map(([name, body]) =>
+      `<details data-key="prop-${k}-${esc(name)}"><summary>proposed ${k==='tools'?'tool':'network policy'} <code>${esc(name)}</code></summary><pre data-key="prop-pre-${k}-${esc(name)}">${esc(JSON.stringify(body, null, 2))}</pre></details>`)).join('');
+  return `<div>${esc(s.summary)}</div>
+    <table><tr><th>profile</th><th>roles</th><th>tools</th><th>network</th><th>resources</th></tr>${profiles}</table>
+    ${(E.problems||[]).length?`<div class="err">${E.problems.map(esc).join('<br>')}</div>`:''}
+    ${proposed}<details data-key="env-rationale"><summary>rationale</summary><div>${esc(s.rationale)}</div></details>
+    <a ${on('openDoc', E.path)}>${esc(E.path.split('/').slice(2).join('/'))} v${E.version}</a>`;
+}
+
+function environmentCard() {
+  return `<div class="card"><b>Approve sandbox environment</b> <span class="muted">(the controller then builds the images with mise and podman and creates the network providers; highlighted entries are proposed, not yet in the library)</span>
+      ${environmentSpecHtml()}
+      <textarea id="f_text" placeholder="feedback for revision / approval note"></textarea>
+      <button class="act ok" ${on('act', 'H-E1', 'approve', 'feedback')}>Approve</button>
+      <button class="act warn" ${on('act', 'H-E1', 'revise', 'feedback')}>Request revision</button></div>`;
+}
+
+function environmentBuildHtml() {
+  const b = (S.change||{}).environment;
+  if (!b) return '';
+  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>profile</th><th>image</th><th>verifier image</th><th>network providers</th><th>driver config</th></tr>
+    ${Object.entries(b.profiles).map(([p, x]) => `<tr><td><b>${esc(p)}</b></td><td class="mono">${esc(x.image||'—')}</td><td class="mono">${esc(x.verifier_image||'—')}</td>
+      <td class="mono">${(x.providers||[]).map(esc).join('<br>')||'—'}</td><td class="mono">${esc(x.driver_config||'—')}</td></tr>`).join('')}</table>
+    <div class="mono muted">${[b.spec, b.log, b.attestation].filter(Boolean).map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div>`;
 }
 
 function renderDetail() {
@@ -269,6 +309,8 @@ function renderDetail() {
     ${n.accepted_sha?`<div>accepted</div><div>${short(n.accepted_sha)}</div>`:''}
     ${n.sandbox?`<div>sandbox</div><div><code>${esc(n.sandbox)}</code></div>`:''}</div>`;
   h += actionForm(n);
+  if (n.kind === 'environment' && n.status === 'ACCEPTED') h += `<h2 style="margin-top:10px">Environment spec</h2>` + environmentSpecHtml();
+  if (n.kind === 'provision') h += environmentBuildHtml();
   if (n.task) h += `<details data-key="task"><summary>Task contract</summary><pre data-key="task-pre">${esc(JSON.stringify(n.task, null, 2))}</pre></details>`;
   const ver = Object.entries(n.verification||{});
   if (ver.length) h += `<h2 style="margin-top:10px">Verification</h2>` + ver.map(([k,v]) => `<div class="card">${k==='integration'?'integration':'cycle '+k}: ${v.ok?'<b class="gate-satisfied">PASS</b>':'<b class="gate-unsatisfied">FAIL</b>'} at ${short(v.sha)} ${v.infra_error?`<span class="err">${esc(v.infra_error)}</span>`:''}

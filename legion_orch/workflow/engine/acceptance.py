@@ -103,9 +103,12 @@ class Acceptance:
         ref = None
         try:
             policy = self.c.svc.write_policy(base / "policy.yaml", agent=False, push=False)
+            if stale := self.c.environment_stale():
+                raise SandboxError(stale)
             ref = await self.c.runner.create(SandboxSpec(
                 name=name, payload_dir=payload, policy_file=policy, agent=False,
-                change=self.c.cid, task=label, role="verifier", run=name))
+                change=self.c.cid, task=label, role="verifier", run=name,
+                env=self.c.sandbox_env("verifier")))
             self.c.svc.auth.register_verifier(
                 ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
             root = self.c.cfg.sandbox.root

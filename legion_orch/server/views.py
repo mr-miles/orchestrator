@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from ..workflow import governance
 from ..workflow.engine import ChangeEngine, Controller
-from ..workflow.model import ACCEPTED, LIVE_RUN
+from ..workflow.engine.common import ENV_SPEC
+from ..workflow.environment import LibraryError, resolve, used_proposals
+from ..workflow.model import ACCEPTED, ENVIRONMENT, LIVE_RUN
 
 
 def change_list(ctl: Controller) -> list[dict]:
@@ -16,6 +18,22 @@ def change_list(ctl: Controller) -> list[dict]:
                     "nodes": len(ce.nodes),
                     "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values())})
     return sorted(out, key=lambda c: c["created_at"], reverse=True)
+
+
+def environment_spec(ce: ChangeEngine) -> dict | None:
+    """The latest environment spec for the H-E1 card, with the proposals its profiles use."""
+    if ENVIRONMENT not in ce.nodes or not ce.latest(ENV_SPEC):
+        return None
+    spec = ce.json_doc(ENV_SPEC)
+    try:                        # each profile's effective network: what its tools bring + extras
+        profiles, problems = resolve(spec, ce.environment_library())
+        network = {p: [{"policy": x.name, "tools": list(x.tools),
+                        "hosts": [f"{e['host']}:{e['port']}" for e in x.endpoints]}
+                       for x in rp.policies] for p, rp in profiles.items()}
+    except LibraryError as e:
+        network, problems = {}, [str(e)]
+    return {"path": ce.p(ENV_SPEC), "version": ce.latest(ENV_SPEC), "spec": spec,
+            "proposals": used_proposals(spec), "network": network, "problems": problems}
 
 
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
@@ -31,4 +49,5 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "gates": governance.gate_set(ce) if ch and ch.tier else [],
             "h2": [s.model_dump() for s in governance.h2_status(ce)] if ch and ch.requirements else [],
             "surfaces": [s.model_dump() for s in governance.surfaces(ce)] if ch else [],
+            "environment": environment_spec(ce),
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}

@@ -7,6 +7,7 @@ from ..model import (
     HUMAN,
     LIVE_RUN,
     PENDING,
+    PROVISION,
     R_REPORTED,
     READY,
     REVIEWING,
@@ -21,14 +22,16 @@ from .acceptance import Acceptance
 from .core import ChangeCore
 from .dispatch import Dispatcher
 from .graph import StageGraph
+from .provision import Provisioner
 from .runs import RunLifecycle
 
 
 class Scheduler:
     def __init__(self, core: ChangeCore, graph: StageGraph, lifecycle: RunLifecycle,
-                 dispatcher: Dispatcher, acceptance: Acceptance):
+                 dispatcher: Dispatcher, acceptance: Acceptance, provisioner: Provisioner):
         self.c, self.graph, self.lifecycle = core, graph, lifecycle
         self.dispatcher, self.acceptance = dispatcher, acceptance
+        self.provisioner = provisioner
 
     async def tick(self) -> None:
         """Under the lock: promote nodes whose dependencies are accepted, fail timed-out runs
@@ -68,6 +71,11 @@ class Scheduler:
         """Prepare at most ``capacity`` runs for the node: its role's run when it is ready (or
         in rework), or the missing panel members' runs while it is under review."""
         c = self.c
+        if node.kind == PROVISION and node.status == READY:     # controller work, no run
+            node.status = RUNNING
+            c.event("provision", "provisioning the approved environment", node.id)
+            c.spawn(self.provisioner.provision())
+            return []
         if node.status in (READY, REWORK) and node.kind in ROLE_FOR_KIND:
             if not self.graph.deps_accepted(node):
                 return []

@@ -76,3 +76,6 @@ class RoleContext(ChangeView, Protocol):
         """Decide the review panel outcome once every member has reported."""
 
     def oracle_commands(self) -> list[str]: ...
+
+    def environment_library(self) -> Any:
+        """workflow.environment.Library: the tool and network-policy library."""

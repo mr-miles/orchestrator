@@ -537,10 +537,11 @@ def test_role_dispatch_policy():
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
     assert roles_where("judges_head") == {"baseline", "integration", "release"}
     assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}
-    assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
+    assert roles_where("sees_draft_plan") == {"environment", "critic", "oracle", "baseline"}
     everyone = set(Assets(ROOT / "assets").roles)
     assert everyone - roles_where("sees_requirements") == {"intake"}
-    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle"}
+    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "environment",
+                                                             "critic", "oracle"}
 
 
 def test_role_handlers_use_only_the_role_context():
@@ -682,8 +683,8 @@ def test_cgi_head_parsing():
 
 def test_every_human_gate_action_has_a_handler():
     from legion_orch.workflow.engine.human import HumanGates
-    from legion_orch.workflow.model import H_CHANGE, H_REQUIREMENTS, H_SPEC
-    assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_SPEC, H_CHANGE}
+    from legion_orch.workflow.model import H_CHANGE, H_ENV, H_REQUIREMENTS, H_SPEC
+    assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
     assert all(callable(getattr(HumanGates, m)) for m in HumanGates.GATE_ACTIONS.values())
 
 

@@ -49,6 +49,16 @@ sandbox:
   # root: /sandbox                 # payload and working copy inside the sandbox; match your image,
   # run_as_user: sandbox           # e.g. root: /home/agent, run_as_user: agent, run_as_group: agent
   # run_as_group: sandbox
+environment:                     # sandbox-environment stage (WORKFLOW.md §5.3a); omit to disable
+  library_dir: environments      # reusable tools/ (mise) and policies/ (network) – see its README
+  podman_bin: podman             # builds the images on this host (FROM sandbox.image / verifier_image)
+  mise_version: v2026.11.0       # mise installed into every environment image
+  # registry: registry.example.com/your-org   # push images here if the gateway cannot see
+  #                                            # this host's local podman images
+  build_timeout_s: 1800
+  max_memory_mib: 32768          # caps on what a spec may request per sandbox (G-E3); resources
+  max_vcpus: 16                  # are passed as --driver-config-json from
+  max_disk_mib: 204800           # policies/sandbox-resources.template.yaml
 identity:                        # SPIFFE/SPIRE workload identity (see legion_orch/identity.py)
   provider: legion-controller    # created once per workspace: legion-orch setup-openshell --apply
   jwks_uri: https://spire-spiffe-oidc-discovery-provider.spire.svc.cluster.local/keys

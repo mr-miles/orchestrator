@@ -2,6 +2,7 @@
 from . import (  # noqa: F401  (registration side effects)
     baseline,
     critic,
+    environment,
     implementer,
     intake,
     integration,

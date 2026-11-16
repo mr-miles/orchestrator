@@ -1,0 +1,4 @@
+description: git (system package); its HTTPS remote helper makes the network requests
+apt: [git]
+binaries: ["/usr/lib/git-core/git-remote-https", "/usr/libexec/git-core/git-remote-https"]
+# No network by default: a profile opts in with  network: {git: [github-read]}

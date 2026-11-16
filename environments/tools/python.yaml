@@ -1,0 +1,5 @@
+description: CPython (python, python3, pip)
+mise: {python: "3.12"}
+binaries: ["bin/python*", "bin/pip*"]        # relative to the mise install directory
+# No network: packages come through uv (language-preferences), so pip cannot reach PyPI.
+env: {PIP_CACHE_DIR: /tmp/pip-cache}         # sandboxes may write /tmp, not necessarily $HOME

@@ -1,0 +1,4 @@
+description: Go toolchain
+mise: {go: "1.25"}
+binaries: ["bin/go"]
+network: [go-proxy]                             # attached wherever this tool is used

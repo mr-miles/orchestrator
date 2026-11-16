@@ -21,7 +21,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.
 
 ```
-start (intake) -> H-1 -> plan <-> critique -> oracle -> [baseline] -> H-2 -> build DAG
+start (intake) -> H-1 -> plan -> [environment] <-> critique -> [H-E1 -> provision] -> oracle -> [baseline] -> H-2 -> build DAG
    (verify -> review panel -> rework loop -> merge) -> integration -> [release] -> H-3 -> ship
 ```
 
@@ -80,6 +80,21 @@ installed at run time. Claude Code expects `python3` and `node`; `images/agent/D
 to an existing Debian/Ubuntu-based agent image (`--build-arg BASE=<image>`). Bake in any packages
 the project's agents and verification commands need as well (`sandbox.verifier_image` runs the
 verification commands).
+
+### Sandbox environments
+
+With an `environment:` section in the config, planning gains a step: the `environment` agent
+writes `plan/environment.json`, naming sandbox **profiles** (tools, network policies, and
+memory/vCPU/disk if non-default) and which role runs in which profile. Profiles are composed from
+a library in [`environments/`](environments/README.md): tools installed with **mise**, and network
+policies that become credentialless OpenShell provider profiles. The spec is critiqued with the
+plan and approved at **H-E1**. The controller then provisions it: `podman build` of one image per
+profile (`FROM sandbox.image`, or `sandbox.verifier_image` for the verifier) tagged by content and
+reused when identical, `openshell profile import` + `provider create` per network policy, and the
+resources rendered from `policies/sandbox-resources.template.yaml` into `--driver-config-json`.
+Every later sandbox of a mapped role gets its profile's image, providers and resources. Proposed
+library entries can be promoted with `legion-orch library promote <change> tool|policy <name>`.
+Without the section the workflow is unchanged.
 
 `sandbox.runner: local` runs everything as local processes. It provides **no isolation** and is for
 development and tests only.

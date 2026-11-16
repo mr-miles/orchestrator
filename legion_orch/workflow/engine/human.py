@@ -1,4 +1,4 @@
-"""Human actions: the H-1/H-2/H-3 gates, escalation resolution, change-level governance."""
+"""Human actions: the H-1/H-E1/H-2/H-3 gates, escalation resolution, change-level governance."""
 from __future__ import annotations
 
 from .. import governance, guards, risk
@@ -8,9 +8,11 @@ from ..model import (
     BASELINE,
     BUILD,
     CRITIQUE,
+    ENVIRONMENT,
     ESCALATED,
     FAILED,
     H_CHANGE,
+    H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
@@ -20,6 +22,7 @@ from ..model import (
     ORACLE,
     PENDING,
     PLAN,
+    PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
     READY,
@@ -40,7 +43,7 @@ from ..model import (
 )
 from ..results import ActionResult
 from .acceptance import Acceptance
-from .common import WorkflowError, _slug
+from .common import ENV_SPEC, WorkflowError, _slug
 from .core import ChangeCore
 from .graph import StageGraph
 from .runs import RunLifecycle
@@ -101,6 +104,8 @@ class HumanGates:
         (H_REQUIREMENTS, "revise"): "_revise_requirements",
         (H_SPEC, "approve"): "_approve_spec",
         (H_SPEC, "revise"): "_revise_spec",
+        (H_ENV, "approve"): "_approve_environment",
+        (H_ENV, "revise"): "_revise_environment",
         (H_CHANGE, "accept"): "_accept_change",
         (H_CHANGE, "reject"): "_reject_change",
     }
@@ -170,6 +175,7 @@ class HumanGates:
         oracle, baseline, build nodes, the integration branch and surface pins)."""
         ch = self.c.change
         self._send_back(self.c.nodes[PLAN], approver, payload)
+        self._reset_environment(self.c.nodes[PLAN].feedback[-1:])
         for nid in (CRITIQUE, ORACLE, BASELINE):
             if nid in self.c.nodes:
                 n = self.c.nodes[nid]
@@ -181,6 +187,37 @@ class HumanGates:
         ch.surface_pins = {}
         node.status = PENDING
         return ActionResult()
+
+    async def _approve_environment(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """H-E1: approve the sandbox environment at its current version; provisioning follows."""
+        version = self.c.latest(ENV_SPEC)
+        if version is None:
+            raise WorkflowError(f"no {ENV_SPEC} to approve")
+        note = (payload.get("feedback") or "").strip() or None
+        rec = Approval(gate=H_ENV, approver=approver, pins={self.c.p(ENV_SPEC): version}, note=note)
+        rec.attestation = self.c.write_record("control/approvals/environment.json", rec).attestation
+        self.c.change.approvals[H_ENV] = rec
+        node.status = ACCEPTED
+        return ActionResult()
+
+    async def _revise_environment(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """H-E1 revise: the environment is reworked (and critiqued again) with the feedback."""
+        self._send_back(self.c.nodes[ENVIRONMENT], approver, payload)
+        node.status = PENDING
+        return ActionResult()
+
+    def _reset_environment(self, feedback: list[Feedback]) -> None:
+        """The plan is being reworked: the environment, its approval and its build follow."""
+        if ENVIRONMENT not in self.c.nodes:
+            return
+        env = self.c.nodes[ENVIRONMENT]
+        env.cycle += 1
+        env.feedback += feedback
+        env.status = PENDING
+        for nid in (H_ENV, PROVISION):
+            self.c.nodes[nid].status = PENDING
+        self.c.change.approvals.pop(H_ENV, None)
+        self.c.change.environment = None
 
     async def _accept_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-3: accept the whole change at the current integration head."""
@@ -292,6 +329,7 @@ class HumanGates:
             plan.cycle += 1
             plan.feedback += node.feedback[-1:]
             plan.status = REWORK
+            self._reset_environment(node.feedback[-1:])
             node.cycle += 1
             node.status = PENDING
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle

@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Sandbox environment (plan/environment.json): named sandbox profiles composed from the tool and network-policy library, which role runs in which profile, and proposed library additions.",
+  "type": "object",
+  "required": ["summary", "profiles", "roles", "rationale"],
+  "additionalProperties": false,
+  "$defs": {
+    "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"},
+    "tool_ref": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}(@[A-Za-z0-9][A-Za-z0-9._+-]{0,39})?$"},
+    "binary": {
+      "description": "Absolute path, or a path relative to the tool's mise install directory (<MISE_DATA_DIR>/installs/<tool>/<version>/) for single-mise-tool entries. Globs allowed.",
+      "type": "string", "pattern": "^(/\\S{1,255}|(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9*][^\\s/]*(/[^\\s/]+){0,8})$"
+    },
+    "tool": {
+      "type": "object",
+      "required": ["description"],
+      "anyOf": [{"required": ["mise"]}, {"required": ["apt"]}],
+      "additionalProperties": false,
+      "properties": {
+        "description": {"type": "string", "minLength": 1, "maxLength": 300},
+        "mise": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 10,
+          "propertyNames": {"pattern": "^[a-z0-9][A-Za-z0-9._:/@-]{0,99}$"},
+          "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,39}$"}
+        },
+        "apt": {
+          "type": "array", "maxItems": 30, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.+-]{0,63}$"}
+        },
+        "binaries": {"type": "array", "maxItems": 30, "items": {"$ref": "#/$defs/binary"}},
+        "network": {
+          "description": "Network policies the tool needs to work (e.g. uv: [pypi]); a profile with the tool gets them, allowing this tool's binaries only.",
+          "type": "array", "maxItems": 10, "uniqueItems": true, "items": {"$ref": "#/$defs/name"}
+        },
+        "env": {
+          "type": "object",
+          "maxProperties": 20,
+          "propertyNames": {"pattern": "^(?!PATH$)(?!MISE_)[A-Z_][A-Z0-9_]{0,63}$"},
+          "additionalProperties": {"type": "string", "pattern": "^[^\\n\\r\"$`\\\\]{0,500}$"}
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "required": ["host", "port"],
+      "additionalProperties": false,
+      "properties": {
+        "host": {"type": "string", "pattern": "^(\\*\\.)?[A-Za-z0-9]([A-Za-z0-9-]{0,62}\\.)*[A-Za-z0-9-]{1,63}$"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "path": {"type": "string", "pattern": "^/\\S{0,255}$"},
+        "protocol": {"enum": ["rest"]},
+        "enforcement": {"enum": ["enforce", "audit"]},
+        "access": {"enum": ["read-only", "read-write", "full"]}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["description", "endpoints"],
+      "additionalProperties": false,
+      "properties": {
+        "description": {"type": "string", "minLength": 1, "maxLength": 300},
+        "endpoints": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"$ref": "#/$defs/endpoint"}}
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": ["tools"],
+      "additionalProperties": false,
+      "properties": {
+        "tools": {"type": "array", "maxItems": 30, "uniqueItems": true, "items": {"$ref": "#/$defs/tool_ref"}},
+        "network": {
+          "description": "Extra network policies per tool, beyond those the tool declares (e.g. {\"uv\": [\"internal-pypi\"]}).",
+          "type": "object", "maxProperties": 30, "propertyNames": {"$ref": "#/$defs/name"},
+          "additionalProperties": {"type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true,
+                                   "items": {"$ref": "#/$defs/name"}}
+        },
+        "offline": {
+          "description": "true: none of the tools' declared network policies (extras in `network` still apply).",
+          "type": "boolean"
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "memory_mib": {"type": "integer", "minimum": 256},
+            "vcpus": {"type": "integer", "minimum": 1},
+            "disk_mib": {"type": "integer", "minimum": 512}
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 10,
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {"$ref": "#/$defs/profile"}
+    },
+    "roles": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {"$ref": "#/$defs/name"}
+    },
+    "proposed": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tools": {"type": "object", "maxProperties": 20, "propertyNames": {"$ref": "#/$defs/name"},
+                  "additionalProperties": {"$ref": "#/$defs/tool"}},
+        "policies": {"type": "object", "maxProperties": 20, "propertyNames": {"$ref": "#/$defs/name"},
+                     "additionalProperties": {"$ref": "#/$defs/policy"}}
+      }
+    },
+    "rationale": {"type": "string", "minLength": 1, "maxLength": 8000}
+  }
+}

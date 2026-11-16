@@ -1,0 +1,5 @@
+description: Read public GitHub repositories and release downloads (git clone/fetch, curl)
+endpoints:
+  - {host: github.com, port: 443, access: read-only}
+  - {host: codeload.github.com, port: 443, access: read-only}
+  - {host: objects.githubusercontent.com, port: 443, access: read-only}

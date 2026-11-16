@@ -1,0 +1,4 @@
+description: crates.io index and downloads, read-only (cargo)
+endpoints:
+  - {host: index.crates.io, port: 443, access: read-only}
+  - {host: static.crates.io, port: 443, access: read-only}

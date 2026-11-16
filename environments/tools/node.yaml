@@ -1,0 +1,4 @@
+description: Node.js with npm and npx
+mise: {node: "22"}
+binaries: ["bin/node"]                       # npm and npx run as node
+network: [npm-registry]                             # attached wherever this tool is used

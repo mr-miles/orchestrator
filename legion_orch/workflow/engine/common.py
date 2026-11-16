@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 log = logging.getLogger("legion")
 PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
+ENV_SPEC = "plan/environment.json"     # the sandbox environment spec (environment role)
 
 
 class WorkflowError(Exception):

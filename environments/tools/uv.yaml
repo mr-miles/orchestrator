@@ -1,0 +1,10 @@
+description: uv Python package and project manager (uses the mise Python; never downloads one)
+mise: {uv: "0.9"}
+binaries: ["uv", "*/uv"]                     # flat or per-target layout of the release archive
+network: [pypi]                             # attached wherever this tool is used
+env:
+  # Sandboxes reach no Python download host: use the interpreter on PATH (the profile's python
+  # tool) and fail clearly on a requires-python mismatch instead of a network error.
+  UV_PYTHON_DOWNLOADS: never
+  UV_PYTHON_PREFERENCE: only-system
+  UV_CACHE_DIR: /tmp/uv-cache                # sandboxes may write /tmp, not necessarily $HOME
