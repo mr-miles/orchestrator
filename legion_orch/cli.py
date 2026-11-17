@@ -24,8 +24,10 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("serve", help="run the controller, MCP endpoint, git remote and web UI")
     sub.add_parser("check", help="validate config and the assets folder")
     so = sub.add_parser("setup-openshell", help="one-time workspace setup: import the "
-                        "legion-controller provider profile and create the provider")
-    so.add_argument("--out", default="legion-provider-profile.yaml")
+                        "controller's provider profiles (legion-mcp, legion-git, legion-git-push) "
+                        "and create their providers")
+    so.add_argument("--out", default="legion-provider-profiles",
+                    help="directory for the rendered profiles (<id>.yaml)")
     so.add_argument("--apply", action="store_true", help="run the openshell commands (else print)")
     st = sub.add_parser("start", help="start a change on a running controller")
     st.add_argument("goal")
@@ -120,19 +122,22 @@ def cmd_setup_openshell(cfg: Config, args) -> int:
 
     import yaml
 
-    from .sandbox import provider_profile, setup_commands, setup_workspace
+    from .sandbox import provider_profiles, setup_commands, setup_workspace
+    from .sandbox.profile import profile_file
     from .server import MCP_TOOLS
-    profile = provider_profile(cfg, list(MCP_TOOLS))
-    if args.apply:       # import or update the profile; create the provider if missing
+    profiles = provider_profiles(cfg, list(MCP_TOOLS))
+    out = Path(args.out)
+    if args.apply:       # import or update each profile; create its provider if missing
         run = lambda cmd, probe: subprocess.run(cmd, capture_output=probe, text=True)
-        return setup_workspace(cfg, profile, Path(args.out), run)
-    with open(args.out, "w") as f:
-        yaml.safe_dump(profile, f, sort_keys=False)
-    print(f"wrote {args.out}")
-    for cmd in setup_commands(cfg, args.out):
+        return setup_workspace(cfg, profiles, out, run)
+    out.mkdir(parents=True, exist_ok=True)
+    for pid, profile in profiles.items():
+        profile_file(out, pid).write_text(yaml.safe_dump(profile, sort_keys=False))
+        print(f"wrote {profile_file(out, pid)}")
+    for cmd in setup_commands(cfg, out):
         print("$", " ".join(cmd))
-    print("(re-run with --apply to execute; it updates an existing profile and keeps an existing "
-          "provider, so it is safe to re-run after a change)")
+    print("(re-run with --apply to execute; it updates existing profiles and keeps existing "
+          "providers, so it is safe to re-run after a change)")
     return 0
 
 

@@ -21,6 +21,7 @@ from legion_orch.sandbox import (
     SandboxSpec,
     Tool,
     driver_config,
+    merge_network,
     policy_entry,
     render_policy,
 )
@@ -111,17 +112,19 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     name = f.run("build:T1", "implementer").sandbox
     sp = f.runner.specs[name]
     assert sp.env == SandboxEnv(image=impl.image, network=impl.network, cpu="2", memory="4096Mi")
-    # a credentialless policy is a rule in the sandbox's own policy, next to the template's
+    # a credentialless policy is a rule in the sandbox's own policy; controller access is not
+    # (it comes from the attached provider profiles)
     rules = f.runner.policies[name]["network_policies"]
-    assert set(rules) == {"legion_mcp", "legion_git", "env_pypi"}
+    assert set(rules) == {"env_pypi"}
     assert rules["env_pypi"] == impl.network["env_pypi"] and rules["env_pypi"]["binaries"]
+    assert sp.push                                   # the implementer gets legion-git-push
     await f.implement()
     verifiers = sandboxes(f, "verifier")
     assert verifiers and all(v.env.image == ver.image and v.env.network == {} for v in verifiers)
-    assert all(set(f.runner.policies[v.name]["network_policies"]) == {"legion_git"}
+    assert all(f.runner.policies[v.name]["network_policies"] == {} and not v.push
                for v in verifiers)
     await f.review()
-    assert all(r.env.image == rev.image for r in sandboxes(f, "reviewer"))
+    assert all(r.env.image == rev.image and not r.push for r in sandboxes(f, "reviewer"))
     assert f.status("build:T1") == "ACCEPTED"
     assert all(sp.env is None for sp in f.runner.specs.values()
                if sp.role in ("intake", "planner", "critic"))
@@ -399,7 +402,6 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
         f.ce.nodes["provision"].status = RUNNING
         f.ce.save()
     ctl2 = Controller(f.cfg, runner=f.runner, builder=f.builder)
-    ctl2.set_mcp_tools(f.ctl.svc.mcp_tools)
     ctl2.load()
     ce2 = ctl2.changes[f.ce.cid]
     async with ctl2.svc.lock:
@@ -416,9 +418,10 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
 
 # ====================================================================== sandbox create commands
 def test_openshell_create_attaches_the_environment(tmp_path):
-    """What OpenShell is actually asked for: the profile's image, only the configured providers
-    (network policies are in the policy file), CPU and memory as --cpu / --memory and disk as
-    --driver-config-json – for agents and verifiers."""
+    """What OpenShell is actually asked for: the profile's image, the controller's providers
+    (exactly one git profile) and the configured ones – network policies are in the policy file –,
+    CPU and memory as --cpu / --memory and disk as --driver-config-json – for agents and
+    verifiers."""
     from legion_orch.sandbox.runner import OpenShellRunner
     cfg = make_config(tmp_path, environment={})
     cfg.sandbox.image, cfg.sandbox.providers = "reg/agent:1", ["claude-code"]
@@ -432,24 +435,26 @@ def test_openshell_create_attaches_the_environment(tmp_path):
     env = SandboxEnv(image="localhost/legion-env:abc", network={"env_pypi": {"name": "env-pypi"}},
                      cpu="2", memory="4096Mi", driver_config='{"firecracker": {"disk_mib": 2048}}')
 
-    def create(agent: bool, env: SandboxEnv | None) -> list[str]:
+    def create(agent: bool, env: SandboxEnv | None, push: bool = False) -> list[str]:
         calls.clear()
         asyncio.run(r.create(SandboxSpec(name="lg-ada", payload_dir=tmp_path, policy_file=tmp_path / "p",
                                          agent=agent, role="implementer" if agent else "verifier",
-                                         env=env)))
+                                         env=env, push=push)))
         return calls[0]
 
     def flag(args, name):
         return [args[i + 1] for i, a in enumerate(args) if a == name]
     agent = create(True, env)
     assert flag(agent, "--from") == ["localhost/legion-env:abc"]
-    assert flag(agent, "--provider") == ["legion-controller", "claude-code"]
+    assert flag(agent, "--provider") == ["legion-mcp", "legion-git", "claude-code"]
+    assert flag(create(True, env, push=True), "--provider") == ["legion-mcp", "legion-git-push",
+                                                                "claude-code"]
     assert flag(agent, "--cpu") == ["2"] and flag(agent, "--memory") == ["4096Mi"]
     assert flag(agent, "--driver-config-json") == ['{"firecracker": {"disk_mib": 2048}}']
     verifier = create(False, env)
     assert flag(verifier, "--from") == ["localhost/legion-env:abc"]
     assert flag(verifier, "--cpu") == ["2"] and flag(verifier, "--memory") == ["4096Mi"]
-    assert flag(verifier, "--provider") == ["legion-controller"]
+    assert flag(verifier, "--provider") == ["legion-git"]                   # no MCP, no model
     plain = create(True, None)
     assert flag(plain, "--from") == ["reg/agent:1"]
     assert not {"--cpu", "--memory", "--driver-config-json"} & set(plain)
@@ -556,7 +561,7 @@ def test_image_recipe_rendering_is_content_addressed():
 
 def test_network_policy_becomes_a_sandbox_policy_rule(tmp_path):
     """No credential, no provider: the policy is a network_policies entry of the sandbox policy,
-    open to the profile's binaries, merged after the template's own rules."""
+    open to the profile's binaries, merged after any rules of the template's own."""
     pol = Policy(name="npm-registry", description="npm", binaries=("/opt/node/bin/npm",),
                  endpoints=(Endpoint(host="registry.npmjs.org", port=443),))
     key, entry = policy_entry(pol)
@@ -565,12 +570,13 @@ def test_network_policy_becomes_a_sandbox_policy_rule(tmp_path):
                      "endpoints": [{"host": "registry.npmjs.org", "port": 443, "protocol": "rest",
                                     "enforcement": "enforce", "access": "read-only"}]}
     cfg = make_config(tmp_path, environment={})
-    doc = yaml.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=["report"],
-                                       network={key: entry}))
-    assert list(doc["network_policies"]) == ["legion_mcp", "legion_git", key]
-    assert doc["network_policies"][key] == entry
-    with pytest.raises(ValueError, match="legion_git"):
-        render_policy(cfg, agent=False, push=False, mcp_tools=[], network={"legion_git": entry})
+    for agent in (True, False):
+        doc = yaml.safe_load(render_policy(cfg, agent=agent, network={key: entry}))
+        assert doc["network_policies"] == {key: entry}
+    own = {"network_policies": {"site_proxy": {"name": "site-proxy"}}}
+    assert list(merge_network(own, {key: entry})["network_policies"]) == ["site_proxy", key]
+    with pytest.raises(ValueError, match="site_proxy"):
+        merge_network(own, {"site_proxy": entry})
 
 
 def test_resources_caps_and_driver_config(tmp_path):

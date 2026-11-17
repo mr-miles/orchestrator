@@ -1,6 +1,7 @@
-# OpenShell sandbox policy for deterministic verifier sandboxes: git fetch from the controller,
-# nothing else (no model, no MCP). Add package-registry endpoints only if verification commands
-# must install dependencies (prefer baking them into the verifier image).
+# OpenShell sandbox policy for deterministic verifier sandboxes: git fetch from the controller
+# (the attached legion-git provider profile), nothing else (no model, no MCP). Add
+# package-registry endpoints only if verification commands must install dependencies (prefer
+# baking them into the verifier image).
 version: 1
 filesystem_policy:
   include_workdir: true
@@ -11,27 +12,6 @@ landlock:
 process:
   run_as_user: ${RUN_AS_USER}
   run_as_group: ${RUN_AS_GROUP}
-network_policies:
-  legion_git:
-    name: legion-git
-    endpoints:
-      - host: ${GIT_HOST}
-        port: ${GIT_PORT}
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow:
-              method: GET
-              path: "/git/*.git/**"
-          - allow:
-              method: HEAD
-              path: "/git/*.git/**"
-          - allow:
-              method: OPTIONS
-              path: "/git/*.git/**"
-          - allow:
-              method: POST
-              path: "/git/*.git/git-upload-pack"
-        deny_rules:
-          - { method: POST, path: /git/*.git/git-receive-pack }
-    binaries: ${GIT_BINARIES}
+network_policies: {}
+  # Nothing here: git fetch comes from the legion-git provider profile. The controller adds the
+  # sandbox environment's network policies (env_*) here.

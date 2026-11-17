@@ -1,9 +1,11 @@
-# Provider profile imported once into the workspace (`legion-orch setup-openshell`):
-# the gateway exchanges the sandbox's SPIFFE JWT-SVID at the controller and injects the returned
-# task-scoped bearer into requests to the controller's MCP and git endpoints only.
+# Provider profile `legion-mcp`, imported once per workspace (`legion-orch setup-openshell`) and
+# attached to every agent sandbox (not verifiers). Attaching it is what lets the agent CLI reach
+# the controller's MCP endpoint: OpenShell adds these endpoints to the sandbox's effective policy,
+# so the sandbox policy templates need no rule for them. The gateway exchanges the sandbox's
+# SPIFFE JWT-SVID at the controller and injects the returned task-scoped bearer.
 id: ${PROFILE_ID}
-display_name: Legion orchestrator
-description: Controller access (MCP + git) with a task-scoped token obtained from the sandbox's SPIFFE JWT-SVID
+display_name: Legion controller MCP
+description: Controller MCP endpoint (vetted methods and tools) with a task-scoped token obtained from the sandbox's SPIFFE JWT-SVID
 category: other
 credentials:
   - name: access_token
@@ -20,13 +22,13 @@ credentials:
       scopes: [${SCOPE}]
       cache_ttl_seconds: ${TOKEN_CACHE_TTL}
 endpoints:
+  # Own port: OpenShell does not allow MCP to share a host:port with another protocol.
   - host: ${MCP_HOST}
     port: ${MCP_PORT}
     path: ${MCP_PATH}
     protocol: mcp
     enforcement: enforce
-    # Profiles set the body limit on the endpoint (policies: mcp.max_body_bytes); both are the
-    # same JSON-RPC limit inside OpenShell and must be equal (it compares overlapping endpoints).
+    # the gateway drops larger requests with a connection reset (server.mcp_max_body_bytes)
     json_rpc_max_body_bytes: ${MCP_MAX_BODY_BYTES}
     mcp:
       versions: ${MCP_VERSIONS}
@@ -39,24 +41,4 @@ endpoints:
       - allow: { method: server/discover }
       - allow: { method: subscriptions/listen }      # 2026-07-28: server events (SEP-2575)
       - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
-  - host: ${GIT_HOST}
-    port: ${GIT_PORT}
-    protocol: rest
-    enforcement: enforce
-    rules:
-      - allow:
-          method: GET
-          path: "/git/*.git/**"
-      - allow:
-          method: HEAD
-          path: "/git/*.git/**"
-      - allow:
-          method: OPTIONS
-          path: "/git/*.git/**"
-      - allow:
-          method: POST
-          path: "/git/*.git/git-upload-pack"
-      - allow:
-          method: POST
-          path: "/git/*.git/git-receive-pack"
-binaries: ${PROFILE_BINARIES}
+binaries: ${AGENT_BINARIES}

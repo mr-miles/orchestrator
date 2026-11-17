@@ -22,7 +22,6 @@ import yaml
 
 from legion_orch.config import load_config
 from legion_orch.sandbox import BuildError, EnvironmentBuilder, Runner, SandboxError
-from legion_orch.server.mcp import MCP_TOOLS
 from legion_orch.workflow.engine import ChangeEngine, Controller
 from legion_orch.workflow.model import LIVE_RUN, Run
 from legion_orch.workflow.risk import SIGNALS
@@ -201,7 +200,6 @@ class Flow:
         self.runner = FakeRunner()
         self.builder = FakeBuilder()
         self.ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
-        self.ctl.set_mcp_tools(list(MCP_TOOLS))
         self.ce: ChangeEngine = None   # type: ignore[assignment]
 
     @classmethod

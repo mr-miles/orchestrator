@@ -237,8 +237,8 @@ class Dispatcher:
                 env = sandbox_env(self.c.change, run.role)
                 policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
                                                  network=env.network if env else None,
-                                                 agent=True, push=h.pushes)
-                run.sandbox_ref = await self._create(run, payload, policy)
+                                                 agent=True)
+                run.sandbox_ref = await self._create(run, payload, policy, push=h.pushes)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
             proc = await self.c.runner.start_agent(run.sandbox, self.c.run_dir(run_id) / "agent.log")
         except Exception as e:
@@ -268,13 +268,13 @@ class Dispatcher:
             self.lifecycle.archive_log(run)
             self.c.save()
 
-    async def _create(self, run: Run, payload, policy, attempts: int = 3) -> str:
+    async def _create(self, run: Run, payload, policy, *, push: bool, attempts: int = 3) -> str:
         """Create the run's sandbox. If the gateway already has a sandbox of that name (another
         controller on the same gateway), take a new name and try again."""
         for attempt in range(attempts):
             try:
                 return await self.c.runner.create(SandboxSpec(
-                    name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True,
+                    name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True, push=push,
                     change=self.c.cid, task=run.node_id, role=run.role, run=run.id,
                     env=sandbox_env(self.c.change, run.role)))
             except Exception as e:

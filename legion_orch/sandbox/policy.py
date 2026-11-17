@@ -1,13 +1,9 @@
-"""Sandbox network policies, rendered from ``policies/{agent,verifier}-policy.template.yaml``.
+"""Sandbox policies, rendered from ``policies/{agent,verifier}-policy.template.yaml``.
 
-The controller exposes two endpoints to sandboxes, on different ports because OpenShell does not
-allow an MCP endpoint to share a host and port with another protocol:
-
-* **MCP** (``protocol: mcp``): the gateway parses every JSON-RPC request and allows only the MCP
-  handshake methods and ``tools/call`` for the tools the controller's MCP server registers
-  (``mcp_tools``, see legion_orch.server.mcp.MCP_TOOLS).
-* **git** (``protocol: rest``): fetch; push only for roles that may push (others get a deny rule,
-  which takes precedence). Verifiers get fetch only.
+They carry no rule for the controller: its MCP endpoint and git remote reach a sandbox through
+the attached provider profiles (``legion-mcp``; ``legion-git`` or ``legion-git-push``, see
+:mod:`.profile`), whose endpoints OpenShell adds to the effective policy. The controller adds the
+sandbox environment's network policies (``env_*``).
 """
 from __future__ import annotations
 
@@ -15,13 +11,10 @@ import yaml
 
 from ..config import Config
 from .network import merge_network
-from .templates import base_values, git_push_deny_rules, render
+from .templates import base_values, render
 
 
-def render_policy(cfg: Config, *, agent: bool, push: bool, mcp_tools: list[str],
-                  network: dict[str, dict] | None = None) -> str:
+def render_policy(cfg: Config, *, agent: bool, network: dict[str, dict] | None = None) -> str:
     """The sandbox policy; ``network`` adds the sandbox environment's network policies."""
-    values = base_values(cfg, mcp_tools=mcp_tools) | {
-        "GIT_PUSH_DENY_RULES": git_push_deny_rules(cfg, push and agent)}
-    doc = render(cfg, "agent_policy" if agent else "verifier_policy", values)
+    doc = render(cfg, "agent_policy" if agent else "verifier_policy", base_values(cfg))
     return yaml.safe_dump(merge_network(doc, network or {}), sort_keys=False)

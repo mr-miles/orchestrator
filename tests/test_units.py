@@ -393,7 +393,8 @@ def test_templates_render(tmp_path):
     create = calls[0]
     assert create[:2] == ["sandbox", "create"]
     for flag in (["--name", "lg-r0001-0123456789"], ["--from", "reg/agent:1"],
-                 ["--provider", "legion-controller"], ["--provider", "claude-code"],
+                 ["--provider", "legion-mcp"], ["--provider", "legion-git"],
+                 ["--provider", "claude-code"],
                  ["--label", "legion.task=build.T1"],
                  ["--upload", f"{tmp_path / 'payload'}:/sandbox"]):
         assert any(create[i:i + 2] == flag for i in range(len(create))), flag
@@ -407,9 +408,11 @@ def test_templates_render(tmp_path):
         assert _re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?", key.split("/")[-1]), kv
         assert _re.fullmatch(r"([A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?)?", val), kv
     assert r.cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
-    cmds = setup_commands(cfg, "p.yaml")
-    assert cmds[1][5:] == ["provider", "create", "--name", "legion-controller",
-                           "--type", "legion-controller", "--runtime-credentials"]
+    cmds = setup_commands(cfg, "profiles")
+    assert [c[5:] for c in cmds] == [
+        step for pid in ("legion-mcp", "legion-git", "legion-git-push")
+        for step in (["profile", "import", "-f", f"profiles/{pid}.yaml"],
+                     ["provider", "create", "--name", pid, "--type", pid, "--runtime-credentials"])]
     assert spec_to_args({"a_b": None, "c": False, "d": True, "e": [1, 2], "f": {"k": "v:1"}}) == \
         ["--d", "--e", "1", "--e", "2", "--f", "k=v:1"]
     assert spec_to_args({"label": {"k": ":build:T1/x:"}}) == ["--label", "k=build.T1.x"]
@@ -421,55 +424,54 @@ def test_templates_render(tmp_path):
         render_text("x: ${MCP_TOOLS}", {})
 
 
-def test_generated_policy_and_provider_profile(tmp_path):
+def test_generated_policies_and_provider_profiles(tmp_path):
+    """Controller access is one provider profile per endpoint, not sandbox policy rules: legion-mcp
+    (agent CLI → MCP), legion-git (git, fetch only: receive-pack denied) and legion-git-push (git,
+    fetch and push). Sandbox policies have no controller rule."""
     import yaml as _y
 
-    from legion_orch.sandbox import provider_profile, render_policy, setup_commands
+    from legion_orch.sandbox import provider_profiles, render_policy, setup_commands
     from legion_orch.server import MCP_TOOLS
     cfg = _os_cfg(tmp_path)
-    kw = {"mcp_tools": list(MCP_TOOLS)}
-    agent = _y.safe_load(render_policy(cfg, agent=True, push=True, **kw))
-    mcp = agent["network_policies"]["legion_mcp"]["endpoints"][0]
-    git = agent["network_policies"]["legion_git"]["endpoints"][0]
-    assert mcp["protocol"] == "mcp" and git["protocol"] == "rest"
+    agent = _y.safe_load(render_policy(cfg, agent=True))
+    ver = _y.safe_load(render_policy(cfg, agent=False))
+    assert agent["network_policies"] == ver["network_policies"] == {}
+    profs = provider_profiles(cfg, list(MCP_TOOLS))
+    assert list(profs) == ["legion-mcp", "legion-git", "legion-git-push"]
+    assert all(p["id"] == pid for pid, p in profs.items())
+    [mcp], [git], [push] = (profs[p]["endpoints"] for p in profs)
+    assert mcp["protocol"] == "mcp" and git["protocol"] == push["protocol"] == "rest"
     assert (mcp["host"], mcp["port"], mcp["path"]) == ("host.openshell.internal", 8766, "/mcp")
     assert (git["host"], git["port"]) == ("host.openshell.internal", 8767)   # one port per protocol
     calls = [r["allow"] for r in mcp["rules"] if r["allow"]["method"] == "tools/call"]
     assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
+    # each endpoint only for the binaries that use it
+    assert profs["legion-mcp"]["binaries"] == cfg.sandbox.agent_binaries
+    assert profs["legion-git"]["binaries"] == profs["legion-git-push"]["binaries"] == cfg.sandbox.git_binaries
+    # the same allows; deny rules win over every allow, so only legion-git denies push
+    assert git["rules"] == push["rules"]
     assert any(r["allow"]["path"].endswith("git-receive-pack") for r in git["rules"])
-    judge = _y.safe_load(render_policy(cfg, agent=True, push=False, **kw))
-    jgit = judge["network_policies"]["legion_git"]["endpoints"][0]
-    assert git["deny_rules"] == []                                       # pushing role
-    assert jgit["deny_rules"] == [{"method": "POST", "path": "/git/*.git/git-receive-pack"}]
-    ver = _y.safe_load(render_policy(cfg, agent=False, push=False, **kw))
-    assert set(ver["network_policies"]) == {"legion_git"}
-    prof = provider_profile(cfg, list(MCP_TOOLS))
-    token_endpoint = prof["credentials"][0]["token_grant"]["token_endpoint"]
-    # OpenShell's profile lint: token_endpoint is https unless the host is loopback (the gateway
-    # makes the exchange host-side) ...
-    assert token_endpoint == "http://127.0.0.1:8768/oauth/token"
-    # ... and an endpoint's tls is omitted (auto-detect + inspect) or "skip"; skip would disable
-    # inspection and the bearer injection, so no endpoint we render sets it
+    assert git["deny_rules"] == [{"method": "POST", "path": "/git/*.git/git-receive-pack"}]
+    assert push["deny_rules"] == []
+    for p in profs.values():
+        grant = p["credentials"][0]["token_grant"]
+        # OpenShell's profile lint: token_endpoint is https unless the host is loopback (the
+        # gateway makes the exchange host-side)
+        assert grant["token_endpoint"] == "http://127.0.0.1:8768/oauth/token"
+        assert all(e["port"] != 8765 for e in p["endpoints"])     # operator port never exposed
+    # an endpoint's tls is omitted (auto-detect + inspect) or "skip"; skip would disable
+    # inspection and the bearer injection, so nothing we render sets it
     def keys(o):
         if isinstance(o, dict):
             return set(o) | {k for v in o.values() for k in keys(v)}
         return {k for v in o for k in keys(v)} if isinstance(o, list) else set()
-    assert all("tls" not in keys(doc) for doc in (prof, agent, judge, ver))
-    # model hosts come only from the model provider's profile (inspected, with the credential);
-    # a plain L4 rule for them is refused by the gateway as an uninspected credential path
-    hosts = {e["host"] for doc in (agent, judge, ver) for r in doc["network_policies"].values()
-             for e in r["endpoints"]}
-    assert not any("anthropic" in h for h in hosts), hosts
-    assert all(e.get("protocol") for doc in (agent, judge, ver)
-               for r in doc["network_policies"].values() for e in r["endpoints"])
-    assert all(e["port"] != 8765 for e in prof["endpoints"])          # operator port never exposed
-    assert [e["protocol"] for e in prof["endpoints"]] == ["mcp", "rest"]
+    assert all("tls" not in keys(doc) for doc in (*profs.values(), agent, ver))
     assert "Bearer" not in _y.safe_dump(agent) and "token" not in _y.safe_dump(agent).lower()
     # every openshell call targets the configured workspace (and gateway)
     from legion_orch.sandbox.runner import OpenShellRunner
     assert OpenShellRunner(cfg).cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
     assert all(c[:5] == ["openshell", "--workspace", "team-ml", "-g", "prod"]
-               for c in setup_commands(cfg, "p.yaml"))
+               for c in setup_commands(cfg, "profiles"))
 
 
 def test_engine_boundaries():
@@ -788,8 +790,8 @@ def test_names_are_not_reused_and_get_numbers_once_all_are_used():
 
 @pytest.mark.parametrize("exists", [False, True])
 def test_setup_workspace_imports_or_updates(tmp_path, exists):
-    """A fresh workspace imports the profile and creates the provider; a configured one updates
-    the profile (with its resource_version) and keeps the provider."""
+    """A fresh workspace imports each profile and creates its provider; a configured one updates
+    each profile (with its resource_version) and keeps the providers."""
     import subprocess
 
     import yaml as _y
@@ -801,21 +803,23 @@ def test_setup_workspace_imports_or_updates(tmp_path, exists):
     def run(cmd, probe):
         calls.append((cmd[5:], probe))
         if cmd[5:7] == ["profile", "export"]:
-            out = '{"id": "legion-controller", "resource_version": "42"}' if exists else ""
+            out = f'{{"id": "{cmd[7]}", "resource_version": "42"}}' if exists else ""
             return subprocess.CompletedProcess(cmd, 0 if exists else 1, out, "")
         if cmd[5:7] == ["provider", "get"]:
             return subprocess.CompletedProcess(cmd, 0 if exists else 1, "", "")
         return subprocess.CompletedProcess(cmd, 0, "", "")
-    out = tmp_path / "profile.yaml"
-    assert setup_workspace(cfg, {"id": "legion-controller"}, out, run, say=lambda _: None) == 0
+    out = tmp_path / "profiles"
+    ids = ["legion-mcp", "legion-git", "legion-git-push"]
+    assert setup_workspace(cfg, {p: {"id": p} for p in ids}, out, run, say=lambda _: None) == 0
     steps = [c for c, probe in calls if not probe]
-    written = _y.safe_load(out.read_text())
+    written = {p: _y.safe_load((out / f"{p}.yaml").read_text()) for p in ids}
     if exists:
-        assert steps == [["profile", "update", "-f", str(out), "legion-controller"]]
-        assert written == {"id": "legion-controller", "resource_version": "42"}
+        assert steps == [["profile", "update", "-f", str(out / f"{p}.yaml"), p] for p in ids]
+        assert written == {p: {"id": p, "resource_version": "42"} for p in ids}
     else:
-        assert [s[:2] for s in steps] == [["profile", "import"], ["provider", "create"]]
-        assert written == {"id": "legion-controller"}
+        assert [s[:2] for s in steps] == [["profile", "import"], ["provider", "create"]] * 3
+        assert [s[3] for s in steps if s[:2] == ["provider", "create"]] == ids
+        assert written == {p: {"id": p} for p in ids}
 
 
 def test_default_agent_command_finds_the_payload(tmp_path):
@@ -855,11 +859,10 @@ def test_sandbox_root_and_user_follow_the_image(tmp_path):
     import yaml as _y
 
     from legion_orch.sandbox import LocalRunner, OpenShellRunner, SandboxSpec, render_policy
-    from legion_orch.server import MCP_TOOLS
     cfg = _os_cfg(tmp_path)
     cfg.sandbox.root, cfg.sandbox.run_as_user, cfg.sandbox.run_as_group = "/home/agent", "agent", "agent"
     for agent in (True, False):
-        pol = _y.safe_load(render_policy(cfg, agent=agent, push=agent, mcp_tools=list(MCP_TOOLS)))
+        pol = _y.safe_load(render_policy(cfg, agent=agent))
         assert pol["filesystem_policy"]["read_write"] == ["/home/agent", "/tmp", "/dev/null"]
         assert (pol["process"]["run_as_user"], pol["process"]["run_as_group"]) == ("agent", "agent")
     calls = []
@@ -881,21 +884,17 @@ def test_sandbox_root_and_user_follow_the_image(tmp_path):
 
 def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
     """The gateway refuses MCP methods the policy does not list. Every method our server answers
-    must be allowed in both the sandbox policy and the provider profile, and nothing else.
+    must be allowed in the legion-mcp provider profile, and nothing else.
     (subscriptions/listen was once missing and denied.) Prompts and resources are not offered:
     the tools_only middleware refuses them although the SDK registers handlers."""
-    import yaml as _y
     from mcp.server.mcpserver import MCPServer
 
-    from legion_orch.sandbox import provider_profile, render_policy
+    from legion_orch.sandbox import provider_profiles
     from legion_orch.sandbox.templates import MCP_VERSIONS
     from legion_orch.server import MCP_TOOLS
     from legion_orch.server.mcp import NOT_OFFERED
     cfg = _os_cfg(tmp_path)
-    policy = _y.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=list(MCP_TOOLS)))
-    endpoints = [policy["network_policies"]["legion_mcp"]["endpoints"][0],
-                 next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
-                      if e["protocol"] == "mcp")]
+    endpoints = provider_profiles(cfg, list(MCP_TOOLS))["legion-mcp"]["endpoints"]
     handlers = set(MCPServer("probe")._lowlevel_server._request_handlers)
     served = {m for m in handlers if m.split("/", 1)[0] not in NOT_OFFERED}
     lifecycle = {"initialize", "notifications/initialized", "notifications/cancelled"}
@@ -907,25 +906,19 @@ def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):
 
 def test_gateway_inspects_mcp_requests_as_large_as_the_largest_document(tmp_path):
     """OpenShell drops MCP requests over mcp.max_body_bytes (default 64 KiB) with no response, which
-    agents see as connection resets on docs_write. Policy and profile render the same limit, and a
-    docs_write of the largest document the store accepts – JSON content, so heavily escaped –
-    fits in it."""
+    agents see as connection resets on docs_write. The legion-mcp profile renders the configured
+    limit, and a docs_write of the largest document the store accepts – JSON content, so heavily
+    escaped – fits in it."""
     import json as _j
 
-    import yaml as _y
-
-    from legion_orch.sandbox import provider_profile, render_policy
+    from legion_orch.sandbox import provider_profiles
     from legion_orch.server import MCP_TOOLS
     from legion_orch.store.docstore import MAX_DOC_BYTES
     cfg = _os_cfg(tmp_path)
-    policy = _y.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=list(MCP_TOOLS)))
-    pol_ep = policy["network_policies"]["legion_mcp"]["endpoints"][0]
-    prof_ep = next(e for e in provider_profile(cfg, list(MCP_TOOLS))["endpoints"]
-                   if e["protocol"] == "mcp")
+    [prof_ep] = provider_profiles(cfg, list(MCP_TOOLS))["legion-mcp"]["endpoints"]
     limit = cfg.server.mcp_max_body_bytes
-    # the same limit, spelled as each schema requires: policy mcp.max_body_bytes, profile
-    # endpoint json_rpc_max_body_bytes (a profile's mcp block may not carry it)
-    assert pol_ep["mcp"]["max_body_bytes"] == prof_ep["json_rpc_max_body_bytes"] == limit
+    # a profile endpoint spells it json_rpc_max_body_bytes (its mcp block may not carry it)
+    assert prof_ep["json_rpc_max_body_bytes"] == limit
     assert set(prof_ep["mcp"]) <= {"versions", "strict_tool_names", "allow_all_known_mcp_methods"}
     row = {"id": "REQ-1", "command": 'pytest -k "greet and not slow"', "path": "src\\greet.txt"}
     doc = _j.dumps({"tests": [row] * (MAX_DOC_BYTES // len(_j.dumps(row)))})[:MAX_DOC_BYTES]

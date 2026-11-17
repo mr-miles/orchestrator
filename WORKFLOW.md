@@ -67,11 +67,12 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 * **Sandbox per task.** A sandbox serves exactly one task in one role for its whole life: an
   implementer sandbox is reused across that task's rework cycles; critics, reviewers and verifiers
   always get their own (`openshell sandbox create --detach --name lg-<first name>
-  --provider legion-controller --policy … --upload payload:/sandbox`). The payload contains only
+  --provider legion-mcp --provider legion-git[-push] --policy … --upload payload:/sandbox`). The payload contains only
   `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and `run-agent.sh`.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
 * **Workload identity (SPIFFE/SPIRE).** Set up once per OpenShell workspace
-  (`legion-orch setup-openshell`): a provider profile `legion-controller` whose `token_grant` makes
+  (`legion-orch setup-openshell`): one provider profile per controller endpoint – `legion-mcp`,
+  `legion-git` and `legion-git-push` (below) – each with a `token_grant` that makes
   the gateway's sandbox supervisor fetch the sandbox's JWT-SVID
   (`spiffe://…/openshell/sandbox/<sandbox-id>`) and exchange it at the controller's
   `POST /oauth/token` (OAuth2 client_credentials, `jwt-spiffe` client assertion). The controller
@@ -81,23 +82,26 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   injects it as `Authorization: Bearer` into requests to the controller only. Every MCP and git
   request is then bound to the sandbox's live run, which must match the token's change, task and
   role; when the run ends, the token is useless.
-* **Network policy** (rendered per sandbox from [`policies/agent-policy.template.yaml`](policies/agent-policy.template.yaml);
-  every object legion-orch creates in OpenShell – policies, sandboxes, provider profile, provider –
-  comes from a template in [`policies/`](policies/README.md) using one shared placeholder
-  vocabulary): the model provider, plus
-  * `legion_mcp` – `protocol: mcp` on the controller's dedicated MCP port (`/mcp`). The gateway
-    parses every JSON-RPC request and allows only the handshake methods and `tools/call` for the
-    controller's own tools (exactly the table below); anything else is denied before it reaches
-    the controller. (MCP has its own port because OpenShell does not allow an MCP endpoint to
-    share a host and port with another protocol.)
-  * `legion_git` – `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port:
-    fetch, and `git-receive-pack` only for roles that push (implementer, oracle); other roles
-    have push in `deny_rules`.
+* **Network access** comes from the providers a sandbox attaches; OpenShell adds each attached
+  profile's endpoints to the sandbox's effective policy, so the sandbox policy
+  ([`policies/agent-policy.template.yaml`](policies/agent-policy.template.yaml)) has no rule for
+  the controller. Every object legion-orch creates in OpenShell – policies, sandboxes, provider
+  profiles, providers – comes from a template in [`policies/`](policies/README.md) using one
+  shared placeholder vocabulary. Agents attach the model provider, plus
+  * `legion-mcp` – `protocol: mcp` on the controller's dedicated MCP port (`/mcp`), for the agent
+    CLI. The gateway parses every JSON-RPC request and allows only the handshake methods and
+    `tools/call` for the controller's own tools (exactly the table below); anything else is
+    denied before it reaches the controller. (MCP has its own port because OpenShell does not
+    allow an MCP endpoint to share a host and port with another protocol.)
+  * `legion-git-push` (roles that push: implementer, oracle) or `legion-git` (every other role) –
+    `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port, for git. Both
+    allow fetch and `git-receive-pack`; `legion-git` also denies `git-receive-pack`, and a deny
+    rule applies across the whole effective policy, so a sandbox attaches exactly one of them.
 
   The operator UI/API listens on a separate port that is never exposed to sandboxes; the token
   endpoint has its own port for the gateway supervisor.
 
-  Verifier sandboxes get `legion_git` (fetch only) and nothing else.
+  Verifier sandboxes attach `legion-git` (fetch only) and nothing else.
 
   With the environment stage (§5.3a), the policy of a mapped role's sandbox additionally holds
   its profile's network policies (`env_<name>`, each open to the binaries that brought it), and the
