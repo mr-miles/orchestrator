@@ -30,7 +30,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.
 
 ```
-start (intake) -> H-1 -> plan -> [environment] <-> critique -> [H-E1 -> provision] -> oracle -> [baseline] -> H-2 -> build DAG
+start (intake) -> H-1 -> plan (planner <-> critique, with [environment]) -> [H-E1 -> provision] -> oracle -> [baseline] -> H-2 -> build DAG
    (verify -> review panel -> rework loop -> merge) -> integration -> [release] -> H-3 -> ship
 ```
 

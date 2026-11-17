@@ -39,7 +39,7 @@ async def test_r1_change_runs_to_ready(f: Flow):
     assert f.ce.change.risk.tier == "R1" and f.status("H-1") == AWAITING_HUMAN
     res = await f.human("H-1", "accept")
     assert (res.tier, res.panel) == ("R1", ["reviewer"])
-    assert set(f.ce.nodes) == {"intake", "H-1", "plan", "critique", "H-2", "ship"}   # no R2 stages
+    assert set(f.ce.nodes) == {"intake", "H-1", "plan", "H-2", "ship"}   # no R2 stages
     await f.plan()
     await f.critique("PASS")
     assert f.status("build:T1") == PENDING and f.ce.nodes["ship"].depends_on == ["build:T1"]
@@ -126,7 +126,7 @@ async def test_report_schema_mismatch_is_g_r7(f: Flow):
     await f.intake()
     await f.human("H-1", "accept")
     await f.plan()
-    r = f.run("critique")
+    r = f.run("plan", "critic")
     plan = [f.ce.latest_att(p) for p in ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
     doc = await f.write(r, "critique/cycle-1.md", "x")
     out = await f.report(r, plan + [doc], {"verdict": "MAYBE"})
@@ -246,20 +246,24 @@ async def test_critique_rework_loop_and_budget_escalation(f: Flow):
     await f.intake()
     await f.human("H-1", "accept")
     await f.plan()
+    plan = f.ce.nodes["plan"]
+    assert plan.status == REVIEWING                         # the plan is critiqued, not accepted
+    first = f.run("plan", "critic")
     await f.critique("REWORK")
-    plan, crit = f.ce.nodes["plan"], f.ce.nodes["critique"]
     assert plan.status == RUNNING and plan.cycle == 2 and plan.feedback[-1].source == "critique"
-    assert crit.status == PENDING and crit.cycle == 2
+    assert plan.reviews["1:critic"].verdict == "REWORK" and first.sandbox in f.runner.deleted
+    assert f.ce.runs[plan.runs[0]].status == R_SUPERSEDED   # the reworked plan's planner run
     await f.plan()
     await f.critique("REWORK")                              # second REWORK: budget spent
-    assert crit.status == ESCALATED and crit.escalation.resume == Resume.CRITIQUE_BUDGET
-    await f.human("critique", "answer", answer="the spec is fine as it is")
-    assert crit.extra_cycles == 1 and plan.cycle == 3 and plan.status == RUNNING
+    assert plan.status == ESCALATED and plan.escalation.resume == Resume.CRITIQUE_BUDGET
+    await f.human("plan", "answer", answer="the spec is fine as it is")
+    assert plan.extra_cycles == 1 and plan.cycle == 3 and plan.status == RUNNING
     assert {"decisions", "critique"} <= {fb.source for fb in plan.feedback[-2:]}
     assert any("the spec is fine" in fb.text for fb in plan.feedback)
     await f.plan()
     await f.critique("PASS")
-    assert crit.status == ACCEPTED and "build:T1" in f.ce.nodes
+    assert plan.status == ACCEPTED and "build:T1" in f.ce.nodes
+    assert f.ce.runs[plan.runs[-2]].status == R_ACCEPTED    # the planner run the critic passed
 
 
 @scenario()
@@ -267,7 +271,7 @@ async def test_critique_must_attest_the_latest_plan(f: Flow):
     await f.intake()
     await f.human("H-1", "accept")
     await f.plan()
-    r = f.run("critique")
+    r = f.run("plan", "critic")
     doc = await f.write(r, "critique/cycle-1.md", "x")
     out = await f.report(r, [doc], {"verdict": "REWORK", "findings": []})
     assert {"G-C1: REWORK requires at least one finding"} <= set(out.violations)
@@ -292,7 +296,6 @@ async def test_h2_revise_restarts_everything_derived_from_the_plan(f: Flow):
     await f.to_h2()
     await f.human("H-2", "revise", feedback="split the task")
     assert f.status("plan") == RUNNING and f.ce.nodes["plan"].cycle == 2
-    assert f.status("critique") == PENDING and f.ce.nodes["critique"].cycle == 2
     assert f.status("H-2") == PENDING and not f.ce.build_nodes()
     assert f.ce.change.integration_head == f.ce.change.base_sha
     await f.plan()
@@ -689,7 +692,7 @@ async def test_a_name_taken_on_the_gateway_is_replaced(f: Flow):
     assert run.sandbox in f.runner.created and len(f.runner.created) == 2   # intake + plan
     f.runner.clash = 3                     # never free: the critic's run fails as a system error
     await f.plan()                         # (a planner rework reuses its kept sandbox)
-    critic = f.runs("critique")[-1]
+    critic = f.runs("plan", "critic")[-1]
     assert critic.failure and critic.failure.source == FailureSource.SYSTEM
     assert "already exists" in critic.failure.reason
 
@@ -898,3 +901,4 @@ async def test_a_change_on_a_blank_repository(f: Flow):
     assert f.ce.change.status == ChangeStatus.READY
     assert await f.ctl.git.blob(base, "src/greet.txt") is None                 # nothing at base
     assert await f.ctl.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged
+

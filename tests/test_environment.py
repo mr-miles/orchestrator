@@ -85,10 +85,10 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     f.cfg.sandbox.image, f.cfg.sandbox.verifier_image = "reg/agent:1", "reg/verifier:1"
     await f.intake()
     await f.human("H-1", "accept")
-    assert f.ce.nodes["critique"].depends_on == ["plan"] and "environment" not in f.ce.nodes
+    assert f.ce.nodes["H-E1"].depends_on == ["plan"] and "environment" not in f.ce.nodes
     assert "`pypi` – Python Package Index" in f.run("plan").assignment["environment"]
     await f.plan()
-    assert any("plan/environment.json" in r for r in f.run("critique").context_refs)
+    assert any("plan/environment.json" in r for r in f.run("plan", "critic").context_refs)
     await f.critique("PASS")
     assert f.status("H-E1") == "AWAITING_HUMAN" and f.status("provision") == "PENDING"
     await f.human("H-E1", "approve")
@@ -274,12 +274,12 @@ async def test_h_e1_revise_reworks_the_plan_and_recritiques(f: Flow):
     await f.plan()
     await f.critique("PASS")
     await f.human("H-E1", "revise", feedback="the verifier needs node for the lint step")
-    plan, crit = f.ce.nodes["plan"], f.ce.nodes["critique"]
-    assert plan.cycle == 2 and plan.status == "RUNNING" and crit.status == "PENDING"
+    plan = f.ce.nodes["plan"]
+    assert plan.cycle == 2 and plan.status == "RUNNING" and f.status("H-E1") == "PENDING"
     assert "node for the lint" in f.run("plan").assignment["feedback_items"][-1]["text"]
     await f.plan(environment=spec(profiles={**ENVIRONMENT["profiles"],
                                             "check": {"tools": ["python", "uv", "node"]}}))
-    assert f.status("critique") == "RUNNING" and f.run("critique").cycle == 2
+    assert f.status("plan") == "REVIEWING" and f.run("plan", "critic").cycle == 2
     await f.critique("PASS")
     await f.human("H-E1", "approve")
     assert f.status("provision") == "ACCEPTED"
@@ -317,8 +317,8 @@ async def test_critique_budget_answer_reworks_the_plan(f: Flow):
     await to_plan(f)
     await f.plan()
     await f.critique("REWORK")
-    assert f.ce.nodes["critique"].escalation.kind == "critique_budget"
-    await f.human("critique", "answer", answer="keep the single task")
+    assert f.ce.nodes["plan"].escalation.kind == "critique_budget"
+    await f.human("plan", "answer", answer="keep the single task")
     assert f.status("plan") == "RUNNING" and f.status("H-E1") == "PENDING"
 
 
