@@ -9,6 +9,7 @@ from . import (  # noqa: F401  (registration side effects)
     panel,
     planner,
     release,
+    retrospective,
 )
 from .base import REGISTRY, Report, RoleHandler, handler_for, register, roles_where
 

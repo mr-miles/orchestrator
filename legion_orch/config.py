@@ -114,14 +114,32 @@ class SandboxConfig:
     run_as_group: str = "sandbox"
     # Command run inside the sandbox to start the agent, via `bash -lc` from the working copy.
     # $LEGION_PAYLOAD is the payload directory (/sandbox/payload in OpenShell) and
-    # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner.
+    # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner. On a rework
+    # in a kept sandbox, $LEGION_RESUME_SESSION is the earlier agent session to continue.
     agent_command: str = (
-        'claude -p --mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
+        'claude -p ${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"} '
+        '--mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
         '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '
         "--permission-mode bypassPermissions --output-format stream-json --verbose "
         '< "$LEGION_PAYLOAD/prompt.md"'
     )
     extra_create_args: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RetrospectiveConfig:
+    # Before an agent's sandbox is deleted because its work is done, resume its session for one
+    # reflection turn (what cost it time, guidance that was missing or wrong), stored in
+    # control/reflections/. Best-effort: a failed or timed-out reflection never blocks the change.
+    reflect: bool = True
+    # Run the retrospective (an agent analysing the change, see WORKFLOW.md §5.13) as soon as
+    # a change ends; a decision owner can always ask for another.
+    auto: bool = True
+    reflect_timeout_s: int = 600
+    # Judges are skipped: what they missed shows in later outcomes (findings.json), not in
+    # their own account, and the panel would otherwise reflect once per member per cycle.
+    reflect_skip_roles: list[str] = field(default_factory=lambda: [
+        "retrospective", "reviewer", "security", "architecture", "critic"])
 
 
 @dataclass
@@ -172,6 +190,7 @@ class Config:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
+    retrospective: RetrospectiveConfig = field(default_factory=RetrospectiveConfig)
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -208,6 +227,7 @@ def load_config(path: str | Path) -> Config:
         sandbox=_build(SandboxConfig, raw.get("sandbox")),
         identity=_build(IdentityConfig, raw.get("identity")),
         environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
+        retrospective=_build(RetrospectiveConfig, raw.get("retrospective")),
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )

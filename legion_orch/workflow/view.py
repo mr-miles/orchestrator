@@ -77,5 +77,11 @@ class RoleContext(ChangeView, Protocol):
 
     def oracle_commands(self) -> list[str]: ...
 
+    def stored_log(self, run_id: str) -> str:
+        """A run's whole archived agent log."""
+
+    def timeline(self) -> str:
+        """The change's controller events so far (JSON lines)."""
+
     def reset_environment(self) -> None:
         """The plan is reworked: the environment's approval and build are dropped."""

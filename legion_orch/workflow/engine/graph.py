@@ -8,7 +8,6 @@ from ..model import (
     ACTIVE_NODE,
     BASELINE,
     BUILD,
-    CRITIQUE,
     H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
@@ -19,7 +18,9 @@ from ..model import (
     PENDING,
     PLAN,
     PROVISION,
+    READY,
     RELEASE,
+    RETRO,
     REWORK,
     SHIP,
     Node,
@@ -39,13 +40,14 @@ class StageGraph:
         c = self.c
         tier = c.change.tier
         r = risk.rank(tier)
-        c.add_node(Node(id=PLAN, kind=PLAN, title="Plan: spec, oracle, task graph",
+        # the plan node is accepted once the critic passes it (planner, then critique, then
+        # rework until it does): like a build task with its review
+        c.add_node(Node(id=PLAN, kind=PLAN, title="Plan: spec, oracle, task graph; critique",
                         depends_on=[H_REQUIREMENTS]))
-        c.add_node(Node(id=CRITIQUE, kind=CRITIQUE, title="Critique: pre-mortem", depends_on=[PLAN]))
-        after_critique = CRITIQUE
+        after_critique = PLAN
         if c.cfg.environment is not None:          # the plan includes the sandbox environment
             c.add_node(Node(id=H_ENV, kind=HUMAN, title="Approve sandbox environment",
-                            depends_on=[CRITIQUE]))
+                            depends_on=[PLAN]))
             c.add_node(Node(id=PROVISION, kind=PROVISION, title="Provision: environment images",
                             depends_on=[H_ENV]))
             after_critique = PROVISION
@@ -69,6 +71,18 @@ class StageGraph:
                             depends_on=[RELEASE if r >= 3 else INTEGRATION]))
         c.add_node(Node(id=SHIP, kind=SHIP, title="Ship readiness check",
                         depends_on=[H_CHANGE] if r >= 2 else [H_SPEC]))
+
+    def add_retrospective(self) -> Node:
+        """Queue the retrospective of an ended change: a new node, or a new cycle of it."""
+        c = self.c
+        node = c.nodes.get(RETRO)
+        if node is None:
+            node = Node(id=RETRO, kind=RETRO, status=READY,
+                        title="Retrospective: lessons for the assets and process")
+            c.add_node(node)
+        else:
+            node.cycle, node.status, node.escalation = node.cycle + 1, READY, None
+        return node
 
     def materialize_builds(self, taskgraph: dict) -> None:
         """Replace the build nodes by one per task of an accepted task graph."""

@@ -18,7 +18,6 @@ from ..util import now_iso
 class NodeKind(StrEnum):
     INTAKE = "intake"
     PLAN = "plan"
-    CRITIQUE = "critique"
     PROVISION = "provision"
     ORACLE = "oracle"
     BASELINE = "baseline"
@@ -27,6 +26,7 @@ class NodeKind(StrEnum):
     RELEASE = "release"
     SHIP = "ship"
     HUMAN = "human"
+    RETROSPECTIVE = "retrospective"      # on demand, once the change has ended
 
 
 class NodeStatus(StrEnum):
@@ -144,16 +144,16 @@ class Resume(StrEnum):
     READY = "READY"                       # dispatch the node again
     REWORK = "REWORK"                     # dispatch a rework run in the same cycle
     REWORK_CYCLE = "REWORK_CYCLE"         # grant one more cycle and rework
-    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more critique cycle; the plan is reworked
+    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more plan cycle; the plan is reworked
     VERIFYING = "VERIFYING"               # re-run deterministic verification
     REVIEWING = "REVIEWING"               # re-dispatch the missing panel member(s)
 
 
 # Short aliases used throughout the engine (members compare and serialise as their strings).
-INTAKE, PLAN, CRITIQUE, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
-    NodeKind.INTAKE, NodeKind.PLAN, NodeKind.CRITIQUE, NodeKind.ORACLE, NodeKind.BASELINE,
+INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
+    NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.SHIP, NodeKind.HUMAN)
-PROVISION = NodeKind.PROVISION
+PROVISION, RETRO = NodeKind.PROVISION, NodeKind.RETROSPECTIVE
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
@@ -163,9 +163,9 @@ R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(Run
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
 # Which agent role executes each node kind
-ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", CRITIQUE: "critic", ORACLE: "oracle",
+ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
-                 RELEASE: "release"}
+                 RELEASE: "release", RETRO: "retrospective"}
 
 
 class Record(BaseModel):
@@ -307,7 +307,10 @@ class Node(Record):
     wave: int = 0
     runs: list[str] = []
     current_run: str | None = None
-    sandbox: str | None = None            # implementer sandbox (reused across rework cycles)
+    # the sandbox the node's producer keeps across rework cycles (implementer; intake, planner
+    # and oracle until their gate passes), and whether it is stopped between runs
+    sandbox: str | None = None
+    sandbox_stopped: bool = False
     base_sha: str | None = None
     candidate_sha: str | None = None
     accepted_sha: str | None = None
@@ -371,6 +374,12 @@ class Run(Record):
     judged_sha: str | None = None         # candidate/head under judgement (judge roles)
     prompt_pin: str | None = None
     assets_sha: str | None = None         # sha256 of the asset set used to render the prompt
+    # the values bound into the prompt's template variables: with the asset files of assets_sha
+    # (control/assets/), they re-render the exact prompt (prompt_pin checks it)
+    template_vars: dict[str, str] = {}
+    session_id: str | None = None         # the agent CLI's session (from its log)
+    resumed_session: str | None = None    # the agent session this run continued
+    resumed_from: str | None = None       # the earlier run that session belongs to
     write_scope: list[str] = []
     required_docs: list[str] = []
     context_refs: list[str] = []

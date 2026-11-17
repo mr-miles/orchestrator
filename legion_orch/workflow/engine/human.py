@@ -8,7 +8,6 @@ from ..model import (
     AWAITING_HUMAN,
     BASELINE,
     BUILD,
-    CRITIQUE,
     ESCALATED,
     FAILED,
     H_CHANGE,
@@ -22,9 +21,11 @@ from ..model import (
     ORACLE,
     PENDING,
     PLAN,
+    PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
     READY,
+    RETRO,
     REVIEWING,
     REWORK,
     RUNNING,
@@ -170,12 +171,12 @@ class HumanGates:
         return ActionResult(approved=done, pending=[])
 
     async def _revise_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2 revise: the plan is reworked; everything derived from it starts over (critique,
-        oracle, baseline, build nodes, the integration branch and surface pins)."""
+        """H-2 revise: the plan is reworked (and critiqued again); everything derived from it
+        starts over (oracle, baseline, build nodes, the integration branch and surface pins)."""
         ch = self.c.change
         self._send_back(self.c.nodes[PLAN], approver, payload)
         self.graph.reset_environment()
-        for nid in (CRITIQUE, ORACLE, BASELINE):
+        for nid in (ORACLE, BASELINE):
             if nid in self.c.nodes:
                 n = self.c.nodes[nid]
                 n.status, n.cycle = PENDING, n.cycle + 1
@@ -203,8 +204,6 @@ class HumanGates:
         """H-E1 revise: the planner reworks the plan's environment with the feedback; the plan
         is then critiqued again."""
         self._send_back(self.c.nodes[PLAN], approver, payload)
-        crit = self.c.nodes[CRITIQUE]
-        crit.status, crit.cycle = PENDING, crit.cycle + 1
         node.status = PENDING
         return ActionResult()
 
@@ -249,10 +248,9 @@ class HumanGates:
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
                 raise WorkflowError("an answer is required")
-            target = self.c.nodes[PLAN] if resume == Resume.CRITIQUE_BUDGET else node
-            att = self._feedback_doc(target, approver, text, "decisions")
-            target.feedback.append(Feedback(cycle=target.cycle, source="decisions",
-                                            text=f"human decision: {text}", attestations=[att]))
+            att = self._feedback_doc(node, approver, text, "decisions")
+            node.feedback.append(Feedback(cycle=node.cycle, source="decisions",
+                                          text=f"human decision: {text}", attestations=[att]))
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)
@@ -314,13 +312,9 @@ class HumanGates:
         """Continue the workflow where the resolved escalation said it should."""
         if resume == Resume.CRITIQUE_BUDGET:          # one more critique cycle: rework the plan
             node.extra_cycles += 1
-            plan = self.c.nodes[PLAN]
-            plan.cycle += 1
-            plan.feedback += node.feedback[-1:]
-            plan.status = REWORK
-            self.graph.reset_environment()
             node.cycle += 1
-            node.status = PENDING
+            node.status = REWORK
+            self.graph.reset_environment()
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
             node.extra_cycles += 1
             cur = self.c.runs.get(node.current_run) if node.current_run else None
@@ -361,9 +355,50 @@ class HumanGates:
         self.c.event("library", f"{approver} promoted {kind} {payload.get('name')} into {dest}")
         return f"wrote {dest}"
 
+    def _start_retrospective(self, approver: str, payload: dict) -> str:
+        """Ask for (another) retrospective of an ended change: an agent analyses the
+        change's records, logs and reflections and proposes improvements to the assets and the
+        process. Asking again runs a new cycle; ``focus`` optionally says what to look at."""
+        c = self.c
+        if c.change.status == ChangeStatus.ACTIVE:
+            raise WorkflowError("a retrospective needs an ended change (it is still active)")
+        node = c.nodes.get(RETRO)
+        if node is not None and node.status not in (ACCEPTED, FAILED, ESCALATED):
+            raise WorkflowError(f"a retrospective is already {node.status}")
+        node = self.graph.add_retrospective()
+        focus = (payload.get("focus") or payload.get("feedback") or "").strip()
+        if focus:
+            att = self._feedback_doc(node, approver, focus, "focus")
+            node.feedback.append(Feedback(cycle=node.cycle, source="focus", text=focus,
+                                          attestations=[att]))
+        c.event("retrospective", f"{approver} asked for a retrospective (cycle {node.cycle})", RETRO)
+        return f"retrospective queued (cycle {node.cycle})"
+
+    def _reprovision(self, approver: str, payload: dict) -> str:
+        """Build the provisioned environment again from the approved spec against the current
+        library (G-PV1), e.g. after a library entry was fixed. The spec and its H-E1 approval
+        stay; to change what the spec asks for, revise the plan instead. New runs of mapped roles
+        wait from now on; provisioning starts once their live runs end and nothing is verifying
+        or merging (the old build stays in place until the new one is accepted)."""
+        c = self.c
+        prov = c.nodes.get(PROVISION)
+        if prov is None or c.change.environment is None or prov.status != ACCEPTED:
+            raise WorkflowError("there is no provisioned environment to rebuild")
+        if stale := governance.stale_environment(c):
+            raise WorkflowError(f"{stale}; approve the new spec at H-E1 instead")
+        reason = payload.get("reason")
+        if not risk.valid_reason(reason):
+            raise WorkflowError("a reason of ≥24 chars and more than one word is required")
+        prov.status = PENDING
+        c.event("provision", f"{approver} requested reprovisioning: {reason}", PROVISION)
+        return ("provisioning again from the approved spec and the current library once running "
+                "agents of mapped roles finish; their new runs wait until then")
+
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface,
-        promote_proposal (an approved environment proposal into the library)."""
+        promote_proposal (an approved environment proposal into the library), reprovision
+        (rebuild the environment against the current library), retrospective (of an ended
+        change)."""
         payload = payload or {}
         async with self.c.lock:
             self._check_approver(approver)
@@ -380,6 +415,10 @@ class HumanGates:
                                        note="applies only to runs of this task that start after now")
                 elif action == "promote_proposal":
                     res = ActionResult(note=self._promote(approver, payload))
+                elif action == "reprovision":
+                    res = ActionResult(note=self._reprovision(approver, payload))
+                elif action == "retrospective":
+                    res = ActionResult(note=self._start_retrospective(approver, payload))
                 elif action == "approve_surface":
                     if not risk.valid_reason(payload.get("reason")):
                         raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")

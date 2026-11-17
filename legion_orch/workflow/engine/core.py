@@ -5,12 +5,14 @@ is handed to each engine collaborator; it knows nothing of dispatch, reports or 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
 from ...store import DocVersion
+from ...util import now_iso
 from .. import attest, governance
 from ..model import (
     BUILD,
@@ -37,6 +39,8 @@ class ChangeCore:
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
+        self._timeline: list[str] = []                 # events not yet written to the store
+        self._timeline_at = time.monotonic()
 
     # ------------------------------------------------------------------ state
     @property
@@ -60,6 +64,7 @@ class ChangeCore:
     def save(self) -> None:
         """Persist the state (the caller holds the lock) and wake the scheduler and UI."""
         self.st.save()
+        self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.host.changed()
 
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
@@ -82,10 +87,36 @@ class ChangeCore:
     # ------------------------------------------------------------------ events and tasks
     def event(self, kind: str, message: str, node: str | None = None,
               run: str | None = None) -> None:
-        """Log a notable step. Not persisted: the store's records (node and run versions,
-        control documents) are the history."""
+        """Log a notable step, and append it to the change's timeline (a retrospective reads it
+        alongside the store's records, which are the history)."""
         log.info("[%s %s] %s%s", self.cid, kind, f"{node}: " if node else "", message)
+        self._append_timeline({"ts": now_iso(), "kind": kind, "node": node, "run": run,
+                               "message": message})
         self.host.touch()
+
+    TIMELINE_FLUSH_EVENTS, TIMELINE_FLUSH_S = 200, 60.0
+
+    def _append_timeline(self, rec: dict) -> None:
+        self._timeline.append(json.dumps(rec, default=str))
+
+    def flush_timeline(self, force: bool = False) -> None:
+        """Write the buffered events as the next ``control/timeline/<n>.jsonl`` chunk: on save
+        once enough have built up or a minute has passed, and when ``force``d (the change ended, a
+        retrospective needs it). A crash loses at most the unwritten chunk."""
+        if not self._timeline or self.change is None:
+            return
+        if not force and len(self._timeline) < self.TIMELINE_FLUSH_EVENTS \
+                and time.monotonic() - self._timeline_at < self.TIMELINE_FLUSH_S:
+            return
+        n = len(self.docs.list(self.p("control/timeline/"))) + 1
+        self.write_record(f"control/timeline/{n:05d}.jsonl", "\n".join(self._timeline) + "\n")
+        self._timeline, self._timeline_at = [], time.monotonic()
+
+    def timeline(self) -> str:
+        """The change's events so far (JSON lines)."""
+        self.flush_timeline(force=True)
+        return "".join(self.docs.read(m.path, m.version).content
+                       for m in self.docs.list(self.p("control/timeline/")))
 
     def spawn(self, coro) -> None:
         """Run a background task; the controller logs a failure, the event marks the change."""

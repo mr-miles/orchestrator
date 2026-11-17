@@ -57,7 +57,7 @@ class ChangeEngine(ChangeCore):
         self._graph = StageGraph(self)
         self._lifecycle = RunLifecycle(self)
         self._acceptance = Acceptance(self, self._lifecycle)
-        self._provisioner = Provisioner(self)
+        self._provisioner = Provisioner(self, self._lifecycle)
         self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
@@ -129,6 +129,9 @@ class ChangeEngine(ChangeCore):
 
     def log_tail(self, run_id: str, lines: int = 200) -> str:
         return self._lifecycle.log_tail(run_id, lines)
+
+    def stored_log(self, run_id: str) -> str:
+        return self._lifecycle.stored_log(run_id)
 
     # ------------------------------------------------------------------ RoleContext
     def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
