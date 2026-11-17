@@ -5,6 +5,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 // name and JSON-encoded arguments, dispatched by one delegated listener (see bottom of file).
 const on = (name, ...args) => `data-on="${esc(name)}" data-args="${esc(JSON.stringify(args))}"`;
 const STATUSES = ['PENDING','READY','RUNNING','VERIFYING','REVIEWING','MERGING','REWORK','AWAITING_HUMAN','ESCALATED','ACCEPTED','FAILED'];
+// Progress bar order: finished on the left, then work in hand, waiting (grey) on the right.
+const PROGRESS_ORDER = ['ACCEPTED','FAILED','ESCALATED','AWAITING_HUMAN','REWORK','MERGING','REVIEWING','VERIFYING','RUNNING','READY','PENDING'];
 const color = s => getComputedStyle(document.documentElement).getPropertyValue('--'+s).trim() || '#888';
 let S = null, selected = null, tab = 'gates', docSel = null;
 $('#approver').value = localStorage.approver || '';
@@ -97,9 +99,9 @@ function renderPipeline() {
   $('#pipeline').innerHTML = html.replace(/<span class="arrow">→<\/span>$/, '') || '<span class="muted">—</span>';
   const counts = {}; S.nodes.forEach(n => counts[n.status] = (counts[n.status]||0)+1);
   const total = S.nodes.length || 1;
-  $('#progressbar').innerHTML = STATUSES.filter(s => counts[s]).map(s => `<div title="${s}: ${counts[s]}" style="width:${100*counts[s]/total}%;background:${color(s)}"></div>`).join('');
+  $('#progressbar').innerHTML = PROGRESS_ORDER.filter(s => counts[s]).map(s => `<div title="${s}: ${counts[s]}" style="width:${100*counts[s]/total}%;background:${color(s)}"></div>`).join('');
   const acc = counts.ACCEPTED || 0;
-  $('#progresstext').innerHTML = `${acc}/${S.nodes.length} nodes accepted · ` + STATUSES.filter(s => counts[s]).map(s => `${s.toLowerCase()} ${counts[s]}`).join(' · ')
+  $('#progresstext').innerHTML = `${acc}/${S.nodes.length} nodes accepted · ` + PROGRESS_ORDER.filter(s => counts[s]).map(s => `${s.toLowerCase()} ${counts[s]}`).join(' · ')
     + ` · ${S.runs.length} run(s), ${S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status)).length} live`;
 }
 
