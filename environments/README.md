@@ -54,7 +54,7 @@ env: {PIP_CACHE_DIR: /tmp/pip-cache}              # optional image ENV for sandb
 ```yaml
 description: Python Package Index, read-only (pip, uv)
 endpoints:
-  - {host: pypi.org, port: 443, access: read-only}          # optional: path, protocol, enforcement, allow_encoded_slash
+  - {host: pypi.org, port: 443, access: read-only}          # optional: path, protocol, enforcement
   - {host: files.pythonhosted.org, port: 443, access: read-only}
 ```
 

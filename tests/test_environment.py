@@ -692,10 +692,26 @@ def test_language_preferences_reach_the_roles_that_plan_build_and_judge_code():
     assert "uv" in a.skill("language-preferences") and "ruff" in a.skill("language-preferences")
 
 
-def test_npm_registry_keeps_encoded_slashes_for_scoped_packages():
-    """npm fetches scoped packages as /@scope%2fname; the gateway rejects %2F unless allowed."""
+def test_npm_registry_keeps_encoded_slashes_for_scoped_packages(tmp_path):
+    """npm fetches scoped packages as /@scope%2fname; the gateway rejects %2F unless the endpoint
+    allows it, and honours that only for explicit rules – never together with an access preset."""
     lib = library()
     entry = lambda name: policy_entry(Policy(name=name, description="", binaries=("/x",),
                                              endpoints=tuple(lib.policies[name].endpoints)))[1]
-    assert [e.get("allow_encoded_slash") for e in entry("npm-registry")["endpoints"]] == [True]
-    assert all("allow_encoded_slash" not in e for e in entry("pypi")["endpoints"])   # unset: omitted
+    assert entry("npm-registry")["endpoints"] == [{
+        "host": "registry.npmjs.org", "port": 443, "protocol": "rest", "enforcement": "enforce",
+        "rules": [{"allow": {"method": "GET", "path": "/**"}}], "allow_encoded_slash": True}]
+    pypi = entry("pypi")["endpoints"]
+    assert all(e["access"] == "read-only" and not {"rules", "allow_encoded_slash"} & set(e) for e in pypi)
+    rule = {"allow": {"method": "GET", "path": "/**"}}
+    for bad, msg in (({"access": "read-only", "rules": [rule]}, "rules or access"),
+                     ({"allow_encoded_slash": True}, "needs explicit rules"),
+                     ({"allow_encoded_slash": True, "access": "read-only"}, "needs explicit rules")):
+        with pytest.raises(ValueError, match=msg):
+            Endpoint(host="h.example.com", port=443, **bad)
+    # the library schema refuses the same shapes before the model sees them
+    (tmp_path / "policies").mkdir()
+    (tmp_path / "policies" / "bad.yaml").write_text(yaml.safe_dump({"description": "x", "endpoints": [
+        {"host": "h.example.com", "port": 443, "access": "read-only", "rules": [rule]}]}))
+    with pytest.raises(LibraryError, match="bad.yaml"):
+        Library.load(tmp_path, SCHEMA)
