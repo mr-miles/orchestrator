@@ -92,6 +92,7 @@ async def _full_workflow(tmp_path):
         b = await ctl.start_change("Say hello and goodbye, again")
         assert a.cid != b.cid
         await asyncio.gather(_drive(a), _drive(b))
+        await _event_streams(ctl, cfg, a)
         old_token = ctl.auth.identity.tokens.issue(
             WorkloadBinding(sandbox="s", change=a.cid, task="intake", role="intake"), "x")
         await _identity_checks(ctl, cfg)
@@ -249,6 +250,43 @@ async def _r3_workflow(tmp_path):
         await task
 
 
+async def _sse(c, url: str):
+    """The (event, data) pairs of a server-sent event stream, as they arrive."""
+    async with c.stream("GET", url) as r:
+        assert r.headers["content-type"].startswith("text/event-stream")
+        name = None
+        async for line in r.aiter_lines():
+            if line.startswith("event: "):
+                name = line[7:]
+            elif line.startswith("data: "):
+                yield name, json.loads(line[6:])
+
+
+async def _event_streams(ctl, cfg, ce):
+    """The UI's streams: a change's state and the change list on connect, then only when they
+    change; a finished run's log, then its end."""
+    import httpx
+    base = f"http://127.0.0.1:{cfg.server.port}/api"
+    async with httpx.AsyncClient(timeout=10) as c:
+        stream = _sse(c, f"{base}/changes/{ce.cid}/events")
+        first = [await anext(stream), await anext(stream)]
+        assert [n for n, _ in first] == ["changes", "state"]
+        assert {x["id"] for x in first[0][1]} == set(ctl.changes)
+        assert first[1][1]["change"]["id"] == ce.cid and "version" not in first[1][1]
+        ce.event("note", "an event alone changes nothing the UI shows")      # bumps the version
+        await ce.change_action("attest", "miles", {
+            "kind": "e2e-evaluation", "verdict": "pass", "sources": ["file:plan/spec.md@1"]})
+        name, state = await asyncio.wait_for(anext(stream), 5)      # only the real change arrives
+        assert name == "state" and "e2e-evaluation" in state["change"]["attestations"]
+        await stream.aclose()
+        run = next(iter(ce.runs.values()))
+        log = [x async for x in _sse(c, f"{base}/runs/{run.id}/log/events")]
+        assert [n for n, _ in log] == ["log", "end"]
+        assert log[0][1]["from"] == 0 and log[0][1]["entries"] and not log[0][1]["live"]
+        bad = await c.get(f"{base}/changes/nope/events")
+        assert bad.status_code == 400
+
+
 async def _identity_checks(ctl, cfg):
     """The token endpoint and MCP refuse anything but a managed sandbox's valid JWT-SVID."""
     import httpx
@@ -272,7 +310,6 @@ async def _identity_checks(ctl, cfg):
         csp = ui.headers["content-security-policy"]
         assert "script-src 'self'" in csp and "unsafe-inline" not in csp.split("script-src")[1].split(";")[0]
         assert "<script>" not in ui.text and " onclick=" not in ui.text
-        assert (await c.get(f"{operator}/app.js")).headers["content-type"].startswith("text/javascript")
         unknown = ctl.auth.dev_spire.mint("not-a-managed-sandbox", ic.svid_audience)
         r = await c.post(token_url, data=form(unknown))
         assert r.status_code == 401 and r.json()["error"] == "invalid_client"
@@ -352,6 +389,42 @@ def test_operator_api_errors(tmp_path):
     asyncio.run(go())
 
 
+def test_the_built_ui_is_served(tmp_path, monkeypatch):
+    """The bundle bun builds into static/dist: index without caching, hashed assets cached for
+    good, nothing outside dist; without a build, a page that says how to make one."""
+    import httpx
+
+    from legion_orch.server import web
+    _make_repo(tmp_path / "src-repo")
+    app = web.build_app(Controller(_config(tmp_path, _free_port())))
+    dist = tmp_path / "dist"
+    monkeypatch.setattr(web, "UI_DIST", dist)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://op") as c:
+            r = await c.get("/")
+            assert r.status_code == 503 and "bun run build" in r.text
+            assert "script-src 'self'" in r.headers["content-security-policy"]
+            (dist / "assets").mkdir(parents=True)
+            (dist / "index.html").write_text('<script type="module" src="/assets/index-1.js">'
+                                             "</script>")
+            (dist / "assets/index-1.js").write_text("export {}")
+            (dist / "favicon.svg").write_text("<svg/>")
+            (tmp_path / "secret.txt").write_text("no")
+            r = await c.get("/")
+            assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+            r = await c.get("/assets/index-1.js")
+            assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+            assert r.headers["content-type"].startswith("text/javascript")
+            assert (await c.get("/favicon.svg")).status_code == 200
+            for bad in ("/../secret.txt", "/assets/../../secret.txt", "/%2e%2e/secret.txt",
+                        "/index.html", "/assets/missing.js"):
+                assert (await c.get(bad)).status_code == 404, bad
+            assert (await c.get("/api/changes")).json() == []      # the API still comes first
+    asyncio.run(go())
+
+
 def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
     """One Ctrl+C stops every listener, even with the UI's event stream connected (uvicorn's own
     per-server signal handlers left all but one listener running and waited on the stream)."""
@@ -373,7 +446,9 @@ def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
                 break
             except httpx.TransportError:
                 time.sleep(0.1)
-        with httpx.stream("GET", f"http://127.0.0.1:{port}/api/stream", timeout=10) as s:
+        cid = httpx.post(f"http://127.0.0.1:{port}/api/changes", json={"goal": "stream"},
+                         timeout=10).json()["change"]
+        with httpx.stream("GET", f"http://127.0.0.1:{port}/api/changes/{cid}/events", timeout=10) as s:
             next(s.iter_lines())                          # the stream is live
             proc.send_signal(signal.SIGINT)
             start = time.monotonic()
