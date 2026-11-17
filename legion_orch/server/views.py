@@ -5,7 +5,7 @@ from ..workflow import governance
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.engine.common import ENV_SPEC
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
-from ..workflow.model import ACCEPTED, H_ENV, LIVE_RUN
+from ..workflow.model import ACCEPTED, H_ENV, LIVE_RUN, RETRO
 
 
 def change_list(ctl: Controller) -> list[dict]:
@@ -16,7 +16,8 @@ def change_list(ctl: Controller) -> list[dict]:
                     "created_at": c.created_at,
                     "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
                     "nodes": len(ce.nodes),
-                    "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values())})
+                    "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values()),
+                    "retrospective": ce.nodes[RETRO].status if RETRO in ce.nodes else None})
     return sorted(out, key=lambda c: c["created_at"], reverse=True)
 
 
@@ -47,7 +48,7 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
              for n in ce.nodes.values()]
     runs = [r.model_dump(mode="json", exclude={"assignment"}) for r in ce.runs.values()]
     return {"project": cfg.project, "repo": cfg.repo.name, "decision_owners": cfg.decision_owners,
-            "version": ctl.version, "assets_sha": ctl.assets.sha, "limits": cfg.limits.__dict__,
+            "assets_sha": ctl.assets.sha, "limits": cfg.limits.__dict__,
             "change": ch.model_dump(mode="json") if ch else None, "nodes": nodes, "runs": runs,
             "gates": governance.gate_set(ce) if ch and ch.tier else [],
             "h2": [s.model_dump() for s in governance.h2_status(ce)] if ch and ch.requirements else [],

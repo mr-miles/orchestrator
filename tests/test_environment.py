@@ -27,7 +27,7 @@ from legion_orch.sandbox import (
 )
 from legion_orch.sandbox.images import dockerfile, image_tag, mise_toml
 from legion_orch.workflow.assets import Assets
-from legion_orch.workflow.engine import Controller
+from legion_orch.workflow.engine import Controller, WorkflowError
 from legion_orch.workflow.environment import (
     EnvironmentSpec,
     Kind,
@@ -85,10 +85,10 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     f.cfg.sandbox.image, f.cfg.sandbox.verifier_image = "reg/agent:1", "reg/verifier:1"
     await f.intake()
     await f.human("H-1", "accept")
-    assert f.ce.nodes["critique"].depends_on == ["plan"] and "environment" not in f.ce.nodes
+    assert f.ce.nodes["H-E1"].depends_on == ["plan"] and "environment" not in f.ce.nodes
     assert "`pypi` – Python Package Index" in f.run("plan").assignment["environment"]
     await f.plan()
-    assert any("plan/environment.json" in r for r in f.run("critique").context_refs)
+    assert any("plan/environment.json" in r for r in f.run("plan", "critic").context_refs)
     await f.critique("PASS")
     assert f.status("H-E1") == "AWAITING_HUMAN" and f.status("provision") == "PENDING"
     await f.human("H-E1", "approve")
@@ -274,12 +274,12 @@ async def test_h_e1_revise_reworks_the_plan_and_recritiques(f: Flow):
     await f.plan()
     await f.critique("PASS")
     await f.human("H-E1", "revise", feedback="the verifier needs node for the lint step")
-    plan, crit = f.ce.nodes["plan"], f.ce.nodes["critique"]
-    assert plan.cycle == 2 and plan.status == "RUNNING" and crit.status == "PENDING"
+    plan = f.ce.nodes["plan"]
+    assert plan.cycle == 2 and plan.status == "RUNNING" and f.status("H-E1") == "PENDING"
     assert "node for the lint" in f.run("plan").assignment["feedback_items"][-1]["text"]
     await f.plan(environment=spec(profiles={**ENVIRONMENT["profiles"],
                                             "check": {"tools": ["python", "uv", "node"]}}))
-    assert f.status("critique") == "RUNNING" and f.run("critique").cycle == 2
+    assert f.status("plan") == "REVIEWING" and f.run("plan", "critic").cycle == 2
     await f.critique("PASS")
     await f.human("H-E1", "approve")
     assert f.status("provision") == "ACCEPTED"
@@ -317,8 +317,8 @@ async def test_critique_budget_answer_reworks_the_plan(f: Flow):
     await to_plan(f)
     await f.plan()
     await f.critique("REWORK")
-    assert f.ce.nodes["critique"].escalation.kind == "critique_budget"
-    await f.human("critique", "answer", answer="keep the single task")
+    assert f.ce.nodes["plan"].escalation.kind == "critique_budget"
+    await f.human("plan", "answer", answer="keep the single task")
     assert f.status("plan") == "RUNNING" and f.status("H-E1") == "PENDING"
 
 
@@ -493,6 +493,10 @@ def test_every_seeded_tool_resolves_to_absolute_binaries():
         assert tool.binaries, f"{name} declares no binaries"
     node, _ = resolve_tool("node", lib.tools["node"], None)       # node, npm and npx
     assert node.binaries == ("/usr/local/share/mise/installs/node/*/bin/*",)
+    bun, _ = resolve_tool("bun", lib.tools["bun"], None)          # bun and bunx (a link to it)
+    assert bun.binaries == ("/usr/local/share/mise/installs/bun/*/bin/*",)
+    assert lib.tools["bun"].network == ["npm-registry"]            # scoped packages: encoded slash
+    assert "shadcn-registry" in lib.policies                       # opt-in, per profile
 
 
 def test_selected_tools_bring_their_network_for_their_own_binaries():
@@ -720,3 +724,56 @@ def test_npm_registry_is_read_only_and_keeps_encoded_slashes():
     node, err = resolve_tool("node", lib.tools["node"], None)
     assert err is None and ("NPM_CONFIG_AUDIT", "false") in node.env
     assert 'ENV NPM_CONFIG_AUDIT="false"' in dockerfile("base", [node], "v1", "sandbox")
+
+
+# ====================================================================== reprovision
+@scenario(**ENV)
+async def test_reprovision_rebuilds_against_the_current_library(f: Flow):
+    """A fixed library entry reaches a provisioned change: running agents of mapped roles finish
+    on the old build, their next runs wait, then provisioning builds again and released
+    sandboxes start fresh in the new build. The spec and its H-E1 approval stay."""
+    lib_dir = f.tmp / "lib"
+    own_library(f)
+    await f.to_build()
+    old = f.ce.change.environment.roles
+    approval = f.ce.change.approvals["H-E1"]
+    implementer = f.run("build:T1", "implementer")            # live, in its kept sandbox
+    assert f.ce.nodes["build:T1"].sandbox == implementer.sandbox
+
+    with pytest.raises(WorkflowError, match="reason"):
+        await f.change_action("reprovision", reason="fix")
+    uv = lib_dir / "tools/uv.yaml"
+    uv.write_text(uv.read_text() + "  UV_NO_PROGRESS: \"1\"\n")
+    res = await f.change_action("reprovision", reason="the uv library entry gained a setting")
+    assert "once running agents of mapped roles finish" in res.note
+    assert f.status("provision") == "PENDING"                 # the implementer is still live
+
+    await f.implement()                                       # verify, then the panel waits
+    assert f.status("provision") == "ACCEPTED"
+    new = f.ce.change.environment.roles
+    assert new["implementer"].image != old["implementer"].image
+    assert new["reviewer"].image != old["reviewer"].image
+    assert f.ce.change.approvals["H-E1"] == approval          # same spec, same approval
+    assert f.ce.nodes["build:T1"].sandbox is None
+    assert implementer.sandbox in f.runner.deleted
+    recipe = f.builder.recipes[new["implementer"].image]
+    assert 'ENV UV_NO_PROGRESS="1"' in recipe.files["Dockerfile"]
+    reviewers = sandboxes(f, "reviewer", "build:T1")
+    assert reviewers and all(r.env.image == new["reviewer"].image for r in reviewers)
+
+
+@scenario(**ENV)
+async def test_reprovision_needs_a_provisioned_current_environment(f: Flow):
+    reason = "rebuild against the updated library"
+    await to_plan(f)
+    with pytest.raises(WorkflowError, match="no provisioned environment"):
+        await f.change_action("reprovision", reason=reason)
+    await f.plan()
+    await f.critique("PASS")
+    await f.human("H-E1", "approve")
+    assert f.status("provision") == "ACCEPTED"
+    path = "plan/environment.json"
+    f.ce.docs.write(f.ce.p(path), json.dumps(spec(summary="changed after approval")),
+                    author="someone", role="planner", base_version=f.ce.latest(path))
+    with pytest.raises(WorkflowError, match="G-E5"):
+        await f.change_action("reprovision", reason=reason)

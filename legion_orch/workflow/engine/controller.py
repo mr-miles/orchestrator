@@ -59,7 +59,8 @@ class Controller:
             builder=builder or make_builder(cfg))
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
-        self.version = 0                  # bumped on every visible change (UI polling)
+        self.version = 0                  # bumped on every visible change (UI streams)
+        self._bumped = asyncio.Event()    # set (and replaced) whenever the version moves
         self._reserved_names: set[str] = set()   # sandbox names handed out this process
         self.stopping = asyncio.Event()   # set on shutdown: long-lived responses end
         self._tasks: set[asyncio.Task] = set()
@@ -85,11 +86,28 @@ class Controller:
 
     # ------------------------------------------------------------------ EngineHost
     def changed(self) -> None:
-        self.version += 1
+        self._bump()
         self._wake.set()
 
     def touch(self) -> None:
+        self._bump()
+
+    def _bump(self) -> None:
         self.version += 1
+        bumped, self._bumped = self._bumped, asyncio.Event()
+        bumped.set()
+
+    async def wait_version(self, seen: int, timeout: float) -> None:
+        """Return once the version differs from ``seen``, the controller stops, or ``timeout``."""
+        if self.version != seen or self.stopping.is_set():
+            return
+        waits = [asyncio.ensure_future(self._bumped.wait()),
+                 asyncio.ensure_future(self.stopping.wait())]
+        try:
+            await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for w in waits:
+                w.cancel()
 
     def spawn(self, coro, on_error=None) -> None:
         async def wrapper():
@@ -129,6 +147,8 @@ class Controller:
         for p in self.svc.procs.values():
             if p.returncode is None:
                 p.kill()
+        for ce in self.changes.values():
+            ce.flush_timeline(force=True)
 
     async def _loop(self) -> None:
         while True:

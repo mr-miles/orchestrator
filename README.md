@@ -15,13 +15,22 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   resolves before anything moves forward.
 * The web UI shows the plan, the live task graph, agent progress, reviews, verification, documents and
   ship gates, and it is where humans approve, revise and resolve escalations.
-* A sandbox is deleted as soon as the work it produced is accepted.
+* A sandbox is deleted as soon as the work it produced is accepted. Intake, planner and oracle
+  keep theirs, stopped, with the agent's session until the gate that can send the work back
+  passes (H-1, H-2), so a rework continues the same conversation.
+* Before a finished agent's sandbox is deleted, the agent reflects on its session (what cost it
+  time, where its instructions failed) into `control/reflections/`. When a change ends, a
+  **retrospective** runs (and a decision owner can ask for more): an agent that reads the reflections, the whole agent
+  logs (timestamped, with per-run digests), the timeline and the reviews, and proposes changes to
+  the souls, skills, prompts and process (`retro/report.md`). Configure with `retrospective:`
+  (`auto`, `reflect`, `reflect_timeout_s`, `reflect_skip_roles` – judges are skipped by default; the
+  retrospective judges reviews by their escapes instead); see WORKFLOW.md §5.13.
 * The document store and the git remote are the only durable state. Each change is namespaced under
   `changes/<id>/`, including the controller's own graph, node and run records, and is rebuilt
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.
 
 ```
-start (intake) -> H-1 -> plan -> [environment] <-> critique -> [H-E1 -> provision] -> oracle -> [baseline] -> H-2 -> build DAG
+start (intake) -> H-1 -> plan (planner <-> critique, with [environment]) -> [H-E1 -> provision] -> oracle -> [baseline] -> H-2 -> build DAG
    (verify -> review panel -> rework loop -> merge) -> integration -> [release] -> H-3 -> ship
 ```
 
@@ -29,6 +38,7 @@ start (intake) -> H-1 -> plan -> [environment] <-> critique -> [H-E1 -> provisio
 
 ```bash
 pip install -e '.[test]'
+(cd frontend && bun install && bun run build)    # the web UI, into legion_orch/server/static/dist
 cp orchestrator.example.yaml orchestrator.yaml   # set repo, decision_owners, sandbox image/providers
                                                  # (omit repo.path to start from an empty repository)
 legion-orch -c orchestrator.yaml check            # validate the assets folder
@@ -39,6 +49,8 @@ legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
 legion-orch -c orchestrator.yaml act <change-id> H-2 approve --approver miles --payload '{"subjects": ["REQ-1"]}'
 legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
   --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
+legion-orch -c orchestrator.yaml govern <change-id> reprovision --approver miles \
+  --payload '{"reason": "rebuild against the updated environment library"}'
 ```
 
 Four listeners, one purpose each:
@@ -49,6 +61,12 @@ Four listeners, one purpose each:
 | `server.agent_host:mcp_port` | `0.0.0.0:8766` | `/mcp` | agents, vetted by the gateway as `protocol: mcp` |
 | `server.agent_host:git_port` | `0.0.0.0:8767` | `/git/<repo>.git` (push only to the run's branch) | agents and verifiers |
 | `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → task-scoped token) | the OpenShell gateway supervisor |
+
+The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS and shadcn/ui,
+built with bun) follows a change over server-sent events: `/api/changes/<id>/events` pushes the
+change's state and the change list whenever they differ, and `/api/runs/<run>/log/events` an
+agent's log as it grows. Build it before packaging (`python -m build` ships whatever is in
+`static/dist`); without a build, `/` says how to make one.
 
 Sandboxes reach the agent-facing listeners at `server.public_host` (default
 `host.openshell.internal`). The UI is served with a Content Security Policy that forbids inline

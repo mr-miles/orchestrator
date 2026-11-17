@@ -547,14 +547,15 @@ def test_role_dispatch_policy():
     from legion_orch.workflow.roles import roles_where
     panel = {"reviewer", "security", "architecture"}
     assert roles_where("pushes") == {"implementer", "oracle"}
-    assert roles_where("panel") == panel
+    assert roles_where("panel") == panel | {"critic"}         # the critic judges the plan node
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
-    assert roles_where("judges_head") == {"baseline", "integration", "release"}
+    assert roles_where("judges_head") == {"baseline", "integration", "release", "retrospective"}
     assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}
     assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
     everyone = set(Assets(ROOT / "assets").roles)
     assert everyone - roles_where("sees_requirements") == {"intake"}
-    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle"}
+    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle",
+                                                            "retrospective"}
 
 
 def test_role_handlers_use_only_the_role_context():
@@ -576,13 +577,17 @@ def test_attestations_cannot_carry_markup():
     assert parse(f"git:app/src/a_b-c.d/e+f=g.py@{SHA}", ["app"]).path == "src/a_b-c.d/e+f=g.py"
 
 
-def test_ui_has_no_inline_script():
-    static = ROOT / "legion_orch/server/static"
+def test_ui_has_no_inline_script_or_raw_html():
+    """The UI renders agent-authored text and is served with a CSP without inline script: its
+    page has no inline script or handlers, React never injects raw HTML, and the operator token
+    is never persisted beyond the browser session."""
+    ui = ROOT / "frontend"
     inline = re.compile(r'\son[a-z]+\s*=\s*["\']', re.I)     # HTML attribute form, e.g. onclick="
-    html, js = (static / "index.html").read_text(), (static / "app.js").read_text()
-    assert "<script>" not in html and not inline.findall(html)
-    assert not inline.findall(js), inline.findall(js)          # handlers are data-on + delegation
-    assert "localStorage.optoken" not in js
+    html = (ui / "index.html").read_text()
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html) and not inline.findall(html)
+    src = "".join(p.read_text() for p in (ui / "src").rglob("*.ts*"))
+    assert "dangerouslySetInnerHTML" not in src and "innerHTML" not in src
+    assert "localStorage.setItem(\"optoken" not in src and "localStorage.setItem('optoken" not in src
 
 
 def test_server_ports_must_be_distinct(tmp_path):
@@ -938,3 +943,40 @@ def test_gateway_inspects_mcp_requests_as_large_as_the_largest_document(tmp_path
     from legion_orch.server.web import mcp_request_limit
     served = mcp_request_limit(cfg)
     assert len(body.encode()) < served < limit, (len(body), served, limit)
+
+
+def test_sandbox_exec_gets_no_stdin(tmp_path, monkeypatch):
+    """`sandbox exec` forwards its stdin into the sandbox, where nothing reads it: input that fills
+    the supervisor's buffer gets the command killed (exit 74), so the controller's stdin is never
+    passed on."""
+    import asyncio
+
+    from legion_orch.sandbox import runner as rmod
+    seen = []
+
+    class Out:
+        async def read(self, n):
+            return b""
+
+    class Proc:
+        returncode = 0
+        stdout = Out()
+
+        async def wait(self):
+            return 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*argv, **kw):
+        seen.append((argv, kw.get("stdin")))
+        return Proc()
+    monkeypatch.setattr(rmod.asyncio, "create_subprocess_exec", fake_exec)
+    r = rmod.OpenShellRunner(_os_cfg(tmp_path))
+    asyncio.run(r.exec("sb", ["true"]))
+
+    async def agent():
+        await (await r.start_agent("sb", tmp_path / "agent.log")).wait()
+    asyncio.run(agent())
+    assert [a[a.index("sandbox") + 1] for a, _ in seen] == ["exec", "exec"]
+    assert all(stdin == asyncio.subprocess.DEVNULL for _, stdin in seen)

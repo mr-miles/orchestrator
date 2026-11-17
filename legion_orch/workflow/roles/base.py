@@ -43,15 +43,27 @@ class RoleHandler:
     panel = False                 # review-panel member: dispatched per cycle on the candidate
     judges_head = False           # works at the integration head (judged sha = head)
     reuses_sandbox = False        # keeps its sandbox across the node's rework cycles
+    # Keeps its sandbox (stopped between runs) and its agent session across the node's rework
+    # cycles until this gate node is accepted: a rework continues the earlier conversation.
+    keeps_session_until: str | None = None
     needs_fresh_approval = False  # spec/oracle approval must be fresh before dispatch (G-B1)
     # ---- context given to the run (attestations listed in the prompt / assignment)
     sees_requirements = True      # accepted requirements and risk (H-1 pins)
     sees_draft_plan = False       # latest plan documents, even after H-2 approval
     sees_oracle_commit = True     # the protected oracle commit
 
+    @property
+    def keeps_sandbox(self) -> bool:
+        """Its node holds the sandbox between runs (``node.sandbox``)."""
+        return self.reuses_sandbox or self.keeps_session_until is not None
+
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
         """Role-specific context attestations beyond the common ones."""
         return []
+
+    def payload_files(self, e: RoleContext, node: Node, run: Run) -> dict[str, str]:
+        """Extra files for the run's payload (path relative to the payload directory -> text)."""
+        return {}
 
     def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
         """Role-specific prompt template variables beyond the common ones."""

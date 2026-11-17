@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Config
+from ..util import now_iso
 from .names import check_name
 from .templates import base_values, render, sandbox_providers, spec_to_args
 
@@ -71,8 +72,8 @@ class SandboxError(Exception):
 async def _run(argv: list[str], timeout: float, env: dict | None = None,
                cwd: str | None = None) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
-        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        env=env, cwd=cwd)
+        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, env=env, cwd=cwd)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
@@ -80,6 +81,55 @@ async def _run(argv: list[str], timeout: float, env: dict | None = None,
         await proc.wait()
         return 124, f"timeout after {timeout}s"
     return proc.returncode, out.decode(errors="replace")
+
+
+class LoggedProcess:
+    """An agent process whose output the controller writes to its log as it arrives, adding
+    the time it arrived to each stream-json event (``legion_ts``; the agent CLI's events carry
+    none). Other lines (setup script, shell) are written unchanged."""
+
+    CHUNK = 1 << 16
+
+    def __init__(self, proc: asyncio.subprocess.Process, log_file: Path):
+        self.proc = proc
+        self._pump = asyncio.ensure_future(self._copy(log_file))
+
+    @property
+    def returncode(self) -> int | None:
+        return self.proc.returncode
+
+    def kill(self) -> None:
+        self.proc.kill()
+
+    async def wait(self) -> int:
+        rc = await self.proc.wait()
+        await self._pump
+        return rc
+
+    async def _copy(self, log_file: Path) -> None:
+        pending = b""
+        with open(log_file, "ab") as log:
+            while chunk := await self.proc.stdout.read(self.CHUNK):
+                *lines, pending = (pending + chunk).split(b"\n")
+                log.write(b"".join(stamp(line) + b"\n" for line in lines))
+                log.flush()
+            if pending:
+                log.write(stamp(pending) + b"\n")
+
+
+def stamp(line: bytes) -> bytes:
+    """``{"type": ...}`` -> ``{"legion_ts": "<now>", "type": ...}``; other lines unchanged."""
+    if line.startswith(b'{"') and line.rstrip().endswith(b"}"):
+        return b'{"legion_ts":"' + now_iso().encode() + b'",' + line[1:]
+    return line
+
+
+async def spawn_logged(argv: list[str], log_file: Path, **kw) -> LoggedProcess:
+    """Start ``argv`` with stdin closed and stdout+stderr copied into ``log_file``."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, **kw)
+    return LoggedProcess(proc, log_file)
 
 
 def env_values(values: dict, env: SandboxEnv, *, agent: bool) -> dict:
@@ -101,6 +151,10 @@ class Runner:
                    timeout: float = 600) -> tuple[int, str]: ...
     async def start_agent(self, name: str, log_file: Path) -> asyncio.subprocess.Process: ...
     async def delete(self, name: str) -> None: ...
+    async def stop(self, name: str) -> None:
+        """Stop a sandbox kept between runs; its workspace (and agent session) is preserved."""
+    async def start(self, name: str) -> None:
+        """Start a stopped sandbox again."""
 
 
 def openshell_cli(cfg: Config) -> list[str]:
@@ -151,17 +205,20 @@ class OpenShellRunner(Runner):
         return await _run(args + ["--", *argv], timeout)
 
     async def start_agent(self, name, log_file):
-        log = open(log_file, "ab")
-        try:
-            return await asyncio.create_subprocess_exec(
-                *self.cli, "sandbox", "exec", name, "--no-tty", "--",
-                "bash", f"{self.cfg.sandbox.root}/payload/run-agent.sh",
-                stdout=log, stderr=asyncio.subprocess.STDOUT)
-        finally:
-            log.close()
+        # stdin is closed: `sandbox exec` forwards it into the sandbox, where nothing reads it,
+        # and input that fills the supervisor's buffer gets the agent killed (exit 74)
+        return await spawn_logged([*self.cli, "sandbox", "exec", name, "--no-tty", "--",
+                                   "bash", f"{self.cfg.sandbox.root}/payload/run-agent.sh"],
+                                  log_file)
 
     async def delete(self, name):
         await self._os("sandbox", "delete", name, timeout=300)
+
+    async def stop(self, name):
+        await self._os("sandbox", "stop", name, timeout=300)
+
+    async def start(self, name):
+        await self._os("sandbox", "start", name, timeout=900)
 
 
 class LocalRunner(Runner):
@@ -206,13 +263,8 @@ class LocalRunner(Runner):
 
     async def start_agent(self, name, log_file):
         env = await self._env(name)
-        log = open(log_file, "ab")
-        try:
-            return await asyncio.create_subprocess_exec(
-                "bash", str(self._root(name) / "payload" / "run-agent.sh"),
-                stdout=log, stderr=asyncio.subprocess.STDOUT, env=env, cwd=str(self._root(name)))
-        finally:
-            log.close()
+        return await spawn_logged(["bash", str(self._root(name) / "payload" / "run-agent.sh")],
+                                  log_file, env=env, cwd=str(self._root(name)))
 
     async def delete(self, name):
         shutil.rmtree(self._root(name), ignore_errors=True)
