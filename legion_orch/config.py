@@ -147,8 +147,6 @@ class EnvironmentConfig:
 @dataclass
 class IdentityConfig:
     """Workload identity (SPIFFE/SPIRE via the OpenShell gateway). See legion_orch/identity.py."""
-    # OpenShell provider created once per workspace from policies/legion-provider-profile.template.yaml
-    provider: str = "legion-controller"
     trust_prefix: str = "spiffe://openshell.local/openshell/sandbox/"
     jwks_uri: str | None = None          # SPIRE OIDC discovery JWKS, e.g. https://spire-oidc/keys
     issuer: str | None = None            # expected JWT-SVID iss (None = not checked)

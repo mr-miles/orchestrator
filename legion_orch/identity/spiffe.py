@@ -1,10 +1,10 @@
 """Workload identity: SPIFFE JWT-SVID → controller access token.
 
 No credential is ever placed in a sandbox. The OpenShell gateway's sandbox supervisor holds the
-sandbox's SPIFFE identity; a workspace-level provider profile (``legion-controller``) tells it to
-exchange the sandbox's JWT-SVID at ``POST /oauth/token`` (OAuth2 client_credentials with a
-``jwt-spiffe`` client assertion) and to inject the returned bearer into the agent's requests to
-the controller (MCP and git). The controller:
+sandbox's SPIFFE identity; workspace-level provider profiles (``legion-mcp``, ``legion-git``,
+``legion-git-push``) tell it to exchange the sandbox's JWT-SVID at ``POST /oauth/token``
+(OAuth2 client_credentials with a ``jwt-spiffe`` client assertion) and to inject the returned
+bearer into the agent's requests to the controller (MCP and git). The controller:
 
 1. verifies the JWT-SVID against the SPIRE JWKS (signature, issuer, audience, expiry, and the
    sandbox SPIFFE ID prefix),

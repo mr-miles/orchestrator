@@ -28,7 +28,8 @@ TEMPLATES = {
     "verifier_policy": "verifier-policy.template.yaml",
     "agent_sandbox": "agent-sandbox.template.yaml",
     "verifier_sandbox": "verifier-sandbox.template.yaml",
-    "provider_profile": "legion-provider-profile.template.yaml",
+    "mcp_profile": "legion-mcp-profile.template.yaml",
+    "git_profile": "legion-git-profile.template.yaml",
     "provider": "legion-provider.template.yaml",
     "sandbox_resources": "sandbox-resources.template.yaml",
 }
@@ -44,25 +45,27 @@ VOCABULARY: dict[str, str] = {
     "MCP_VERSIONS": "MCP protocol revisions the gateway accepts",
     "MCP_MAX_BODY_BYTES": "largest MCP request the gateway inspects (server.mcp_max_body_bytes)",
     "MCP_TOOLS": "tool names the controller's MCP server registers (the tools/call allowlist)",
-    "GIT_PUSH_DENY_RULES": "deny rules for git-receive-pack: [] for roles that push, else a POST deny",
+    "GIT_PUSH_DENY_RULES": "deny rules of the git profile: [] for legion-git-push, a POST "
+                           "git-receive-pack deny for legion-git",
     "TOKEN_ENDPOINT": "the controller's OAuth token endpoint (server.token_port, /oauth/token)",
     # identity (from identity.*)
     "TOKEN_AUDIENCE": "audience requested for controller access tokens",
     "SVID_AUDIENCE": "audience of the sandbox JWT-SVID presented to the token endpoint",
     "SCOPE": "OAuth scope requested for controller access tokens",
     "TOKEN_CACHE_TTL": "seconds the gateway may cache a controller access token",
-    "PROVIDER": "OpenShell provider name for controller access (identity.provider)",
-    "PROFILE_ID": "OpenShell provider profile id / provider type (legion-controller)",
+    "PROFILE_ID": "the controller provider profile being rendered (legion-mcp, legion-git, "
+                  "legion-git-push): its id, and its provider's name and type",
     # OpenShell placement and images (from sandbox.*)
     "WORKSPACE": "OpenShell workspace (sandbox.workspace)",
     "AGENT_IMAGE": "image for agent sandboxes: its environment image, else sandbox.image "
                    "(null: gateway default)",
     "VERIFIER_IMAGE": "image for verifier sandboxes: its environment image, else "
                       "sandbox.verifier_image or sandbox.image",
-    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: PROVIDER + sandbox.providers",
-    "AGENT_BINARIES": "policy binaries [{path}] of the agent CLI (sandbox.agent_binaries)",
-    "GIT_BINARIES": "policy binaries [{path}] of git and its HTTP remote helpers",
-    "PROFILE_BINARIES": "plain paths of agent and git binaries, for the provider profile",
+    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: legion-mcp, legion-git-push "
+                         "(roles that push) or legion-git, then sandbox.providers",
+    "AGENT_BINARIES": "paths of the agent CLI (sandbox.agent_binaries), for the legion-mcp profile",
+    "GIT_BINARIES": "paths of git and its HTTP remote helpers (sandbox.git_binaries), for the "
+                    "git profiles",
     # per sandbox (from the controller at creation time)
     "SANDBOX_NAME": "readable sandbox name: lg-<first name> (agents), lgv-<first name> (verifiers)",
     "POLICY_FILE": "path of the rendered sandbox policy",
@@ -74,7 +77,7 @@ VOCABULARY: dict[str, str] = {
     "RUN_ID": "run id that created the sandbox (verifiers: the verifier name)",
     "ROLE": "role the sandbox serves (implementer, reviewer, ..., verifier)",
     "TASK_ID": "node / task id the sandbox serves (sanitised automatically in labels)",
-    "VERIFIER_PROVIDERS": "providers attached to verifier sandboxes: PROVIDER",
+    "VERIFIER_PROVIDERS": "providers attached to verifier sandboxes: legion-git",
     # environment resources (null when the spec leaves them out: driver defaults)
     "SANDBOX_CPU": "--cpu: vCPUs requested by the sandbox's environment profile",
     "SANDBOX_MEMORY": "--memory: memory requested by the sandbox's environment profile (<n>Mi)",
@@ -84,7 +87,12 @@ VOCABULARY: dict[str, str] = {
 }
 
 MCP_VERSIONS = ["2025-06-18", "2025-11-25", "2026-07-28"]
-PROFILE_ID = "legion-controller"
+# Controller access: one provider profile (and provider of the same name) per endpoint, and a
+# read-only and a read-write git profile, since deny rules apply across a sandbox's whole policy.
+MCP_PROFILE = "legion-mcp"
+GIT_PROFILE = "legion-git"
+GIT_PUSH_PROFILE = "legion-git-push"
+CONTROLLER_PROFILES = (MCP_PROFILE, GIT_PROFILE, GIT_PUSH_PROFILE)
 
 
 class TemplateError(ValueError):
@@ -112,16 +120,15 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
         "TOKEN_ENDPOINT": cfg.server.token_url,
         "TOKEN_AUDIENCE": ic.token_audience, "SVID_AUDIENCE": ic.svid_audience, "SCOPE": ic.scope,
         "TOKEN_CACHE_TTL": max(30, min(ic.access_ttl_s // 2, 120)),
-        "PROVIDER": ic.provider, "PROFILE_ID": PROFILE_ID, "WORKSPACE": sc.workspace,
+        "WORKSPACE": sc.workspace,
         "AGENT_IMAGE": sc.image, "VERIFIER_IMAGE": sc.verifier_image or sc.image,
-        "SANDBOX_PROVIDERS": list(dict.fromkeys([ic.provider, *sc.providers])),
-        "VERIFIER_PROVIDERS": [ic.provider],
+        "SANDBOX_PROVIDERS": sandbox_providers(cfg, push=False),
+        "VERIFIER_PROVIDERS": [GIT_PROFILE],
         "SANDBOX_CPU": None, "SANDBOX_MEMORY": None, "DRIVER_CONFIG": None,
         "SANDBOX_WRITABLE": [sc.root, "/tmp", "/dev/null"],
         "RUN_AS_USER": sc.run_as_user, "RUN_AS_GROUP": sc.run_as_group,
-        "AGENT_BINARIES": [{"path": b} for b in sc.agent_binaries],
-        "GIT_BINARIES": [{"path": b} for b in sc.git_binaries],
-        "PROFILE_BINARIES": list(dict.fromkeys([*sc.agent_binaries, *sc.git_binaries])),
+        "AGENT_BINARIES": list(sc.agent_binaries),
+        "GIT_BINARIES": list(sc.git_binaries),
     }
     if mcp_tools is not None:
         v["MCP_TOOLS"] = list(mcp_tools)
@@ -134,9 +141,15 @@ def label_value(value: str) -> str:
     return re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", v)
 
 
-def git_push_deny_rules(cfg: Config, push: bool) -> list[dict]:
-    """Deny rules take precedence over allows in OpenShell, so the templates always allow
-    git-receive-pack and roles that may not push get this deny."""
+def sandbox_providers(cfg: Config, *, push: bool) -> list[str]:
+    """Providers an agent sandbox attaches: MCP, exactly one git profile, the configured ones."""
+    git = GIT_PUSH_PROFILE if push else GIT_PROFILE
+    return list(dict.fromkeys([MCP_PROFILE, git, *cfg.sandbox.providers]))
+
+
+def git_push_deny_rules(push: bool) -> list[dict]:
+    """Deny rules take precedence over allows in OpenShell, so the git template always allows
+    git-receive-pack and the read-only profile gets this deny."""
     return [] if push else [{"method": "POST", "path": "/git/*.git/git-receive-pack"}]
 
 

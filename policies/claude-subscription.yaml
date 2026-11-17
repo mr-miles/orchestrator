@@ -18,4 +18,4 @@ endpoints:
     protocol: rest
     access: read-write
     enforcement: enforce
-binaries: ${PROFILE_BINARIES}
+binaries: ${AGENT_BINARIES}

@@ -16,7 +16,7 @@ from .names import (
 )
 from .network import Endpoint, Policy, merge_network, policy_entry
 from .policy import render_policy
-from .profile import PROFILE_ID, provider_profile, setup_commands, setup_workspace
+from .profile import CONTROLLER_PROFILES, provider_profiles, setup_commands, setup_workspace
 from .resources import Resources, driver_config
 from .runner import (
     LocalRunner,
@@ -30,7 +30,8 @@ from .runner import (
 from .scripts import RUN_AGENT_SH, VERIFY_SETUP_SH
 from .templates import TEMPLATES, VOCABULARY, TemplateError, base_values, render, spec_to_args
 
-__all__ = ["agentlog", "render_policy", "PROFILE_ID", "provider_profile", "setup_commands", "setup_workspace",
+__all__ = ["agentlog", "render_policy", "CONTROLLER_PROFILES", "provider_profiles", "setup_commands",
+           "setup_workspace",
            "LocalRunner", "OpenShellRunner", "Runner", "SandboxError", "SandboxSpec", "make_runner",
            "RUN_AGENT_SH", "VERIFY_SETUP_SH", "TEMPLATES", "VOCABULARY", "TemplateError",
            "base_values", "render", "spec_to_args", "MAX_NAME", "check_name", "human_name",

@@ -8,9 +8,11 @@
     openshell sandbox exec <n> --no-tty [--workdir W] -- <argv>
     openshell sandbox delete <n>
 
-No credential is placed in a sandbox. The ``legion-controller`` provider (created once per
-workspace, see ``legion-orch setup-openshell``) makes the gateway supervisor exchange the
-sandbox's SPIFFE JWT-SVID at the controller and inject the bearer into requests to it.
+No credential is placed in a sandbox. The controller's providers (``legion-mcp`` for agents, and
+``legion-git`` or ``legion-git-push``; created once per workspace, see ``legion-orch
+setup-openshell``) give the sandbox its controller endpoints and make the gateway supervisor
+exchange the sandbox's SPIFFE JWT-SVID at the controller and inject the bearer into requests
+to it.
 
 ``LocalRunner`` emulates the same contract with local directories and subprocesses. It provides
 **no isolation** and exists for development and tests only. It also stands in for the gateway:
@@ -30,7 +32,7 @@ from pathlib import Path
 
 from ..config import Config
 from .names import check_name
-from .templates import base_values, render, spec_to_args
+from .templates import base_values, render, sandbox_providers, spec_to_args
 
 # Obtains a bearer for a sandbox ref (what the OpenShell gateway does for real sandboxes).
 Gateway = Callable[[str], Awaitable[str]]
@@ -53,7 +55,8 @@ class SandboxSpec:
     name: str
     payload_dir: Path          # uploaded as /sandbox/payload
     policy_file: Path
-    agent: bool = True         # False => deterministic verifier (identity provider only)
+    agent: bool = True         # False => deterministic verifier (legion-git only)
+    push: bool = False         # agents: legion-git-push instead of legion-git
     change: str = ""
     task: str = ""
     role: str = ""
@@ -123,7 +126,8 @@ class OpenShellRunner(Runner):
         values = base_values(self.cfg) | {
             "SANDBOX_NAME": spec.name, "POLICY_FILE": str(spec.policy_file),
             "PAYLOAD_UPLOAD": f"{spec.payload_dir}:{self.cfg.sandbox.root}", "CHANGE_ID": spec.change,
-            "TASK_ID": spec.task, "ROLE": spec.role, "RUN_ID": spec.run or spec.name}
+            "TASK_ID": spec.task, "ROLE": spec.role, "RUN_ID": spec.run or spec.name,
+            "SANDBOX_PROVIDERS": sandbox_providers(self.cfg, push=spec.push)}
         if spec.env:
             values = env_values(values, spec.env, agent=spec.agent)
         tmpl = render(self.cfg, "agent_sandbox" if spec.agent else "verifier_sandbox", values)
