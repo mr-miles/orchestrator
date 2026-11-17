@@ -170,9 +170,7 @@ upload, and live agent logs). `tmp/` is wiped on start. The access-token signing
 in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
 restart the controller rebuilds every change from the store; runs that were live lost their agent
 process, so they are failed and escalated (no automatic retry), and interrupted verification,
-merge or ship steps are resumed. A change stored with a separate `critique` node (before the
-critique became part of the plan node) is folded on load: its runs, granted cycles and escalation
-move to `plan`, which is `REVIEWING` if the critic has not passed it yet.
+merge or ship steps are resumed.
 
 ---
 
