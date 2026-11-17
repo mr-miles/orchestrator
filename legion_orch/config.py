@@ -200,12 +200,15 @@ REMOVED_KEYS = {
 }
 
 
-def agent_command(sc: SandboxConfig) -> str:
+def agent_command(sc: SandboxConfig, *, tools: bool = True) -> str:
     """The command run-agent.sh starts the agent with (via ``bash -lc`` from the working copy).
     $LEGION_PAYLOAD is the payload directory and $LEGION_MCP_CONFIG its mcp.json, under every
-    runner; $LEGION_RESUME_SESSION, when set, is the agent session to continue."""
+    runner; $LEGION_RESUME_SESSION, when set, is the agent session to continue. ``tools=False``
+    (a reflection) gives the agent no built-in tools, so it answers from the session and its
+    prompt instead of reading files (the session's own transcript included)."""
     return (f'{shlex.quote(sc.agent_bin)} -p '
             '${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"} '
+            + ('' if tools else '--tools "" ') +
             '--mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
             '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '
             "--permission-mode bypassPermissions --output-format stream-json --verbose "

@@ -24,10 +24,11 @@ Your part in this change is finished: {outcome}. Before your sandbox is deleted,
 this whole session. Your answer is read by whoever improves the instructions, tools and process
 you worked with, so that the next agent avoids what slowed you down or misled you.
 
-Do not call any tools and do not change anything: answer in plain text, from what you remember
-of this session and from the controller's record of your runs below. Be specific and honest; name
-files, commands, instructions and turns, and take costs from the record. "Nothing" is a fine
-answer for a section that has nothing, not a way to skip one: the record shows where time went.
+You have no tools in this turn and nothing is to change: answer in plain text, from what you
+remember of this session and from the controller's record of your runs below. Be specific and
+honest; name files, commands, instructions and turns, and take costs from the record. "Nothing"
+is a fine answer for a section that has nothing, not a way to skip one: the record shows where
+time went.
 
 {context}
 Answer in markdown with exactly these sections:
@@ -202,7 +203,7 @@ class Reflector:
         (payload / "soul.md").write_text(soul)
         (payload / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
         env = {"LEGION_RUN_ID": rid, "LEGION_ROLE": last.role, "LEGION_NEEDS_REPO": "0",
-               "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox),
+               "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
                "LEGION_RESUME_SESSION": last.session_id, "LEGION_REQUIRE_SESSION": "1"}
         (payload / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n"
                                                  for k, v in env.items()))
@@ -218,7 +219,7 @@ class Reflector:
             text = log_file.read_text(errors="replace") if log_file.exists() else ""
             result = agentlog.agent_result(text)
             async with c.lock:
-                if result is None or result.is_error:
+                if result is None or result.is_error or not result.message.strip():
                     c.event("reflection", f"no reflection from run {last.id} (exit {rc})",
                             last.node_id, last.id)
                     return

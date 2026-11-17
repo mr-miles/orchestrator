@@ -150,10 +150,13 @@ async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
     await f.human("H-2", "approve")
     await f.settle()
     (sb, prompt), = [x for x in f.runner.reflected if x[0] == plan.sandbox]
-    assert "Do not call any tools" in prompt and "## Time sinks" in prompt
+    assert "You have no tools in this turn" in prompt and "## Time sinks" in prompt
     assert sb in f.runner.restarted                      # it was stopped between runs
     env = next(e for e in reversed(f.runner.run_envs) if "LEGION_REQUIRE_SESSION" in e)
     assert "LEGION_RESUME_SESSION=plan-session" in env and "LEGION_NEEDS_REPO=0" in env
+    assert "--tools" in env                              # a reflection has no tools to call
+    work = next(e for e in f.runner.run_envs if "LEGION_RUN_ID=" + plan.id + "\n" in e)
+    assert "--tools" not in work                         # the work run keeps them
     doc = f.ce.doc(f"control/reflections/{plan.id}.md").content
     assert doc.startswith("# Reflection: planner on plan") and "The tests took long." in doc
     assert sb in f.runner.deleted
@@ -267,6 +270,20 @@ async def test_a_rework_that_does_not_continue_its_session_is_noted(f: Flow):
     await f.plan()
     assert (f"run {second.id} was to continue session plan-1 but ran in plan-2"
             in f.ce.timeline())
+
+
+@scenario()
+async def test_an_empty_answer_is_no_reflection(f: Flow):
+    f.cfg.retrospective.reflect = True
+    f.runner.reflection_text = "  \n"
+    await f.to_build("R1")
+    impl = f.run("build:T1", "implementer")
+    say(f, impl, init("impl-1"))
+    await f.implement()
+    await f.review(verdict="PASS")
+    await f.settle()
+    assert not f.ce.latest(f"control/reflections/{impl.id}.md")
+    assert f"no reflection from run {impl.id}" in f.ce.timeline()
 
 
 @scenario()
