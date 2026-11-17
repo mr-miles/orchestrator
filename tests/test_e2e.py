@@ -461,6 +461,7 @@ def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        proc.stdout.close()
 
 
 def test_document_listing_hides_controller_records_unless_asked(tmp_path):
@@ -599,14 +600,17 @@ def test_agent_listeners_keep_idle_connections_open(tmp_path):
             hdr = {"Content-Type": "application/json", "Mcp-Protocol-Version": "2025-11-25",
                    "Accept": "application/json, text/event-stream"}
             body = '{"jsonrpc":"2.0","id":1,"method":"ping"}'
-            c.request("POST", "/mcp", body, hdr)
-            c.getresponse().read()
-            time.sleep(idle)
             try:
                 c.request("POST", "/mcp", body, hdr)
-                return c.getresponse().status
-            except OSError as e:
-                return type(e).__name__
+                c.getresponse().read()
+                time.sleep(idle)
+                try:
+                    c.request("POST", "/mcp", body, hdr)
+                    return c.getresponse().status
+                except OSError as e:
+                    return type(e).__name__
+            finally:
+                c.close()
         try:
             assert await asyncio.to_thread(ping_twice, 0.2) == 200       # within the keep-alive
             assert await asyncio.to_thread(ping_twice, 2) != 200         # closed after 1 s idle
