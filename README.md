@@ -38,6 +38,7 @@ start (intake) -> H-1 -> plan (planner <-> critique, with [environment]) -> [H-E
 
 ```bash
 pip install -e '.[test]'
+(cd frontend && bun install && bun run build)    # the web UI, into legion_orch/server/static/dist
 cp orchestrator.example.yaml orchestrator.yaml   # set repo, decision_owners, sandbox image/providers
                                                  # (omit repo.path to start from an empty repository)
 legion-orch -c orchestrator.yaml check            # validate the assets folder
@@ -60,6 +61,12 @@ Four listeners, one purpose each:
 | `server.agent_host:mcp_port` | `0.0.0.0:8766` | `/mcp` | agents, vetted by the gateway as `protocol: mcp` |
 | `server.agent_host:git_port` | `0.0.0.0:8767` | `/git/<repo>.git` (push only to the run's branch) | agents and verifiers |
 | `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → task-scoped token) | the OpenShell gateway supervisor |
+
+The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS and shadcn/ui,
+built with bun) follows a change over server-sent events: `/api/changes/<id>/events` pushes the
+change's state and the change list whenever they differ, and `/api/runs/<run>/log/events` an
+agent's log as it grows. Build it before packaging (`python -m build` ships whatever is in
+`static/dist`); without a build, `/` says how to make one.
 
 Sandboxes reach the agent-facing listeners at `server.public_host` (default
 `host.openshell.internal`). The UI is served with a Content Security Policy that forbids inline
