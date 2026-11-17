@@ -15,6 +15,7 @@ import shutil
 
 from ...config import agent_command
 from ...sandbox import RUN_AGENT_SH, agentlog
+from ...util import stop_process
 from ..model import Run
 from .core import ChangeCore
 
@@ -184,9 +185,9 @@ class Reflector:
                 c.event("reflection", f"recorded {reflection_path(last.id)}", last.node_id, last.id)
                 c.save()
         except Exception as e:                      # best-effort: never blocks the deletion
-            if proc is not None and proc.returncode is None:
-                proc.kill()
             c.event("reflection", f"reflection of run {last.id} skipped: {e or type(e).__name__}",
                     last.node_id, last.id)
-        finally:
+        finally:                                    # also when cancelled (at shutdown)
+            if proc is not None:
+                await stop_process(proc)
             shutil.rmtree(d, ignore_errors=True)

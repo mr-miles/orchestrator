@@ -993,3 +993,26 @@ def test_sandbox_exec_gets_no_stdin(tmp_path, monkeypatch):
     asyncio.run(agent())
     assert [a[a.index("sandbox") + 1] for a, _ in seen] == ["exec", "exec"]
     assert all(stdin == asyncio.subprocess.DEVNULL for _, stdin in seen)
+
+
+def test_a_cancelled_command_does_not_leave_its_process_running(tmp_path):
+    """Cancelling a task (as the controller does at shutdown) kills and reaps the command it was
+    waiting for, instead of leaving it running past the event loop."""
+    import asyncio
+    import os
+
+    from legion_orch.git.http import git_exec_path
+    from legion_orch.sandbox.runner import _run
+    pidfile = tmp_path / "pid"
+
+    async def go():
+        task = asyncio.create_task(_run(["sh", "-c", f"echo $$ > {pidfile}; exec sleep 30"], 60))
+        while not pidfile.exists() or not pidfile.read_text().strip():
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(go())
+    with pytest.raises(ProcessLookupError):        # killed and reaped, not a zombie
+        os.kill(int(pidfile.read_text()), 0)
+    assert git_exec_path() and os.path.isdir(git_exec_path())

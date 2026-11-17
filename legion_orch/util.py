@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 from datetime import UTC, datetime
+from typing import Any
 
 
 def now_iso() -> str:
@@ -21,3 +23,14 @@ def bearer(header: str) -> str | None:
         except Exception:
             return None
     return None
+
+
+async def stop_process(proc: Any) -> None:
+    """Kill ``proc`` (an asyncio process, or anything with ``returncode``, ``kill`` and ``wait``)
+    if it is still running, and wait for it: a child must not outlive the task that started it,
+    whether that task timed out, failed or was cancelled."""
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        await proc.wait()

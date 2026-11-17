@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import subprocess
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 
@@ -182,6 +183,13 @@ class _Backend:
             self._slots.release()
 
 
+def git_exec_path() -> str:
+    """git's helper directory (``git --exec-path``), waiting for git to exit (``os.popen`` left
+    the process unreaped)."""
+    return subprocess.run(["git", "--exec-path"], check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
 class GitEndpoint:
     """The smart-HTTP endpoint for one repository (see the module docstring)."""
 
@@ -190,7 +198,7 @@ class GitEndpoint:
         self.remote, self.authorize = remote, authorize
         self.max_request_bytes = max_request_bytes
         self._slots = asyncio.Semaphore(max_concurrency)
-        self._exe = os.path.join(os.popen("git --exec-path").read().strip(), "git-http-backend")
+        self._exe = os.path.join(git_exec_path(), "git-http-backend")
 
     async def handle(self, request: Request) -> Response:
         grant = self.authorize(request)
