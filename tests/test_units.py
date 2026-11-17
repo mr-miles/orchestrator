@@ -536,7 +536,7 @@ def test_role_dispatch_policy():
     from legion_orch.workflow.roles import roles_where
     panel = {"reviewer", "security", "architecture"}
     assert roles_where("pushes") == {"implementer", "oracle"}
-    assert roles_where("panel") == panel
+    assert roles_where("panel") == panel | {"critic"}         # the critic judges the plan node
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
     assert roles_where("judges_head") == {"baseline", "integration", "release", "retrospective"}
     assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}

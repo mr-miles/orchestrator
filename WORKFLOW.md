@@ -170,7 +170,9 @@ upload, and live agent logs). `tmp/` is wiped on start. The access-token signing
 in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
 restart the controller rebuilds every change from the store; runs that were live lost their agent
 process, so they are failed and escalated (no automatic retry), and interrupted verification,
-merge or ship steps are resumed.
+merge or ship steps are resumed. A change stored with a separate `critique` node (before the
+critique became part of the plan node) is folded on load: its runs, granted cycles and escalation
+move to `plan`, which is `REVIEWING` if the critic has not passed it yet.
 
 ---
 
@@ -218,9 +220,9 @@ listed in the readiness result.
 ### 4.1 Change (stage) graph
 
 ```
- [map+intake] -> (H-1 accept requirements) -> [plan] -> [critique] --REWORK--> [plan]
-       ^ revise                                                    | PASS
-       +-----------------------------------------------------------+
+ [map+intake] -> (H-1 accept requirements) -> [plan: planner -> critique --REWORK--> planner]
+       ^ revise                                                            | PASS
+       +-------------------------------------------------------------------+
                          {(H-E1 approve sandbox environment, pinned) -> [provision]}
                                                              |
                                                   R2+: [oracle] -> R3: [baseline]
@@ -237,6 +239,8 @@ listed in the readiness result.
 ```
 
 Every box is a node in the **task graph** shown by the UI; human gates are nodes of kind `human`.
+Like a build task with its review, the plan node holds its own critique: it is `REVIEWING` while
+the critic judges the planner's documents and `ACCEPTED` only when the critic passes them.
 Steps in `{…}` exist only when the controller is configured with an `environment:` section
 (§5.3a); the planner then also writes the sandbox environment spec. Without it the graph is
 unchanged.
@@ -249,6 +253,7 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
                        +-- REWORK -+-------------+-----------+   (evidence-driven, cycle budget)
               any -> ESCALATED (human) -> READY | ACCEPTED (override) | FAILED
               human nodes: PENDING -> AWAITING_HUMAN -> ACCEPTED
+              plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> ACCEPTED, REWORK on REWORK
 ```
 
 ### 4.3 Run status
@@ -334,7 +339,11 @@ Universal guards apply to every task and are listed once.
 | G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
 
-### 5.3 `critique`
+### 5.3 critique (part of `plan`)
+
+The critic judges the plan node while it is `REVIEWING` (after each planner report), like a
+review-panel member a build task: a fresh sandbox, its verdict stored on the node
+(`reviews["<cycle>:critic"]`), the cycle being the plan's.
 
 * **Soul:** `plan-critic`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `pre-mortem`, `finding-format`, `language-preferences`
 * **Writes:** `critique/**`  **Required:** `critique/cycle-{{cycle}}.md`
@@ -342,9 +351,11 @@ Universal guards apply to every task and are listed once.
 | ID | Rule |
 | --- | --- |
 | G-C1 | `data.verdict ∈ {PASS, REWORK}`; `REWORK` needs ≥1 finding; the report attests the plan documents at the versions critiqued, which must be the latest. |
-| G-C2 | More than `critique_max_cycles` REWORK verdicts ⇒ escalate. |
+| G-C2 | A REWORK verdict in plan cycle `critique_max_cycles` (plus cycles a human granted) ⇒ the plan node escalates; answering grants one more cycle. |
 
-`REWORK` reopens `plan` with the critique attested as feedback, then re-runs `critique`.
+`PASS` accepts the plan node and creates the build nodes from `plan/taskgraph.json`. `REWORK` sends
+the plan back to the planner (a new cycle, the critique attested as feedback); it is critiqued
+again when the planner reports.
 With the environment stage the critique also covers `plan/environment.json` (it must attest the
 latest version, and the `pre-mortem` skill checks that every command can run in its role's
 sandbox); `REWORK` sends both back to the planner.
@@ -375,7 +386,7 @@ overwrites a library entry.
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
-| H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `plan` is reworked with the feedback attested, then `critique` runs again. H-2 revise and a critique-budget rework drop the approval and the build. |
+| H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `plan` is reworked with the feedback attested and critiqued again. H-2 revise and a critique-budget rework drop the approval and the build. |
 
 ### `provision` – build the environment (controller, no agent)
 

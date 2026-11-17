@@ -362,7 +362,7 @@ class Flow:
         return await self.report(r, atts)
 
     async def critique(self, verdict: str = "PASS"):
-        r = self.run("critique")
+        r = self.run("plan", "critic")
         docs = ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json") + (
             ("plan/environment.json",) if "H-E1" in self.ce.nodes else ())
         plan = [self.ce.latest_att(p) for p in docs]

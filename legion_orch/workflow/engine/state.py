@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ...store import DocStore
-from ..model import Change, Node, Run
+from ..model import Change, Node, NodeKind, NodeStatus, Resume, Run
 
 CONTROL = "control/"
 
@@ -64,6 +64,33 @@ class StateStore:
         for m in self.docs.list(self.root + "runs/"):
             run = Run.model_validate(self._read(m.path))
             self.runs[run.id] = run
+        self._fold_critique()
+
+    def _fold_critique(self) -> None:
+        """Stores from before critique was part of the plan node had a ``critique`` node after
+        it: fold it into the plan node (its runs, cycles granted and escalation), so that the
+        plan is REVIEWING while the critic still has to pass it, and depend on ``plan``."""
+        crit = self.nodes.get(NodeKind.CRITIQUE.value)
+        plan = self.nodes.get(NodeKind.PLAN.value)
+        if crit is None or crit.kind != NodeKind.CRITIQUE or plan is None:
+            return
+        for r in self.runs.values():
+            if r.node_id == crit.id:
+                r.node_id = plan.id
+        plan.runs = sorted(set(plan.runs) | set(crit.runs))
+        plan.feedback += [f for f in crit.feedback if f not in plan.feedback]
+        plan.extra_cycles += crit.extra_cycles
+        if crit.status == NodeStatus.ESCALATED:
+            plan.status, plan.escalation = NodeStatus.ESCALATED, crit.escalation
+            if plan.escalation and plan.escalation.resume == Resume.READY:   # a critic run failed
+                plan.escalation.resume = Resume.REVIEWING
+        elif crit.status != NodeStatus.ACCEPTED and plan.status == NodeStatus.ACCEPTED:
+            plan.status = NodeStatus.REVIEWING        # the critic has yet to pass this plan
+        for n in self.nodes.values():
+            if crit.id in n.depends_on:
+                n.depends_on = list(dict.fromkeys(plan.id if d == crit.id else d
+                                                  for d in n.depends_on))
+        del self.nodes[crit.id]
 
     def save(self) -> None:
         if self.change is None:

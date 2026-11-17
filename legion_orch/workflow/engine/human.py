@@ -8,7 +8,6 @@ from ..model import (
     AWAITING_HUMAN,
     BASELINE,
     BUILD,
-    CRITIQUE,
     ESCALATED,
     FAILED,
     H_CHANGE,
@@ -172,12 +171,12 @@ class HumanGates:
         return ActionResult(approved=done, pending=[])
 
     async def _revise_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2 revise: the plan is reworked; everything derived from it starts over (critique,
-        oracle, baseline, build nodes, the integration branch and surface pins)."""
+        """H-2 revise: the plan is reworked (and critiqued again); everything derived from it
+        starts over (oracle, baseline, build nodes, the integration branch and surface pins)."""
         ch = self.c.change
         self._send_back(self.c.nodes[PLAN], approver, payload)
         self.graph.reset_environment()
-        for nid in (CRITIQUE, ORACLE, BASELINE):
+        for nid in (ORACLE, BASELINE):
             if nid in self.c.nodes:
                 n = self.c.nodes[nid]
                 n.status, n.cycle = PENDING, n.cycle + 1
@@ -205,8 +204,6 @@ class HumanGates:
         """H-E1 revise: the planner reworks the plan's environment with the feedback; the plan
         is then critiqued again."""
         self._send_back(self.c.nodes[PLAN], approver, payload)
-        crit = self.c.nodes[CRITIQUE]
-        crit.status, crit.cycle = PENDING, crit.cycle + 1
         node.status = PENDING
         return ActionResult()
 
@@ -251,10 +248,9 @@ class HumanGates:
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
                 raise WorkflowError("an answer is required")
-            target = self.c.nodes[PLAN] if resume == Resume.CRITIQUE_BUDGET else node
-            att = self._feedback_doc(target, approver, text, "decisions")
-            target.feedback.append(Feedback(cycle=target.cycle, source="decisions",
-                                            text=f"human decision: {text}", attestations=[att]))
+            att = self._feedback_doc(node, approver, text, "decisions")
+            node.feedback.append(Feedback(cycle=node.cycle, source="decisions",
+                                          text=f"human decision: {text}", attestations=[att]))
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)
@@ -316,13 +312,9 @@ class HumanGates:
         """Continue the workflow where the resolved escalation said it should."""
         if resume == Resume.CRITIQUE_BUDGET:          # one more critique cycle: rework the plan
             node.extra_cycles += 1
-            plan = self.c.nodes[PLAN]
-            plan.cycle += 1
-            plan.feedback += node.feedback[-1:]
-            plan.status = REWORK
-            self.graph.reset_environment()
             node.cycle += 1
-            node.status = PENDING
+            node.status = REWORK
+            self.graph.reset_environment()
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
             node.extra_cycles += 1
             cur = self.c.runs.get(node.current_run) if node.current_run else None
