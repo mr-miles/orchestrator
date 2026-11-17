@@ -127,6 +127,16 @@ class SandboxConfig:
 
 
 @dataclass
+class RetrospectiveConfig:
+    # Before an agent's sandbox is deleted because its work is done, resume its session for one
+    # reflection turn (what cost it time, guidance that was missing or wrong), stored in
+    # control/reflections/. Best-effort: a failed or timed-out reflection never blocks the change.
+    reflect: bool = True
+    reflect_timeout_s: int = 600
+    reflect_skip_roles: list[str] = field(default_factory=lambda: ["retrospective"])
+
+
+@dataclass
 class EnvironmentConfig:
     """The sandbox-environment stage (§5.3a of WORKFLOW.md): the planner specifies the tools,
     network policies and resources sandboxes need; after approval (H-E1) the controller builds them.
@@ -174,6 +184,7 @@ class Config:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
+    retrospective: RetrospectiveConfig = field(default_factory=RetrospectiveConfig)
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -210,6 +221,7 @@ def load_config(path: str | Path) -> Config:
         sandbox=_build(SandboxConfig, raw.get("sandbox")),
         identity=_build(IdentityConfig, raw.get("identity")),
         environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
+        retrospective=_build(RetrospectiveConfig, raw.get("retrospective")),
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )

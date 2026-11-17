@@ -130,6 +130,9 @@ class ChangeEngine(ChangeCore):
     def log_tail(self, run_id: str, lines: int = 200) -> str:
         return self._lifecycle.log_tail(run_id, lines)
 
+    def stored_log(self, run_id: str) -> str:
+        return self._lifecycle.stored_log(run_id)
+
     # ------------------------------------------------------------------ RoleContext
     def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
         self._lifecycle.accept_runs(node, roles)

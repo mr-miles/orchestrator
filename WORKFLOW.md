@@ -150,13 +150,19 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
 | `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
-| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha and rendered-prompt sha**, attempts, violations, report, progress. No credential exists to store. |
-| `changes/<id>/control/logs/<run>.log` | agent output, archived when the agent exits (last 512 KiB); not readable by agents |
+| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
+| `changes/<id>/control/logs/<run>.log` (`<run>.2.log`, …) | the agent's whole output, archived when it exits, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB). Each stream-json event carries `legion_ts`, the time the controller received it. Not readable by agents |
+| `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
+| `changes/<id>/control/reflections/<run>.md` | the agent's own account of what cost it time and where its guidance failed (§5.13) |
+| `changes/<id>/control/timeline/<n>.jsonl` | the controller's events (dispatch, sandbox, verification, rework, human actions), written in chunks |
+| `changes/<id>/control/assets/<sha>.json` | the hash of each asset file of an asset set the change's runs used |
 | `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship,environment}/…` | human decisions and controller evidence (`environment/build.json`: the provisioned environment) |
 | git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
 
 Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset set and of its
-rendered soul + prompt.
+rendered soul + prompt, and keeps the template values it was rendered with. Re-rendering with those
+values reproduces the prompt exactly while the pin matches; otherwise the recorded asset hashes
+say which files have changed since (`Assets.check_prompt`).
 
 On disk, `state_dir` is set once per controller and holds only `state.db` (the store), `git/` (the
 bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted after
@@ -514,12 +520,37 @@ Each is a versioned document under `control/`, so superseding keeps the history.
 | `approve_protected_paths` | `control/approvals/protected-paths/<n>.json` | G-PP1 |
 | `approve_surface` | `control/surfaces/<id>.json` | G-SF1 |
 | `override` | `control/overrides/<n>.json` | G-OV1 |
+| `retrospective` | node `retrospective` (§5.13); optional `focus` in `control/focus/` | only once the change has ended |
 
 | ID | Rule |
 | --- | --- |
 | G-AT1 | Kind ∈ `independent-baseline, security-evaluation, e2e-evaluation, architecture-review, rollback-evidence, forward-fix-evidence, release-observation`; verdict ∈ `pass, fail, unknown, not_applicable`; ≥1 resolvable source attestation (a waiver still names its bytes); `not_applicable` needs a waiver reason (≥24 chars, >1 word) and only it may carry one; `release-observation` cannot be `pass` (the release plan is the evidence); optional `covers` lists task ids – partial coverage leaves the gate unsatisfied. One record per kind: re-attesting supersedes, and a `fail` is never undone by a pass on a sibling kind. |
 | G-SF1 | At ship, every file pinned by a verification surface has the same blob at the integration head as when pinned. A drift leaves `integration_or_real_interface_checks` unsatisfied until a human re-affirms the surface (`approve_surface`, with a reason) – a decision, never a silent re-pin. |
 | G-OV1 | `add_gate` adds any known gate to this change's set; `waive_gate` needs a reason (≥24 chars) and resolvable replacement evidence, and is refused for `deterministic_verification`, `explicit_human_approval` and `whole_change_acceptance_evidence`. Tier changes happen only at H-1. |
+
+### 5.13 Reflection and retrospective
+
+**Reflection (automatic).** When an agent's sandbox is deleted because its work is done (accepted,
+superseded, or its hold ended – not after a failure), the controller first resumes the agent's
+session (`--resume`) for one reflection turn: what cost it time, which instructions were missing or
+wrong, tool and environment friction, mistakes (for an implementer: each finding raised against its
+work) and suggestions. The answer is stored as `control/reflections/<run>.md`. The agent still has
+its whole context, which a later retrospective does not. Best-effort: a missing session, an error
+or `retrospective.reflect_timeout_s` skips it, and the deletion goes ahead. Turn it off with
+`retrospective.reflect: false`; `reflect_skip_roles` lists roles that never reflect.
+
+**Retrospective (on demand).** Once a change has ended (`READY`, `NOT_READY` or `ABANDONED`), a
+decision owner can ask for a retrospective (UI, or `change_action retrospective` with an optional
+`focus`). This adds node `retrospective`, which is dispatched even though the change is no longer
+active.
+
+* **Soul:** `retrospective-analyst`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`
+* **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and node
+  records, the change's documents, the current assets and a prompt check per run (agents cannot
+  read `control/logs/` through MCP). Its context lists earlier changes' retrospectives.
+* **Writes:** `retro/`  **Required:** `retro/report.md` (summary, ranked findings with evidence
+  and root cause, proposed changes as diffs against the assets, what is not worth fixing).
+* It proposes; a human applies. Asking again runs a new cycle.
 
 ---
 
@@ -567,6 +598,7 @@ assets/
 | `architecture` | [`prompts/architecture.md`](assets/prompts/architecture.md) |
 | `integration` | [`prompts/integration.md`](assets/prompts/integration.md) |
 | `release` | [`prompts/release.md`](assets/prompts/release.md) |
+| `retrospective` | [`prompts/retrospective.md`](assets/prompts/retrospective.md) |
 
 **Souls**
 
@@ -583,6 +615,7 @@ assets/
 * [`architecture-reviewer`](assets/souls/architecture-reviewer.md)
 * [`integration-verifier`](assets/souls/integration-verifier.md)
 * [`release-planner`](assets/souls/release-planner.md)
+* [`retrospective-analyst`](assets/souls/retrospective-analyst.md)
 
 **Schemas** ([`bindings.yaml`](assets/schemas/bindings.yaml) maps path patterns to these; agents
 can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON documents use JSON Schema

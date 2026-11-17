@@ -538,12 +538,13 @@ def test_role_dispatch_policy():
     assert roles_where("pushes") == {"implementer", "oracle"}
     assert roles_where("panel") == panel
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
-    assert roles_where("judges_head") == {"baseline", "integration", "release"}
+    assert roles_where("judges_head") == {"baseline", "integration", "release", "retrospective"}
     assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}
     assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
     everyone = set(Assets(ROOT / "assets").roles)
     assert everyone - roles_where("sees_requirements") == {"intake"}
-    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle"}
+    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle",
+                                                            "retrospective"}
 
 
 def test_role_handlers_use_only_the_role_context():
@@ -938,8 +939,16 @@ def test_sandbox_exec_gets_no_stdin(tmp_path, monkeypatch):
     from legion_orch.sandbox import runner as rmod
     seen = []
 
+    class Out:
+        async def read(self, n):
+            return b""
+
     class Proc:
         returncode = 0
+        stdout = Out()
+
+        async def wait(self):
+            return 0
 
         async def communicate(self):
             return b"", b""
@@ -950,6 +959,9 @@ def test_sandbox_exec_gets_no_stdin(tmp_path, monkeypatch):
     monkeypatch.setattr(rmod.asyncio, "create_subprocess_exec", fake_exec)
     r = rmod.OpenShellRunner(_os_cfg(tmp_path))
     asyncio.run(r.exec("sb", ["true"]))
-    asyncio.run(r.start_agent("sb", tmp_path / "agent.log"))
+
+    async def agent():
+        await (await r.start_agent("sb", tmp_path / "agent.log")).wait()
+    asyncio.run(agent())
     assert [a[a.index("sandbox") + 1] for a, _ in seen] == ["exec", "exec"]
     assert all(stdin == asyncio.subprocess.DEVNULL for _, stdin in seen)

@@ -61,6 +61,10 @@ class RoleHandler:
         """Role-specific context attestations beyond the common ones."""
         return []
 
+    def payload_files(self, e: RoleContext, node: Node, run: Run) -> dict[str, str]:
+        """Extra files for the run's payload (path relative to the payload directory -> text)."""
+        return {}
+
     def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
         """Role-specific prompt template variables beyond the common ones."""
         return {}

@@ -10,6 +10,7 @@ from ..model import (
     PROVISION,
     R_REPORTED,
     READY,
+    RETRO,
     REVIEWING,
     REWORK,
     ROLE_FOR_KIND,
@@ -43,16 +44,21 @@ class Scheduler:
                 return
             if self.lifecycle.release_sandboxes():      # a gate passed, or the change ended
                 c.save()
-            if c.change.status != "ACTIVE":
+            active = c.change.status == "ACTIVE"
+            # an ended change only runs a retrospective someone asked for
+            if not active and not any(n.kind == RETRO for n in c.nodes.values()):
                 return
-            for node in list(c.nodes.values()):
-                if node.status == PENDING and self.graph.deps_accepted(node):
-                    self._promote(node)
+            if active:
+                for node in list(c.nodes.values()):
+                    if node.status == PENDING and self.graph.deps_accepted(node):
+                        self._promote(node)
             self.lifecycle.check_timeouts()
             capacity = c.cfg.limits.max_parallel - c.host.live_count()
             for node in list(c.nodes.values()):
                 if capacity <= 0:
                     break
+                if not active and node.kind != RETRO:
+                    continue
                 for run in self._dispatch(node, capacity):
                     launches.append(run)
                     capacity -= 1

@@ -129,6 +129,8 @@ class Controller:
         for p in self.svc.procs.values():
             if p.returncode is None:
                 p.kill()
+        for ce in self.changes.values():
+            ce.flush_timeline(force=True)
 
     async def _loop(self) -> None:
         while True:

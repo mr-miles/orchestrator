@@ -87,3 +87,11 @@ architecture:
   git: candidate
   report_schema: report-review
   repo: true
+retrospective:
+  soul: retrospective-analyst
+  skills: [harness-contract, docstore-protocol, attestation-format]
+  write: ["retro/"]
+  required_docs: ["retro/report.md"]
+  git: none
+  report_schema: report-none
+  repo: true

@@ -18,6 +18,12 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
 * A sandbox is deleted as soon as the work it produced is accepted. Intake, planner and oracle
   keep theirs, stopped, with the agent's session until the gate that can send the work back
   passes (H-1, H-2), so a rework continues the same conversation.
+* Before a finished agent's sandbox is deleted, the agent reflects on its session (what cost it
+  time, where its instructions failed) into `control/reflections/`. Once a change has ended, a
+  decision owner can run a **retrospective**: an agent that reads the reflections, the whole agent
+  logs (timestamped, with per-run digests), the timeline and the reviews, and proposes changes to
+  the souls, skills, prompts and process (`retro/report.md`). Configure with `retrospective:`
+  (`reflect`, `reflect_timeout_s`, `reflect_skip_roles`); see WORKFLOW.md §5.13.
 * The document store and the git remote are the only durable state. Each change is namespaced under
   `changes/<id>/`, including the controller's own graph, node and run records, and is rebuilt
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.

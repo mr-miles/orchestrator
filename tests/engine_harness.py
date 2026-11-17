@@ -69,6 +69,10 @@ class FakeRunner(Runner):
         self.restarted: list[str] = []                   # stopped sandboxes started again
         self.run_envs: list[str] = []                    # run.env of every payload, in order
         self.fail_stop = False
+        self.payloads: dict[str, dict[str, str]] = {}    # sandbox -> payload files at create
+        self._reflecting: dict[str, str] = {}             # sandbox -> reflection prompt
+        self.reflected: list[tuple[str, str]] = []        # (sandbox, prompt) of each reflection
+        self.reflection_text = "## Time sinks\nThe tests took long.\n"
         self.commands: dict[str, tuple[int, str]] = {}   # verification command -> (rc, output)
         self.setup_rc = 0
         self.fail_create: str | None = None              # role whose sandbox creation fails
@@ -83,6 +87,8 @@ class FakeRunner(Runner):
             raise SandboxError("openshell sandbox create failed (quota)")
         self.created.append(spec.name)
         self.run_envs.append(_run_env(spec.payload_dir))
+        self.payloads[spec.name] = {str(f.relative_to(spec.payload_dir)): f.read_text()
+                                    for f in Path(spec.payload_dir).rglob("*") if f.is_file()}
         self.specs[spec.name] = spec
         self.policies[spec.name] = yaml.safe_load(Path(spec.policy_file).read_text())
         return spec.name
@@ -90,6 +96,8 @@ class FakeRunner(Runner):
     async def upload(self, name, payload_dir):
         self.uploads.append(name)
         self.run_envs.append(_run_env(payload_dir))
+        if "LEGION_REQUIRE_SESSION" in self.run_envs[-1]:          # a reflection turn
+            self._reflecting[name] = (Path(payload_dir) / "prompt.md").read_text()
 
     async def stop(self, name):
         if self.fail_stop:
@@ -106,6 +114,13 @@ class FakeRunner(Runner):
 
     async def start_agent(self, name, log_file):
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        if name in self._reflecting:          # the resumed agent answers and exits
+            self.reflected.append((name, self._reflecting.pop(name)))
+            log_file.write_text(json.dumps({"type": "result", "subtype": "success",
+                                            "result": self.reflection_text}) + "\n")
+            proc = FakeProc()
+            proc.exit(0)
+            return proc
         log_file.write_text(f"agent started in {name}\nworking...\n")
         self.started.append(name)
         return FakeProc()
@@ -216,6 +231,7 @@ class Flow:
         if not blank_repo and not (tmp_path / "src-repo").exists():
             make_source_repo(tmp_path / "src-repo")
         self.cfg = make_config(tmp_path, blank_repo=blank_repo, **limits)
+        self.cfg.retrospective.reflect = False      # tests that want reflections turn them on
         self.runner = FakeRunner()
         self.builder = FakeBuilder()
         self.ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)

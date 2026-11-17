@@ -58,6 +58,10 @@ class Assignment:
             "feedback_items": [f.model_dump(mode="json") for f in node.feedback]}
 
 
+def assets_record(sha: str) -> str:
+    return f"control/assets/{sha.removeprefix('sha256:')[:16]}.json"
+
+
 class Dispatcher:
     """Turns a ready node into a run (guards G-D1..G-D4, G-B1) and starts its agent."""
 
@@ -136,8 +140,10 @@ class Dispatcher:
                   else self.c.assets.roles[role].soul,
                   base_sha=node.base_sha or ch.base_sha, branch=branch, judged_sha=judged_sha,
                   prompt_pin=rendered.pin, assets_sha=self.c.assets.sha,
+                  template_vars={k: str(v) for k, v in asg.variables.items()},
                   write_scope=asg.write_scope, required_docs=asg.required_docs,
                   context_refs=asg.context, assignment=asg.for_agent(node))
+        self._record_assets()
         self._place_in_sandbox(run, node)
         self._record_dispatch(run, node)
         self._payload(run, rendered)
@@ -169,6 +175,13 @@ class Dispatcher:
             "feedback": self._feedback_text(node),
         })
         return Assignment(variables, write, required, context, task_json)
+
+    def _record_assets(self) -> None:
+        """Record which asset files (by hash) the change's runs used, once per asset set: a run's
+        prompt can then be checked against the current files (Assets.check_prompt)."""
+        path = assets_record(self.c.assets.sha)
+        if not self.c.latest(path):
+            self.c.write_record(path, {"sha": self.c.assets.sha, "files": self.c.assets.manifest()})
 
     def _place_in_sandbox(self, run: Run, node: Node) -> None:
         """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
@@ -216,20 +229,29 @@ class Dispatcher:
             "LEGION_NEEDS_REPO": "1" if self.c.assets.roles[run.role].repo else "0",
             "LEGION_AGENT_COMMAND": self.c.cfg.sandbox.agent_command,
         }
-        if session := self._resumable_session(run):
-            env["LEGION_RESUME_SESSION"] = session
+        if found := self._resumable_session(run):
+            run.resumed_from, run.resumed_session = found
+            env["LEGION_RESUME_SESSION"] = run.resumed_session
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
         (d / "run-agent.sh").write_text(RUN_AGENT_SH)
+        for rel, text in handler_for(run.role).payload_files(self.roles, self.c.nodes[run.node_id],
+                                                             run).items():
+            f = d / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text)
 
-    def _resumable_session(self, run: Run) -> str | None:
-        """For a role that keeps its session: the agent session of the node's previous run in
-        the same sandbox, which this rework continues."""
+    def _resumable_session(self, run: Run) -> tuple[str, str] | None:
+        """For a role that keeps its session: the node's previous run in the same sandbox and
+        its agent session, which this rework continues."""
         if handler_for(run.role).keeps_session_until is None:
             return None
         node = self.c.nodes[run.node_id]
         prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]
         prev = [r for r in prev if r.role == run.role and r.sandbox == run.sandbox]
-        return agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000)) if prev else None
+        if not prev:
+            return None
+        sid = prev[-1].session_id or agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000))
+        return (prev[-1].id, sid) if sid else None
 
     async def _stage(self, run: Run, stage: RunStage, message: str) -> None:
         async with self.c.lock:

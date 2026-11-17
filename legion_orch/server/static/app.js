@@ -347,6 +347,7 @@ const PAYLOADS = {
   override_gate: () => ({kind: $('#o_kind').value, gate: $('#o_gate').value, reason: $('#o_reason').value,
                          evidence: $('#o_evidence').value}),
   protected: () => ({task: $('#p_task').value, paths: csv('#p_paths'), reason: $('#p_reason').value}),
+  retro: () => ({focus: $('#r_focus').value}),
   surface: surface => ({surface, reason: prompt('Why does this surface still describe the real interface? (≥24 chars)') || ''}),
 };
 function actClick(node, action, payloadKey, arg, confirmText) {
@@ -405,7 +406,12 @@ async function renderTab(force) {
 function governanceHtml(c) {
   const atts = Object.values(c.attestations||{});
   const tasks = S.nodes.filter(n=>n.kind==='build').map(n=>n.task.id);
-  return `<h2 style="margin-top:14px">Governance</h2>
+  const retro = S.nodes.find(n=>n.kind==='retrospective');
+  const retroHtml = c.status === 'ACTIVE' ? '' : `<div class="card"><b>Retrospective</b> <span class="muted">an agent studies the change's logs, reflections and reviews and proposes improvements to the souls, skills and process${retro?` · ${esc(retro.status)} (cycle ${retro.cycle})`:''}</span>
+      ${retro&&retro.status==='ACCEPTED'?`<div><a ${on('openDoc', docPath('retro/report.md'))}>retro/report.md</a></div>`:''}
+      <input id="r_focus" placeholder="focus (optional): what to look at">
+      <button class="act" ${on('govern', 'retrospective', 'retro')}>Run retrospective</button></div>`;
+  return retroHtml + `<h2 style="margin-top:14px">Governance</h2>
     <table><tr><th>attestation</th><th>verdict</th><th>by</th><th>sources</th></tr>${atts.map(a=>`<tr><td>${esc(a.kind)}</td><td>${esc(a.verdict)}</td><td>${esc(a.attested_by)}</td><td class="mono">${a.sources.map(x=>`<a ${on('openAtt', x)}>${esc(x)}</a>`).join('<br>')}${a.warnings.length?`<div class="err">${a.warnings.map(esc).join('<br>')}</div>`:''}</td></tr>`).join('') || '<tr><td colspan=4 class="muted">none</td></tr>'}</table>
     <div class="card"><b>Attest</b><div class="grid2">
       <select id="g_kind">${(S.attestation_kinds||[]).map(k=>`<option>${k}</option>`).join('')}</select>
@@ -432,7 +438,7 @@ async function govern(action, payload) {
   const approver = $('#approver').value.trim();
   if (!approver) { alert('Enter your approver id (top right).'); return; }
   try { const r = await api(`/api/changes/${CID}/action`, {action, approver, payload});
-    if (r.warnings && r.warnings.length) alert(r.warnings.join('\n')); await refresh(); }
+    if (r.warnings && r.warnings.length) alert(r.warnings.join('\n')); else if (r.note) alert(r.note); await refresh(); }
   catch (e) { alert(e.message); }
 }
 function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }

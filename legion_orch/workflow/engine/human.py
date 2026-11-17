@@ -25,6 +25,7 @@ from ..model import (
     R_REPORTED,
     R_SUPERSEDED,
     READY,
+    RETRO,
     REVIEWING,
     REWORK,
     RUNNING,
@@ -361,9 +362,34 @@ class HumanGates:
         self.c.event("library", f"{approver} promoted {kind} {payload.get('name')} into {dest}")
         return f"wrote {dest}"
 
+    def _start_retrospective(self, approver: str, payload: dict) -> str:
+        """Ask for a retrospective of an ended change (on demand only): an agent analyses the
+        change's records, logs and reflections and proposes improvements to the assets and the
+        process. Asking again runs a new cycle; ``focus`` optionally says what to look at."""
+        c = self.c
+        if c.change.status == ChangeStatus.ACTIVE:
+            raise WorkflowError("a retrospective needs an ended change (it is still active)")
+        node = c.nodes.get(RETRO)
+        if node is not None and node.status not in (ACCEPTED, FAILED, ESCALATED):
+            raise WorkflowError(f"a retrospective is already {node.status}")
+        if node is None:
+            node = Node(id=RETRO, kind=RETRO, title="Retrospective: lessons for the assets and process",
+                        status=READY)
+            c.add_node(node)
+        else:
+            node.cycle, node.status, node.escalation = node.cycle + 1, READY, None
+        focus = (payload.get("focus") or payload.get("feedback") or "").strip()
+        if focus:
+            att = self._feedback_doc(node, approver, focus, "focus")
+            node.feedback.append(Feedback(cycle=node.cycle, source="focus", text=focus,
+                                          attestations=[att]))
+        c.event("retrospective", f"{approver} asked for a retrospective (cycle {node.cycle})", RETRO)
+        return f"retrospective queued (cycle {node.cycle})"
+
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface,
-        promote_proposal (an approved environment proposal into the library)."""
+        promote_proposal (an approved environment proposal into the library),
+        retrospective (of an ended change)."""
         payload = payload or {}
         async with self.c.lock:
             self._check_approver(approver)
@@ -380,6 +406,8 @@ class HumanGates:
                                        note="applies only to runs of this task that start after now")
                 elif action == "promote_proposal":
                     res = ActionResult(note=self._promote(approver, payload))
+                elif action == "retrospective":
+                    res = ActionResult(note=self._start_retrospective(approver, payload))
                 elif action == "approve_surface":
                     if not risk.valid_reason(payload.get("reason")):
                         raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")
