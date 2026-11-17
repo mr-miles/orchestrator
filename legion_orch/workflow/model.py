@@ -307,7 +307,10 @@ class Node(Record):
     wave: int = 0
     runs: list[str] = []
     current_run: str | None = None
-    sandbox: str | None = None            # implementer sandbox (reused across rework cycles)
+    # the sandbox the node's producer keeps across rework cycles (implementer; intake, planner
+    # and oracle until their gate passes), and whether it is stopped between runs
+    sandbox: str | None = None
+    sandbox_stopped: bool = False
     base_sha: str | None = None
     candidate_sha: str | None = None
     accepted_sha: str | None = None

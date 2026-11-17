@@ -927,3 +927,29 @@ def test_gateway_inspects_mcp_requests_as_large_as_the_largest_document(tmp_path
     from legion_orch.server.web import mcp_request_limit
     served = mcp_request_limit(cfg)
     assert len(body.encode()) < served < limit, (len(body), served, limit)
+
+
+def test_sandbox_exec_gets_no_stdin(tmp_path, monkeypatch):
+    """`sandbox exec` forwards its stdin into the sandbox, where nothing reads it: input that fills
+    the supervisor's buffer gets the command killed (exit 74), so the controller's stdin is never
+    passed on."""
+    import asyncio
+
+    from legion_orch.sandbox import runner as rmod
+    seen = []
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*argv, **kw):
+        seen.append((argv, kw.get("stdin")))
+        return Proc()
+    monkeypatch.setattr(rmod.asyncio, "create_subprocess_exec", fake_exec)
+    r = rmod.OpenShellRunner(_os_cfg(tmp_path))
+    asyncio.run(r.exec("sb", ["true"]))
+    asyncio.run(r.start_agent("sb", tmp_path / "agent.log"))
+    assert [a[a.index("sandbox") + 1] for a, _ in seen] == ["exec", "exec"]
+    assert all(stdin == asyncio.subprocess.DEVNULL for _, stdin in seen)

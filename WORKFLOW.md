@@ -65,8 +65,11 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 ```
 
 * **Sandbox per task.** A sandbox serves exactly one task in one role for its whole life: an
-  implementer sandbox is reused across that task's rework cycles; critics, reviewers and verifiers
-  always get their own (`openshell sandbox create --detach --name lg-<first name>
+  implementer sandbox is reused across that task's rework cycles; intake, planner and oracle keep
+  theirs (stopped between runs with `openshell sandbox stop`, started again for a rework) and
+  continue their agent session (`claude --resume`) until the gate that can send their work back
+  has passed (intake: H-1; planner and oracle: H-2); critics, reviewers and verifiers always get
+  their own (`openshell sandbox create --detach --name lg-<first name>
   --provider legion-mcp --provider legion-git[-push] --policy … --upload payload:/sandbox`). The payload contains only
   `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and `run-agent.sh`.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
@@ -552,7 +555,8 @@ assets/
   by any role.
 * The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.
 * Each role has a handler in `legion_orch/workflow/roles/`: its dispatch policy (`pushes`,
-  `judge`, `panel`, `judges_head`, `reuses_sandbox`, `needs_fresh_approval`, which context it
+  `judge`, `panel`, `judges_head`, `reuses_sandbox`, `keeps_session_until`,
+  `needs_fresh_approval`, which context it
   sees), its role-specific guards, and the transition after an accepted report. Handlers work
   against the narrow `RoleContext` interface, not engine internals. Adding a role means assets
   plus one handler module; the controller refuses to start if a role in `roles.yaml` has none.

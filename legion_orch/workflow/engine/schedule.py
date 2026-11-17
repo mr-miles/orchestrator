@@ -42,7 +42,11 @@ class Scheduler:
         c = self.c
         launches: list[Run] = []
         async with c.lock:
-            if c.change is None or c.change.status != "ACTIVE":
+            if c.change is None:
+                return
+            if self.lifecycle.release_sandboxes():      # a gate passed, or the change ended
+                c.save()
+            if c.change.status != "ACTIVE":
                 return
             for node in list(c.nodes.values()):
                 if node.status == PENDING and self.graph.deps_accepted(node) \

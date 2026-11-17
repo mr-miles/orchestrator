@@ -209,3 +209,17 @@ def last_output(text: str, lines: int = 3) -> str:
     """The last few non-JSON lines (what the shell or setup script said before exiting)."""
     raw = [line for line, ev in _events(text) if ev is None and line.strip()]
     return "\n".join(raw[-lines:])
+
+
+def session_id(text: str) -> str | None:
+    """The agent CLI's session id (Claude Code puts it on its init and result events), so a
+    later run in the same sandbox can resume the conversation; None if the log has none."""
+    found = None
+    for _, ev in _events(text):
+        if ev is None or not (ev.get("type") == "result"
+                              or (ev.get("type") == "system" and ev.get("subtype") == "init")):
+            continue
+        sid = ev.get("session_id")
+        if isinstance(sid, str) and sid and all(c.isalnum() or c in "-_" for c in sid):
+            found = sid
+    return found

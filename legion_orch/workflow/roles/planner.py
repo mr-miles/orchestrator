@@ -5,7 +5,7 @@ from __future__ import annotations
 from .. import guards
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
-from ..model import CRITIQUE, H_ENV, PENDING, Node
+from ..model import CRITIQUE, H_ENV, H_SPEC, PENDING, Node
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -16,6 +16,7 @@ NO_ENVIRONMENT = (f"No sandbox environment stage is configured: do not write `{E
 @register
 class Planner(RoleHandler):
     roles = ("planner",)
+    keeps_session_until = H_SPEC       # reworked (sent back) until this gate passes
     sees_oracle_commit = False
 
     def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:

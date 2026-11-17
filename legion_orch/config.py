@@ -114,9 +114,11 @@ class SandboxConfig:
     run_as_group: str = "sandbox"
     # Command run inside the sandbox to start the agent, via `bash -lc` from the working copy.
     # $LEGION_PAYLOAD is the payload directory (/sandbox/payload in OpenShell) and
-    # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner.
+    # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner. On a rework
+    # in a kept sandbox, $LEGION_RESUME_SESSION is the earlier agent session to continue.
     agent_command: str = (
-        'claude -p --mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
+        'claude -p ${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"} '
+        '--mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
         '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '
         "--permission-mode bypassPermissions --output-format stream-json --verbose "
         '< "$LEGION_PAYLOAD/prompt.md"'

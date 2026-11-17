@@ -6,12 +6,14 @@ from datetime import UTC, datetime
 
 from ...util import now_iso
 from ..model import (
+    ACCEPTED,
     BUILD,
     LIVE_RUN,
     R_ACCEPTED,
     R_FAILED,
     R_REPORTED,
     R_SUPERSEDED,
+    ROLE_FOR_KIND,
     FailureSource,
     Node,
     Resume,
@@ -45,6 +47,37 @@ class RunLifecycle:
                     proc.kill()
                 self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
 
+    def holds_sandbox(self, node: Node) -> bool:
+        """The node's producer still keeps ``node.sandbox`` for rework: roles with
+        ``keeps_session_until`` until that gate is accepted, the implementer until its node is.
+        Nothing is held once the change is no longer active."""
+        if not node.sandbox or node.kind not in ROLE_FOR_KIND or self.c.change.status != "ACTIVE":
+            return False
+        h = handler_for(ROLE_FOR_KIND[node.kind])
+        if h.keeps_session_until is not None:
+            gate = self.c.nodes.get(h.keeps_session_until)
+            return gate is not None and gate.status != ACCEPTED
+        return h.reuses_sandbox and node.status != ACCEPTED
+
+    def _held(self) -> set[str]:
+        return {n.sandbox for n in self.c.nodes.values() if self.holds_sandbox(n)}
+
+    def release_sandboxes(self) -> bool:
+        """Delete kept sandboxes whose hold has ended (their gate passed, or the change ended)
+        once no run uses them. Returns whether anything changed."""
+        changed = False
+        for node in self.c.nodes.values():
+            sb = node.sandbox
+            if not sb or self.holds_sandbox(node) or any(
+                    r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
+                continue
+            node.sandbox, node.sandbox_stopped, changed = None, False, True
+            if any(r.sandbox == sb and not r.sandbox_deleted for r in self.c.runs.values()):
+                self.c.event("sandbox", f"releasing {sb}: {node.id} is not reworked any more",
+                             node.id)
+                self.delete_sandbox_later(sb)
+        return changed
+
     def delete_sandbox_later(self, name: str) -> None:
         """Delete a sandbox in the background (its work has been accepted)."""
         self.c.spawn(self.delete_sandbox(name))
@@ -69,6 +102,9 @@ class RunLifecycle:
         self.c.escalate(node, "run_failed", f"{who} ({label}): {reason}", resume=resume,
                         run=run.id, log_tail=tail, source=source)
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
+            # a failed run's sandbox is not kept for rework either: the retry starts afresh
+            if node.sandbox == run.sandbox:
+                node.sandbox, node.sandbox_stopped = None, False
             self.c.spawn(self.delete_sandbox(run.sandbox))
 
     def archive_log(self, run: Run) -> None:
@@ -109,7 +145,8 @@ class RunLifecycle:
         return True
 
     def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
-        """Mark the node's reported runs ACCEPTED and delete their sandboxes (principle 8)."""
+        """Mark the node's reported runs ACCEPTED and delete their sandboxes (principle 8),
+        except one a node still holds for rework (see :meth:`holds_sandbox`)."""
         sandboxes = set()
         for rid in node.runs:
             r = self.c.runs[rid]
@@ -119,7 +156,11 @@ class RunLifecycle:
                 r.status = R_ACCEPTED
             if r.sandbox and not r.sandbox_deleted and r.status in (R_ACCEPTED, R_SUPERSEDED, R_FAILED):
                 sandboxes.add(r.sandbox)
-        for sb in sandboxes:
+        held = self._held()
+        for sb in sandboxes - held:
             if any(r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
                 continue
+            for n in self.c.nodes.values():
+                if n.sandbox == sb:
+                    n.sandbox, n.sandbox_stopped = None, False
             self.c.spawn(self.delete_sandbox(sb))

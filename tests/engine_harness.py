@@ -50,6 +50,11 @@ class FakeProc:
         self.exit(-9)
 
 
+def _run_env(payload_dir) -> str:
+    f = Path(payload_dir) / "run.env"
+    return f.read_text() if f.exists() else ""
+
+
 class FakeRunner(Runner):
     """Records sandbox operations; verification commands return scripted results."""
 
@@ -59,7 +64,11 @@ class FakeRunner(Runner):
         self.policies: dict[str, dict] = {}              # sandbox name -> its policy document
         self.uploads: list[str] = []
         self.deleted: list[str] = []
-        self.started: list[str] = []
+        self.started: list[str] = []                     # agents started (start_agent)
+        self.stopped: list[str] = []                     # kept sandboxes stopped between runs
+        self.restarted: list[str] = []                   # stopped sandboxes started again
+        self.run_envs: list[str] = []                    # run.env of every payload, in order
+        self.fail_stop = False
         self.commands: dict[str, tuple[int, str]] = {}   # verification command -> (rc, output)
         self.setup_rc = 0
         self.fail_create: str | None = None              # role whose sandbox creation fails
@@ -73,12 +82,22 @@ class FakeRunner(Runner):
         if self.fail_create == spec.role:
             raise SandboxError("openshell sandbox create failed (quota)")
         self.created.append(spec.name)
+        self.run_envs.append(_run_env(spec.payload_dir))
         self.specs[spec.name] = spec
         self.policies[spec.name] = yaml.safe_load(Path(spec.policy_file).read_text())
         return spec.name
 
     async def upload(self, name, payload_dir):
         self.uploads.append(name)
+        self.run_envs.append(_run_env(payload_dir))
+
+    async def stop(self, name):
+        if self.fail_stop:
+            raise SandboxError("openshell sandbox stop is not supported")
+        self.stopped.append(name)
+
+    async def start(self, name):
+        self.restarted.append(name)
 
     async def exec(self, name, argv, *, workdir=None, timeout=600):
         if argv[1].endswith("verify-setup.sh"):

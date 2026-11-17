@@ -687,12 +687,11 @@ async def test_a_name_taken_on_the_gateway_is_replaced(f: Flow):
     await f.human("H-1", "accept")
     run = f.run("plan")
     assert run.sandbox in f.runner.created and len(f.runner.created) == 2   # intake + plan
-    await f.plan()
-    f.runner.clash = 3                     # never free: the run fails as a system error
-    await f.critique("REWORK")
-    rework = f.runs("plan")[-1]
-    assert rework.failure and rework.failure.source == FailureSource.SYSTEM
-    assert "already exists" in rework.failure.reason
+    f.runner.clash = 3                     # never free: the critic's run fails as a system error
+    await f.plan()                         # (a planner rework reuses its kept sandbox)
+    critic = f.runs("critique")[-1]
+    assert critic.failure and critic.failure.source == FailureSource.SYSTEM
+    assert "already exists" in critic.failure.reason
 
 
 @scenario()
