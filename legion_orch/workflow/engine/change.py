@@ -57,7 +57,7 @@ class ChangeEngine(ChangeCore):
         self._graph = StageGraph(self)
         self._lifecycle = RunLifecycle(self)
         self._acceptance = Acceptance(self, self._lifecycle)
-        self._provisioner = Provisioner(self)
+        self._provisioner = Provisioner(self, self._lifecycle)
         self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)

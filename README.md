@@ -48,6 +48,8 @@ legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
 legion-orch -c orchestrator.yaml act <change-id> H-2 approve --approver miles --payload '{"subjects": ["REQ-1"]}'
 legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
   --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
+legion-orch -c orchestrator.yaml govern <change-id> reprovision --approver miles \
+  --payload '{"reason": "rebuild against the updated environment library"}'
 ```
 
 Four listeners, one purpose each:
