@@ -716,3 +716,7 @@ def test_npm_registry_is_read_only_and_keeps_encoded_slashes():
     assert policy_entry(pol)[1]["endpoints"] == [{
         "host": "registry.npmjs.org", "port": 443, "protocol": "rest", "enforcement": "enforce",
         "access": "read-only", "allow_encoded_slash": True}]
+    # read-only denies npm's audit POST, so node turns the audit off in the image
+    node, err = resolve_tool("node", lib.tools["node"], None)
+    assert err is None and ("NPM_CONFIG_AUDIT", "false") in node.env
+    assert 'ENV NPM_CONFIG_AUDIT="false"' in dockerfile("base", [node], "v1", "sandbox")
