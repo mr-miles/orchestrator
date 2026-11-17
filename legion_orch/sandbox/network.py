@@ -1,20 +1,19 @@
 """Network access for environments: endpoints, the policy as attached to one sandbox profile,
-and the credentialless OpenShell provider profile that carries it.
+and the ``network_policies`` entry it becomes in that sandbox's own policy.
 
-Attached providers contribute their endpoints to the sandbox's effective policy, so the sandbox
-policy templates never change. Provider ids are content-addressed: an edited policy (or a tool
-whose binaries changed) is a new provider, and running sandboxes keep the one they started with.
+A library policy carries no credential, so it is not an OpenShell provider: it is rendered into
+the policy of each sandbox the profile applies to (:func:`merge_network`), open to the profile's
+binaries that brought it. Running sandboxes keep the policy they were created with.
 """
 from __future__ import annotations
 
-import hashlib
-import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-NET_PREFIX = "legion-net-"
+NET_KEY_PREFIX = "env_"        # network_policies keys of environment policies
 
 
 class Endpoint(BaseModel):
@@ -39,21 +38,22 @@ class Policy:
     tools: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class NetworkProvider:
-    """The provider profile (and provider of the same name) that carries one :class:`Policy`."""
-    id: str
-    body: dict[str, Any]
+def policy_entry(policy: Policy) -> tuple[str, dict[str, Any]]:
+    """The policy's ``network_policies`` key and entry in a sandbox policy."""
+    key = NET_KEY_PREFIX + re.sub(r"[^A-Za-z0-9_]", "_", policy.name)
+    return key, {"name": f"env-{policy.name}",
+                 "endpoints": [e.model_dump(exclude_none=True) for e in policy.endpoints],
+                 "binaries": [{"path": b} for b in policy.binaries]}
 
-    @classmethod
-    def of(cls, policy: Policy) -> NetworkProvider:
-        body = {"display_name": f"legion network: {policy.name}", "description": policy.description,
-                "category": "other", "credentials": [],
-                "endpoints": [e.model_dump(exclude_none=True) for e in policy.endpoints],
-                "binaries": list(policy.binaries)}
-        digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:8]
-        return cls(id=f"{NET_PREFIX}{policy.name}-{digest}", body=body)
 
-    def profile(self) -> dict[str, Any]:
-        """The document ``openshell profile import`` takes."""
-        return {"id": self.id} | self.body
+def merge_network(doc: dict[str, Any], network: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Add environment policies to a rendered sandbox policy. A key the template already uses
+    is an error rather than a silent replacement of the template's rule."""
+    if not network:
+        return doc
+    rules = doc.get("network_policies") or {}
+    if clash := sorted(set(rules) & set(network)):
+        raise ValueError(f"environment network policies {clash} clash with the sandbox policy "
+                         "template's network_policies keys")
+    doc["network_policies"] = rules | network
+    return doc

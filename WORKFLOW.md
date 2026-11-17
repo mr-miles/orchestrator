@@ -99,9 +99,9 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 
   Verifier sandboxes get `legion_git` (fetch only) and nothing else.
 
-  With the environment stage (§5.3a), sandboxes of mapped roles additionally attach the network
-  providers of their profile, whose endpoints OpenShell adds to the effective policy, and run the
-  profile's image and resources.
+  With the environment stage (§5.3a), the policy of a mapped role's sandbox additionally holds
+  its profile's network policies (`env_<name>`, each open to the binaries that brought it), and the
+  sandbox runs the profile's image and resources.
 * **Agents push; the controller hosts the remote.** The controller serves its bare hub repository
   over git smart-HTTP (`git http-backend`) at `/git/<repo>.git`. Every live run may fetch. A run
   may push **only** to its own branch
@@ -348,7 +348,7 @@ The planner specifies the sandboxes for everyone who runs or works with the code
 role (or the deterministic `verifier`) runs in which profile. Profiles are composed from the
 **library** (`environment.library_dir`, default [`environments/`](environments/README.md)):
 tools installed with mise, each declaring its binaries and the network policies it needs, and
-network policies that become credentialless OpenShell provider profiles. Selecting a tool
+network policies, credentialless endpoint lists that become rules in the sandbox policy. Selecting a tool
 brings its network, open to that tool's binaries only; a profile adds per-tool extras or goes
 `offline`. The spec
 may propose new library entries inline; they apply to this change once approved, and an operator
@@ -370,21 +370,21 @@ The approved spec version is resolved against the library again and built: one i
 (profile, base image) – `FROM sandbox.image` for agents, `FROM sandbox.verifier_image` for the
 verifier – with the profile's tools installed by mise under `/usr/local/share/mise` (read-only in
 every sandbox) and their `env` settings as image `ENV`, via `podman build`, tagged by content (`localhost/legion-env:<hash>`, or pushed to
-`environment.registry`), and one provider per network policy (`legion-net-<name>-<hash>`,
-imported and created in `sandbox.workspace`). Identical images and profiles are reused, across
-changes too. CPU and memory become `sandbox create --cpu <vcpus>` and `--memory <n>Mi`; disk,
+`environment.registry`). Identical images are reused, across changes too. Network policies
+carry no credentials, so nothing is created for them in OpenShell: each is resolved into a
+`network_policies` entry (`env_<name>`, open to the binaries that brought it) recorded with the
+build and added to the policy of every sandbox of the role. CPU and memory become `sandbox create --cpu <vcpus>` and `--memory <n>Mi`; disk,
 which has no CLI flag, is rendered through `policies/sandbox-resources.template.yaml` into
 `--driver-config-json`. The result is recorded in `control/environment/build.json` and the
 change record; the build log in `control/logs/provision.log`.
 
 | ID | Rule |
 | --- | --- |
-| G-PV1 | Every image and network provider a mapped profile needs is built or found. Otherwise the node escalates `provision_failed` (retry provisions again). |
+| G-PV1 | Every image a mapped profile needs is built or found. Otherwise the node escalates `provision_failed` (retry provisions again). |
 | G-E5 | (dispatch of a mapped role, and every verifier sandbox) the H-E1 pin still equals the latest `plan/environment.json`. |
 
 From then on every sandbox of a mapped role is created from its profile's image, with its
-network providers attached (they contribute their endpoints to the effective policy) and its
-resources; unmapped roles keep the defaults.
+network policies in the sandbox policy and its resources; unmapped roles keep the defaults.
 
 ### 5.4 `oracle` (R2+) – protected acceptance tests
 

@@ -57,8 +57,8 @@ controller only fills in placeholders.
 | `${WORKSPACE}` | OpenShell workspace (sandbox.workspace) |
 | `${AGENT_IMAGE}` | image for agent sandboxes: its environment image, else sandbox.image (null for the gateway default) |
 | `${VERIFIER_IMAGE}` | image for verifier sandboxes: its environment image, else sandbox.verifier_image or sandbox.image |
-| `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: PROVIDER + sandbox.providers + its environment's network providers |
-| `${VERIFIER_PROVIDERS}` | providers attached to verifier sandboxes: PROVIDER + its environment's network providers |
+| `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: PROVIDER + sandbox.providers |
+| `${VERIFIER_PROVIDERS}` | providers attached to verifier sandboxes: PROVIDER |
 | `${SANDBOX_CPU}` | `--cpu`: vCPUs requested by the sandbox's environment profile (null: driver default) |
 | `${SANDBOX_MEMORY}` | `--memory`: memory requested by the sandbox's environment profile, `<n>Mi` (null: driver default) |
 | `${DRIVER_CONFIG}` | `--driver-config-json` for the sandbox's disk (the rendered `sandbox-resources` template), null for the driver default |
@@ -81,12 +81,11 @@ controller only fills in placeholders.
 
 With the sandbox-environment stage (`environment:` in the config, WORKFLOW.md §5.3a) a sandbox
 of a role that the approved spec maps to a profile gets that profile's image (`${AGENT_IMAGE}` /
-`${VERIFIER_IMAGE}`), its network providers (appended to `${SANDBOX_PROVIDERS}` /
-`${VERIFIER_PROVIDERS}`) and its resources (`${SANDBOX_CPU}`, `${SANDBOX_MEMORY}`,
-`${DRIVER_CONFIG}`). The network providers are
-credentialless provider profiles built from `environments/policies/` by the controller; OpenShell
-adds their endpoints to the sandbox's effective policy, so the policy templates here need no
-change.
+`${VERIFIER_IMAGE}`), its network policies and its resources (`${SANDBOX_CPU}`,
+`${SANDBOX_MEMORY}`, `${DRIVER_CONFIG}`). The network policies come from
+`environments/policies/`; they carry no credentials, so the controller adds them to the rendered
+sandbox policy as `network_policies` entries named `env_<name>` after the template's own. The
+policy templates here need no change, but must not use `env_*` keys themselves.
 
 CPU and memory are `sandbox create` flags (`--cpu`, `--memory`). Disk has no flag:
 `sandbox-resources.template.yaml` is rendered with `${DISK_MIB}`; null values are dropped and an

@@ -47,7 +47,7 @@ GUARDS: dict[str, str] = {
     "G-E3": "environment resources within the configured caps",
     "G-E4": "only roles that run after provisioning (and the verifier) are mapped",
     "G-E5": "a mapped role is dispatched only while the environment approval is fresh",
-    "G-PV1": "provisioning builds every image and network provider the spec needs",
+    "G-PV1": "provisioning builds every image the spec needs",
     "H-E1": "human approves the sandbox environment (pinned)",
     # build
     "G-B1": "build dispatch requires fresh spec/oracle approval",

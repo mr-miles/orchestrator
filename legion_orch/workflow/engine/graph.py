@@ -46,7 +46,7 @@ class StageGraph:
         if c.cfg.environment is not None:          # the plan includes the sandbox environment
             c.add_node(Node(id=H_ENV, kind=HUMAN, title="Approve sandbox environment",
                             depends_on=[CRITIQUE]))
-            c.add_node(Node(id=PROVISION, kind=PROVISION, title="Provision: images & network providers",
+            c.add_node(Node(id=PROVISION, kind=PROVISION, title="Provision: environment images",
                             depends_on=[H_ENV]))
             after_critique = PROVISION
         h2_deps = [after_critique]

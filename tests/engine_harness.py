@@ -18,6 +18,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import yaml
+
 from legion_orch.config import load_config
 from legion_orch.sandbox import BuildError, EnvironmentBuilder, Runner, SandboxError
 from legion_orch.server.mcp import MCP_TOOLS
@@ -55,6 +57,7 @@ class FakeRunner(Runner):
     def __init__(self):
         self.created: list[str] = []
         self.specs: dict[str, object] = {}               # sandbox name -> SandboxSpec
+        self.policies: dict[str, dict] = {}              # sandbox name -> its policy document
         self.uploads: list[str] = []
         self.deleted: list[str] = []
         self.started: list[str] = []
@@ -72,6 +75,7 @@ class FakeRunner(Runner):
             raise SandboxError("openshell sandbox create failed (quota)")
         self.created.append(spec.name)
         self.specs[spec.name] = spec
+        self.policies[spec.name] = yaml.safe_load(Path(spec.policy_file).read_text())
         return spec.name
 
     async def upload(self, name, payload_dir):
@@ -95,13 +99,12 @@ class FakeRunner(Runner):
 
 
 class FakeBuilder(EnvironmentBuilder):
-    """Records the images and network providers provisioning asks for; ``fail`` makes the
+    """Records the images provisioning asks for; ``fail`` makes the
     next build fail. Images are "built" once, then found (content-addressed reuse)."""
 
     def __init__(self):
         self.built: list[str] = []                 # image tags built
         self.recipes: dict[str, object] = {}       # tag -> ImageRecipe
-        self.providers: dict[str, object] = {}     # provider id -> NetworkProvider
         self.fail: str | None = None
 
     async def ensure_image(self, recipe):
@@ -113,10 +116,6 @@ class FakeBuilder(EnvironmentBuilder):
             return recipe.tag, f"{recipe.tag} exists; reused"
         self.built.append(recipe.tag)
         return recipe.tag, f"built {recipe.tag}"
-
-    async def ensure_provider(self, provider):
-        self.providers[provider.id] = provider
-        return f"provider {provider.id}"
 
 
 def make_source_repo(path: Path) -> None:

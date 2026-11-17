@@ -1,5 +1,5 @@
 """Sandboxes: runners (OpenShell, local), bootstrap scripts, network policy and provider profile,
-and environments (images, network providers, resources and the builders that make them).
+and environments (images, network policies, resources and the builders that make them).
 
 Knows nothing about the workflow or the MCP server; the MCP tool allowlist is passed in.
 """
@@ -14,7 +14,7 @@ from .names import (
     human_name,
     is_name_clash,
 )
-from .network import Endpoint, NetworkProvider, Policy
+from .network import Endpoint, Policy, merge_network, policy_entry
 from .policy import render_policy
 from .profile import PROFILE_ID, provider_profile, setup_commands, setup_workspace
 from .resources import Resources, driver_config
@@ -36,4 +36,4 @@ __all__ = ["agentlog", "render_policy", "PROFILE_ID", "provider_profile", "setup
            "base_values", "render", "spec_to_args", "MAX_NAME", "check_name", "human_name",
            "is_name_clash", "AGENT_PREFIX", "VERIFIER_PREFIX", "BuildError", "EnvironmentBuilder",
            "ImageRecipe", "NoBuilder", "PodmanBuilder", "Policy", "Tool", "make_builder", "SandboxEnv",
-           "Endpoint", "NetworkProvider", "Resources", "driver_config"]
+           "Endpoint", "merge_network", "policy_entry", "Resources", "driver_config"]

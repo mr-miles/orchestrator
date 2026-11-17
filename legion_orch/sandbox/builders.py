@@ -1,9 +1,8 @@
-"""Where environment images and network providers are made. Both operations are idempotent:
-content-addressed names mean an existing image or provider is simply found and kept.
+"""Where environment images are made. Idempotent: content-addressed tags mean an existing image
+is simply found and kept. (Network policies need no building: they go into the sandbox policy.)
 
-* :class:`PodmanBuilder` – ``podman build`` (and ``push`` with a registry) on the controller host;
-  ``openshell profile import`` + ``provider create`` in ``sandbox.workspace``.
-* :class:`NoBuilder` – the local runner: default images, no providers (no isolation anyway).
+* :class:`PodmanBuilder` – ``podman build`` (and ``push`` with a registry) on the controller host.
+* :class:`NoBuilder` – the local runner: default images.
 """
 from __future__ import annotations
 
@@ -11,12 +10,8 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-import yaml
-
 from ..config import Config
 from .images import ImageRecipe
-from .network import NetworkProvider
-from .runner import openshell_cli
 
 
 class BuildError(Exception):
@@ -29,17 +24,10 @@ class EnvironmentBuilder:
         default image) and a log."""
         raise NotImplementedError
 
-    async def ensure_provider(self, provider: NetworkProvider) -> str:
-        """Import the profile and create the provider unless they exist; return a log."""
-        raise NotImplementedError
-
 
 class NoBuilder(EnvironmentBuilder):
     async def ensure_image(self, recipe):
         return None, f"local runner: {recipe.tag} not built (default image)\n"
-
-    async def ensure_provider(self, provider):
-        return f"local runner: provider {provider.id} not created\n"
 
 
 async def _run(argv: list[str], timeout: float) -> tuple[int, str]:
@@ -58,7 +46,6 @@ class PodmanBuilder(EnvironmentBuilder):
     def __init__(self, cfg: Config):
         assert cfg.environment is not None
         self.env = cfg.environment
-        self.cli = openshell_cli(cfg)
 
     async def _step(self, log: list[str], argv: list[str], timeout: float = 600,
                     probe: bool = False) -> int:
@@ -87,24 +74,6 @@ class PodmanBuilder(EnvironmentBuilder):
         if self.env.registry:
             await self._step(log, [pod, "push", recipe.tag], timeout=self.env.build_timeout_s)
         return recipe.tag, "\n".join(log)
-
-    async def ensure_provider(self, provider):
-        log: list[str] = []
-        pid = provider.id
-        if await self._step(log, [*self.cli, "profile", "export", pid, "-o", "json"], probe=True) != 0:
-            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-                yaml.safe_dump(provider.profile(), f, sort_keys=False)
-            try:
-                await self._step(log, [*self.cli, "profile", "import", "-f", f.name])
-            finally:
-                Path(f.name).unlink(missing_ok=True)
-        else:
-            log.append(f"profile {pid} exists; kept (content-addressed)")
-        if await self._step(log, [*self.cli, "provider", "get", pid], probe=True) != 0:
-            await self._step(log, [*self.cli, "provider", "create", "--name", pid, "--type", pid])
-        else:
-            log.append(f"provider {pid} exists; kept")
-        return "\n".join(log)
 
 
 def make_builder(cfg: Config) -> EnvironmentBuilder:

@@ -234,7 +234,9 @@ class Dispatcher:
                 await self.c.runner.upload(run.sandbox, payload)
             else:
                 await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
+                env = sandbox_env(self.c.change, run.role)
                 policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
+                                                 network=env.network if env else None,
                                                  agent=True, push=h.pushes)
                 run.sandbox_ref = await self._create(run, payload, policy)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")

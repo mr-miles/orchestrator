@@ -2,9 +2,10 @@
 
 The approved ``plan/environment.json`` (the version pinned by H-E1) is resolved against the
 library again – the library may have changed since the spec was written – and everything a
-mapped role needs is built: one image per (base, tool set) and one network provider per policy
-as attached to a profile. Both are content-addressed, so what several roles or changes share is
-built once. The result is the change's :class:`EnvironmentBuild`, one :class:`RoleEnvironment`
+mapped role needs is built: one image per (base, tool set), content-addressed so what several
+roles or changes share is built once. Network policies carry no credentials, so nothing is
+created for them in OpenShell: each becomes a ``network_policies`` entry of the role's sandbox
+policy. The result is the change's :class:`EnvironmentBuild`, one :class:`RoleEnvironment`
 per mapped role; dispatch and verification attach it (:func:`sandbox_env`). Any failure
 escalates; retry provisions again.
 """
@@ -12,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...sandbox import BuildError, ImageRecipe, NetworkProvider, SandboxEnv, driver_config
+from ...sandbox import BuildError, ImageRecipe, SandboxEnv, driver_config, policy_entry
 from .. import guards
 from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
 from ..model import (
@@ -31,10 +32,9 @@ from .core import ChangeCore
 
 @dataclass
 class ProvisionPlan:
-    """What the approved spec needs: per role its recipe, providers and resources."""
+    """What the approved spec needs: per role its recipe, network policies and resources."""
     spec: str                                                    # attestation
     recipes: dict[str, ImageRecipe] = field(default_factory=dict)        # role -> image recipe
-    providers: dict[str, list[NetworkProvider]] = field(default_factory=dict)   # role -> providers
     roles: dict[str, RoleEnvironment] = field(default_factory=dict)      # role -> (image unset)
 
 
@@ -43,7 +43,7 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
     env = change.environment.roles.get(role) if change.environment else None
     if env is None:
         return None
-    return SandboxEnv(image=env.image, providers=list(env.providers), cpu=env.cpu,
+    return SandboxEnv(image=env.image, network=dict(env.network), cpu=env.cpu,
                       memory=env.memory, driver_config=env.driver_config)
 
 
@@ -82,9 +82,8 @@ class Provisioner:
             base = (sc.verifier_image or sc.image) if role == VERIFIER else sc.image
             plan.recipes[role] = ImageRecipe.make(base or "", prof.tools, mise_version=env.mise_version,
                                                   user=sc.run_as_user, registry=env.registry)
-            plan.providers[role] = [NetworkProvider.of(p) for p in prof.policies]
             plan.roles[role] = RoleEnvironment(
-                profile=pname, providers=[p.id for p in plan.providers[role]],
+                profile=pname, network=dict(policy_entry(p) for p in prof.policies),
                 cpu=prof.resources.cpu, memory=prof.resources.memory,
                 driver_config=driver_config(c.cfg, prof.resources))
         return plan
@@ -100,19 +99,18 @@ class Provisioner:
                 c.save()
                 return
             recipes = {r.tag: r for r in plan.recipes.values()}
-            providers = {p.id: p for ps in plan.providers.values() for p in ps}
-            c.event("provision", f"building {len(recipes)} image(s) and {len(providers)} network "
-                    f"provider(s) for {plan.spec}", PROVISION)
+            c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}", PROVISION)
         log: list[str] = []
+        for role, env in sorted(plan.roles.items()):
+            for key, entry in env.network.items():
+                log.append(f"## {role}: network policy {key} (sandbox policy): "
+                           f"binaries {[b['path'] for b in entry['binaries']]}")
         images: dict[str, str | None] = {}           # recipe tag -> image reference
         try:
             for tag, recipe in recipes.items():
                 log.append(f"## image {tag}\n\n{recipe.files['Dockerfile']}")
                 images[tag], out = await c.svc.builder.ensure_image(recipe)
                 log.append(out)
-            for pid, prov in providers.items():
-                log.append(f"## network provider {pid}: binaries {prov.body['binaries']}")
-                log.append(await c.svc.builder.ensure_provider(prov))
         except (BuildError, OSError) as e:
             async with c.lock:
                 if c.nodes[PROVISION].status == RUNNING:

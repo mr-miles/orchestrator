@@ -15,13 +15,14 @@ from legion_orch.config import load_config
 from legion_orch.sandbox import (
     Endpoint,
     ImageRecipe,
-    NetworkProvider,
     Policy,
     Resources,
     SandboxEnv,
     SandboxSpec,
     Tool,
     driver_config,
+    policy_entry,
+    render_policy,
 )
 from legion_orch.sandbox.images import dockerfile, image_tag, mise_toml
 from legion_orch.workflow.assets import Assets
@@ -96,24 +97,29 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     impl, ver, rev = roles["implementer"], roles["verifier"], roles["reviewer"]
     assert impl.image.startswith("localhost/legion-env:") and impl.image != ver.image
     assert rev.image != ver.image                    # same profile, agent vs verifier base image
-    assert impl.providers and impl.providers[0].startswith("legion-net-pypi-")
-    assert ver.providers == rev.providers == []      # check is offline
+    assert list(impl.network) == ["env_pypi"]
+    assert ver.network == rev.network == {}          # check is offline
     assert (impl.cpu, impl.memory, impl.driver_config) == ("2", "4096Mi", None)
     assert (ver.cpu, ver.memory, ver.driver_config) == (None, None, None)
     assert f.ce.latest("control/environment/build.json") and f.ce.latest("control/logs/provision.log")
     recipe = f.builder.recipes[impl.image]
     assert "COPY mise.toml /etc/mise/config.toml" in recipe.files["Dockerfile"]
     assert '"python" = "3.12"' in recipe.files["mise.toml"]
-    prov = f.builder.providers[impl.providers[0]]
-    assert prov.body["credentials"] == [] and {e["host"] for e in prov.body["endpoints"]} >= {"pypi.org"}
+    assert {e["host"] for e in impl.network["env_pypi"]["endpoints"]} >= {"pypi.org"}
 
     await f.human("H-2", "approve")
-    sp = f.runner.specs[f.run("build:T1", "implementer").sandbox]
-    assert sp.env == SandboxEnv(image=impl.image, providers=impl.providers, cpu="2",
-                                memory="4096Mi")
+    name = f.run("build:T1", "implementer").sandbox
+    sp = f.runner.specs[name]
+    assert sp.env == SandboxEnv(image=impl.image, network=impl.network, cpu="2", memory="4096Mi")
+    # a credentialless policy is a rule in the sandbox's own policy, next to the template's
+    rules = f.runner.policies[name]["network_policies"]
+    assert set(rules) == {"legion_mcp", "legion_git", "env_pypi"}
+    assert rules["env_pypi"] == impl.network["env_pypi"] and rules["env_pypi"]["binaries"]
     await f.implement()
     verifiers = sandboxes(f, "verifier")
-    assert verifiers and all(v.env.image == ver.image and v.env.providers == [] for v in verifiers)
+    assert verifiers and all(v.env.image == ver.image and v.env.network == {} for v in verifiers)
+    assert all(set(f.runner.policies[v.name]["network_policies"]) == {"legion_git"}
+               for v in verifiers)
     await f.review()
     assert all(r.env.image == rev.image for r in sandboxes(f, "reviewer"))
     assert f.status("build:T1") == "ACCEPTED"
@@ -138,7 +144,7 @@ async def test_r2_oracle_and_integration_run_in_the_environment(f: Flow):
 
 
 @scenario(**ENV)
-async def test_identical_environments_reuse_images_and_providers(f: Flow):
+async def test_identical_environments_reuse_images(f: Flow):
     await f.to_build()
     first = list(f.builder.built)
     (f.tmp / "second").mkdir()
@@ -410,9 +416,9 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
 
 # ====================================================================== sandbox create commands
 def test_openshell_create_attaches_the_environment(tmp_path):
-    """What OpenShell is actually asked for: the profile's image, its providers after the
-    configured ones, CPU and memory as --cpu / --memory and disk as --driver-config-json – for
-    agents and verifiers."""
+    """What OpenShell is actually asked for: the profile's image, only the configured providers
+    (network policies are in the policy file), CPU and memory as --cpu / --memory and disk as
+    --driver-config-json – for agents and verifiers."""
     from legion_orch.sandbox.runner import OpenShellRunner
     cfg = make_config(tmp_path, environment={})
     cfg.sandbox.image, cfg.sandbox.providers = "reg/agent:1", ["claude-code"]
@@ -423,7 +429,7 @@ def test_openshell_create_attaches_the_environment(tmp_path):
         return '{"id": "sb-1"}' if args[:2] == ("sandbox", "get") else ""
     r = OpenShellRunner(cfg)
     r._os = fake_os
-    env = SandboxEnv(image="localhost/legion-env:abc", providers=["legion-net-pypi-1234"],
+    env = SandboxEnv(image="localhost/legion-env:abc", network={"env_pypi": {"name": "env-pypi"}},
                      cpu="2", memory="4096Mi", driver_config='{"firecracker": {"disk_mib": 2048}}')
 
     def create(agent: bool, env: SandboxEnv | None) -> list[str]:
@@ -437,17 +443,17 @@ def test_openshell_create_attaches_the_environment(tmp_path):
         return [args[i + 1] for i, a in enumerate(args) if a == name]
     agent = create(True, env)
     assert flag(agent, "--from") == ["localhost/legion-env:abc"]
-    assert flag(agent, "--provider") == ["legion-controller", "claude-code", "legion-net-pypi-1234"]
+    assert flag(agent, "--provider") == ["legion-controller", "claude-code"]
     assert flag(agent, "--cpu") == ["2"] and flag(agent, "--memory") == ["4096Mi"]
     assert flag(agent, "--driver-config-json") == ['{"firecracker": {"disk_mib": 2048}}']
     verifier = create(False, env)
     assert flag(verifier, "--from") == ["localhost/legion-env:abc"]
     assert flag(verifier, "--cpu") == ["2"] and flag(verifier, "--memory") == ["4096Mi"]
-    assert flag(verifier, "--provider") == ["legion-controller", "legion-net-pypi-1234"]
+    assert flag(verifier, "--provider") == ["legion-controller"]
     plain = create(True, None)
     assert flag(plain, "--from") == ["reg/agent:1"]
     assert not {"--cpu", "--memory", "--driver-config-json"} & set(plain)
-    assert flag(create(True, SandboxEnv(providers=[])), "--from") == ["reg/agent:1"]  # no image: default
+    assert flag(create(True, SandboxEnv()), "--from") == ["reg/agent:1"]  # no image: default
 
 
 # ====================================================================== library and rendering
@@ -548,17 +554,23 @@ def test_image_recipe_rendering_is_content_addressed():
     assert set(r.files) == {"Dockerfile", "mise.toml"}
 
 
-def test_network_provider_is_credentialless_and_content_addressed():
-    pol = Policy(name="pypi", description="pypi", binaries=("/usr/bin/python3",), endpoints=PYPI)
-    prov = NetworkProvider.of(pol)
-    assert prov.body["credentials"] == [] and prov.id.startswith("legion-net-pypi-")
-    assert prov.body["endpoints"] == [{"host": "pypi.org", "port": 443, "protocol": "rest",
-                                       "enforcement": "enforce", "access": "read-only"}]
-    assert prov.profile()["id"] == prov.id
-    wider = Policy(name="pypi", description="pypi", binaries=("/usr/bin/python3",),
-                   endpoints=(Endpoint(host="pypi.org", port=443, access="read-write"),))
-    other_bins = Policy(name="pypi", description="pypi", binaries=("/usr/bin/uv",), endpoints=PYPI)
-    assert len({prov.id, NetworkProvider.of(wider).id, NetworkProvider.of(other_bins).id}) == 3
+def test_network_policy_becomes_a_sandbox_policy_rule(tmp_path):
+    """No credential, no provider: the policy is a network_policies entry of the sandbox policy,
+    open to the profile's binaries, merged after the template's own rules."""
+    pol = Policy(name="npm-registry", description="npm", binaries=("/opt/node/bin/npm",),
+                 endpoints=(Endpoint(host="registry.npmjs.org", port=443),))
+    key, entry = policy_entry(pol)
+    assert key == "env_npm_registry"
+    assert entry == {"name": "env-npm-registry", "binaries": [{"path": "/opt/node/bin/npm"}],
+                     "endpoints": [{"host": "registry.npmjs.org", "port": 443, "protocol": "rest",
+                                    "enforcement": "enforce", "access": "read-only"}]}
+    cfg = make_config(tmp_path, environment={})
+    doc = yaml.safe_load(render_policy(cfg, agent=True, push=True, mcp_tools=["report"],
+                                       network={key: entry}))
+    assert list(doc["network_policies"]) == ["legion_mcp", "legion_git", key]
+    assert doc["network_policies"][key] == entry
+    with pytest.raises(ValueError, match="legion_git"):
+        render_policy(cfg, agent=False, push=False, mcp_tools=[], network={"legion_git": entry})
 
 
 def test_resources_caps_and_driver_config(tmp_path):
@@ -574,8 +586,8 @@ def test_resources_caps_and_driver_config(tmp_path):
 
 # ====================================================================== builders
 def test_podman_builder_commands(tmp_path, monkeypatch):
-    """Build when the image is missing (and push with a registry); import the profile and create
-    the provider when missing; skip all of it when they exist; fail with the log."""
+    """Build when the image is missing (and push with a registry); skip it when it exists;
+    fail with the log."""
     from legion_orch.sandbox import builders
     cfg = make_config(tmp_path, environment={"registry": "reg.example.com/legion"})
     calls: list[list[str]] = []
@@ -596,16 +608,9 @@ def test_podman_builder_commands(tmp_path, monkeypatch):
                               mise_version="v1", user="sandbox", registry=cfg.environment.registry)
     ref, _ = asyncio.run(b.ensure_image(recipe))
     assert ref == recipe.tag and [c[1] for c in calls] == ["image", "build", "push"]
-    prov = NetworkProvider.of(Policy("pypi", "pypi", PYPI, ("/x",)))
-    calls.clear()
-    asyncio.run(b.ensure_provider(prov))
-    ops = [" ".join(c[c.index("--workspace") + 2:][:2]) for c in calls]
-    assert ops == ["profile export", "profile import", "provider get", "provider create"]
-    assert calls[-1][-4:] == ["--name", prov.id, "--type", prov.id]
-    exists.update({recipe.tag, prov.id})
+    exists.add(recipe.tag)
     calls.clear()
     asyncio.run(b.ensure_image(recipe))
-    asyncio.run(b.ensure_provider(prov))
     assert calls[0][1] == "image" and not any("create" in c or "build" in c for c in calls)
     exists.clear()
     fail.add("push")
