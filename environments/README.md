@@ -58,14 +58,14 @@ endpoints:
   - {host: files.pythonhosted.org, port: 443, access: read-only}
 ```
 
-A policy is only endpoints; tools say who uses it. As attached to one profile it becomes a
-credentialless OpenShell provider profile (`legion-net-<name>-<hash>`) whose `binaries` are those
-of the profile's tools that brought it (or that the profile added it for). Endpoints are inspected as
+A policy is only endpoints; tools say who uses it. It has no credential, so it is not an
+OpenShell provider: as attached to one profile it becomes a `network_policies` entry
+(`env_<name>`) in the sandbox policy of every role in that profile, whose `binaries` are those of
+the profile's tools that brought it (or that the profile added it for). Endpoints are inspected as
 `protocol: rest`, `enforcement: enforce`, `access: read-only` unless the entry says otherwise.
-The provider is created in `sandbox.workspace` and attached to the sandboxes of every role in
-that profile; OpenShell adds its endpoints to the sandbox's effective policy. Provider profiles
-are content-addressed: editing a policy or a tool's binaries creates a new one, and sandboxes
-that already run keep the one they were created with.
+The entries are resolved when the environment is provisioned and recorded with the build, so
+editing the library later does not change a provisioned change; sandboxes that already run keep
+the policy they were created with.
 
 Policies cannot carry credentials and may not target the controller host or loopback (G-E2).
 Name the narrowest hosts and paths that work. The library is checked as a whole at start-up and

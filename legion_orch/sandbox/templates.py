@@ -59,8 +59,7 @@ VOCABULARY: dict[str, str] = {
                    "(null: gateway default)",
     "VERIFIER_IMAGE": "image for verifier sandboxes: its environment image, else "
                       "sandbox.verifier_image or sandbox.image",
-    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: PROVIDER + sandbox.providers + "
-                         "its environment's network providers",
+    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: PROVIDER + sandbox.providers",
     "AGENT_BINARIES": "policy binaries [{path}] of the agent CLI (sandbox.agent_binaries)",
     "GIT_BINARIES": "policy binaries [{path}] of git and its HTTP remote helpers",
     "PROFILE_BINARIES": "plain paths of agent and git binaries, for the provider profile",
@@ -75,8 +74,7 @@ VOCABULARY: dict[str, str] = {
     "RUN_ID": "run id that created the sandbox (verifiers: the verifier name)",
     "ROLE": "role the sandbox serves (implementer, reviewer, ..., verifier)",
     "TASK_ID": "node / task id the sandbox serves (sanitised automatically in labels)",
-    "VERIFIER_PROVIDERS": "providers attached to verifier sandboxes: PROVIDER + its environment's "
-                          "network providers",
+    "VERIFIER_PROVIDERS": "providers attached to verifier sandboxes: PROVIDER",
     # environment resources (null when the spec leaves them out: driver defaults)
     "SANDBOX_CPU": "--cpu: vCPUs requested by the sandbox's environment profile",
     "SANDBOX_MEMORY": "--memory: memory requested by the sandbox's environment profile (<n>Mi)",

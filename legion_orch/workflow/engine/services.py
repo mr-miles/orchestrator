@@ -27,7 +27,7 @@ class Services:
     auth: WorkloadAuth
     tmp: Path                                   # transient payloads and live logs only
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # Builds environment images and network providers (podman + openshell; no-op locally).
+    # Builds environment images (podman; no-op locally).
     builder: EnvironmentBuilder = field(default_factory=NoBuilder)
     procs: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     # The gateway's MCP tool allowlist, set when the MCP server is built (sandbox policies).
@@ -41,13 +41,16 @@ class Services:
     def mcp_url(self) -> str:
         return self.cfg.server.mcp_url
 
-    def write_policy(self, dest: Path, *, agent: bool, push: bool) -> Path:
+    def write_policy(self, dest: Path, *, agent: bool, push: bool,
+                     network: dict[str, dict] | None = None) -> Path:
         """Sandbox policy from policies/{agent,verifier}-policy.template.yaml: MCP vetted by the
-        gateway (protocol: mcp, tool allowlist), git push only if the role may push."""
+        gateway (protocol: mcp, tool allowlist), git push only if the role may push, plus the
+        network policies of the sandbox's environment."""
         dest.parent.mkdir(parents=True, exist_ok=True)
         if self.mcp_tools is None:
             raise RuntimeError("MCP server not built: no tool allowlist for the sandbox policy")
-        dest.write_text(render_policy(self.cfg, agent=agent, push=push, mcp_tools=self.mcp_tools))
+        dest.write_text(render_policy(self.cfg, agent=agent, push=push, mcp_tools=self.mcp_tools,
+                                       network=network))
         return dest
 
 

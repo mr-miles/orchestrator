@@ -38,10 +38,11 @@ Gateway = Callable[[str], Awaitable[str]]
 
 @dataclass
 class SandboxEnv:
-    """A sandbox's environment (from the approved environment spec): image, network providers
-    and resources. None fields keep the configured defaults."""
+    """A sandbox's environment (from the approved environment spec): image, network policies
+    (``network_policies`` entries for the sandbox policy) and resources. None fields keep the
+    configured defaults."""
     image: str | None = None
-    providers: list[str] = field(default_factory=list)
+    network: dict[str, dict] = field(default_factory=dict)
     cpu: str | None = None              # --cpu
     memory: str | None = None           # --memory
     driver_config: str | None = None    # --driver-config-json (disk)
@@ -79,13 +80,11 @@ async def _run(argv: list[str], timeout: float, env: dict | None = None,
 
 
 def env_values(values: dict, env: SandboxEnv, *, agent: bool) -> dict:
-    """Template values for a sandbox with an environment: its image, providers and resources
-    (the agent or the verifier template's placeholders)."""
-    image, providers = ("AGENT_IMAGE", "SANDBOX_PROVIDERS") if agent else \
-        ("VERIFIER_IMAGE", "VERIFIER_PROVIDERS")
+    """Template values for a sandbox with an environment: its image and resources (the agent
+    or the verifier template's placeholders). Its network policies are in the policy file."""
+    image = "AGENT_IMAGE" if agent else "VERIFIER_IMAGE"
     out = dict(values) | {"SANDBOX_CPU": env.cpu, "SANDBOX_MEMORY": env.memory,
-                          "DRIVER_CONFIG": env.driver_config,
-                          providers: list(dict.fromkeys([*values[providers], *env.providers]))}
+                          "DRIVER_CONFIG": env.driver_config}
     if env.image:
         out[image] = env.image
     return out

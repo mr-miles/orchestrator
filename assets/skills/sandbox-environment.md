@@ -4,7 +4,7 @@ When your assignment asks for it, `plan/environment.json` declares the sandboxes
 with the code; it is part of the plan, so the commands you plan decide what it needs. It is
 critiqued with the plan, approved by a human (gate H-E1), then built by the controller: one
 container image per profile (the base agent or verifier image plus your tools, installed with
-**mise**), one OpenShell network provider per network policy, and the resources (`--cpu`,
+**mise**), the network policies as rules of each sandbox's policy, and the resources (`--cpu`,
 `--memory`; disk as driver config). On a rework, leave it as it is (attest its latest version)
 unless the plan's needs changed.
 

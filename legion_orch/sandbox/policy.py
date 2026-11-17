@@ -14,11 +14,14 @@ from __future__ import annotations
 import yaml
 
 from ..config import Config
+from .network import merge_network
 from .templates import base_values, git_push_deny_rules, render
 
 
-def render_policy(cfg: Config, *, agent: bool, push: bool, mcp_tools: list[str]) -> str:
+def render_policy(cfg: Config, *, agent: bool, push: bool, mcp_tools: list[str],
+                  network: dict[str, dict] | None = None) -> str:
+    """The sandbox policy; ``network`` adds the sandbox environment's network policies."""
     values = base_values(cfg, mcp_tools=mcp_tools) | {
         "GIT_PUSH_DENY_RULES": git_push_deny_rules(cfg, push and agent)}
     doc = render(cfg, "agent_policy" if agent else "verifier_policy", values)
-    return yaml.safe_dump(doc, sort_keys=False)
+    return yaml.safe_dump(merge_network(doc, network or {}), sort_keys=False)

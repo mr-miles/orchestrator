@@ -105,13 +105,15 @@ class Acceptance:
         (payload / "verify-setup.sh").write_text(VERIFY_SETUP_SH)
         ref = None
         try:
-            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False, push=False)
+            env = sandbox_env(self.c.change, VERIFIER)
+            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False, push=False,
+                                             network=env.network if env else None)
             if stale := governance.stale_environment(self.c):
                 raise SandboxError(stale)
             ref = await self.c.runner.create(SandboxSpec(
                 name=name, payload_dir=payload, policy_file=policy, agent=False,
                 change=self.c.cid, task=label, role="verifier", run=name,
-                env=sandbox_env(self.c.change, VERIFIER)))
+                env=env))
             self.c.svc.auth.register_verifier(
                 ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
             root = self.c.cfg.sandbox.root

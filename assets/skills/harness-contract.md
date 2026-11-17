@@ -10,6 +10,10 @@ You follow `read-before-write -> evidence-before-action -> minimal diff -> verif
   protected paths, never write documents outside your write scope.
 - Verification is part of the work. Run the commands you were given and record their exit codes
   before you report.
+- If you run a command in the background (`Monitor`, or `Bash` with `run_in_background`), its
+  exit code is unknown until its completion notice arrives. Wait for that notice before you
+  record the result or report; never report while a task you started is still running. Stop
+  any background process you no longer need before you report.
 - Finish with exactly one `report(...)` call whose status is `DONE` or `BLOCKED`. If the
   controller rejects the report it returns the violated guard ids – fix the cause and report
   again. You have a limited number of attempts.

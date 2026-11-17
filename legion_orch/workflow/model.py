@@ -490,7 +490,9 @@ class RoleEnvironment(Record):
     """The provisioned sandbox environment of one role (or the verifier) (G-PV1)."""
     profile: str
     image: str | None = None              # None: the configured default image
-    providers: list[str] = []             # network providers attached to the sandbox
+    # network_policies entries added to the sandbox policy (key -> entry), as resolved at
+    # provisioning; no credentials, so not OpenShell providers
+    network: dict[str, dict] = {}
     cpu: str | None = None                # sandbox create --cpu
     memory: str | None = None             # sandbox create --memory
     driver_config: str | None = None      # --driver-config-json (disk)

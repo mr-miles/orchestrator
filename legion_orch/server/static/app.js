@@ -5,6 +5,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 // name and JSON-encoded arguments, dispatched by one delegated listener (see bottom of file).
 const on = (name, ...args) => `data-on="${esc(name)}" data-args="${esc(JSON.stringify(args))}"`;
 const STATUSES = ['PENDING','READY','RUNNING','VERIFYING','REVIEWING','MERGING','REWORK','AWAITING_HUMAN','ESCALATED','ACCEPTED','FAILED'];
+// Progress bar order: finished on the left, then work in hand, waiting (grey) on the right.
+const PROGRESS_ORDER = ['ACCEPTED','FAILED','ESCALATED','AWAITING_HUMAN','REWORK','MERGING','REVIEWING','VERIFYING','RUNNING','READY','PENDING'];
 const color = s => getComputedStyle(document.documentElement).getPropertyValue('--'+s).trim() || '#888';
 let S = null, selected = null, tab = 'gates', docSel = null;
 $('#approver').value = localStorage.approver || '';
@@ -97,9 +99,9 @@ function renderPipeline() {
   $('#pipeline').innerHTML = html.replace(/<span class="arrow">→<\/span>$/, '') || '<span class="muted">—</span>';
   const counts = {}; S.nodes.forEach(n => counts[n.status] = (counts[n.status]||0)+1);
   const total = S.nodes.length || 1;
-  $('#progressbar').innerHTML = STATUSES.filter(s => counts[s]).map(s => `<div title="${s}: ${counts[s]}" style="width:${100*counts[s]/total}%;background:${color(s)}"></div>`).join('');
+  $('#progressbar').innerHTML = PROGRESS_ORDER.filter(s => counts[s]).map(s => `<div title="${s}: ${counts[s]}" style="width:${100*counts[s]/total}%;background:${color(s)}"></div>`).join('');
   const acc = counts.ACCEPTED || 0;
-  $('#progresstext').innerHTML = `${acc}/${S.nodes.length} nodes accepted · ` + STATUSES.filter(s => counts[s]).map(s => `${s.toLowerCase()} ${counts[s]}`).join(' · ')
+  $('#progresstext').innerHTML = `${acc}/${S.nodes.length} nodes accepted · ` + PROGRESS_ORDER.filter(s => counts[s]).map(s => `${s.toLowerCase()} ${counts[s]}`).join(' · ')
     + ` · ${S.runs.length} run(s), ${S.runs.filter(r => ['STARTING','ACTIVE'].includes(r.status)).length} live`;
 }
 
@@ -280,7 +282,7 @@ function environmentSpecHtml() {
 }
 
 function environmentCard() {
-  return `<div class="card"><b>Approve sandbox environment</b> <span class="muted">(the controller then builds the images with mise and podman and creates the network providers; highlighted entries are proposed, not yet in the library)</span>
+  return `<div class="card"><b>Approve sandbox environment</b> <span class="muted">(the controller then builds the images with mise and podman and adds the network policies to each sandbox's policy; highlighted entries are proposed, not yet in the library)</span>
       ${environmentSpecHtml()}
       <textarea id="f_text" placeholder="feedback for revision / approval note"></textarea>
       <button class="act ok" ${on('act', 'H-E1', 'approve', 'feedback')}>Approve</button>
@@ -290,9 +292,9 @@ function environmentCard() {
 function environmentBuildHtml() {
   const b = (S.change||{}).environment;
   if (!b) return '';
-  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>role</th><th>profile</th><th>image</th><th>network providers</th><th>resources</th></tr>
+  return `<h2 style="margin-top:10px">Provisioned environment</h2><table><tr><th>role</th><th>profile</th><th>image</th><th>network policies</th><th>resources</th></tr>
     ${Object.entries(b.roles).map(([r, x]) => `<tr><td><b>${esc(r)}</b></td><td>${esc(x.profile)}</td><td class="mono">${esc(x.image||'default')}</td>
-      <td class="mono">${(x.providers||[]).map(esc).join('<br>')||'—'}</td><td class="mono">${[x.cpu && `--cpu ${x.cpu}`, x.memory && `--memory ${x.memory}`, x.driver_config && `driver ${x.driver_config}`].filter(Boolean).map(esc).join('<br>')||'—'}</td></tr>`).join('')}</table>
+      <td class="mono">${Object.values(x.network||{}).map(n => `${esc(n.name)}: ${(n.endpoints||[]).map(e => esc(`${e.host}:${e.port}`)).join(', ')}`).join('<br>')||'—'}</td><td class="mono">${[x.cpu && `--cpu ${x.cpu}`, x.memory && `--memory ${x.memory}`, x.driver_config && `driver ${x.driver_config}`].filter(Boolean).map(esc).join('<br>')||'—'}</td></tr>`).join('')}</table>
     <div class="mono muted">${[b.spec, b.log, b.attestation].filter(Boolean).map(a=>`<a ${on('openAtt', a)}>${esc(a)}</a>`).join('<br>')}</div>`;
 }
 
@@ -440,7 +442,8 @@ function openAtt(a) { const m = /^file:(.+)@(\d+)$/.exec(a); if (m) openDoc(m[1]
 // (or following the end when scrolled to the bottom) and any expanded entries.
 let LOG = null;   // {id, raw, data, timer}
 const LOG_KIND = {sandbox:'sandbox', init:'agent start', text:'agent', prompt:'input', thinking:'thinking',
-                  tool_call:'tool', tool_result:'result', result:'final result', event:'event'};
+                  tool_call:'tool', tool_result:'result', result:'final result',
+                  waiting:'turn ended, waiting', task:'background task', event:'event'};
 function entryHtml(e) {
   const body = e.text ? `<div class="lt">${esc(e.text)}</div>` : '';
   const head = `<span class="lk">${esc(LOG_KIND[e.kind]||e.kind)}</span>${e.title?`<b>${esc(e.title)}</b>`:''}`;
