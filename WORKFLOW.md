@@ -689,7 +689,7 @@ guards, because a per-file schema cannot express them.
 * [`taskgraph-schema`](assets/skills/taskgraph-schema.md)
 * [`sandbox-environment`](assets/skills/sandbox-environment.md)
 * [`language-preferences`](assets/skills/language-preferences.md) – the house conventions per
-  language (Python: uv, ruff, pytest), shared by every role that plans, writes, tests or judges
+  language (Python: uv, ruff, pytest; web frontends: React, TypeScript, Vite, bun), shared by every role that plans, writes, tests or judges
   code; edit it to steer what the orchestrator produces
 * [`pre-mortem`](assets/skills/pre-mortem.md)
 * [`finding-format`](assets/skills/finding-format.md)
