@@ -6,3 +6,7 @@ authentication failures, integrity failures (deserialisation, unsigned updates),
 monitoring gaps, SSRF. Then walk STRIDE over each new entry point: Spoofing, Tampering,
 Repudiation, Information disclosure, Denial of service, Elevation of privilege. Scan the diff for
 secrets. Every security finding needs an exploit sketch in `impact`.
+
+For a web UI, also check that it still runs under `script-src 'self'` (no inline script or `on*=`
+handlers, no library that injects one), that untrusted text is never rendered as HTML
+(`dangerouslySetInnerHTML`, `innerHTML`, `v-html`), and that tokens are not kept in `localStorage`.
