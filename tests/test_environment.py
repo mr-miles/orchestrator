@@ -493,6 +493,10 @@ def test_every_seeded_tool_resolves_to_absolute_binaries():
         assert tool.binaries, f"{name} declares no binaries"
     node, _ = resolve_tool("node", lib.tools["node"], None)       # node, npm and npx
     assert node.binaries == ("/usr/local/share/mise/installs/node/*/bin/*",)
+    bun, _ = resolve_tool("bun", lib.tools["bun"], None)          # bun and bunx (a link to it)
+    assert bun.binaries == ("/usr/local/share/mise/installs/bun/*/bin/*",)
+    assert lib.tools["bun"].network == ["npm-registry"]            # scoped packages: encoded slash
+    assert "shadcn-registry" in lib.policies                       # opt-in, per profile
 
 
 def test_selected_tools_bring_their_network_for_their_own_binaries():

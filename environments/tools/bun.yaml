@@ -1,0 +1,8 @@
+description: Bun JavaScript runtime, package manager and test runner (bun, bunx)
+mise: {bun: "1.4"}
+binaries: ["bin/*"]                          # bun, and bunx (a link to it)
+network: [npm-registry]                      # bun install / bunx fetch from the npm registry
+env:
+  BUN_INSTALL_CACHE_DIR: /tmp/bun-cache      # sandboxes may write /tmp, not necessarily $HOME
+  # crash reports and telemetry go to hosts no sandbox reaches: do not try
+  DO_NOT_TRACK: "1"
