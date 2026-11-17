@@ -5,7 +5,7 @@ from __future__ import annotations
 from .. import guards
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
-from ..model import CRITIQUE, H_ENV, H_SPEC, PENDING, Node
+from ..model import H_ENV, H_SPEC, REVIEWING, Node
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -66,5 +66,6 @@ class Planner(RoleHandler):
         return v
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
-        await super().on_done(e, r)
-        e.nodes[CRITIQUE].status = PENDING       # (re-)critique the new plan
+        """The plan is critiqued next (the critic is dispatched while it is REVIEWING); it is
+        accepted when the critic passes it."""
+        r.node.status = REVIEWING

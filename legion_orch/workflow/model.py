@@ -18,7 +18,7 @@ from ..util import now_iso
 class NodeKind(StrEnum):
     INTAKE = "intake"
     PLAN = "plan"
-    CRITIQUE = "critique"
+    CRITIQUE = "critique"                # stores from before critique was part of the plan node
     PROVISION = "provision"
     ORACLE = "oracle"
     BASELINE = "baseline"
@@ -145,7 +145,7 @@ class Resume(StrEnum):
     READY = "READY"                       # dispatch the node again
     REWORK = "REWORK"                     # dispatch a rework run in the same cycle
     REWORK_CYCLE = "REWORK_CYCLE"         # grant one more cycle and rework
-    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more critique cycle; the plan is reworked
+    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more plan cycle; the plan is reworked
     VERIFYING = "VERIFYING"               # re-run deterministic verification
     REVIEWING = "REVIEWING"               # re-dispatch the missing panel member(s)
 
@@ -164,7 +164,7 @@ R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(Run
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
 # Which agent role executes each node kind
-ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", CRITIQUE: "critic", ORACLE: "oracle",
+ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
                  RELEASE: "release", RETRO: "retrospective"}
 
