@@ -108,7 +108,10 @@ class DocStore:
               base_version: int | None = None, schema: str | None = None) -> DocVersion:
         """Create a new version. ``base_version`` must equal the current latest version
         (``None`` only for a new path) – optimistic concurrency (guard G-W2). The content must
-        match the schema bound to ``path``; ``schema``, if given, must name that schema (G-W3)."""
+        match the schema bound to ``path``; ``schema``, if given, must name that schema (G-W3).
+
+        Content identical to the latest version creates nothing: that version is returned (its
+        ``version`` then equals ``base_version``)."""
         if not PATH_RE.match(path) or len(path) > 512:
             raise DocStoreError(f"invalid document path {path!r}")
         data = content.encode()
@@ -123,8 +126,13 @@ class DocStore:
             if latest != base_version:
                 raise VersionConflict(
                     f"G-W2: base_version {base_version} != latest {latest} for {path}")
+            digest = "sha256:" + hashlib.sha256(data).hexdigest()
+            if latest is not None:
+                current = self.read(path, latest)
+                if current.sha256 == digest:
+                    return current
             v = DocVersion(path=path, version=(latest or 0) + 1, content=content,
-                           sha256="sha256:" + hashlib.sha256(data).hexdigest(),
+                           sha256=digest,
                            author=author, role=role, created_at=now_iso(),
                            schema=sch.name, schema_sha=sch.sha)
             self.conn.execute(

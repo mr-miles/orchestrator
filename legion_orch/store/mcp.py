@@ -64,14 +64,17 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
                              "the current latest version (omit for a new document). The content "
                              "must match the schema bound to the path (see docs_schema). Returns "
                              "the attestation file:<path>@<version> to cite. At most 2 MiB of "
-                             "content per version.")
+                             "content per version. Content identical to the latest version "
+                             "creates no new version: that version is returned with "
+                             "unchanged=true.")
     async def docs_write(ctx: Context, path: str, content: str, base_version: int | None = None) -> dict:
         s = session(ctx)
         try:
             v = await s.write(s.resolve(path), content, base_version)
         except DocStoreError as e:
             raise ToolError(str(e)) from None
-        return v.meta().to_json()
+        # identical to the latest version: no new version was created
+        return v.meta().to_json() | {"unchanged": v.version == base_version}
 
     @server.tool(description="The schema a document path is bound to (name, format, definition). "
                              "Every write is validated against it; check before writing.")

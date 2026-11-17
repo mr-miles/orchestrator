@@ -79,6 +79,11 @@ class Reports:
             raise WorkflowError(f"G-W4: write quota exhausted: this run has written {run.doc_bytes} "
                                 f"bytes; this write needs {size} more (limit {lim.max_doc_bytes_per_run})")
         v = self.c.docs.write(path, content, author=run.id, role=run.role, base_version=base_version)
+        if v.version == base_version:            # identical to the latest: no new version
+            if v.author != run.id and v.attestation not in run.confirmed_docs:
+                run.confirmed_docs.append(v.attestation)
+            self.c.event("doc", f"{v.attestation} unchanged", run.node_id, run.id)
+            return v
         run.docs_written += 1
         run.doc_bytes += size
         self.c.event("doc", f"{v.attestation} written", run.node_id, run.id)
@@ -224,7 +229,8 @@ class Reports:
         """Required documents and git (G-R4/G-R5, G-B2), then the role handler's own guards.
         Returns the violations and, once the generic checks pass, the typed report."""
         role = self.c.assets.roles[run.role]
-        found, v = guards.required_docs(run.id, run.required_docs, parsed, self.c.docs)
+        found, v = guards.required_docs(run.id, run.required_docs, parsed, self.c.docs,
+                                        run.confirmed_docs)
         sha, vg = guards.required_git(role.git, parsed, self.c.cfg.repo.name, run.judged_sha)
         v += vg
         if v:

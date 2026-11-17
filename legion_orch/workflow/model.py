@@ -388,6 +388,9 @@ class Run(Record):
     assignment: dict[str, Any] = {}
     attempts: int = 0
     docs_written: int = 0                 # document versions written by this run (G-W4 quota)
+    # versions this run wrote again unchanged (written earlier by another run or the controller):
+    # they count as its own for G-R4
+    confirmed_docs: list[str] = []
     doc_bytes: int = 0
     violations: list[list[str]] = []
     report: RunReport | None = None
