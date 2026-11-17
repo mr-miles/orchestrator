@@ -129,14 +129,19 @@ class Provisioner:
                                                         "\n\n".join(log)).attestation)
             build.attestation = c.write_record("control/environment/build.json", build).attestation
             c.change.environment = build
-            # Sandboxes kept across cycles were created from the previous build (reprovision):
-            # release them, so each node's next run starts fresh in this one.
-            released = sorted({n.sandbox for n in c.nodes.values() if n.sandbox})
-            for n in c.nodes.values():
-                n.sandbox = None
-            for sb in released:
-                c.event("provision", f"released sandbox {sb} of the previous build", PROVISION)
-                self.lifecycle.delete_sandbox_later(sb)
+            # A kept sandbox of a role this build maps was created from an earlier build or the
+            # default image: release it (after its agent reflects), so the node's next run
+            # starts in this one. Other roles' sandboxes (the planner's) are untouched by builds.
+            for sb in sorted({n.sandbox for n in c.nodes.values() if n.sandbox}):
+                if not {r.role for r in c.runs.values() if r.sandbox == sb} & set(roles):
+                    continue
+                stopped = False
+                for n in c.nodes.values():
+                    if n.sandbox == sb:
+                        stopped = stopped or n.sandbox_stopped
+                        n.sandbox, n.sandbox_stopped = None, False
+                c.event("provision", f"released sandbox {sb}: not from this build", PROVISION)
+                self.lifecycle.delete_sandbox_later(sb, stopped)
             node.status = ACCEPTED
             c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                     PROVISION)

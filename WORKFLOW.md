@@ -414,8 +414,10 @@ H-E1-approved spec against the current library again, e.g. after a library entry
 does not change the spec: a tool or policy the spec does not name needs a plan revision and a
 new H-E1. New runs of mapped roles wait from the request on; provisioning starts once their live
 runs have ended and nothing is verifying or merging, and the old build stays in place until the
-new one is accepted. Sandboxes kept across cycles (implementers) are then released, so each
-node's next run starts fresh in the new build and continues from its pushed branch.
+new one is accepted. Sandboxes kept across cycles by mapped roles (implementers) are then
+released, after their agent reflects, so each node's next run starts fresh in the new build and
+continues from its pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps
+its session to H-2 through H-E1 and provisioning.
 
 ### 5.4 `oracle` (R2+) – protected acceptance tests
 

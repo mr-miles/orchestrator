@@ -129,8 +129,12 @@ class Reflector:
             return
         async with c.lock:
             runs = self._session_runs(sandbox)
-            if not runs or c.latest(reflection_path(runs[-1].id)):
+            if not runs:
+                c.event("reflection", f"sandbox {sandbox}: no agent session recorded; "
+                                      "no reflection")
                 return
+            if c.latest(reflection_path(runs[-1].id)):
+                return                      # already reflected (a release seen twice)
             last = runs[-1]
             prompt = reflection_prompt(c, runs)
             soul = c.assets.soul(last.soul) if last.soul in c.assets.souls_ else ""
