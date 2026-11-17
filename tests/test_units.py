@@ -566,13 +566,17 @@ def test_attestations_cannot_carry_markup():
     assert parse(f"git:app/src/a_b-c.d/e+f=g.py@{SHA}", ["app"]).path == "src/a_b-c.d/e+f=g.py"
 
 
-def test_ui_has_no_inline_script():
-    static = ROOT / "legion_orch/server/static"
+def test_ui_has_no_inline_script_or_raw_html():
+    """The UI renders agent-authored text and is served with a CSP without inline script: its
+    page has no inline script or handlers, React never injects raw HTML, and the operator token
+    is never persisted beyond the browser session."""
+    ui = ROOT / "frontend"
     inline = re.compile(r'\son[a-z]+\s*=\s*["\']', re.I)     # HTML attribute form, e.g. onclick="
-    html, js = (static / "index.html").read_text(), (static / "app.js").read_text()
-    assert "<script>" not in html and not inline.findall(html)
-    assert not inline.findall(js), inline.findall(js)          # handlers are data-on + delegation
-    assert "localStorage.optoken" not in js
+    html = (ui / "index.html").read_text()
+    assert not re.search(r"<script(?![^>]*\bsrc=)", html) and not inline.findall(html)
+    src = "".join(p.read_text() for p in (ui / "src").rglob("*.ts*"))
+    assert "dangerouslySetInnerHTML" not in src and "innerHTML" not in src
+    assert "localStorage.setItem(\"optoken" not in src and "localStorage.setItem('optoken" not in src
 
 
 def test_server_ports_must_be_distinct(tmp_path):

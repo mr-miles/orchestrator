@@ -25,6 +25,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     Response,
@@ -44,7 +45,10 @@ from . import views
 from .mcp import build_mcp
 
 log = logging.getLogger("legion.server")
-STATIC = Path(__file__).parent / "static"
+# The web UI: frontend/ built with bun (`bun run build`) into static/dist at packaging time.
+UI_DIST = Path(__file__).parent / "static" / "dist"
+NOT_BUILT = ("<!doctype html><title>Legion Orchestrator</title><p>The web UI is not built. Run "
+             "<code>bun install &amp;&amp; bun run build</code> in <code>frontend/</code>.</p>")
 # The UI renders agent-authored text. Scripts may only come from this origin (no inline script or
 # inline event handlers), so injected markup cannot execute; responses are never sniffed or framed.
 SECURITY_HEADERS = {
@@ -55,6 +59,9 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "X-Frame-Options": "DENY",
 }
+# Server-sent events: reconnect delay for the browser, the longest wait before re-checking, a
+# pause after sending so a burst of transitions makes one update, and the idle keep-alive.
+SSE_RETRY_MS, SSE_TICK_S, SSE_COALESCE_S, SSE_HEARTBEAT_S = 2000, 1.0, 0.1, 15.0
 # The controller's own records (changes/<cid>/control/: state, graph, logs, verification) are
 # hidden from the default document listing; they stay readable, and ?all=1 lists them.
 CONTROL = "/control/"
@@ -200,12 +207,24 @@ def build_app(ctl: Controller) -> Starlette:
             raise BadRequest(f"{name} must be a non-negative integer")
         return int(raw)
 
-    # ---- static
+    # ---- static: the built UI (frontend/ -> static/dist)
     async def index(_: Request):
-        return FileResponse(STATIC / "index.html", headers=SECURITY_HEADERS)
+        page = UI_DIST / "index.html"
+        if not page.is_file():
+            return HTMLResponse(NOT_BUILT, status_code=503, headers=SECURITY_HEADERS)
+        return FileResponse(page, headers=SECURITY_HEADERS | {"Cache-Control": "no-cache"})
 
-    async def app_js(_: Request):
-        return FileResponse(STATIC / "app.js", media_type="text/javascript", headers=SECURITY_HEADERS)
+    async def ui_file(request: Request):
+        """Hashed bundle files (``/assets/…``) and the UI's public files (e.g. the icon)."""
+        if request.method not in ("GET", "HEAD"):
+            return PlainTextResponse("not found", status_code=404)
+        rel = request.path_params["path"]
+        root = UI_DIST.resolve()
+        f = (root / rel).resolve()
+        if not f.is_file() or root not in f.parents or f.name == "index.html":
+            return PlainTextResponse("not found", status_code=404)
+        cache = "public, max-age=31536000, immutable" if rel.startswith("assets/") else "no-cache"
+        return FileResponse(f, headers=SECURITY_HEADERS | {"Cache-Control": cache})
 
     async def workflow(_: Request):
         p = ctl.cfg.workflow_doc
@@ -255,17 +274,73 @@ def build_app(ctl: Controller) -> Starlette:
                 "failure": run.failure.model_dump(mode="json") if run.failure else None,
                 "live": run.status in LIVE_RUN, "entries": agentlog.entries(text)}
 
-    async def stream(request: Request):
+    def sse(gen) -> StreamingResponse:
+        return StreamingResponse(gen, media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    def event(name: str, data) -> str:
+        return f"event: {name}\ndata: {compact(data)}\n\n"
+
+    def compact(data) -> str:
+        return json.dumps(data, separators=(",", ":"))
+
+    @api()
+    async def change_events(request: Request):
+        """Server-sent events for one change: ``state`` (everything the UI shows for it) and
+        ``changes`` (the change list) – each sent on connect and then whenever it differs, never
+        polled. A comment line every ``SSE_HEARTBEAT_S`` keeps idle connections open."""
+        ce = ctl.get(request.path_params["cid"])
+
         async def gen():
-            last = -1
+            yield f"retry: {SSE_RETRY_MS}\n\n"
+            sent: dict[str, str] = {}
+            seen, quiet = -1, 0.0
             while not ctl.stopping.is_set() and not await request.is_disconnected():
-                if ctl.version != last:
-                    last = ctl.version
-                    yield f"data: {json.dumps({'version': last})}\n\n"
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(ctl.stopping.wait(), 0.5)
-        return StreamingResponse(gen(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache"})
+                if ctl.version != seen:
+                    seen, quiet = ctl.version, 0.0
+                    for name, data in (("changes", views.change_list(ctl)),
+                                       ("state", views.change_state(ctl, ce))):
+                        payload = compact(data)
+                        if sent.get(name) != payload:
+                            sent[name] = payload
+                            yield f"event: {name}\ndata: {payload}\n\n"
+                    await asyncio.sleep(SSE_COALESCE_S)     # a burst of transitions, one update
+                elif quiet >= SSE_HEARTBEAT_S:
+                    quiet = 0.0
+                    yield ": keep-alive\n\n"
+                await ctl.wait_version(seen, SSE_TICK_S)
+                quiet += SSE_TICK_S
+        return sse(gen())
+
+    @api()
+    async def log_events(request: Request):
+        """Server-sent events for a run's agent log: ``log`` with the run's status and the display
+        entries that changed (``from``: the first index that differs from what was sent; the
+        client keeps entries before it), then ``end`` once the run has finished. The log grows
+        without state changes, so it is re-read every ``SSE_TICK_S`` while the run is live."""
+        ce, run = ctl.find_run(request.path_params["run_id"])
+        lines = int_param(request, "lines", 5000)
+
+        async def gen():
+            yield f"retry: {SSE_RETRY_MS}\n\n"
+            sent: list[dict] = []
+            status = None
+            while not ctl.stopping.is_set() and not await request.is_disconnected():
+                entries = agentlog.entries(ce.log_tail(run.id, lines))
+                head = {"run": run.id, "status": run.status, "stage": run.stage,
+                        "failure": run.failure.model_dump(mode="json") if run.failure else None,
+                        "live": run.status in LIVE_RUN}
+                start = next((i for i, (a, b) in enumerate(zip(sent, entries, strict=False))
+                              if a != b), min(len(sent), len(entries)))
+                if start < len(entries) or len(entries) != len(sent) or head != status:
+                    yield event("log", head | {"from": start, "entries": entries[start:],
+                                               "total": len(entries)})
+                    sent, status = entries, head
+                if not head["live"]:
+                    yield event("end", {"run": run.id})
+                    return
+                await ctl.wait_version(ctl.version, SSE_TICK_S)
+        return sse(gen())
 
     # ---- writes (human decisions)
     @api(write=True)
@@ -295,7 +370,6 @@ def build_app(ctl: Controller) -> Starlette:
 
     return Starlette(routes=[
         Route("/", index),
-        Route("/app.js", app_js),
         Route("/api/workflow", workflow),
         Route("/api/meta", meta),
         Route("/api/changes", list_changes, methods=["GET"]),
@@ -303,8 +377,11 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/changes/{cid}/state", state),
         Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
-        Route("/api/stream", stream),
+        Route("/api/changes/{cid}/events", change_events),
+        Route("/api/runs/{run_id}/log/events", log_events),
         Route("/api/docs", docs),
         Route("/api/doc", doc),
         Route("/api/runs/{run_id}/log", run_log),
+        # last: the UI's bundle and public files (anything else, by any method, is a 404)
+        Route("/{path:path}", ui_file, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
     ], lifespan=lifespan)
