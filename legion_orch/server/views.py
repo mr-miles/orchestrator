@@ -5,7 +5,7 @@ from ..workflow import governance
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.engine.common import ENV_SPEC
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
-from ..workflow.model import ACCEPTED, H_ENV, LIVE_RUN
+from ..workflow.model import ACCEPTED, H_ENV, LIVE_RUN, RETRO
 
 
 def change_list(ctl: Controller) -> list[dict]:
@@ -16,7 +16,8 @@ def change_list(ctl: Controller) -> list[dict]:
                     "created_at": c.created_at,
                     "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
                     "nodes": len(ce.nodes),
-                    "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values())})
+                    "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values()),
+                    "retrospective": ce.nodes[RETRO].status if RETRO in ce.nodes else None})
     return sorted(out, key=lambda c: c["created_at"], reverse=True)
 
 

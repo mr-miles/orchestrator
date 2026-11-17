@@ -78,9 +78,13 @@ function short(sha) { return sha ? `<code>${sha.slice(0,10)}</code>` : '—'; }
 function renderHeader() {
   const c = S.change;
   $('#startbox').style.display = (showStart || !CHANGES.length) ? '' : 'none';
-  $('#changeSel').innerHTML = CHANGES.length ? CHANGES.map(x => `<option value="${esc(x.id)}" ${x.id===CID?'selected':''}>${esc(x.id)} · ${esc(x.status)}${x.tier?' · '+x.tier:''}${x.live_runs?' · '+x.live_runs+' live':''} · ${esc(x.goal.slice(0,40))}</option>`).join('') : '<option>no changes yet</option>';
+  $('#changeSel').innerHTML = CHANGES.length ? CHANGES.map(x => `<option value="${esc(x.id)}" ${x.id===CID?'selected':''}>${esc(x.id)} · ${esc(x.status)}${x.tier?' · '+x.tier:''}${x.live_runs?' · '+x.live_runs+' live':''}${x.retrospective&&x.retrospective!=='ACCEPTED'?' · retrospective '+x.retrospective.toLowerCase():''} · ${esc(x.goal.slice(0,40))}</option>`).join('') : '<option>no changes yet</option>';
   if (!c) { $('#hdr').innerHTML = `${esc(S.project)} · repo <b>${esc(S.repo)}</b> · no changes`; return; }
-  $('#hdr').innerHTML = `${esc(S.project)} · <b>${esc(c.id)}</b> · ${badge(c.status)} · tier ${c.tier ? `<b>${c.tier}</b>` : '<i>unassessed</i>'}
+  const retro = S.nodes.find(n => n.kind === 'retrospective');
+  const retroBadge = !retro ? '' : retro.status === 'ACCEPTED'
+    ? ` · <a ${on('openDoc', docPath('retro/report.md'))}>retrospective report</a>`
+    : ` · <a ${on('select', retro.id)}>${badge(retro.status)} retrospective</a>`;
+  $('#hdr').innerHTML = `${esc(S.project)} · <b>${esc(c.id)}</b> · ${badge(c.status)}${retroBadge} · tier ${c.tier ? `<b>${c.tier}</b>` : '<i>unassessed</i>'}
     · base ${short(c.base_sha)} · integration ${short(c.integration_head)} · <span class="muted" title="${esc(c.goal)}">${esc(c.goal.slice(0,90))}</span>`;
 }
 
@@ -118,6 +122,9 @@ function layout(nodes) {
   const ancestors = id => { if (anc[id]) return anc[id]; anc[id] = new Set();
     for (const x of deps(id)) { anc[id].add(x); ancestors(x).forEach(a => anc[id].add(a)); } return anc[id]; };
   nodes.forEach(n => d(n.id));
+  // the retrospective depends on nothing (it runs however the change ended) but comes last
+  const last = Math.max(0, ...nodes.filter(n => n.kind !== 'retrospective').map(n => depth[n.id]));
+  nodes.filter(n => n.kind === 'retrospective').forEach(n => { depth[n.id] = last + 1; });
   // transitive reduction: drop dep x of n when another dep of n already depends on x
   const kept = [];
   for (const n of nodes) { const ds = deps(n.id);
@@ -347,6 +354,7 @@ const PAYLOADS = {
   override_gate: () => ({kind: $('#o_kind').value, gate: $('#o_gate').value, reason: $('#o_reason').value,
                          evidence: $('#o_evidence').value}),
   protected: () => ({task: $('#p_task').value, paths: csv('#p_paths'), reason: $('#p_reason').value}),
+  retro: () => ({focus: $('#r_focus').value}),
   surface: surface => ({surface, reason: prompt('Why does this surface still describe the real interface? (≥24 chars)') || ''}),
 };
 function actClick(node, action, payloadKey, arg, confirmText) {
@@ -405,7 +413,12 @@ async function renderTab(force) {
 function governanceHtml(c) {
   const atts = Object.values(c.attestations||{});
   const tasks = S.nodes.filter(n=>n.kind==='build').map(n=>n.task.id);
-  return `<h2 style="margin-top:14px">Governance</h2>
+  const retro = S.nodes.find(n=>n.kind==='retrospective');
+  const retroHtml = c.status === 'ACTIVE' ? '' : `<div class="card"><b>Retrospective</b> <span class="muted">an agent studies the change's logs, reflections and reviews and proposes improvements to the souls, skills and process${retro?` · ${esc(retro.status)} (cycle ${retro.cycle})`:''}</span>
+      ${retro&&retro.status==='ACCEPTED'?`<div><a ${on('openDoc', docPath('retro/report.md'))}>retro/report.md</a></div>`:''}
+      <input id="r_focus" placeholder="focus (optional): what to look at">
+      <button class="act" ${on('govern', 'retrospective', 'retro')}>${retro?'Run another retrospective':'Run retrospective'}</button></div>`;
+  return retroHtml + `<h2 style="margin-top:14px">Governance</h2>
     <table><tr><th>attestation</th><th>verdict</th><th>by</th><th>sources</th></tr>${atts.map(a=>`<tr><td>${esc(a.kind)}</td><td>${esc(a.verdict)}</td><td>${esc(a.attested_by)}</td><td class="mono">${a.sources.map(x=>`<a ${on('openAtt', x)}>${esc(x)}</a>`).join('<br>')}${a.warnings.length?`<div class="err">${a.warnings.map(esc).join('<br>')}</div>`:''}</td></tr>`).join('') || '<tr><td colspan=4 class="muted">none</td></tr>'}</table>
     <div class="card"><b>Attest</b><div class="grid2">
       <select id="g_kind">${(S.attestation_kinds||[]).map(k=>`<option>${k}</option>`).join('')}</select>
@@ -432,7 +445,7 @@ async function govern(action, payload) {
   const approver = $('#approver').value.trim();
   if (!approver) { alert('Enter your approver id (top right).'); return; }
   try { const r = await api(`/api/changes/${CID}/action`, {action, approver, payload});
-    if (r.warnings && r.warnings.length) alert(r.warnings.join('\n')); await refresh(); }
+    if (r.warnings && r.warnings.length) alert(r.warnings.join('\n')); else if (r.note) alert(r.note); await refresh(); }
   catch (e) { alert(e.message); }
 }
 function openDoc(path, version) { docSel = {path, version}; tab = 'docs'; renderTabs(); renderTab(); }
