@@ -705,3 +705,14 @@ def test_npm_registry_keeps_encoded_slashes_for_scoped_packages():
                                              endpoints=tuple(lib.policies[name].endpoints)))[1]
     assert [e.get("allow_encoded_slash") for e in entry("npm-registry")["endpoints"]] == [True]
     assert all("allow_encoded_slash" not in e for e in entry("pypi")["endpoints"])   # unset: omitted
+
+
+def test_npm_registry_is_read_only_and_keeps_encoded_slashes():
+    """npm fetches scoped packages as /@scope%2fname; the gateway rejects %2F unless the endpoint
+    allows it."""
+    lib = library()
+    pol = Policy(name="npm-registry", description="", binaries=("/x",),
+                 endpoints=tuple(lib.policies["npm-registry"].endpoints))
+    assert policy_entry(pol)[1]["endpoints"] == [{
+        "host": "registry.npmjs.org", "port": 443, "protocol": "rest", "enforcement": "enforce",
+        "access": "read-only", "allow_encoded_slash": True}]
