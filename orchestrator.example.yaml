@@ -41,6 +41,7 @@ sandbox:
   image: registry.example.com/your-org/claude-agent:latest
   verifier_image: registry.example.com/your-org/toolchain:latest
   providers: [claude-code]       # model credentials; legion-mcp and legion-git(-push) are added automatically
+  # agent_bin: claude             # the agent CLI in the image (the controller builds its flags)
   agent_binaries: [/usr/local/bin/claude]   # binaries allowed to call the controller's MCP
   # git_binaries: [/usr/bin/git, /usr/lib/git-core/git-remote-http, /usr/lib/git-core/git-remote-https]
   #   allowed to reach the controller's git remote; Fedora/RHEL/Alpine use /usr/libexec/git-core/

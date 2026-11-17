@@ -14,7 +14,6 @@ import inspect
 import json
 import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
@@ -184,7 +183,7 @@ def make_config(tmp_path: Path, *, blank_repo: bool = False, environment: dict |
         sandbox:
           runner: local
           templates_dir: {ROOT / 'policies'}
-          agent_command: "{sys.executable} -c pass"
+          agent_bin: "true"
     """))
     if environment is not None:
         env = {"library_dir": str(ROOT / "environments")} | environment

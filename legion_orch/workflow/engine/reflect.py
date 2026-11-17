@@ -13,6 +13,7 @@ import json
 import shlex
 import shutil
 
+from ...config import agent_command
 from ...sandbox import RUN_AGENT_SH, agentlog
 from ..model import Run
 from .core import ChangeCore
@@ -201,7 +202,7 @@ class Reflector:
         (payload / "soul.md").write_text(soul)
         (payload / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
         env = {"LEGION_RUN_ID": rid, "LEGION_ROLE": last.role, "LEGION_NEEDS_REPO": "0",
-               "LEGION_AGENT_COMMAND": c.cfg.sandbox.agent_command,
+               "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox),
                "LEGION_RESUME_SESSION": last.session_id, "LEGION_REQUIRE_SESSION": "1"}
         (payload / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n"
                                                  for k, v in env.items()))

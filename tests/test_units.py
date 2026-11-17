@@ -845,16 +845,16 @@ def test_default_agent_command_finds_the_payload(tmp_path):
     import shlex
     import subprocess
 
-    from legion_orch.config import SandboxConfig
+    from legion_orch.config import SandboxConfig, agent_command
     from legion_orch.sandbox import RUN_AGENT_SH
     sb, bin_dir = tmp_path / "sb", tmp_path / "bin"
     (sb / "payload").mkdir(parents=True)
     bin_dir.mkdir()
     for name, text in (("soul.md", "SOUL"), ("prompt.md", "PROMPT"), ("mcp.json", "{}")):
         (sb / "payload" / name).write_text(text)
-    cmd = SandboxConfig().agent_command
-    assert cmd.startswith("claude ")
-    cmd = str(bin_dir / "claude") + cmd[len("claude"):]      # `bash -lc` may reset PATH
+    assert agent_command(SandboxConfig()).startswith("claude -p ")
+    # an absolute agent_bin, as `bash -lc` may reset PATH
+    cmd = agent_command(SandboxConfig(agent_bin=str(bin_dir / "claude")))
     (sb / "payload" / "run.env").write_text(f"LEGION_NEEDS_REPO=0\nLEGION_AGENT_COMMAND={shlex.quote(cmd)}\n")
     (sb / "payload" / "run-agent.sh").write_text(RUN_AGENT_SH)
     (bin_dir / "claude").write_text('#!/bin/sh\nprintf "%s\\n" "$@"; echo "stdin=$(cat)"\n')
@@ -865,6 +865,19 @@ def test_default_agent_command_finds_the_payload(tmp_path):
     assert out[out.index("--mcp-config") + 1] == str(sb / "payload" / "mcp.json")
     assert out[out.index("--append-system-prompt") + 1] == "SOUL"
     assert out[-1] == "stdin=PROMPT"
+    assert "--resume" not in out                         # no session to continue
+
+
+def test_the_agent_command_resumes_a_session_and_cannot_be_replaced(tmp_path):
+    from legion_orch.config import SandboxConfig, agent_command, load_config
+    cmd = agent_command(SandboxConfig(agent_bin="/opt/my claude"))
+    assert cmd.startswith("'/opt/my claude' -p ")
+    assert '${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"}' in cmd
+    cfg = tmp_path / "orchestrator.yaml"
+    cfg.write_text("project: p\nrepo: {name: app, path: ., base_branch: main}\n"
+                   "decision_owners: [miles]\nsandbox: {agent_command: claude -p}\n")
+    with pytest.raises(ValueError, match="agent_command was removed.*agent_bin"):
+        load_config(cfg)
 
 
 def test_sandbox_root_and_user_follow_the_image(tmp_path):

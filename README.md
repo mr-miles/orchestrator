@@ -94,8 +94,10 @@ Each agent run gets `openshell sandbox create --detach --name lg-<first name> --
 `prompt.md`, `mcp.json`, `run.env` and `run-agent.sh`. The agent clones from and pushes to the controller,
 and writes documents over MCP. Nothing is downloaded from a sandbox. Deterministic verification runs
 in a separate, read-only sandbox through `openshell sandbox exec`. Adjust `policies/*.template.yaml`
-to match your image's binary paths. The default agent command is the native `claude` CLI baked into
-the image.
+to match your image's binary paths. The agent is the native `claude` CLI baked into the image;
+`sandbox.agent_bin` names it if it is not `claude` on the PATH. The controller builds the rest of the
+command, because it must read the payload, use the controller's MCP config and resume the agent's
+session on rework and for reflection.
 
 The image is the agent's whole toolset: sandboxes reach no package registry, so nothing can be
 installed at run time. Claude Code expects `python3` and `node`; `images/agent/Dockerfile` adds them

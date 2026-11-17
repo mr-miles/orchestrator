@@ -50,6 +50,9 @@ async def _wait(engine, pred, what, timeout=90):
 
 def _config(tmp_path, port):
     cfg_path = tmp_path / "orchestrator.yaml"
+    fake = tmp_path / "claude"       # stands in for the agent CLI, whatever flags it is given
+    fake.write_text(f"#!/bin/sh\nexec {sys.executable} {ROOT / 'tests/fake_agent.py'}\n")
+    fake.chmod(0o755)
     cfg_path.write_text(textwrap.dedent(f"""
         project: e2e
         repo: {{name: app, path: {tmp_path / 'src-repo'}, base_branch: main}}
@@ -64,7 +67,7 @@ def _config(tmp_path, port):
         sandbox:
           runner: local
           templates_dir: {ROOT / 'policies'}
-          agent_command: "{sys.executable} {ROOT / 'tests/fake_agent.py'}"
+          agent_bin: "{fake}"
     """))
     return load_config(cfg_path)
 
