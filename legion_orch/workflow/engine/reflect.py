@@ -223,6 +223,14 @@ class Reflector:
                     return
                 header = (f"# Reflection: {last.role} on {last.node_id}\n\n"
                           f"Runs: {', '.join(r.id for r in runs)}; session {last.session_id}\n\n")
+                got = agentlog.session_id(text)
+                if got and got != last.session_id:     # --resume did not take: a new session
+                    c.event("reflection", f"run {last.id}: the agent did not resume session "
+                                          f"{last.session_id} (it ran in {got})",
+                            last.node_id, last.id)
+                    header += (f"> The agent did not resume session {last.session_id}: it ran in "
+                               f"a new one ({got}), without this session's history, so this "
+                               "answer rests on the controller's record in its prompt.\n\n")
                 c.write_record(reflection_path(last.id), header + result.message.strip() + "\n")
                 c.write_record(f"control/logs/{rid}.log", text[-1024 * 1024:])
                 c.event("reflection", f"recorded {reflection_path(last.id)}", last.node_id, last.id)

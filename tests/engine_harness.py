@@ -73,6 +73,7 @@ class FakeRunner(Runner):
         self._reflecting: dict[str, str] = {}             # sandbox -> reflection prompt
         self.reflected: list[tuple[str, str]] = []        # (sandbox, prompt) of each reflection
         self.reflection_text = "## Time sinks\nThe tests took long.\n"
+        self.reflection_session: str | None = None     # set: the resume does not take
         self.commands: dict[str, tuple[int, str]] = {}   # verification command -> (rc, output)
         self.setup_rc = 0
         self.fail_create: str | None = None              # role whose sandbox creation fails
@@ -116,8 +117,11 @@ class FakeRunner(Runner):
         log_file.parent.mkdir(parents=True, exist_ok=True)
         if name in self._reflecting:          # the resumed agent answers and exits
             self.reflected.append((name, self._reflecting.pop(name)))
-            log_file.write_text(json.dumps({"type": "result", "subtype": "success",
-                                            "result": self.reflection_text}) + "\n")
+            init = ({"type": "system", "subtype": "init", "session_id": self.reflection_session}
+                    if self.reflection_session else None)
+            log_file.write_text((json.dumps(init) + "\n" if init else "")
+                                + json.dumps({"type": "result", "subtype": "success",
+                                              "result": self.reflection_text}) + "\n")
             proc = FakeProc()
             proc.exit(0)
             return proc

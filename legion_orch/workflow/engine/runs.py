@@ -163,6 +163,10 @@ class RunLifecycle:
                     + data[-half:])
         text = data.decode(errors="replace")
         run.session_id = agentlog.session_id(text) or run.session_id
+        if run.resumed_session and run.session_id and run.session_id != run.resumed_session:
+            self.c.event("agent", f"run {run.id} was to continue session {run.resumed_session} "
+                                  f"but ran in {run.session_id}: it started without that "
+                                  "session's history", run.node_id, run.id)
         for n, part in enumerate(split_lines(text, self.PART_BYTES), start=1):
             self.c.write_record(log_part(run.id, n), part)
         self.c.write_record(f"control/digests/{run.id}.json", agentlog.digest(text))
