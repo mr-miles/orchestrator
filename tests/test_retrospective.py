@@ -219,3 +219,46 @@ async def test_a_retrospective_runs_on_demand_once_the_change_has_ended(f: Flow)
     assert f.ce.change.status == ChangeStatus.READY                  # the verdict is unchanged
     await f.change_action("retrospective")                           # again: a new cycle
     assert f.ce.nodes["retrospective"].cycle == 2 and f.run("retrospective").id != run.id
+
+
+@scenario()
+async def test_the_review_ledger_shows_when_each_finding_was_first_raised(f: Flow):
+    f.cfg.retrospective.reflect = True
+    await f.to_build("R1")
+    for cycle, (verdict, title) in enumerate([("FAIL", "no newline"), ("FAIL", "wrong greeting"),
+                                              ("PASS", "")], start=1):
+        await f.implement()
+        rev = f.run("build:T1", "reviewer")
+        say(f, rev, init(f"review-{cycle}"))                 # judges do not reflect by default
+        await f.review(verdict=verdict, title=title)
+    assert f.ce.change.status == ChangeStatus.READY
+    assert not any(sb == rev.sandbox for sb, _ in f.runner.reflected)
+    await f.change_action("retrospective")
+    ledger = json.loads(f.runner.payloads[f.run("retrospective").sandbox]["retro/findings.json"])
+    t1 = ledger["tasks"]["T1"]
+    assert [c["verdicts"] for c in t1["candidates"]] == [{"reviewer": "FAIL"}, {"reviewer": "FAIL"},
+                                                         {"reviewer": "PASS"}]
+    assert all(c["verification"]["ok"] and c["sha"] for c in t1["candidates"])
+    late = next(x for x in t1["findings"] if x["title"] == "wrong greeting")
+    assert late["first_raised_cycle"] == 2 and late["raised_in_cycles"] == [2]
+    assert late["earlier_reviews"] == [{"cycle": 1, "sha": t1["candidates"][0]["sha"],
+                                        "verdict": "FAIL"}]      # a possible escape in cycle 1
+    assert ledger["critique"] and ledger["critique"][0]["verdict"] == "PASS"
+
+
+@scenario()
+async def test_the_retrospective_starts_by_itself_once_reflections_are_done(f: Flow):
+    assert type(f.cfg.retrospective)().auto                  # the default
+    f.cfg.retrospective.auto = True
+    await f.to_build("R1")
+    await f.implement()
+    f.ce._lifecycle.reflector.pending.add("still-reflecting")
+    await f.review(verdict="PASS")
+    assert f.ce.change.status == ChangeStatus.READY
+    assert f.status("retrospective") == "READY" and not f.runs("retrospective")   # waits
+    f.ce._lifecycle.reflector.pending.clear()
+    await f.settle()
+    run = f.run("retrospective")
+    doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
+    await f.report(run, [doc])
+    assert f.status("retrospective") == ACCEPTED and len(f.runs("retrospective")) == 1

@@ -45,6 +45,10 @@ class Scheduler:
             if self.lifecycle.release_sandboxes():      # a gate passed, or the change ended
                 c.save()
             active = c.change.status == "ACTIVE"
+            if not active and c.cfg.retrospective.auto and RETRO not in c.nodes:
+                self.graph.add_retrospective()
+                c.event("retrospective", "the change has ended: retrospective queued", RETRO)
+                c.save()
             # an ended change only runs a retrospective someone asked for
             if not active and not any(n.kind == RETRO for n in c.nodes.values()):
                 return
@@ -89,6 +93,8 @@ class Scheduler:
         if node.status in (READY, REWORK) and node.kind in ROLE_FOR_KIND:
             if not self.graph.deps_accepted(node):
                 return []
+            if node.kind == RETRO and self.lifecycle.reflector.pending:
+                return []                  # its material includes the last reflections
             if node.kind == BUILD and self.graph.overlaps_running(node):
                 return []
             run = self.dispatcher.prepare(node, ROLE_FOR_KIND[node.kind])

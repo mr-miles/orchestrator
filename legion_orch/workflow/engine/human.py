@@ -363,7 +363,7 @@ class HumanGates:
         return f"wrote {dest}"
 
     def _start_retrospective(self, approver: str, payload: dict) -> str:
-        """Ask for a retrospective of an ended change (on demand only): an agent analyses the
+        """Ask for (another) retrospective of an ended change: an agent analyses the
         change's records, logs and reflections and proposes improvements to the assets and the
         process. Asking again runs a new cycle; ``focus`` optionally says what to look at."""
         c = self.c
@@ -372,12 +372,7 @@ class HumanGates:
         node = c.nodes.get(RETRO)
         if node is not None and node.status not in (ACCEPTED, FAILED, ESCALATED):
             raise WorkflowError(f"a retrospective is already {node.status}")
-        if node is None:
-            node = Node(id=RETRO, kind=RETRO, title="Retrospective: lessons for the assets and process",
-                        status=READY)
-            c.add_node(node)
-        else:
-            node.cycle, node.status, node.escalation = node.cycle + 1, READY, None
+        node = self.graph.add_retrospective()
         focus = (payload.get("focus") or payload.get("feedback") or "").strip()
         if focus:
             att = self._feedback_doc(node, approver, focus, "focus")

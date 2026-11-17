@@ -132,8 +132,14 @@ class RetrospectiveConfig:
     # reflection turn (what cost it time, guidance that was missing or wrong), stored in
     # control/reflections/. Best-effort: a failed or timed-out reflection never blocks the change.
     reflect: bool = True
+    # Run the retrospective (an agent analysing the change, see WORKFLOW.md §5.13) as soon as
+    # a change ends; a decision owner can always ask for another.
+    auto: bool = True
     reflect_timeout_s: int = 600
-    reflect_skip_roles: list[str] = field(default_factory=lambda: ["retrospective"])
+    # Judges are skipped: what they missed shows in later outcomes (findings.json), not in
+    # their own account, and the panel would otherwise reflect once per member per cycle.
+    reflect_skip_roles: list[str] = field(default_factory=lambda: [
+        "retrospective", "reviewer", "security", "architecture", "critic"])
 
 
 @dataclass

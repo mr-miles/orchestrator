@@ -117,7 +117,11 @@ class RunLifecycle:
         self.c.spawn(self._retire(name, stopped))
 
     async def _retire(self, name: str, stopped: bool) -> None:
-        await self.reflector.reflect(name, stopped)
+        self.reflector.pending.add(name)
+        try:
+            await self.reflector.reflect(name, stopped)
+        finally:
+            self.reflector.pending.discard(name)
         await self.delete_sandbox(name)
 
     def fail_run(self, run: Run, reason: str, source: FailureSource,

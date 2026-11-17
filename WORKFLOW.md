@@ -520,7 +520,7 @@ Each is a versioned document under `control/`, so superseding keeps the history.
 | `approve_protected_paths` | `control/approvals/protected-paths/<n>.json` | G-PP1 |
 | `approve_surface` | `control/surfaces/<id>.json` | G-SF1 |
 | `override` | `control/overrides/<n>.json` | G-OV1 |
-| `retrospective` | node `retrospective` (§5.13); optional `focus` in `control/focus/` | only once the change has ended |
+| `retrospective` | node `retrospective` (§5.13); optional `focus` in `control/focus/` | only once the change has ended; runs by itself then unless `retrospective.auto: false` |
 
 | ID | Rule |
 | --- | --- |
@@ -537,19 +537,28 @@ wrong, tool and environment friction, mistakes (for an implementer: each finding
 work) and suggestions. The answer is stored as `control/reflections/<run>.md`. The agent still has
 its whole context, which a later retrospective does not. Best-effort: a missing session, an error
 or `retrospective.reflect_timeout_s` skips it, and the deletion goes ahead. Turn it off with
-`retrospective.reflect: false`; `reflect_skip_roles` lists roles that never reflect.
+`retrospective.reflect: false`; `reflect_skip_roles` lists roles that never reflect – by default
+the judges (`reviewer`, `security`, `architecture`, `critic`): what a judge missed shows in later
+outcomes, not in its own account (see `findings.json` below).
 
-**Retrospective (on demand).** Once a change has ended (`READY`, `NOT_READY` or `ABANDONED`), a
-decision owner can ask for a retrospective (UI, or `change_action retrospective` with an optional
-`focus`). This adds node `retrospective`, which is dispatched even though the change is no longer
-active.
+**Retrospective.** When a change ends (`READY`, `NOT_READY` or `ABANDONED`), node
+`retrospective` is added and dispatched even though the change is no longer active – once the
+reflections of the sandboxes released at the end have finished, as they are part of its material.
+`retrospective.auto: false` leaves it to a decision owner, who can also ask for another at any time
+after the change has ended (UI, or `change_action retrospective` with an optional `focus`).
 
 * **Soul:** `retrospective-analyst`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`
 * **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and node
   records, the change's documents, the current assets and a prompt check per run (agents cannot
   read `control/logs/` through MCP). Its context lists earlier changes' retrospectives.
-* **Writes:** `retro/`  **Required:** `retro/report.md` (summary, ranked findings with evidence
-  and root cause, proposed changes as diffs against the assets, what is not worth fixing).
+* **Review ledger:** `retro/findings.json`, built by the controller from the node and run records
+  when the retrospective is dispatched: per task each candidate (sha, verification, verdicts) and
+  each finding with the cycle it was first raised, the cycles it came back in and the earlier
+  candidates the same role reviewed without raising it; the critique's findings; integration
+  outcomes; human feedback. The agent judges escapes (by diffing the pinned candidates) and noise
+  against the review criteria.
+* **Writes:** `retro/`  **Required:** `retro/report.md` (summary, review effectiveness, ranked
+  findings with evidence and root cause, proposed changes as diffs against the assets, what is not worth fixing).
 * It proposes; a human applies. Asking again runs a new cycle.
 
 ---

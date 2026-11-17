@@ -98,6 +98,7 @@ class Reflector:
 
     def __init__(self, core: ChangeCore):
         self.c = core
+        self.pending: set[str] = set()       # sandboxes whose reflection has not finished
 
     def _session_runs(self, sandbox: str) -> list[Run]:
         """The runs whose agent session the sandbox still holds: the latest run with a session and
