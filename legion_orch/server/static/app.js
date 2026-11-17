@@ -78,9 +78,13 @@ function short(sha) { return sha ? `<code>${sha.slice(0,10)}</code>` : '—'; }
 function renderHeader() {
   const c = S.change;
   $('#startbox').style.display = (showStart || !CHANGES.length) ? '' : 'none';
-  $('#changeSel').innerHTML = CHANGES.length ? CHANGES.map(x => `<option value="${esc(x.id)}" ${x.id===CID?'selected':''}>${esc(x.id)} · ${esc(x.status)}${x.tier?' · '+x.tier:''}${x.live_runs?' · '+x.live_runs+' live':''} · ${esc(x.goal.slice(0,40))}</option>`).join('') : '<option>no changes yet</option>';
+  $('#changeSel').innerHTML = CHANGES.length ? CHANGES.map(x => `<option value="${esc(x.id)}" ${x.id===CID?'selected':''}>${esc(x.id)} · ${esc(x.status)}${x.tier?' · '+x.tier:''}${x.live_runs?' · '+x.live_runs+' live':''}${x.retrospective&&x.retrospective!=='ACCEPTED'?' · retrospective '+x.retrospective.toLowerCase():''} · ${esc(x.goal.slice(0,40))}</option>`).join('') : '<option>no changes yet</option>';
   if (!c) { $('#hdr').innerHTML = `${esc(S.project)} · repo <b>${esc(S.repo)}</b> · no changes`; return; }
-  $('#hdr').innerHTML = `${esc(S.project)} · <b>${esc(c.id)}</b> · ${badge(c.status)} · tier ${c.tier ? `<b>${c.tier}</b>` : '<i>unassessed</i>'}
+  const retro = S.nodes.find(n => n.kind === 'retrospective');
+  const retroBadge = !retro ? '' : retro.status === 'ACCEPTED'
+    ? ` · <a ${on('openDoc', docPath('retro/report.md'))}>retrospective report</a>`
+    : ` · <a ${on('select', retro.id)}>${badge(retro.status)} retrospective</a>`;
+  $('#hdr').innerHTML = `${esc(S.project)} · <b>${esc(c.id)}</b> · ${badge(c.status)}${retroBadge} · tier ${c.tier ? `<b>${c.tier}</b>` : '<i>unassessed</i>'}
     · base ${short(c.base_sha)} · integration ${short(c.integration_head)} · <span class="muted" title="${esc(c.goal)}">${esc(c.goal.slice(0,90))}</span>`;
 }
 
@@ -118,6 +122,9 @@ function layout(nodes) {
   const ancestors = id => { if (anc[id]) return anc[id]; anc[id] = new Set();
     for (const x of deps(id)) { anc[id].add(x); ancestors(x).forEach(a => anc[id].add(a)); } return anc[id]; };
   nodes.forEach(n => d(n.id));
+  // the retrospective depends on nothing (it runs however the change ended) but comes last
+  const last = Math.max(0, ...nodes.filter(n => n.kind !== 'retrospective').map(n => depth[n.id]));
+  nodes.filter(n => n.kind === 'retrospective').forEach(n => { depth[n.id] = last + 1; });
   // transitive reduction: drop dep x of n when another dep of n already depends on x
   const kept = [];
   for (const n of nodes) { const ds = deps(n.id);
