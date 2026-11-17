@@ -1,9 +1,11 @@
 # Tooling and tasks for legion-orchestrator. `mise install` then `mise run <task>` (or `mise tasks`).
-# Python dependencies (including ruff, pytest, build) come from pyproject.toml via uv into .venv.
+# Python dependencies (including ruff, pytest, build) come from pyproject.toml via uv into .venv;
+# the web UI's from frontend/package.json via bun. CI (.github/workflows/ci.yml) runs the same.
 
 [tools]
 python = "3.12"
 uv = "0.13"
+bun = "1.4"
 
 [env]
 # Project virtualenv, created with uv on first use and activated for every task.
@@ -18,11 +20,10 @@ description = "Install the package (editable) with test and dev extras into .ven
 run = "uv pip install -q -e '.[test,dev]'"
 
 [tasks.lint]
-description = "ruff, UI JavaScript syntax, and asset/schema validation"
+description = "ruff, and asset/schema/library validation"
 depends = ["install"]
 run = [
   "ruff check legion_orch tests scripts",
-  "python scripts/check_ui.py",
   "legion-orch -c orchestrator.example.yaml check",
 ]
 
@@ -46,9 +47,31 @@ description = "Build sdist and wheel into dist/"
 depends = ["install"]
 run = "uv build"
 
+[tasks."ui:install"]
+description = "Install the web UI's dependencies (bun, from frontend/bun.lock)"
+dir = "frontend"
+run = "bun install --frozen-lockfile"
+
+[tasks."ui:check"]
+description = "Web UI: typecheck, lint, format check and tests"
+depends = ["ui:install"]
+dir = "frontend"
+run = "bun run check"
+
+[tasks."ui:build"]
+description = "Build the web UI into legion_orch/server/static/dist"
+depends = ["ui:install"]
+dir = "frontend"
+run = "bun run build"
+
+[tasks.package]
+description = "The release zip (dist/legion-orchestrator-<version>.zip): runs with uv alone"
+depends = ["ui:build"]
+run = "python scripts/package.py"
+
 [tasks.check]
-description = "Everything CI should run"
-depends = ["lint", "test", "build"]
+description = "Everything CI runs"
+depends = ["lint", "test", "ui:check", "package"]
 
 [tasks.run]
 description = "Run the controller (UI/API/git on server.port, MCP on server.mcp_port)"

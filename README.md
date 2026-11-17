@@ -122,6 +122,23 @@ Without the section the workflow is unchanged.
 `sandbox.runner: local` runs everything as local processes. It provides **no isolation** and is for
 development and tests only.
 
+## Release zip
+
+`mise run package` (or `cd frontend && bun run build`, then `python scripts/package.py`) writes
+`dist/legion-orchestrator-<version>.zip`: the controller with its web UI already built, and the
+`assets`, `policies` and `environments` folders. It needs only [uv](https://docs.astral.sh/uv/)
+to run – no bun, Node or frontend tools:
+
+```bash
+unzip legion-orchestrator-<version>.zip && cd legion-orchestrator-<version>
+cp orchestrator.example.yaml orchestrator.yaml   # then edit it
+uv run legion-orch -c orchestrator.yaml serve
+```
+
+CI (`.github/workflows/ci.yml`) builds, lints and tests the frontend
+(bun) and the backend (uv), then builds this zip, checks it from a clean unpack with uv alone and
+uploads it as the run's artifact. `mise run check` runs the same locally.
+
 ## Tests
 
 `pytest` runs the unit tests, the git access-control test and a full end-to-end workflow. The e2e test

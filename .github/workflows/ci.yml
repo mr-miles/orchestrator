@@ -1,0 +1,90 @@
+# Build, lint and test the backend (uv) and the frontend (bun), then assemble the release zip:
+# the controller with its built web UI, which runs with uv alone (no bun or Node needed).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Frontend (bun)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4'
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Typecheck, lint, format check, tests
+        run: bun run check
+      - name: Build
+        run: bun run build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ui-dist
+          path: legion_orch/server/static/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  backend:
+    name: Backend (uv)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: '3.12'
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked --extra test --extra dev
+      - name: Lint
+        run: uv run ruff check legion_orch tests scripts
+      - name: Check the assets and the environment library
+        run: uv run legion-orch -c orchestrator.example.yaml check
+      - name: Tests
+        run: uv run pytest -q
+
+  package:
+    name: Release zip
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: legion_orch/server/static/dist
+      - name: Build the zip
+        id: zip
+        run: echo "path=$(uv run --no-project python scripts/package.py --out dist)" >> "$GITHUB_OUTPUT"
+      - name: Smoke test from a clean unpack, with uv only
+        run: |
+          work="$RUNNER_TEMP/unpacked"
+          mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }}" -d "$work"
+          cd "$work"/legion-orchestrator-*
+          test -f legion_orch/server/static/dist/index.html
+          uv run legion-orch -c orchestrator.example.yaml check
+          uv run python -c "from legion_orch.server import web; assert (web.UI_DIST / 'index.html').is_file()"
+      # the zip itself (not wrapped in another zip); the artifact is named after the file
+      - uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.zip.outputs.path }}
+          archive: false
+          if-no-files-found: error
