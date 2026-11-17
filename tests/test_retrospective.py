@@ -159,6 +159,31 @@ async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
     assert sb in f.runner.deleted
 
 
+@scenario(environment={})
+async def test_provisioning_keeps_the_planners_sandbox_to_h2(f: Flow):
+    """The environment build maps the build roles, not the planner: H-E1 and provisioning leave
+    its stopped sandbox (and session) for H-2, after which it reflects as usual."""
+    f.cfg.retrospective.reflect = True
+    await f.intake()
+    await f.human("H-1", "accept")
+    plan = f.run("plan")
+    say(f, plan, init("plan-session"))
+    await f.plan()
+    await f.critique("PASS")
+    await f.human("H-E1", "approve")
+    await f.settle()
+    assert f.status("provision") == "ACCEPTED", f.status()
+    assert "planner" not in f.ce.change.environment.roles
+    assert f.ce.nodes["plan"].sandbox == plan.sandbox
+    assert plan.sandbox not in f.runner.deleted and not f.runner.reflected
+    await f.human("H-2", "approve")
+    await f.settle()
+    assert [sb for sb, _ in f.runner.reflected] == [plan.sandbox]
+    assert plan.sandbox in f.runner.restarted          # started again to reflect
+    assert f.ce.latest(f"control/reflections/{plan.id}.md")
+    assert plan.sandbox in f.runner.deleted
+
+
 @scenario()
 async def test_an_implementer_reflects_on_the_findings_against_its_work(f: Flow):
     f.cfg.retrospective.reflect = True
@@ -187,7 +212,9 @@ async def test_no_reflection_without_a_session_or_when_turned_off(f: Flow):
     await f.plan()                                       # no session id in its log
     await f.critique("PASS")
     await f.human("H-2", "approve")
+    await f.settle()
     assert not f.runner.reflected and plan.sandbox in f.runner.deleted
+    assert f"sandbox {plan.sandbox}: no agent session recorded" in f.ce.timeline()
 
 
 # ---------------------------------------------------------------------------- retrospective
