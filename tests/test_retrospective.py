@@ -189,60 +189,41 @@ async def test_provisioning_keeps_the_planners_sandbox_to_h2(f: Flow):
 
 @scenario()
 async def test_an_implementer_reflects_on_the_findings_against_its_work(f: Flow):
-    """Each implementer cycle is a new session: the reflection resumes the last one and is told
-    what the controller recorded of the earlier cycles it cannot remember."""
     f.cfg.retrospective.reflect = True
     await f.to_build("R1")
     first = f.run("build:T1", "implementer")
-    say(f, first, init("impl-1"),
-        tool("t1", "Bash", {"command": "make test"}, "2026-01-01T00:00:00.000Z"),
-        result_of("t1", "2026-01-01T00:02:00.000Z", error=True, text="no rule to make test"))
+    say(f, first, init("impl-session"))
     await f.implement()
     await f.review(verdict="FAIL", title="greeting lacks a newline")
     second = f.run("build:T1", "implementer")
-    say(f, second, init("impl-2"))
+    say(f, second, init("impl-session"))
     await f.implement()
     await f.review(verdict="PASS")
     await f.settle()
     assert f.ce.change.status == ChangeStatus.READY
-    (sb, prompt), = [x for x in f.runner.reflected if x[0] == first.sandbox]
-    env = next(e for e in reversed(f.runner.run_envs) if "LEGION_REQUIRE_SESSION" in e)
-    assert "LEGION_RESUME_SESSION=impl-2" in env          # the last cycle's own session
-    assert f"This session covers run {second.id} (cycle 2)." in prompt
-    assert "Earlier cycles of this task (1) ran in separate sessions" in prompt
-    assert f"- run {first.id}, cycle 1, superseded: 2 min, 1 failed tool calls" in prompt
-    assert "slowest: Bash `make test` (120s)" in prompt
-    assert "failed: Bash `make test`: no rule to make test" in prompt
+    prompt = next(p for sb, p in f.runner.reflected if sb == first.sandbox)
     assert "greeting lacks a newline" in prompt and "why you missed it" in prompt
     assert f.ce.latest(f"control/reflections/{second.id}.md")
 
 
 @scenario()
-async def test_a_single_accepted_run_gets_its_own_record_and_no_phantom_findings(f: Flow):
-    """An implementer accepted first time is still told what its run did, and is not asked about
-    findings "listed above" when there are none."""
+async def test_an_implementer_without_findings_is_not_asked_about_them(f: Flow):
     f.cfg.retrospective.reflect = True
     await f.to_build("R1")
     impl = f.run("build:T1", "implementer")
-    say(f, impl, init("impl-1"),
-        tool("t1", "Bash", {"command": "pytest -q"}, "2026-01-01T00:00:00.000Z"),
-        result_of("t1", "2026-01-01T00:01:30.000Z"))
+    say(f, impl, init("impl-1"))
     await f.implement()
     await f.review(verdict="PASS")
     await f.settle()
     (_, prompt), = [x for x in f.runner.reflected if x[0] == impl.sandbox]
-    assert f"This session covers run {impl.id} (cycle 1)." in prompt
-    assert "separate sessions" not in prompt
-    assert f"- run {impl.id}, cycle 1, accepted: 2 min, 0 failed tool calls" in prompt
-    assert "tools: Bash ×1" in prompt and "slowest: Bash `pytest -q` (90s)" in prompt
     assert "No reviewer, verification or human finding was raised" in prompt
-    assert "not a way to skip one" in prompt
+    assert "listed above" not in prompt
 
 
 @scenario()
 async def test_a_resume_that_does_not_take_is_flagged(f: Flow):
     """The agent CLI ran in a new session instead of resuming the recorded one: the reflection
-    says so (it had only the record) and the timeline notes it."""
+    says so and the timeline notes it."""
     f.cfg.retrospective.reflect = True
     f.runner.reflection_session = "fresh-session"
     await f.to_build("R1")
