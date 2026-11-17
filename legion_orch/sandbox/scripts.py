@@ -49,6 +49,17 @@ else
 fi
 # The agent command finds its inputs through these, under any runner (/sandbox in OpenShell).
 export LEGION_PAYLOAD="$P" LEGION_MCP_CONFIG="$P/mcp.json"
+# A rework continues the earlier session (Claude Code keeps it under its config dir) if the
+# sandbox still has it; otherwise the agent starts a new one.
+if [ -n "${LEGION_RESUME_SESSION:-}" ]; then
+  if find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "$LEGION_RESUME_SESSION.jsonl" \
+       2>/dev/null | grep -q .; then
+    echo "[legion] resuming agent session $LEGION_RESUME_SESSION"
+  else
+    echo "[legion] agent session $LEGION_RESUME_SESSION not found; starting a new one"
+    unset LEGION_RESUME_SESSION
+  fi
+fi
 echo "[legion] starting the agent in $PWD"
 exec bash -lc "$LEGION_AGENT_COMMAND"
 """

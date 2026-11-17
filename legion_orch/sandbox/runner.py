@@ -101,6 +101,10 @@ class Runner:
                    timeout: float = 600) -> tuple[int, str]: ...
     async def start_agent(self, name: str, log_file: Path) -> asyncio.subprocess.Process: ...
     async def delete(self, name: str) -> None: ...
+    async def stop(self, name: str) -> None:
+        """Stop a sandbox kept between runs; its workspace (and agent session) is preserved."""
+    async def start(self, name: str) -> None:
+        """Start a stopped sandbox again."""
 
 
 def openshell_cli(cfg: Config) -> list[str]:
@@ -162,6 +166,12 @@ class OpenShellRunner(Runner):
 
     async def delete(self, name):
         await self._os("sandbox", "delete", name, timeout=300)
+
+    async def stop(self, name):
+        await self._os("sandbox", "stop", name, timeout=300)
+
+    async def start(self, name):
+        await self._os("sandbox", "start", name, timeout=900)
 
 
 class LocalRunner(Runner):

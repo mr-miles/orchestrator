@@ -1,6 +1,7 @@
 """Dispatch: prepare runs, render prompts, payloads and policies, launch sandboxes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 import shutil
@@ -62,6 +63,11 @@ class Dispatcher:
 
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, roles: RoleContext):
         self.c, self.lifecycle, self.roles = core, lifecycle, roles
+        # serialises stopping a kept sandbox with starting the next run in it
+        self._sandbox_locks: dict[str, asyncio.Lock] = {}
+
+    def _sandbox_lock(self, name: str) -> asyncio.Lock:
+        return self._sandbox_locks.setdefault(name, asyncio.Lock())
 
     def _approval_fresh(self) -> list[str]:
         """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
@@ -165,10 +171,10 @@ class Dispatcher:
         return Assignment(variables, write, required, context, task_json)
 
     def _place_in_sandbox(self, run: Run, node: Node) -> None:
-        """Guard G-D4: judges always get a fresh sandbox; only roles that reuse theirs keep it
+        """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
         across the node's cycles."""
         h = handler_for(run.role)
-        if h.reuses_sandbox and node.sandbox:
+        if h.keeps_sandbox and node.sandbox:
             run.sandbox = node.sandbox
             run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
                                     if r.sandbox == node.sandbox and r.sandbox_ref), None)
@@ -186,7 +192,7 @@ class Dispatcher:
         if not h.panel:                 # panel members run alongside; the node stays REVIEWING
             node.current_run = run.id
             node.status = RUNNING
-        if h.reuses_sandbox and node.sandbox is None:
+        if h.keeps_sandbox and node.sandbox is None:
             node.sandbox = run.sandbox
         if node.kind == BUILD and h.pushes and ch.first_build_at is None:
             ch.first_build_at = now_iso()          # approved_spec_and_oracle compares with this
@@ -210,8 +216,20 @@ class Dispatcher:
             "LEGION_NEEDS_REPO": "1" if self.c.assets.roles[run.role].repo else "0",
             "LEGION_AGENT_COMMAND": self.c.cfg.sandbox.agent_command,
         }
+        if session := self._resumable_session(run):
+            env["LEGION_RESUME_SESSION"] = session
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
         (d / "run-agent.sh").write_text(RUN_AGENT_SH)
+
+    def _resumable_session(self, run: Run) -> str | None:
+        """For a role that keeps its session: the agent session of the node's previous run in
+        the same sandbox, which this rework continues."""
+        if handler_for(run.role).keeps_session_until is None:
+            return None
+        node = self.c.nodes[run.node_id]
+        prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]
+        prev = [r for r in prev if r.role == run.role and r.sandbox == run.sandbox]
+        return agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000)) if prev else None
 
     async def _stage(self, run: Run, stage: RunStage, message: str) -> None:
         async with self.c.lock:
@@ -227,11 +245,19 @@ class Dispatcher:
         payload = self.c.run_dir(run_id) / "payload"
         try:
             h = handler_for(run.role)
-            reuse = h.reuses_sandbox and any(
+            reuse = h.keeps_sandbox and any(
                 r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values())
+            log_file = self.c.run_dir(run_id) / "agent.log"
             if reuse:
-                await self._stage(run, RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
-                await self.c.runner.upload(run.sandbox, payload)
+                async with self._sandbox_lock(run.sandbox):
+                    node = self.c.nodes.get(run.node_id)
+                    if node and node.sandbox == run.sandbox and node.sandbox_stopped:
+                        await self._stage(run, RunStage.PREPARING, f"starting sandbox {run.sandbox}")
+                        await self.c.runner.start(run.sandbox)
+                        node.sandbox_stopped = False
+                    await self._stage(run, RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
+                    await self.c.runner.upload(run.sandbox, payload)
+                    proc = await self.c.runner.start_agent(run.sandbox, log_file)
             else:
                 await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
                 env = sandbox_env(self.c.change, run.role)
@@ -240,7 +266,7 @@ class Dispatcher:
                                                  agent=True)
                 run.sandbox_ref = await self._create(run, payload, policy, push=h.pushes)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
-            proc = await self.c.runner.start_agent(run.sandbox, self.c.run_dir(run_id) / "agent.log")
+                proc = await self.c.runner.start_agent(run.sandbox, log_file)
         except Exception as e:
             shutil.rmtree(payload, ignore_errors=True)
             async with self.c.lock:
@@ -267,6 +293,39 @@ class Dispatcher:
             run.stage = RunStage.EXITED
             self.lifecycle.archive_log(run)
             self.c.save()
+        if handler_for(run.role).keeps_session_until is not None:
+            await self._pause_sandbox(run)
+
+    def _should_pause(self, run: Run) -> bool:
+        node = self.c.nodes.get(run.node_id)
+        return (node is not None and node.sandbox == run.sandbox and not node.sandbox_stopped
+                and self.lifecycle.holds_sandbox(node)
+                and not any(r.sandbox == run.sandbox and r.status in LIVE_RUN
+                            for r in self.c.runs.values()))
+
+    async def _pause_sandbox(self, run: Run) -> None:
+        """Stop a kept sandbox until its node is reworked (best effort: if the runner cannot
+        stop it, it stays running and is reused as it is). Under the sandbox lock, so a rework
+        prepared meanwhile either finds it running (and this skips) or stopped (and starts it)."""
+        async with self._sandbox_lock(run.sandbox):
+            async with self.c.lock:
+                if not self._should_pause(run):
+                    return
+            try:
+                await self.c.runner.stop(run.sandbox)
+            except Exception as e:
+                async with self.c.lock:
+                    self.c.event("sandbox", f"could not stop {run.sandbox}; it stays running: {e}",
+                                 run.node_id, run.id)
+                    self.c.save()
+                return
+            async with self.c.lock:
+                node = self.c.nodes.get(run.node_id)
+                if node and node.sandbox == run.sandbox:
+                    node.sandbox_stopped = True
+                    self.c.event("sandbox", f"stopped {run.sandbox} until {node.id} is reworked",
+                                 run.node_id, run.id)
+                self.c.save()
 
     async def _create(self, run: Run, payload, policy, *, push: bool, attempts: int = 3) -> str:
         """Create the run's sandbox. If the gateway already has a sandbox of that name (another

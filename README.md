@@ -15,7 +15,9 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   resolves before anything moves forward.
 * The web UI shows the plan, the live task graph, agent progress, reviews, verification, documents and
   ship gates, and it is where humans approve, revise and resolve escalations.
-* A sandbox is deleted as soon as the work it produced is accepted.
+* A sandbox is deleted as soon as the work it produced is accepted. Intake, planner and oracle
+  keep theirs, stopped, with the agent's session until the gate that can send the work back
+  passes (H-1, H-2), so a rework continues the same conversation.
 * The document store and the git remote are the only durable state. Each change is namespaced under
   `changes/<id>/`, including the controller's own graph, node and run records, and is rebuilt
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.
