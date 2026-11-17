@@ -24,9 +24,8 @@ this whole session. Your answer is read by whoever improves the instructions, to
 you worked with, so that the next agent avoids what slowed you down or misled you.
 
 Do not call any tools and do not change anything: answer in plain text, from what you remember
-of this session and from the controller's record of your runs below. Be specific and honest; name
-files, commands, instructions and turns, and take costs from the record. "Nothing" is a fine
-answer for a section that has nothing, not a way to skip one: the record shows where time went.
+of this session. Be specific and honest; name files, commands, instructions and turns. Estimate
+cost (turns or minutes) where you can. "Nothing" is a fine answer for a section.
 
 {context}
 Answer in markdown with exactly these sections:
@@ -54,7 +53,7 @@ most, highest value first.
 
 IMPLEMENTER_MISTAKES = """Each finding a reviewer, a verification command or a human raised against
 your work (listed above): why you missed it, and what instruction or check would have caught it
-before review. Then anything you got wrong and corrected yourself."""
+before review."""
 DEFAULT_MISTAKES = """Anything you got wrong and had to correct (including reports the controller
 rejected), and what would have prevented it."""
 
@@ -65,72 +64,25 @@ def _outcome(run: Run) -> str:
             "FAILED": "your run failed"}.get(str(run.status), f"your run ended ({run.status})")
 
 
-def _cycles(runs: list[Run]) -> str:
-    return ", ".join(str(r.cycle) for r in runs)
-
-
-def _clip(s: object, n: int) -> str:
-    s = " ".join(str(s).split())
-    return s if len(s) <= n else s[:n - 1] + "…"
-
-
-def _record(c: ChangeCore, run: Run) -> list[str]:
-    """What the controller recorded of a run, from its log's digest (see
-    :func:`agentlog.digest`), in a few lines."""
-    path = f"control/digests/{run.id}.json"
-    d = c.json_doc(path) if c.latest(path) else None
-    head = f"- run {run.id}, cycle {run.cycle}, {str(run.status).lower()}"
-    if not d:
-        return [head + ": no log was recorded"]
-    res = (d.get("results") or [{}])[-1]
-    facts = [f"{d['wall_seconds'] / 60:.0f} min" if d.get("wall_seconds") else None,
-             f"{res['num_turns']} turns" if res.get("num_turns") else None,
-             f"{d.get('tool_error_count', 0)} failed tool calls"]
-    out = [head + ": " + ", ".join(f for f in facts if f)]
-    if tools := list((d.get("tools") or {}).items())[:8]:
-        out.append("  tools: " + ", ".join(f"{t} ×{n.get('calls', 0)}" for t, n in tools))
-    if slow := [s for s in d.get("slowest_tool_calls") or [] if s.get("seconds", 0) >= 30][:5]:
-        out.append("  slowest: " + "; ".join(
-            f"{s['tool']} `{_clip(s['input'], 120)}` ({s['seconds']:.0f}s)" for s in slow))
-    if rep := (d.get("repeated_commands") or [])[:5]:
-        out.append("  repeated: " + "; ".join(
-            f"`{_clip(r['value'], 120)}` ×{r['count']}" for r in rep))
-    if errs := (d.get("tool_errors") or [])[:5]:
-        out.append("  failed: " + "; ".join(
-            f"{e['tool']} `{_clip(e['input'], 100)}`: {_clip(e['error'], 160)}" for e in errs))
-    return out
-
-
 def reflection_prompt(c: ChangeCore, runs: list[Run]) -> str:
-    """The reflection prompt for the session behind ``runs`` (one node and role, oldest first).
-    The role's earlier runs on the node were separate sessions (an implementer starts afresh
-    each cycle): the prompt carries the controller's record of them instead."""
+    """The reflection prompt for the session behind ``runs`` (one node and role, oldest first)."""
     last = runs[-1]
     node = c.nodes.get(last.node_id)
-    ids = {r.id for r in runs}
-    earlier = [r for r in c.runs.values() if r.node_id == last.node_id and r.role == last.role
-               and r.id not in ids and r.cycle <= last.cycle]
-    lines = [f"You were the `{last.role}` agent for `{last.node_id}`. This session covers "
-             + (f"{len(runs)} runs (cycles {_cycles(runs)})." if len(runs) > 1
-                else f"run {last.id} (cycle {last.cycle}).")]
-    if earlier:
-        lines.append(f"\nEarlier cycles of this task ({_cycles(earlier)}) ran in separate sessions "
-                     "that you cannot remember: rely on the record below for those.")
-    lines.append("\nWhat the controller recorded of each run, from its log (use it to check and "
-                 "quantify what you remember, and say where you rely on it):")
-    for r in (earlier[-6:] + runs)[-10:]:
-        lines += _record(c, r)
+    lines = [f"You were the `{last.role}` agent for `{last.node_id}`"
+             + (f" over {len(runs)} runs (cycles {', '.join(str(r.cycle) for r in runs)})."
+                if len(runs) > 1 else ".")]
+    findings = bool(node and node.feedback)
     if node and node.feedback:
         lines.append("\nFeedback your work received (cycle, source: finding):")
         lines += [f"- cycle {f.cycle}, {f.source}: {f.text[:600]}" for f in node.feedback[:40]]
     else:
         lines.append("\nNo reviewer, verification or human finding was raised against your work.")
-    rejected = [(r.id, v) for r in earlier + runs for v in r.violations]
+    rejected = [(r.id, v) for r in runs for v in r.violations]
     if rejected:
         lines.append("\nReports of yours the controller rejected (guard ids and reasons):")
         lines += [f"- {rid}: {'; '.join(v)[:400]}" for rid, v in rejected[:20]]
     return PROMPT.format(outcome=_outcome(last), context="\n".join(lines) + "\n",
-                         mistakes=IMPLEMENTER_MISTAKES if last.role == "implementer"
+                         mistakes=IMPLEMENTER_MISTAKES if last.role == "implementer" and findings
                          else DEFAULT_MISTAKES)
 
 
@@ -152,19 +104,15 @@ class Reflector:
         self.pending: set[str] = set()       # sandboxes whose reflection has not finished
 
     def _session_runs(self, sandbox: str) -> list[Run]:
-        """The runs of the agent session the sandbox still holds, oldest first: the latest run
-        with a session and the runs it continued (``resumed_from``). A run that started a new
-        session (an implementer's next cycle) is not part of it."""
+        """The runs whose agent session the sandbox still holds: the latest run with a session and
+        the earlier runs of the same node and role in this sandbox (a resumed session)."""
         skip = set(self.c.cfg.retrospective.reflect_skip_roles)
         runs = [r for r in self.c.runs.values()
                 if r.sandbox == sandbox and r.session_id and r.role not in skip]
         if not runs:
             return []
-        chain = [runs[-1]]
-        while (prev := self.c.runs.get(chain[0].resumed_from or "")) is not None \
-                and prev not in chain:
-            chain.insert(0, prev)
-        return chain
+        last = runs[-1]
+        return [r for r in runs if r.node_id == last.node_id and r.role == last.role]
 
     async def reflect(self, sandbox: str, stopped: bool = False) -> None:
         """Resume the sandbox's agent session for a reflection turn and record the answer."""
@@ -229,8 +177,7 @@ class Reflector:
                                           f"{last.session_id} (it ran in {got})",
                             last.node_id, last.id)
                     header += (f"> The agent did not resume session {last.session_id}: it ran in "
-                               f"a new one ({got}), without this session's history, so this "
-                               "answer rests on the controller's record in its prompt.\n\n")
+                               f"a new one ({got}), without this session's history.\n\n")
                 c.write_record(reflection_path(last.id), header + result.message.strip() + "\n")
                 c.write_record(f"control/logs/{rid}.log", text[-1024 * 1024:])
                 c.event("reflection", f"recorded {reflection_path(last.id)}", last.node_id, last.id)
