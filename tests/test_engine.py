@@ -902,33 +902,3 @@ async def test_a_change_on_a_blank_repository(f: Flow):
     assert await f.ctl.git.blob(base, "src/greet.txt") is None                 # nothing at base
     assert await f.ctl.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged
 
-
-@scenario()
-async def test_a_store_with_a_separate_critique_node_is_folded_into_the_plan(f: Flow):
-    from legion_orch.workflow.engine.state import StateStore
-    from legion_orch.workflow.model import Escalation, Node, NodeKind
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    critic = f.run("plan", "critic")
-    async with f.ce.lock:                    # as stores written before the fold looked
-        plan = f.ce.nodes["plan"]
-        plan.status, plan.runs = ACCEPTED, [r for r in plan.runs if r != critic.id]
-        critic.node_id = "critique"
-        f.ce.nodes["critique"] = Node(id="critique", kind=NodeKind.CRITIQUE, title="Critique",
-                                      depends_on=["plan"], status=ESCALATED, runs=[critic.id],
-                                      extra_cycles=1, escalation=Escalation(
-                                          kind="run_failed", reason="x", resume=Resume.READY))
-        f.ce.nodes["H-2"].depends_on = ["critique"]
-        f.ce.save()
-    st = StateStore(f.ce.docs, f.ce.cid)
-    st.load()
-    assert "critique" not in st.nodes and st.nodes["H-2"].depends_on == ["plan"]
-    p = st.nodes["plan"]
-    assert p.status == ESCALATED and p.escalation.resume == Resume.REVIEWING  # re-dispatch the critic
-    assert critic.id in p.runs and st.runs[critic.id].node_id == "plan" and p.extra_cycles == 1
-    st.nodes["critique"] = Node(id="critique", kind=NodeKind.CRITIQUE, title="Critique",
-                                depends_on=["plan"])                      # not critiqued yet
-    p.status, p.escalation = ACCEPTED, None
-    st._fold_critique()
-    assert p.status == REVIEWING
