@@ -22,6 +22,7 @@ from ..model import (
     ORACLE,
     PENDING,
     PLAN,
+    PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
     READY,
@@ -381,10 +382,31 @@ class HumanGates:
         c.event("retrospective", f"{approver} asked for a retrospective (cycle {node.cycle})", RETRO)
         return f"retrospective queued (cycle {node.cycle})"
 
+    def _reprovision(self, approver: str, payload: dict) -> str:
+        """Build the provisioned environment again from the approved spec against the current
+        library (G-PV1), e.g. after a library entry was fixed. The spec and its H-E1 approval
+        stay; to change what the spec asks for, revise the plan instead. New runs of mapped roles
+        wait from now on; provisioning starts once their live runs end and nothing is verifying
+        or merging (the old build stays in place until the new one is accepted)."""
+        c = self.c
+        prov = c.nodes.get(PROVISION)
+        if prov is None or c.change.environment is None or prov.status != ACCEPTED:
+            raise WorkflowError("there is no provisioned environment to rebuild")
+        if stale := governance.stale_environment(c):
+            raise WorkflowError(f"{stale}; approve the new spec at H-E1 instead")
+        reason = payload.get("reason")
+        if not risk.valid_reason(reason):
+            raise WorkflowError("a reason of ≥24 chars and more than one word is required")
+        prov.status = PENDING
+        c.event("provision", f"{approver} requested reprovisioning: {reason}", PROVISION)
+        return ("provisioning again from the approved spec and the current library once running "
+                "agents of mapped roles finish; their new runs wait until then")
+
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface,
-        promote_proposal (an approved environment proposal into the library),
-        retrospective (of an ended change)."""
+        promote_proposal (an approved environment proposal into the library), reprovision
+        (rebuild the environment against the current library), retrospective (of an ended
+        change)."""
         payload = payload or {}
         async with self.c.lock:
             self._check_approver(approver)
@@ -401,6 +423,8 @@ class HumanGates:
                                        note="applies only to runs of this task that start after now")
                 elif action == "promote_proposal":
                     res = ActionResult(note=self._promote(approver, payload))
+                elif action == "reprovision":
+                    res = ActionResult(note=self._reprovision(approver, payload))
                 elif action == "retrospective":
                     res = ActionResult(note=self._start_retrospective(approver, payload))
                 elif action == "approve_surface":

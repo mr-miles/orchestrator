@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from ..model import (
+    ACCEPTED,
     AWAITING_HUMAN,
     BUILD,
     HUMAN,
     LIVE_RUN,
+    MERGING,
     PENDING,
     PROVISION,
     R_REPORTED,
@@ -16,6 +18,7 @@ from ..model import (
     ROLE_FOR_KIND,
     RUNNING,
     SHIP,
+    VERIFYING,
     Node,
     Run,
 )
@@ -54,7 +57,8 @@ class Scheduler:
                 return
             if active:
                 for node in list(c.nodes.values()):
-                    if node.status == PENDING and self.graph.deps_accepted(node):
+                    if node.status == PENDING and self.graph.deps_accepted(node) \
+                            and (node.kind != PROVISION or self._environment_quiescent()):
                         self._promote(node)
             self.lifecycle.check_timeouts()
             capacity = c.cfg.limits.max_parallel - c.host.live_count()
@@ -81,6 +85,21 @@ class Scheduler:
         else:
             node.status = READY
 
+    def _environment_quiescent(self) -> bool:
+        """Provisioning (or reprovisioning) may start: no run of a role the current build maps
+        is live and nothing is verifying or merging in that build."""
+        c = self.c
+        mapped = set(c.change.environment.roles) if c.change.environment else set()
+        return not any(r.status in LIVE_RUN and r.role in mapped for r in c.runs.values()) \
+            and not any(n.status in (VERIFYING, MERGING) for n in c.nodes.values())
+
+    def _waits_for_environment(self, role: str) -> bool:
+        """A role the provisioned environment maps waits while it is being rebuilt
+        (``reprovision``), so no sandbox starts from the old build or the default image."""
+        c = self.c
+        prov, env = c.nodes.get(PROVISION), c.change.environment
+        return bool(prov and env and prov.status != ACCEPTED and role in env.roles)
+
     def _dispatch(self, node: Node, capacity: int) -> list[Run]:
         """Prepare at most ``capacity`` runs for the node: its role's run when it is ready (or
         in rework), or the missing panel members' runs while it is under review."""
@@ -97,6 +116,8 @@ class Scheduler:
                 return []                  # its material includes the last reflections
             if node.kind == BUILD and self.graph.overlaps_running(node):
                 return []
+            if self._waits_for_environment(ROLE_FOR_KIND[node.kind]):
+                return []
             run = self.dispatcher.prepare(node, ROLE_FOR_KIND[node.kind])
             return [run] if run else []
         runs: list[Run] = []
@@ -106,7 +127,8 @@ class Scheduler:
                     break
                 busy = any(r.node_id == node.id and r.role == role and r.cycle == node.cycle
                            and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
-                if f"{node.cycle}:{role}" not in node.reviews and not busy:
+                if f"{node.cycle}:{role}" not in node.reviews and not busy \
+                        and not self._waits_for_environment(role):
                     run = self.dispatcher.prepare(node, role, judged_sha=node.candidate_sha)
                     if run:
                         runs.append(run)
