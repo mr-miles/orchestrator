@@ -53,17 +53,8 @@
         "protocol": {"enum": ["rest"]},
         "enforcement": {"enum": ["enforce", "audit"]},
         "access": {"enum": ["read-only", "read-write", "full"]},
-        "rules": {"type": "array", "minItems": 1, "maxItems": 20, "items": {
-          "type": "object", "required": ["allow"], "additionalProperties": false,
-          "properties": {"allow": {
-            "type": "object", "required": ["method", "path"], "additionalProperties": false,
-            "properties": {
-              "method": {"enum": ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]},
-              "path": {"type": "string", "pattern": "^/\\S{0,255}$"}}}}}},
         "allow_encoded_slash": {"type": "boolean"}
-      },
-      "not": {"required": ["rules", "access"]},
-      "dependentRequired": {"allow_encoded_slash": ["rules"]}
+      }
     },
     "policy": {
       "type": "object",

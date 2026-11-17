@@ -1,11 +1,8 @@
 description: npm registry, read-only (npm, npx)
 endpoints:
-  # scoped packages are fetched as /@scope%2fname: keep the encoded slash. The gateway honours
-  # allow_encoded_slash only for explicit rules, so this endpoint uses rules, not access.
+  # scoped packages are fetched as /@scope%2fname: keep the encoded slash
   - host: registry.npmjs.org
     port: 443
+    enforcement: enforce
+    access: read-only
     allow_encoded_slash: true
-    rules:
-      - allow:
-          method: GET
-          path: /**
