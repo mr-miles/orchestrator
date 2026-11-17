@@ -71,8 +71,8 @@ class SandboxError(Exception):
 async def _run(argv: list[str], timeout: float, env: dict | None = None,
                cwd: str | None = None) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
-        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        env=env, cwd=cwd)
+        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, env=env, cwd=cwd)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
@@ -160,7 +160,9 @@ class OpenShellRunner(Runner):
             return await asyncio.create_subprocess_exec(
                 *self.cli, "sandbox", "exec", name, "--no-tty", "--",
                 "bash", f"{self.cfg.sandbox.root}/payload/run-agent.sh",
-                stdout=log, stderr=asyncio.subprocess.STDOUT)
+                # `sandbox exec` forwards its stdin into the sandbox; nothing there reads it, and
+                # input that fills the supervisor's buffer gets the agent killed (exit 74)
+                stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=asyncio.subprocess.STDOUT)
         finally:
             log.close()
 
@@ -220,7 +222,8 @@ class LocalRunner(Runner):
         try:
             return await asyncio.create_subprocess_exec(
                 "bash", str(self._root(name) / "payload" / "run-agent.sh"),
-                stdout=log, stderr=asyncio.subprocess.STDOUT, env=env, cwd=str(self._root(name)))
+                stdin=asyncio.subprocess.DEVNULL, stdout=log, stderr=asyncio.subprocess.STDOUT,
+                env=env, cwd=str(self._root(name)))
         finally:
             log.close()
 
