@@ -9,6 +9,7 @@ from ..model import (
     LIVE_RUN,
     MERGING,
     PENDING,
+    PLAN,
     PROVISION,
     R_REPORTED,
     READY,
@@ -102,7 +103,8 @@ class Scheduler:
 
     def _dispatch(self, node: Node, capacity: int) -> list[Run]:
         """Prepare at most ``capacity`` runs for the node: its role's run when it is ready (or
-        in rework), or the missing panel members' runs while it is under review."""
+        in rework), or the missing panel members' runs while it is under review (the critic's,
+        for the plan)."""
         c = self.c
         if node.kind == PROVISION and node.status == READY:     # controller work, no run
             node.status = RUNNING
@@ -122,7 +124,9 @@ class Scheduler:
             return [run] if run else []
         runs: list[Run] = []
         if node.status == REVIEWING:
-            for role in c.change.panel:
+            # a build task's review panel; the plan's critic
+            for role in (c.change.panel if node.kind == BUILD else ["critic"] if node.kind == PLAN
+                         else []):
                 if len(runs) >= capacity:
                     break
                 busy = any(r.node_id == node.id and r.role == role and r.cycle == node.cycle

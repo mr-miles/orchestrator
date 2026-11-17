@@ -18,7 +18,6 @@ from ..util import now_iso
 class NodeKind(StrEnum):
     INTAKE = "intake"
     PLAN = "plan"
-    CRITIQUE = "critique"
     PROVISION = "provision"
     ORACLE = "oracle"
     BASELINE = "baseline"
@@ -145,14 +144,14 @@ class Resume(StrEnum):
     READY = "READY"                       # dispatch the node again
     REWORK = "REWORK"                     # dispatch a rework run in the same cycle
     REWORK_CYCLE = "REWORK_CYCLE"         # grant one more cycle and rework
-    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more critique cycle; the plan is reworked
+    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more plan cycle; the plan is reworked
     VERIFYING = "VERIFYING"               # re-run deterministic verification
     REVIEWING = "REVIEWING"               # re-dispatch the missing panel member(s)
 
 
 # Short aliases used throughout the engine (members compare and serialise as their strings).
-INTAKE, PLAN, CRITIQUE, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
-    NodeKind.INTAKE, NodeKind.PLAN, NodeKind.CRITIQUE, NodeKind.ORACLE, NodeKind.BASELINE,
+INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
+    NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.SHIP, NodeKind.HUMAN)
 PROVISION, RETRO = NodeKind.PROVISION, NodeKind.RETROSPECTIVE
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
@@ -164,7 +163,7 @@ R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(Run
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
 # Which agent role executes each node kind
-ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", CRITIQUE: "critic", ORACLE: "oracle",
+ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
                  RELEASE: "release", RETRO: "retrospective"}
 

@@ -8,7 +8,6 @@ from ..model import (
     ACTIVE_NODE,
     BASELINE,
     BUILD,
-    CRITIQUE,
     H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
@@ -41,13 +40,14 @@ class StageGraph:
         c = self.c
         tier = c.change.tier
         r = risk.rank(tier)
-        c.add_node(Node(id=PLAN, kind=PLAN, title="Plan: spec, oracle, task graph",
+        # the plan node is accepted once the critic passes it (planner, then critique, then
+        # rework until it does): like a build task with its review
+        c.add_node(Node(id=PLAN, kind=PLAN, title="Plan: spec, oracle, task graph; critique",
                         depends_on=[H_REQUIREMENTS]))
-        c.add_node(Node(id=CRITIQUE, kind=CRITIQUE, title="Critique: pre-mortem", depends_on=[PLAN]))
-        after_critique = CRITIQUE
+        after_critique = PLAN
         if c.cfg.environment is not None:          # the plan includes the sandbox environment
             c.add_node(Node(id=H_ENV, kind=HUMAN, title="Approve sandbox environment",
-                            depends_on=[CRITIQUE]))
+                            depends_on=[PLAN]))
             c.add_node(Node(id=PROVISION, kind=PROVISION, title="Provision: environment images",
                             depends_on=[H_ENV]))
             after_critique = PROVISION

@@ -39,7 +39,7 @@ async def test_planner_keeps_sandbox_and_session_through_critique_until_h2(f: Fl
     assert sb in f.runner.stopped and sb not in f.runner.deleted
     assert f.ce.nodes["plan"].sandbox == sb and f.ce.nodes["plan"].sandbox_stopped
 
-    critic = f.run("critique")
+    critic = f.run("plan", "critic")
     assert critic.sandbox != sb                              # judges stay fresh (G-D4)
     await f.critique("REWORK")
     second = f.run("plan")

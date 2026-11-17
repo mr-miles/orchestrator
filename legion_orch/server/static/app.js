@@ -63,7 +63,9 @@ const STAGE_TEXT = {PREPARING:'preparing sandbox', LAUNCHING:'launching agent', 
 // A node is RUNNING from dispatch; until its live runs' agents connect, say how far they got.
 function nodeState(n, live) {
   const waiting = live.find(r => r.stage === 'PREPARING') || live.find(r => r.stage === 'LAUNCHING');
-  return n.status === 'RUNNING' && waiting ? waiting.stage.toLowerCase() : n.status.toLowerCase();
+  if (n.status === 'RUNNING' && waiting) return waiting.stage.toLowerCase();
+  if (n.kind === 'plan' && n.status === 'REVIEWING') return 'critique';     // the plan's review
+  return n.status.toLowerCase();
 }
 function stageBadge(r) { return r.stage ? `<span class="badge" title="${esc(r.stage)}" style="background:${STAGE_COLORS[r.stage]||'#888'}">${esc(STAGE_TEXT[r.stage]||r.stage)}</span>` : ''; }
 const SOURCE_TEXT = {AGENT:'agent error', SYSTEM:'system error', TIMEOUT:'timeout', CONTROLLER:'controller error'};
