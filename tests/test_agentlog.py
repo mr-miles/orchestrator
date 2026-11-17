@@ -117,3 +117,51 @@ def test_run_agent_script_continues_a_pushed_branch_in_a_fresh_sandbox(tmp_path)
         assert out.returncode == 0, out.stderr
         assert "[legion] starting the agent" in out.stdout
         assert (tmp_path / sandbox / "head").read_text().strip() == want, branch
+
+
+# Claude Code's events for a background task (Monitor / Bash run_in_background), as captured
+STARTED = {"type": "system", "subtype": "task_started", "task_id": "bx1", "tool_use_id": "t9",
+           "description": "run the test suite", "is_backgrounded": True, "task_type": "local_bash"}
+SNAPSHOT = {"type": "system", "subtype": "background_tasks_changed",
+            "tasks": [{"task_id": "bx1", "task_type": "local_bash", "description": "run the test suite"}]}
+WAITING = {"type": "result", "subtype": "success", "is_error": False,
+           "result": "Waiting for the test-suite monitor to finish."}
+UPDATED = {"type": "system", "subtype": "task_updated", "task_id": "bx1",
+           "patch": {"status": "completed", "end_time": 1}}
+NOTIFIED = {"type": "system", "subtype": "task_notification", "task_id": "bx1", "tool_use_id": "t9",
+            "status": "completed", "summary": "Monitor \"run the test suite\" stream ended"}
+EMPTY = {"type": "system", "subtype": "background_tasks_changed", "tasks": []}
+RESUMED = {"type": "assistant", "message": {"content": [{"type": "text", "text": "Tests passed."}]}}
+WAIT_TURN = (INIT, CALL, SNAPSHOT, STARTED, WAITING)
+
+
+def test_a_result_while_background_tasks_run_ends_a_turn_not_the_run():
+    r = agentlog.agent_result(log(*WAIT_TURN))
+    assert r and not r.is_error and r.pending == ("run the test suite",)
+    es = agentlog.entries(log(*WAIT_TURN))
+    assert [e["kind"] for e in es][-2:] == ["task", "waiting"]
+    assert es[-1]["text"].startswith("waiting on 1 background task: run the test suite")
+    # the task finished and the CLI resumed: the second result ends the run
+    full = log(*WAIT_TURN, UPDATED, NOTIFIED, EMPTY, INIT, RESUMED, DONE)
+    r = agentlog.agent_result(full)
+    assert r and r.message == "Reported." and r.pending == ()
+    kinds = [e["kind"] for e in agentlog.entries(full)]
+    assert kinds.count("waiting") == 1 and kinds[-1] == "result"
+
+
+def test_a_resumed_turn_that_dies_has_no_result_and_stopped_tasks_are_not_pending():
+    assert agentlog.agent_result(log(*WAIT_TURN, NOTIFIED, INIT, RESUMED)) is None
+    killed = UPDATED | {"patch": {"status": "killed"}}
+    assert agentlog.agent_result(log(INIT, STARTED, killed, DONE)).pending == ()
+    # a log tail that missed task_started still sees the task through the snapshot
+    assert agentlog.agent_result(log(SNAPSHOT, WAITING)).pending == ("run the test suite",)
+
+
+@scenario()
+async def test_cli_exiting_while_the_agent_waits_on_a_task_is_a_system_error(f: Flow):
+    r = f.run("intake")
+    with open(f.ce.run_dir(r.id) / "agent.log", "a") as fh:
+        fh.write(log(*WAIT_TURN))
+    await f.exit_agent(r, rc=0)
+    assert r.failure.source == "SYSTEM"
+    assert "waiting on 1 background task (run the test suite)" in r.failure.reason

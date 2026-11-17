@@ -289,9 +289,16 @@ class Dispatcher:
     def _exit_reason(self, run: Run, rc: int) -> tuple[str, FailureSource]:
         """Why a live run's process ended. The agent CLI's own result event means the agent ran
         and ended (an agent error); without one the process or its setup failed (a system
-        error)."""
+        error). A last turn that ended waiting on the agent's background tasks is not the end:
+        the CLI should have resumed when they finished, so its exit is a system error."""
         log = self.lifecycle.log_tail(run.id, 2000)
         result = agentlog.agent_result(log)
+        if result is not None and result.pending:
+            n = len(result.pending)
+            return (f"the agent CLI exited with code {rc} while the agent was waiting on {n} "
+                    f"background task{'s' if n != 1 else ''} ({'; '.join(result.pending)[:300]}) "
+                    "instead of resuming when they finished – check the agent image's CLI",
+                    FailureSource.SYSTEM)
         if result is not None:
             if result.is_error:
                 return f"the agent ended with an error ({result.subtype}): {result.message[:500]}", \

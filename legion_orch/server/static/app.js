@@ -440,7 +440,8 @@ function openAtt(a) { const m = /^file:(.+)@(\d+)$/.exec(a); if (m) openDoc(m[1]
 // (or following the end when scrolled to the bottom) and any expanded entries.
 let LOG = null;   // {id, raw, data, timer}
 const LOG_KIND = {sandbox:'sandbox', init:'agent start', text:'agent', prompt:'input', thinking:'thinking',
-                  tool_call:'tool', tool_result:'result', result:'final result', event:'event'};
+                  tool_call:'tool', tool_result:'result', result:'final result',
+                  waiting:'turn ended, waiting', task:'background task', event:'event'};
 function entryHtml(e) {
   const body = e.text ? `<div class="lt">${esc(e.text)}</div>` : '';
   const head = `<span class="lk">${esc(LOG_KIND[e.kind]||e.kind)}</span>${e.title?`<b>${esc(e.title)}</b>`:''}`;
