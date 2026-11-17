@@ -28,6 +28,7 @@ from ..model import (
 )
 from .common import ENV_SPEC
 from .core import ChangeCore
+from .runs import RunLifecycle
 
 
 @dataclass
@@ -48,8 +49,8 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
 
 
 class Provisioner:
-    def __init__(self, core: ChangeCore):
-        self.c = core
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
+        self.c, self.lifecycle = core, lifecycle
 
     def _fail(self, reason: str, log: str = "") -> None:
         if log:
@@ -128,6 +129,14 @@ class Provisioner:
                                                         "\n\n".join(log)).attestation)
             build.attestation = c.write_record("control/environment/build.json", build).attestation
             c.change.environment = build
+            # Sandboxes kept across cycles were created from the previous build (reprovision):
+            # release them, so each node's next run starts fresh in this one.
+            released = sorted({n.sandbox for n in c.nodes.values() if n.sandbox})
+            for n in c.nodes.values():
+                n.sandbox = None
+            for sb in released:
+                c.event("provision", f"released sandbox {sb} of the previous build", PROVISION)
+                self.lifecycle.delete_sandbox_later(sb)
             node.status = ACCEPTED
             c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                     PROVISION)

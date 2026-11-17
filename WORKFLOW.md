@@ -390,6 +390,15 @@ change record; the build log in `control/logs/provision.log`.
 From then on every sandbox of a mapped role is created from its profile's image, with its
 network policies in the sandbox policy and its resources; unmapped roles keep the defaults.
 
+The build is fixed at provisioning: later library edits do not reach it. A decision owner can
+rebuild it with the change-level action `reprovision` (a reason of ≥24 chars), which resolves the
+H-E1-approved spec against the current library again, e.g. after a library entry was fixed. It
+does not change the spec: a tool or policy the spec does not name needs a plan revision and a
+new H-E1. New runs of mapped roles wait from the request on; provisioning starts once their live
+runs have ended and nothing is verifying or merging, and the old build stays in place until the
+new one is accepted. Sandboxes kept across cycles (implementers) are then released, so each
+node's next run starts fresh in the new build and continues from its pushed branch.
+
 ### 5.4 `oracle` (R2+) – protected acceptance tests
 
 * **Soul:** `test-engineer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`

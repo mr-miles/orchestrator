@@ -27,7 +27,7 @@ from legion_orch.sandbox import (
 )
 from legion_orch.sandbox.images import dockerfile, image_tag, mise_toml
 from legion_orch.workflow.assets import Assets
-from legion_orch.workflow.engine import Controller
+from legion_orch.workflow.engine import Controller, WorkflowError
 from legion_orch.workflow.environment import (
     EnvironmentSpec,
     Kind,
@@ -720,3 +720,56 @@ def test_npm_registry_is_read_only_and_keeps_encoded_slashes():
     node, err = resolve_tool("node", lib.tools["node"], None)
     assert err is None and ("NPM_CONFIG_AUDIT", "false") in node.env
     assert 'ENV NPM_CONFIG_AUDIT="false"' in dockerfile("base", [node], "v1", "sandbox")
+
+
+# ====================================================================== reprovision
+@scenario(**ENV)
+async def test_reprovision_rebuilds_against_the_current_library(f: Flow):
+    """A fixed library entry reaches a provisioned change: running agents of mapped roles finish
+    on the old build, their next runs wait, then provisioning builds again and released
+    sandboxes start fresh in the new build. The spec and its H-E1 approval stay."""
+    lib_dir = f.tmp / "lib"
+    own_library(f)
+    await f.to_build()
+    old = f.ce.change.environment.roles
+    approval = f.ce.change.approvals["H-E1"]
+    implementer = f.run("build:T1", "implementer")            # live, in its kept sandbox
+    assert f.ce.nodes["build:T1"].sandbox == implementer.sandbox
+
+    with pytest.raises(WorkflowError, match="reason"):
+        await f.change_action("reprovision", reason="fix")
+    uv = lib_dir / "tools/uv.yaml"
+    uv.write_text(uv.read_text() + "  UV_NO_PROGRESS: \"1\"\n")
+    res = await f.change_action("reprovision", reason="the uv library entry gained a setting")
+    assert "once running agents of mapped roles finish" in res.note
+    assert f.status("provision") == "PENDING"                 # the implementer is still live
+
+    await f.implement()                                       # verify, then the panel waits
+    assert f.status("provision") == "ACCEPTED"
+    new = f.ce.change.environment.roles
+    assert new["implementer"].image != old["implementer"].image
+    assert new["reviewer"].image != old["reviewer"].image
+    assert f.ce.change.approvals["H-E1"] == approval          # same spec, same approval
+    assert f.ce.nodes["build:T1"].sandbox is None
+    assert implementer.sandbox in f.runner.deleted
+    recipe = f.builder.recipes[new["implementer"].image]
+    assert 'ENV UV_NO_PROGRESS="1"' in recipe.files["Dockerfile"]
+    reviewers = sandboxes(f, "reviewer", "build:T1")
+    assert reviewers and all(r.env.image == new["reviewer"].image for r in reviewers)
+
+
+@scenario(**ENV)
+async def test_reprovision_needs_a_provisioned_current_environment(f: Flow):
+    reason = "rebuild against the updated library"
+    await to_plan(f)
+    with pytest.raises(WorkflowError, match="no provisioned environment"):
+        await f.change_action("reprovision", reason=reason)
+    await f.plan()
+    await f.critique("PASS")
+    await f.human("H-E1", "approve")
+    assert f.status("provision") == "ACCEPTED"
+    path = "plan/environment.json"
+    f.ce.docs.write(f.ce.p(path), json.dumps(spec(summary="changed after approval")),
+                    author="someone", role="planner", base_version=f.ce.latest(path))
+    with pytest.raises(WorkflowError, match="G-E5"):
+        await f.change_action("reprovision", reason=reason)
