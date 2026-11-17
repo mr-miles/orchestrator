@@ -555,7 +555,9 @@ superseded, or its hold ended – not after a failure), the controller first res
 session (`--resume`) for one reflection turn: what cost it time, which instructions were missing or
 wrong, tool and environment friction, mistakes (for an implementer: each finding raised against its
 work) and suggestions. The answer is stored as `control/reflections/<run>.md`. The agent still has
-its whole context, which a later retrospective does not. Best-effort: a missing session, an error
+its whole context, which a later retrospective does not. If the agent runs in a new session instead
+(the resume did not take), the reflection says so at the top and the timeline notes it; a rework
+run that does not continue its session is noted the same way. Best-effort: a missing session, an error
 or `retrospective.reflect_timeout_s` skips it, and the deletion goes ahead. Turn it off with
 `retrospective.reflect: false`; `reflect_skip_roles` lists roles that never reflect – by default
 the judges (`reviewer`, `security`, `architecture`, `critic`): what a judge missed shows in later

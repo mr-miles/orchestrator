@@ -204,6 +204,53 @@ async def test_an_implementer_reflects_on_the_findings_against_its_work(f: Flow)
 
 
 @scenario()
+async def test_an_implementer_without_findings_is_not_asked_about_them(f: Flow):
+    f.cfg.retrospective.reflect = True
+    await f.to_build("R1")
+    impl = f.run("build:T1", "implementer")
+    say(f, impl, init("impl-1"))
+    await f.implement()
+    await f.review(verdict="PASS")
+    await f.settle()
+    (_, prompt), = [x for x in f.runner.reflected if x[0] == impl.sandbox]
+    assert "No reviewer, verification or human finding was raised" in prompt
+    assert "listed above" not in prompt
+
+
+@scenario()
+async def test_a_resume_that_does_not_take_is_flagged(f: Flow):
+    """The agent CLI ran in a new session instead of resuming the recorded one: the reflection
+    says so and the timeline notes it."""
+    f.cfg.retrospective.reflect = True
+    f.runner.reflection_session = "fresh-session"
+    await f.to_build("R1")
+    impl = f.run("build:T1", "implementer")
+    say(f, impl, init("impl-1"))
+    await f.implement()
+    await f.review(verdict="PASS")
+    await f.settle()
+    doc = f.ce.doc(f"control/reflections/{impl.id}.md").content
+    assert "> The agent did not resume session impl-1: it ran in a new one (fresh-session)" in doc
+    assert f"run {impl.id}: the agent did not resume session impl-1" in f.ce.timeline()
+
+
+@scenario()
+async def test_a_rework_that_does_not_continue_its_session_is_noted(f: Flow):
+    await f.intake()
+    await f.human("H-1", "accept")
+    first = f.run("plan")
+    say(f, first, init("plan-1"))
+    await f.plan()
+    await f.critique("REWORK")
+    second = f.run("plan")
+    assert second.id != first.id and second.resumed_session == "plan-1"
+    say(f, second, init("plan-2"))
+    await f.plan()
+    assert (f"run {second.id} was to continue session plan-1 but ran in plan-2"
+            in f.ce.timeline())
+
+
+@scenario()
 async def test_no_reflection_without_a_session_or_when_turned_off(f: Flow):
     await f.intake()                                     # reflect is off in the harness
     await f.human("H-1", "accept")

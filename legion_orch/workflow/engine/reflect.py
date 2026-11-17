@@ -71,15 +71,18 @@ def reflection_prompt(c: ChangeCore, runs: list[Run]) -> str:
     lines = [f"You were the `{last.role}` agent for `{last.node_id}`"
              + (f" over {len(runs)} runs (cycles {', '.join(str(r.cycle) for r in runs)})."
                 if len(runs) > 1 else ".")]
+    findings = bool(node and node.feedback)
     if node and node.feedback:
         lines.append("\nFeedback your work received (cycle, source: finding):")
         lines += [f"- cycle {f.cycle}, {f.source}: {f.text[:600]}" for f in node.feedback[:40]]
+    else:
+        lines.append("\nNo reviewer, verification or human finding was raised against your work.")
     rejected = [(r.id, v) for r in runs for v in r.violations]
     if rejected:
         lines.append("\nReports of yours the controller rejected (guard ids and reasons):")
         lines += [f"- {rid}: {'; '.join(v)[:400]}" for rid, v in rejected[:20]]
     return PROMPT.format(outcome=_outcome(last), context="\n".join(lines) + "\n",
-                         mistakes=IMPLEMENTER_MISTAKES if last.role == "implementer"
+                         mistakes=IMPLEMENTER_MISTAKES if last.role == "implementer" and findings
                          else DEFAULT_MISTAKES)
 
 
@@ -168,6 +171,13 @@ class Reflector:
                     return
                 header = (f"# Reflection: {last.role} on {last.node_id}\n\n"
                           f"Runs: {', '.join(r.id for r in runs)}; session {last.session_id}\n\n")
+                got = agentlog.session_id(text)
+                if got and got != last.session_id:     # --resume did not take: a new session
+                    c.event("reflection", f"run {last.id}: the agent did not resume session "
+                                          f"{last.session_id} (it ran in {got})",
+                            last.node_id, last.id)
+                    header += (f"> The agent did not resume session {last.session_id}: it ran in "
+                               f"a new one ({got}), without this session's history.\n\n")
                 c.write_record(reflection_path(last.id), header + result.message.strip() + "\n")
                 c.write_record(f"control/logs/{rid}.log", text[-1024 * 1024:])
                 c.event("reflection", f"recorded {reflection_path(last.id)}", last.node_id, last.id)
