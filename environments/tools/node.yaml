@@ -2,3 +2,7 @@ description: Node.js with npm and npx
 mise: {node: "22"}
 binaries: ["bin/*"]                          # node, npm, npx: the whole bin dir
 network: [npm-registry]                             # attached wherever this tool is used
+env:
+  # npm's post-install audit is a POST to the registry, which the read-only npm-registry
+  # policy denies: skip it instead of failing the request on every install.
+  NPM_CONFIG_AUDIT: "false"
