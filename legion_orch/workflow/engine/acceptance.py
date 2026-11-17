@@ -106,7 +106,7 @@ class Acceptance:
         ref = None
         try:
             env = sandbox_env(self.c.change, VERIFIER)
-            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False, push=False,
+            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False,
                                              network=env.network if env else None)
             if stale := governance.stale_environment(self.c):
                 raise SandboxError(stale)

@@ -1,0 +1,50 @@
+# Provider profiles `legion-git` (read-only) and `legion-git-push` (read-write), both rendered from
+# this template and imported once per workspace (`legion-orch setup-openshell`). Every sandbox
+# attaches exactly one: agents of roles that push get legion-git-push, every other agent and the
+# verifiers get legion-git. OpenShell adds these endpoints to the sandbox's effective policy, so
+# the sandbox policy templates need no rule for them. The gateway injects the task-scoped bearer
+# (SPIFFE JWT-SVID exchanged at the controller); the controller also refuses pushes from runs
+# without a push grant.
+id: ${PROFILE_ID}
+display_name: ${PROFILE_ID}
+description: Controller git remote (smart HTTP) with a task-scoped token obtained from the sandbox's SPIFFE JWT-SVID
+category: other
+credentials:
+  - name: access_token
+    description: Short-lived controller token (client_credentials, jwt-spiffe client assertion)
+    required: false
+    auth_style: bearer
+    header_name: Authorization
+    token_grant:
+      grant_type: client_credentials
+      token_endpoint: ${TOKEN_ENDPOINT}
+      audience: ${TOKEN_AUDIENCE}
+      jwt_svid_audience: ${SVID_AUDIENCE}
+      client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+      scopes: [${SCOPE}]
+      cache_ttl_seconds: ${TOKEN_CACHE_TTL}
+endpoints:
+  - host: ${GIT_HOST}
+    port: ${GIT_PORT}
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow:
+          method: GET
+          path: "/git/*.git/**"
+      - allow:
+          method: HEAD
+          path: "/git/*.git/**"
+      - allow:
+          method: OPTIONS
+          path: "/git/*.git/**"
+      - allow:
+          method: POST
+          path: "/git/*.git/git-upload-pack"
+      - allow:
+          method: POST
+          path: "/git/*.git/git-receive-pack"
+    # [] for legion-git-push; a git-receive-pack deny for legion-git. Deny rules take precedence
+    # over every allow in the effective policy, so a sandbox must attach only one of the two.
+    deny_rules: ${GIT_PUSH_DENY_RULES}
+binaries: ${GIT_BINARIES}

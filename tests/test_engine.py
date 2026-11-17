@@ -830,7 +830,6 @@ async def test_restart_fails_live_runs_and_resumes_verification(f: Flow):
     assert live_intake_like.status != R_FAILED
     f.runner.setup_rc = 0
     ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.set_mcp_tools(f.ctl.svc.mcp_tools)
     ctl2.load()
     ce2 = ctl2.changes[f.ce.cid]
     async with ctl2.svc.lock:

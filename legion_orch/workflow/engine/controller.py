@@ -83,10 +83,6 @@ class Controller:
     def git_url(self) -> str:
         return self.svc.git_url
 
-    def set_mcp_tools(self, tools: list[str]) -> None:
-        """The MCP server's tool list: the gateway allowlist in every sandbox policy."""
-        self.svc.mcp_tools = list(tools)
-
     # ------------------------------------------------------------------ EngineHost
     def changed(self) -> None:
         self.version += 1

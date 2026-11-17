@@ -6,12 +6,13 @@ controller only fills in placeholders.
 
 | Template | Creates |
 | --- | --- |
-| `agent-policy.template.yaml` | network/filesystem policy of every agent sandbox (`sandbox create --policy`) |
-| `verifier-policy.template.yaml` | policy of deterministic verifier sandboxes (git fetch only) |
+| `agent-policy.template.yaml` | filesystem/process policy of every agent sandbox (`sandbox create --policy`); no controller rules |
+| `verifier-policy.template.yaml` | policy of deterministic verifier sandboxes; no controller rules |
 | `agent-sandbox.template.yaml` | `sandbox create` flags for an agent sandbox |
 | `verifier-sandbox.template.yaml` | `sandbox create` flags for a verifier sandbox |
-| `legion-provider-profile.template.yaml` | provider profile imported once per workspace (`profile import -f`) |
-| `legion-provider.template.yaml` | `provider create` flags, once per workspace |
+| `legion-mcp-profile.template.yaml` | provider profile `legion-mcp` (controller MCP), imported once per workspace (`profile import -f`) |
+| `legion-git-profile.template.yaml` | provider profiles `legion-git` (read-only) and `legion-git-push` (read-write), imported once per workspace |
+| `legion-provider.template.yaml` | `provider create` flags, once per workspace for each of the three profiles |
 | `sandbox-resources.template.yaml` | `--driver-config-json` for a sandbox whose environment profile requests disk (see below) |
 
 ## Rendering rules
@@ -27,12 +28,16 @@ controller only fills in placeholders.
   a flag (`no_tty` → `--no-tty`); lists repeat the flag, maps become `KEY=VALUE`, `true` is a bare
   flag, `null`/`false` omit it. Every `openshell` call is prefixed with
   `--workspace ${WORKSPACE}` (and `-g <gateway>` when `sandbox.gateway` is set).
-* OpenShell gives deny rules precedence over allows, so the git endpoint always allows
-  `git-receive-pack` and `${GIT_PUSH_DENY_RULES}` removes it for roles that do not push.
+* Controller access is not in the sandbox policies: each sandbox attaches the controller's
+  provider profiles, whose endpoints OpenShell adds to its effective policy. Agents attach
+  `legion-mcp` and exactly one of `legion-git-push` (roles that push) or `legion-git`; verifiers
+  attach only `legion-git`. OpenShell applies a deny rule across the whole effective policy, so
+  the git template always allows `git-receive-pack` and `${GIT_PUSH_DENY_RULES}` removes it in
+  `legion-git`; a sandbox must never attach both git profiles.
 * `label` values are sanitised to OpenShell's rules (≤63 chars of `[A-Za-z0-9._-]`, e.g.
   `build:T1` → `build.T1`); put exact values in `annotation` if they matter.
 * Do not put credentials in templates: controller access is injected by the gateway (SPIFFE token
-  grant in the provider profile), model access by the model providers.
+  grant in the controller's provider profiles), model access by the model providers.
 
 ## Vocabulary
 
@@ -46,26 +51,24 @@ controller only fills in placeholders.
 | `${MCP_VERSIONS}` | MCP protocol revisions the gateway accepts |
 | `${MCP_MAX_BODY_BYTES}` | largest MCP request the gateway inspects (`server.mcp_max_body_bytes`); larger ones are dropped with a connection reset |
 | `${MCP_TOOLS}` | tool names the controller's MCP server registers (the tools/call allowlist) |
-| `${GIT_PUSH_DENY_RULES}` | deny rules for git-receive-pack: [] for roles that push, else a POST deny |
+| `${GIT_PUSH_DENY_RULES}` | deny rules of the git profile: [] for `legion-git-push`, a POST git-receive-pack deny for `legion-git` |
 | `${TOKEN_ENDPOINT}` | the controller's OAuth token endpoint (server.token_port, /oauth/token) |
 | `${TOKEN_AUDIENCE}` | audience requested for controller access tokens |
 | `${SVID_AUDIENCE}` | audience of the sandbox JWT-SVID presented to the token endpoint |
 | `${SCOPE}` | OAuth scope requested for controller access tokens |
 | `${TOKEN_CACHE_TTL}` | seconds the gateway may cache a controller access token |
-| `${PROVIDER}` | OpenShell provider name for controller access (identity.provider) |
-| `${PROFILE_ID}` | OpenShell provider profile id / provider type (legion-controller) |
+| `${PROFILE_ID}` | the controller provider profile being rendered (`legion-mcp`, `legion-git`, `legion-git-push`): its id, and its provider's name and type |
 | `${WORKSPACE}` | OpenShell workspace (sandbox.workspace) |
 | `${AGENT_IMAGE}` | image for agent sandboxes: its environment image, else sandbox.image (null for the gateway default) |
 | `${VERIFIER_IMAGE}` | image for verifier sandboxes: its environment image, else sandbox.verifier_image or sandbox.image |
-| `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: PROVIDER + sandbox.providers |
-| `${VERIFIER_PROVIDERS}` | providers attached to verifier sandboxes: PROVIDER |
+| `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: `legion-mcp`, `legion-git-push` (roles that push) or `legion-git`, then sandbox.providers |
+| `${VERIFIER_PROVIDERS}` | providers attached to verifier sandboxes: `legion-git` |
 | `${SANDBOX_CPU}` | `--cpu`: vCPUs requested by the sandbox's environment profile (null: driver default) |
 | `${SANDBOX_MEMORY}` | `--memory`: memory requested by the sandbox's environment profile, `<n>Mi` (null: driver default) |
 | `${DRIVER_CONFIG}` | `--driver-config-json` for the sandbox's disk (the rendered `sandbox-resources` template), null for the driver default |
 | `${DISK_MIB}` | disk in MiB requested by the sandbox's environment profile (`sandbox-resources` template only) |
-| `${AGENT_BINARIES}` | policy binaries [{path}] of the agent CLI (sandbox.agent_binaries) |
-| `${GIT_BINARIES}` | policy binaries [{path}] of git and its HTTP remote helpers |
-| `${PROFILE_BINARIES}` | plain paths of agent and git binaries, for the provider profile |
+| `${AGENT_BINARIES}` | paths of the agent CLI (sandbox.agent_binaries), for the `legion-mcp` profile |
+| `${GIT_BINARIES}` | paths of git and its HTTP remote helpers (sandbox.git_binaries), for the git profiles |
 | `${SANDBOX_NAME}` | readable sandbox name: lg-<first name> (agents), lgv-<first name> (verifiers) |
 | `${POLICY_FILE}` | path of the rendered sandbox policy |
 | `${PAYLOAD_UPLOAD}` | upload spec <local payload dir>:<sandbox.root> |

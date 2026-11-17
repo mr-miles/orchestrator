@@ -1,5 +1,6 @@
-# `openshell --workspace ${WORKSPACE} provider create`, run once per workspace.
-# Every sandbox then attaches it (`--provider ${PROVIDER}`, added by legion-orch).
-name: ${PROVIDER}
+# `openshell --workspace <workspace> provider create`, run once per workspace for each controller
+# profile (legion-mcp, legion-git, legion-git-push); the provider has the profile's name.
+# Sandboxes attach them through SANDBOX_PROVIDERS / VERIFIER_PROVIDERS.
+name: ${PROFILE_ID}
 type: ${PROFILE_ID}
 runtime_credentials: true

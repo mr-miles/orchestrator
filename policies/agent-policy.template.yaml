@@ -1,7 +1,8 @@
 # OpenShell sandbox policy for agent runs (critic, planner, implementer, reviewers, ...).
 # Rendered per sandbox by legion-orch; placeholders: see policies/README.md.
-# No credentials appear here: the workspace provider ${PROVIDER} injects a SPIFFE-derived bearer
-# into requests to the controller at the gateway.
+# No credentials appear here. Controller access comes from the attached provider profiles:
+# legion-mcp (MCP) and legion-git or legion-git-push (git), whose endpoints OpenShell adds to the
+# effective policy and whose token grant injects a SPIFFE-derived bearer at the gateway.
 version: 1
 filesystem_policy:
   include_workdir: true
@@ -12,60 +13,9 @@ landlock:
 process:
   run_as_user: ${RUN_AS_USER}
   run_as_group: ${RUN_AS_GROUP}
-network_policies:
-  # No model endpoint here: the model provider attached to the sandbox (sandbox.providers, e.g.
-  # claude-code or claude-subscription) contributes its own inspected endpoint with the
-  # credential. A plain L4 rule for the same host is refused by the gateway as an uninspected
-  # credential path.
-
-  # Controller MCP, vetted by the gateway: only the handshake methods and the controller's tools.
-  # Own port: OpenShell does not allow MCP to share a host:port with another protocol.
-  legion_mcp:
-    name: legion-mcp
-    endpoints:
-      - host: ${MCP_HOST}
-        port: ${MCP_PORT}
-        path: ${MCP_PATH}
-        protocol: mcp
-        enforcement: enforce
-        mcp:
-          versions: ${MCP_VERSIONS}
-          max_body_bytes: ${MCP_MAX_BODY_BYTES}   # = json_rpc_max_body_bytes in the provider profile
-        rules:
-          - allow: { method: initialize }
-          - allow: { method: notifications/initialized }
-          - allow: { method: notifications/cancelled }
-          - allow: { method: ping }
-          - allow: { method: tools/list }
-          - allow: { method: server/discover }
-          - allow: { method: subscriptions/listen }      # 2026-07-28: server events (SEP-2575)
-          - allow: { method: tools/call, tool: { any: ${MCP_TOOLS} } }
-    binaries: ${AGENT_BINARIES}
-
-  # Controller git remote. Push is allowed here and removed by deny rules for roles that do not
-  # push (deny takes precedence); the controller's pre-receive hook also enforces the branch.
-  legion_git:
-    name: legion-git
-    endpoints:
-      - host: ${GIT_HOST}
-        port: ${GIT_PORT}
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow:
-              method: GET
-              path: "/git/*.git/**"
-          - allow:
-              method: HEAD
-              path: "/git/*.git/**"
-          - allow:
-              method: OPTIONS
-              path: "/git/*.git/**"
-          - allow:
-              method: POST
-              path: "/git/*.git/git-upload-pack"
-          - allow:
-              method: POST
-              path: "/git/*.git/git-receive-pack"
-        deny_rules: ${GIT_PUSH_DENY_RULES}
-    binaries: ${GIT_BINARIES}
+network_policies: {}
+  # Nothing here: controller MCP and git come from the legion-mcp and legion-git(-push) provider
+  # profiles, and the model endpoint from the model provider (sandbox.providers), each with its
+  # inspected rules and credential. A plain L4 rule for a credentialed host is refused by the
+  # gateway as an uninspected credential path. The controller adds the sandbox environment's
+  # network policies (env_*) here.

@@ -90,7 +90,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         found = caller(ctx.request_context.request)
         if found is None:
             raise ToolError("no live run for this sandbox identity (runs end when their report is "
-                            "accepted; check the legion-controller provider is attached)")
+                            "accepted; check the legion-mcp provider is attached)")
         return found
 
     # ------------------------------------------------------------------ store tools
@@ -172,5 +172,4 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     registered = {t.name for t in await server.list_tools()}
     if registered != set(MCP_TOOLS):
         raise RuntimeError(f"MCP tools {sorted(registered)} != policy allowlist {sorted(MCP_TOOLS)}")
-    ctl.set_mcp_tools(MCP_TOOLS)       # used when rendering sandbox network policies
     return server

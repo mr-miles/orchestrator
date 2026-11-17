@@ -58,11 +58,15 @@ repository verifies every pushed object (`receive.fsckObjects`, `receive.maxInpu
 
 No credential is ever placed in a sandbox. Once per OpenShell workspace, run
 `legion-orch -c orchestrator.yaml setup-openshell --apply`. Every OpenShell object (sandbox
-policies, `sandbox create` flags, provider profile, provider) is rendered from a template in
+policies, `sandbox create` flags, provider profiles, providers) is rendered from a template in
 [`policies/`](policies/README.md) with one shared `${PLACEHOLDER}` vocabulary, and every
-`openshell` call targets `sandbox.workspace`. This imports the `legion-controller`
-provider profile and creates the provider. The gateway then exchanges each sandbox's SPIFFE
-JWT-SVID at `/oauth/token` and injects the bearer into requests to the controller. Configure
+`openshell` call targets `sandbox.workspace`. This imports one provider profile per controller
+endpoint and creates a provider of the same name for each: `legion-mcp` (MCP, for agents),
+`legion-git` (git fetch only) and `legion-git-push` (fetch and push). Agent sandboxes attach
+`legion-mcp` and one git provider (`legion-git-push` for roles that push); verifiers attach only
+`legion-git`. The attached profiles add the controller endpoints to the sandbox's effective
+policy, so the sandbox policies carry no rule for them. The gateway exchanges each sandbox's
+SPIFFE JWT-SVID at `/oauth/token` and injects the bearer into requests to the controller. Configure
 `identity.jwks_uri` (and `issuer`) with your SPIRE OIDC discovery endpoint.
 
 ### OpenShell
