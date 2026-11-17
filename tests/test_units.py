@@ -99,6 +99,17 @@ def test_docstore_versions_are_immutable():
         d.write("../etc/passwd", "x", author="r", role="r")
 
 
+
+def test_an_unchanged_write_creates_no_version():
+    d = _store()
+    d.write("plan/spec.md", "one", author="r1", role="planner")
+    same = d.write("plan/spec.md", "one", author="r2", role="planner", base_version=1)
+    assert (same.version, same.author) == (1, "r1") and len(d.history("plan/spec.md")) == 1
+    with pytest.raises(VersionConflict):                      # concurrency is still checked
+        d.write("plan/spec.md", "one", author="r2", role="planner")
+    assert d.write("plan/spec.md", "two", author="r2", role="planner", base_version=1).version == 2
+    assert d.write("plan/spec.md", "one", author="r2", role="planner", base_version=2).version == 3
+
 # ------------------------------------------------------------------ attestations
 def test_attestation_parsing():
     assert parse("file:plan/spec.md@3", ["app"]).version == 3

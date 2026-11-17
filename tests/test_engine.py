@@ -878,7 +878,8 @@ async def test_ship_recheck_reevaluates(f: Flow):
     await f.review()
     first = f.ce.change.ship.attestation
     await f.human("ship", "recheck")
-    assert f.ce.change.ship.attestation != first and f.ce.change.status == ChangeStatus.READY
+    assert f.status("ship") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+    assert f.ce.change.ship.attestation == first       # the same verdict: no new record version
 
 
 def test_signals_helper_derives_r1():
@@ -899,3 +900,21 @@ async def test_a_change_on_a_blank_repository(f: Flow):
     assert f.ce.change.status == ChangeStatus.READY
     assert await f.ctl.git.blob(base, "src/greet.txt") is None                 # nothing at base
     assert await f.ctl.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged
+
+
+@scenario()
+async def test_a_rework_may_leave_a_required_document_unchanged(f: Flow):
+    await f.intake()
+    await f.human("H-1", "accept")
+    first = f.run("plan")
+    await f.plan()
+    await f.critique("REWORK")
+    second = f.run("plan")
+    written = second.docs_written
+    att = await f.write(second, "plan/oracle.json", f.ce.doc("plan/oracle.json").content)
+    assert att == f.ce.latest_att("plan/oracle.json") and f.ce.latest("plan/oracle.json") == 1
+    assert f.ce.doc("plan/oracle.json").author == first.id
+    assert second.confirmed_docs == [att] and second.docs_written == written   # no quota used
+    out = await f.plan()                    # rewrites oracle.json and the task graph unchanged
+    assert out.accepted, out.violations
+    assert f.ce.latest("plan/taskgraph.json") == 1 and f.ce.latest("plan/spec.md") == 2

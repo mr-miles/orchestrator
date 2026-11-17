@@ -1,7 +1,9 @@
 ## Skill: Versioned document store
 
-The document store is immutable and versioned. Every write creates a new version; nothing is
-ever overwritten or deleted.
+The document store is immutable and versioned. Every write that changes a document creates a new
+version; nothing is ever overwritten or deleted. Writing content identical to the latest version
+creates nothing: you get that version back with `unchanged: true`, and it counts as yours when you
+attest it in your report (so a rework need not change a document that is still right).
 
 - Paths are relative to your change (`plan/spec.md` means `changes/{{change_id}}/plan/spec.md`).
   To read another change's documents use the full `changes/<id>/...` path.

@@ -284,13 +284,13 @@ Universal guards apply to every task and are listed once.
 | G-R1 | report | `status ∈ {DONE, BLOCKED}`. |
 | G-R2 | report | `BLOCKED` requires non-empty `blocked_reason` and `missing_decision`. |
 | G-R3 | report | Every attestation parses and resolves (`file:` version exists; `git:` object exists in the controller's git remote). |
-| G-R4 | report | The role's required documents are attested at their **latest** version and were **authored by this run**. |
+| G-R4 | report | The role's required documents are attested at their **latest** version and were **written by this run** – or written again unchanged by it, which creates no new version (G-W2) but counts as its own. |
 | G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
 | G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. |
 | G-R7 | report | `data` matches the role's `report_schema` (`roles.yaml`): verdicts, findings, results. |
 | G-R8 | report | Size limits: summary and reasons ≤ 2,000 characters, ≤ 100 attestations, `data` ≤ 256 KiB (report schemas also cap item counts and text lengths); the checks of one report are time-limited (`limits.report_check_timeout_s`). Applying an accepted report is transactional: any controller error restores the state and escalates. |
 | G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
-| G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). |
+| G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). Content identical to the latest version creates no version: that version is returned (`unchanged: true`) and costs no G-W4 quota. |
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
 | G-W4 | docs_write | Per-run quota: at most `limits.max_docs_per_run` document versions (default 200) and `limits.max_doc_bytes_per_run` bytes (default 50 MB). Refused writes say which limit was hit. |
 

@@ -10,7 +10,7 @@ GUARDS: dict[str, str] = {
     "G-R1": "report: status is DONE or BLOCKED",
     "G-R2": "report: BLOCKED needs blocked_reason and missing_decision",
     "G-R3": "report: every attestation parses and resolves",
-    "G-R4": "report: required docs attested at latest version, authored by this run",
+    "G-R4": "report: required docs attested at latest version, written (or rewritten unchanged) by this run",
     "G-R5": "report: required git attestation present",
     "G-R6": "report: too many rejected reports fails the run",
     "G-W1": "docs_write: inside write scope, never control/",

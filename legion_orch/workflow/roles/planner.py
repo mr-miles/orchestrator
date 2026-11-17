@@ -39,7 +39,7 @@ class Planner(RoleHandler):
         v = guards.plan(tg, orc, e.change.requirements, e.change.tier, e.cfg.protected_paths,
                         e.assets.roles["implementer"].souls_allowed, e.docs.schemas)
         _, vs = guards.required_docs(r.run.id, [e.p(f"plan/specs/{q}.md") for q in e.change.requirements],
-                                     r.parsed, e.docs)
+                                     r.parsed, e.docs, r.run.confirmed_docs)
         return v + [x.replace("G-R4", "G-P9") for x in vs] + self._environment(e, r)
 
     def _environment(self, e: RoleContext, r: Report) -> list[str]:
