@@ -18,6 +18,7 @@ from ...sandbox import (
     make_runner,
 )
 from ...store import DocStore
+from ...util import stop_process
 from ..assets import Assets
 from ..environment import Library
 from ..model import (
@@ -141,12 +142,23 @@ class Controller:
                 ce.recover()
         self._loop_task = asyncio.create_task(self._loop())
 
+    STOP_WAIT_S = 10
+
     async def stop(self) -> None:
+        """Stop scheduling, kill the agents and cancel background work (reflections, deletions,
+        provisioning), then wait for all of it, so no child process outlives the controller."""
         if self._loop_task:
             self._loop_task.cancel()
-        for p in self.svc.procs.values():
+        procs = list(self.svc.procs.values())
+        for p in procs:
             if p.returncode is None:
                 p.kill()
+        tasks = [t for t in (self._loop_task, *self._tasks) if t is not None]
+        for t in tasks:
+            t.cancel()
+        waits = [asyncio.ensure_future(stop_process(p)) for p in procs] + tasks
+        if waits:
+            await asyncio.wait(waits, timeout=self.STOP_WAIT_S)
         for ce in self.changes.values():
             ce.flush_timeline(force=True)
 

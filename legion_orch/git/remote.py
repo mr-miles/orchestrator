@@ -13,6 +13,8 @@ import shutil
 import stat
 from pathlib import Path
 
+from ..util import stop_process
+
 PRE_RECEIVE = r"""#!/bin/sh
 # legion-orch: a run token may only update its own branch; never delete refs.
 z=0000000000000000000000000000000000000000
@@ -43,8 +45,11 @@ async def run(*args: str, cwd: Path | None = None, check: bool = True,
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
-        proc.kill()
+        await stop_process(proc)
         raise GitError(f"timeout: {' '.join(args)}") from None
+    except BaseException:                 # cancelled (e.g. at shutdown): do not leave it running
+        await stop_process(proc)
+        raise
     text = out.decode(errors="replace")
     if check and proc.returncode != 0:
         raise GitError(f"{' '.join(args)} failed ({proc.returncode}): {text.strip()[:2000]}")

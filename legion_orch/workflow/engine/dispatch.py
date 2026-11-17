@@ -8,6 +8,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Any
 
+from ...config import agent_command
 from ...sandbox import (
     AGENT_PREFIX,
     RUN_AGENT_SH,
@@ -227,7 +228,7 @@ class Dispatcher:
             "LEGION_BRANCH": run.branch, "LEGION_BASE_SHA": run.judged_sha or run.base_sha,
             "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
             "LEGION_NEEDS_REPO": "1" if self.c.assets.roles[run.role].repo else "0",
-            "LEGION_AGENT_COMMAND": self.c.cfg.sandbox.agent_command,
+            "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
         }
         if found := self._resumable_session(run):
             run.resumed_from, run.resumed_session = found

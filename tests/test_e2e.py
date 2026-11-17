@@ -50,6 +50,9 @@ async def _wait(engine, pred, what, timeout=90):
 
 def _config(tmp_path, port):
     cfg_path = tmp_path / "orchestrator.yaml"
+    fake = tmp_path / "claude"       # stands in for the agent CLI, whatever flags it is given
+    fake.write_text(f"#!/bin/sh\nexec {sys.executable} {ROOT / 'tests/fake_agent.py'}\n")
+    fake.chmod(0o755)
     cfg_path.write_text(textwrap.dedent(f"""
         project: e2e
         repo: {{name: app, path: {tmp_path / 'src-repo'}, base_branch: main}}
@@ -64,7 +67,7 @@ def _config(tmp_path, port):
         sandbox:
           runner: local
           templates_dir: {ROOT / 'policies'}
-          agent_command: "{sys.executable} {ROOT / 'tests/fake_agent.py'}"
+          agent_bin: "{fake}"
     """))
     return load_config(cfg_path)
 
@@ -458,6 +461,7 @@ def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        proc.stdout.close()
 
 
 def test_document_listing_hides_controller_records_unless_asked(tmp_path):
@@ -596,14 +600,17 @@ def test_agent_listeners_keep_idle_connections_open(tmp_path):
             hdr = {"Content-Type": "application/json", "Mcp-Protocol-Version": "2025-11-25",
                    "Accept": "application/json, text/event-stream"}
             body = '{"jsonrpc":"2.0","id":1,"method":"ping"}'
-            c.request("POST", "/mcp", body, hdr)
-            c.getresponse().read()
-            time.sleep(idle)
             try:
                 c.request("POST", "/mcp", body, hdr)
-                return c.getresponse().status
-            except OSError as e:
-                return type(e).__name__
+                c.getresponse().read()
+                time.sleep(idle)
+                try:
+                    c.request("POST", "/mcp", body, hdr)
+                    return c.getresponse().status
+                except OSError as e:
+                    return type(e).__name__
+            finally:
+                c.close()
         try:
             assert await asyncio.to_thread(ping_twice, 0.2) == 200       # within the keep-alive
             assert await asyncio.to_thread(ping_twice, 2) != 200         # closed after 1 s idle

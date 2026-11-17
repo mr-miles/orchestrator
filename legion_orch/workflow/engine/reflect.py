@@ -13,7 +13,9 @@ import json
 import shlex
 import shutil
 
+from ...config import agent_command
 from ...sandbox import RUN_AGENT_SH, agentlog
+from ...util import stop_process
 from ..model import Run
 from .core import ChangeCore
 
@@ -23,9 +25,9 @@ Your part in this change is finished: {outcome}. Before your sandbox is deleted,
 this whole session. Your answer is read by whoever improves the instructions, tools and process
 you worked with, so that the next agent avoids what slowed you down or misled you.
 
-Do not call any tools and do not change anything: answer in plain text, from what you remember
-of this session. Be specific and honest; name files, commands, instructions and turns. Estimate
-cost (turns or minutes) where you can. "Nothing" is a fine answer for a section.
+You have no tools in this turn and nothing is to change: answer in plain text, from what you
+remember of this session. Be specific and honest; name files, commands, instructions and turns.
+Estimate cost (turns or minutes) where you can. "Nothing" is a fine answer for a section.
 
 {context}
 Answer in markdown with exactly these sections:
@@ -149,7 +151,7 @@ class Reflector:
         (payload / "soul.md").write_text(soul)
         (payload / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
         env = {"LEGION_RUN_ID": rid, "LEGION_ROLE": last.role, "LEGION_NEEDS_REPO": "0",
-               "LEGION_AGENT_COMMAND": c.cfg.sandbox.agent_command,
+               "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
                "LEGION_RESUME_SESSION": last.session_id, "LEGION_REQUIRE_SESSION": "1"}
         (payload / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n"
                                                  for k, v in env.items()))
@@ -165,7 +167,7 @@ class Reflector:
             text = log_file.read_text(errors="replace") if log_file.exists() else ""
             result = agentlog.agent_result(text)
             async with c.lock:
-                if result is None or result.is_error:
+                if result is None or result.is_error or not result.message.strip():
                     c.event("reflection", f"no reflection from run {last.id} (exit {rc})",
                             last.node_id, last.id)
                     return
@@ -183,9 +185,9 @@ class Reflector:
                 c.event("reflection", f"recorded {reflection_path(last.id)}", last.node_id, last.id)
                 c.save()
         except Exception as e:                      # best-effort: never blocks the deletion
-            if proc is not None and proc.returncode is None:
-                proc.kill()
             c.event("reflection", f"reflection of run {last.id} skipped: {e or type(e).__name__}",
                     last.node_id, last.id)
-        finally:
+        finally:                                    # also when cancelled (at shutdown)
+            if proc is not None:
+                await stop_process(proc)
             shutil.rmtree(d, ignore_errors=True)

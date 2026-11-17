@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from ..config import Config
+from ..util import stop_process
 from .images import ImageRecipe
 
 
@@ -36,9 +37,11 @@ async def _run(argv: list[str], timeout: float) -> tuple[int, str]:
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await stop_process(proc)
         return 124, f"timeout after {timeout}s"
+    except BaseException:                 # cancelled (e.g. at shutdown): do not leave it running
+        await stop_process(proc)
+        raise
     return proc.returncode, out.decode(errors="replace")
 
 

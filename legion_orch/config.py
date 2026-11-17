@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -112,17 +113,10 @@ class SandboxConfig:
     root: str = "/sandbox"
     run_as_user: str = "sandbox"
     run_as_group: str = "sandbox"
-    # Command run inside the sandbox to start the agent, via `bash -lc` from the working copy.
-    # $LEGION_PAYLOAD is the payload directory (/sandbox/payload in OpenShell) and
-    # $LEGION_MCP_CONFIG its mcp.json, so the same command works under every runner. On a rework
-    # in a kept sandbox, $LEGION_RESUME_SESSION is the earlier agent session to continue.
-    agent_command: str = (
-        'claude -p ${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"} '
-        '--mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
-        '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '
-        "--permission-mode bypassPermissions --output-format stream-json --verbose "
-        '< "$LEGION_PAYLOAD/prompt.md"'
-    )
+    # The agent CLI inside the sandbox (a name on PATH or a path). The controller builds the rest
+    # of the command (see agent_command): it has to read the payload, use the controller's MCP
+    # config and resume the agent's session on rework and for reflection.
+    agent_bin: str = "claude"
     extra_create_args: list[str] = field(default_factory=list)
 
 
@@ -199,8 +193,32 @@ class Config:
         return p if p.is_absolute() else (self.base_dir / p)
 
 
+REMOVED_KEYS = {
+    "agent_command": "sandbox.agent_command was removed: the controller builds the agent command, "
+                     "because a custom one silently dropped --resume (reworks and reflections "
+                     "lost their session). Set sandbox.agent_bin to choose the agent CLI.",
+}
+
+
+def agent_command(sc: SandboxConfig, *, tools: bool = True) -> str:
+    """The command run-agent.sh starts the agent with (via ``bash -lc`` from the working copy).
+    $LEGION_PAYLOAD is the payload directory and $LEGION_MCP_CONFIG its mcp.json, under every
+    runner; $LEGION_RESUME_SESSION, when set, is the agent session to continue. ``tools=False``
+    (a reflection) gives the agent no built-in tools, so it answers from the session and its
+    prompt instead of reading files (the session's own transcript included)."""
+    return (f'{shlex.quote(sc.agent_bin)} -p '
+            '${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"} '
+            + ('' if tools else '--tools "" ') +
+            '--mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
+            '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '
+            "--permission-mode bypassPermissions --output-format stream-json --verbose "
+            '< "$LEGION_PAYLOAD/prompt.md"')
+
+
 def _build(cls, data: dict[str, Any] | None):
     data = dict(data or {})
+    if removed := sorted(set(data) & set(REMOVED_KEYS)):
+        raise ValueError(" ".join(REMOVED_KEYS[k] for k in removed))
     known = {f for f in cls.__dataclass_fields__}
     unknown = set(data) - known
     if unknown:
