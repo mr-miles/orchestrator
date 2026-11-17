@@ -25,6 +25,8 @@ class Endpoint(BaseModel):
     protocol: Literal["rest"] = "rest"
     enforcement: Literal["enforce", "audit"] = "enforce"
     access: Literal["read-only", "read-write", "full"] = "read-only"
+    # keep %2F in path segments instead of rejecting it (npm scoped packages: /@scope%2fname)
+    allow_encoded_slash: bool | None = None
 
 
 @dataclass(frozen=True)

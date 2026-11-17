@@ -690,3 +690,12 @@ def test_language_preferences_reach_the_roles_that_plan_build_and_judge_code():
     have = {r for r, role in a.roles.items() if "language-preferences" in role.skills}
     assert have == {"planner", "critic", "oracle", "implementer", "reviewer"}
     assert "uv" in a.skill("language-preferences") and "ruff" in a.skill("language-preferences")
+
+
+def test_npm_registry_keeps_encoded_slashes_for_scoped_packages():
+    """npm fetches scoped packages as /@scope%2fname; the gateway rejects %2F unless allowed."""
+    lib = library()
+    entry = lambda name: policy_entry(Policy(name=name, description="", binaries=("/x",),
+                                             endpoints=tuple(lib.policies[name].endpoints)))[1]
+    assert [e.get("allow_encoded_slash") for e in entry("npm-registry")["endpoints"]] == [True]
+    assert all("allow_encoded_slash" not in e for e in entry("pypi")["endpoints"])   # unset: omitted

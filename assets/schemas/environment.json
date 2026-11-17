@@ -52,7 +52,8 @@
         "path": {"type": "string", "pattern": "^/\\S{0,255}$"},
         "protocol": {"enum": ["rest"]},
         "enforcement": {"enum": ["enforce", "audit"]},
-        "access": {"enum": ["read-only", "read-write", "full"]}
+        "access": {"enum": ["read-only", "read-write", "full"]},
+        "allow_encoded_slash": {"type": "boolean"}
       }
     },
     "policy": {
