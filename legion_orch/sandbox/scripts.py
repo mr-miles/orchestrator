@@ -56,6 +56,10 @@ if [ -n "${LEGION_RESUME_SESSION:-}" ]; then
        2>/dev/null | grep -q .; then
     echo "[legion] resuming agent session $LEGION_RESUME_SESSION"
   else
+    if [ "${LEGION_REQUIRE_SESSION:-0}" = "1" ]; then
+      echo "[legion] agent session $LEGION_RESUME_SESSION not found" >&2
+      exit 3
+    fi
     echo "[legion] agent session $LEGION_RESUME_SESSION not found; starting a new one"
     unset LEGION_RESUME_SESSION
   fi

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 MAX_TEXT = 4000          # per entry; the raw log keeps everything
@@ -223,3 +224,94 @@ def session_id(text: str) -> str | None:
         if isinstance(sid, str) and sid and all(c.isalnum() or c in "-_" for c in sid):
             found = sid
     return found
+
+
+def _ts(ev: dict) -> float | None:
+    ts = ev.get("legion_ts")
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() if ts else None
+    except (AttributeError, ValueError):
+        return None
+
+
+def digest(text: str) -> dict[str, Any]:
+    """What a run did, for a retrospective to read before (or instead of) its whole log: tool use
+    and failures, repeated commands and reads, the slowest tool calls and the longest waits on
+    the model (from the controller's ``legion_ts`` on each event), turns and cost."""
+    tools: dict[str, dict[str, int]] = {}
+    commands: dict[str, int] = {}
+    reads: dict[str, int] = {}
+    errors: list[dict] = []
+    started: dict[str, tuple[str, str, float | None]] = {}     # tool_use id -> (tool, input, ts)
+    slow: list[dict] = []
+    thinking: list[dict] = []           # gaps before an assistant event: time the model took
+    results: list[dict] = []
+    first = last = None
+    prev_ts = None
+    init: dict[str, Any] = {}
+    subagent_events = sandbox_lines = 0
+    for line, ev in _events(text):
+        if ev is None:
+            sandbox_lines += bool(line.strip())
+            continue
+        ts = _ts(ev)
+        if ts is not None:
+            first = first if first is not None else ts
+            last = ts
+        if ev.get("parent_tool_use_id"):
+            subagent_events += 1
+        t = ev.get("type")
+        if t == "system" and ev.get("subtype") == "init" and not init:
+            init = {"model": ev.get("model"), "session_id": ev.get("session_id"),
+                    "tools": len(ev.get("tools") or [])}
+        elif t == "assistant":
+            if ts is not None and prev_ts is not None and not ev.get("parent_tool_use_id"):
+                thinking.append({"seconds": round(ts - prev_ts, 1), "at": ev.get("legion_ts")})
+            for c in (ev.get("message") or {}).get("content") or []:
+                if not isinstance(c, dict) or c.get("type") != "tool_use":
+                    continue
+                name, inp = _tool_name(str(c.get("name", "?"))), c.get("input")
+                tools.setdefault(name, {"calls": 0, "errors": 0})["calls"] += 1
+                if isinstance(inp, dict) and isinstance(inp.get("command"), str):
+                    commands[inp["command"]] = commands.get(inp["command"], 0) + 1
+                if name == "Read" and isinstance(inp, dict) and isinstance(inp.get("file_path"), str):
+                    reads[inp["file_path"]] = reads.get(inp["file_path"], 0) + 1
+                started[str(c.get("id"))] = (name, _clip(_input_text(inp), 300), ts)
+        elif t == "user":
+            for c in (ev.get("message") or {}).get("content") or []:
+                if not isinstance(c, dict) or c.get("type") != "tool_result":
+                    continue
+                name, inp, t0 = started.get(str(c.get("tool_use_id")), ("?", "", None))
+                if ts is not None and t0 is not None:
+                    slow.append({"tool": name, "input": inp, "seconds": round(ts - t0, 1)})
+                if c.get("is_error"):
+                    tools.setdefault(name, {"calls": 0, "errors": 0})["errors"] += 1
+                    errors.append({"tool": name, "input": inp, "at": ev.get("legion_ts"),
+                                   "error": _clip(_result_text(c.get("content")), 500)})
+        elif t == "result":
+            results.append({k: ev.get(k) for k in ("subtype", "is_error", "num_turns",
+                                                   "duration_ms", "duration_api_ms",
+                                                   "total_cost_usd", "usage") if k in ev})
+        if ts is not None:
+            prev_ts = ts
+
+    def top(d: dict[str, int], n: int, at_least: int) -> list[dict]:
+        return [{"value": _clip(k, 300), "count": v}
+                for k, v in sorted(d.items(), key=lambda kv: -kv[1]) if v >= at_least][:n]
+
+    return {
+        "agent": init,
+        "wall_seconds": round(last - first, 1) if first is not None and last is not None else None,
+        "results": results[-5:],
+        "result_count": len(results),
+        "tools": dict(sorted(tools.items(), key=lambda kv: -kv[1]["calls"])),
+        "tool_seconds": round(sum(s["seconds"] for s in slow), 1),
+        "slowest_tool_calls": sorted(slow, key=lambda s: -s["seconds"])[:15],
+        "longest_model_waits": sorted(thinking, key=lambda s: -s["seconds"])[:10],
+        "repeated_commands": top(commands, 20, 2),
+        "repeated_reads": top(reads, 20, 3),
+        "tool_errors": errors[:30],
+        "tool_error_count": len(errors),
+        "subagent_events": subagent_events,
+        "sandbox_lines": sandbox_lines,
+    }

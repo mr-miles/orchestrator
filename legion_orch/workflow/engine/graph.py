@@ -19,7 +19,9 @@ from ..model import (
     PENDING,
     PLAN,
     PROVISION,
+    READY,
     RELEASE,
+    RETRO,
     REWORK,
     SHIP,
     Node,
@@ -69,6 +71,18 @@ class StageGraph:
                             depends_on=[RELEASE if r >= 3 else INTEGRATION]))
         c.add_node(Node(id=SHIP, kind=SHIP, title="Ship readiness check",
                         depends_on=[H_CHANGE] if r >= 2 else [H_SPEC]))
+
+    def add_retrospective(self) -> Node:
+        """Queue the retrospective of an ended change: a new node, or a new cycle of it."""
+        c = self.c
+        node = c.nodes.get(RETRO)
+        if node is None:
+            node = Node(id=RETRO, kind=RETRO, status=READY,
+                        title="Retrospective: lessons for the assets and process")
+            c.add_node(node)
+        else:
+            node.cycle, node.status, node.escalation = node.cycle + 1, READY, None
+        return node
 
     def materialize_builds(self, taskgraph: dict) -> None:
         """Replace the build nodes by one per task of an accepted task graph."""

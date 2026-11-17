@@ -12,6 +12,7 @@ from ..model import (
     PROVISION,
     R_REPORTED,
     READY,
+    RETRO,
     REVIEWING,
     REWORK,
     ROLE_FOR_KIND,
@@ -46,17 +47,26 @@ class Scheduler:
                 return
             if self.lifecycle.release_sandboxes():      # a gate passed, or the change ended
                 c.save()
-            if c.change.status != "ACTIVE":
+            active = c.change.status == "ACTIVE"
+            if not active and c.cfg.retrospective.auto and RETRO not in c.nodes:
+                self.graph.add_retrospective()
+                c.event("retrospective", "the change has ended: retrospective queued", RETRO)
+                c.save()
+            # an ended change only runs a retrospective someone asked for
+            if not active and not any(n.kind == RETRO for n in c.nodes.values()):
                 return
-            for node in list(c.nodes.values()):
-                if node.status == PENDING and self.graph.deps_accepted(node) \
-                        and (node.kind != PROVISION or self._environment_quiescent()):
-                    self._promote(node)
+            if active:
+                for node in list(c.nodes.values()):
+                    if node.status == PENDING and self.graph.deps_accepted(node) \
+                            and (node.kind != PROVISION or self._environment_quiescent()):
+                        self._promote(node)
             self.lifecycle.check_timeouts()
             capacity = c.cfg.limits.max_parallel - c.host.live_count()
             for node in list(c.nodes.values()):
                 if capacity <= 0:
                     break
+                if not active and node.kind != RETRO:
+                    continue
                 for run in self._dispatch(node, capacity):
                     launches.append(run)
                     capacity -= 1
@@ -102,6 +112,8 @@ class Scheduler:
         if node.status in (READY, REWORK) and node.kind in ROLE_FOR_KIND:
             if not self.graph.deps_accepted(node):
                 return []
+            if node.kind == RETRO and self.lifecycle.reflector.pending:
+                return []                  # its material includes the last reflections
             if node.kind == BUILD and self.graph.overlaps_running(node):
                 return []
             if self._waits_for_environment(ROLE_FOR_KIND[node.kind]):

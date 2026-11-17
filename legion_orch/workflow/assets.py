@@ -115,14 +115,40 @@ class Assets:
             out[p.stem] = p.read_text()
         return out
 
-    def _hash(self) -> str:
-        h = hashlib.sha256()
-        files = [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
+    def _files(self) -> list[Path]:
+        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
             p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md")) \
             + sorted((self.root / "schemas").glob("*.json"))
-        for p in files:
+
+    def _hash(self) -> str:
+        h = hashlib.sha256()
+        for p in self._files():
             h.update(str(p.relative_to(self.root)).encode() + b"\0" + p.read_bytes() + b"\0")
         return "sha256:" + h.hexdigest()
+
+    def manifest(self) -> dict[str, str]:
+        """sha256 of each asset file (relative path -> hash), as loaded: which files a later
+        asset set changed. The set's ``sha`` covers exactly these files."""
+        return {str(p.relative_to(self.root)): "sha256:" + hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in self._files()}
+
+    def check_prompt(self, role: str, template_vars: dict[str, str], pin: str | None,
+                     recorded: dict[str, str] | None = None) -> dict[str, Any]:
+        """Whether these assets reproduce a run's prompt: re-rendered with the run's template
+        values, ``exact`` if the pin matches. Otherwise ``changed`` lists the asset files that
+        differ from the manifest recorded for the run's asset set (``recorded``)."""
+        out: dict[str, Any] = {"status": "unknown", "changed": []}
+        try:
+            if template_vars and role in self.roles:
+                if self.render_role(role, dict(template_vars)).pin == pin:
+                    return {"status": "exact", "changed": []}
+                out["status"] = "changed"
+        except AssetError as e:
+            out = {"status": "changed", "changed": [], "error": str(e)}
+        if recorded is not None:
+            now = self.manifest()
+            out["changed"] = sorted(k for k in set(now) | set(recorded) if now.get(k) != recorded.get(k))
+        return out
 
     # ------------------------------------------------------------------ queries
     def soul(self, name: str) -> str:
