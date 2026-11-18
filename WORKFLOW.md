@@ -441,12 +441,16 @@ these paths are **protected**: any later diff touching them fails G-B3 and the `
 
 ### 5.5 `baseline` (R3) – independent baseline
 
+What is true of the code before any build: which acceptance tests fail (as they should, until the
+change is built) and which failures were already there. The integration verifier is given it.
+
 * **Soul:** `baseline-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`
 * **Writes:** `baseline/**`  **Required:** `baseline/report.md`, git `head`
 
 | ID | Rule |
 | --- | --- |
 | G-BL1 | `data.results` lists every acceptance command with its exit code at the integration head; the attested head equals the current integration head. |
+| G-BL2 | The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's. |
 
 ### H-2 approve spec and oracle
 
@@ -520,7 +524,7 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 
 ### 5.10 `integration` (R2+) and `release` (R3)
 
-* `integration` – **Soul:** `integration-verifier`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Writes:** `integration/**`; **Required:** `integration/report.md`, git `head`.
+* `integration` – **Soul:** `integration-verifier`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Writes:** `integration/**`; **Required:** `integration/report.md`, git `head`. **Inputs** add every task's evidence and, at R3, the baseline report and the controller's baseline run.
 * `release` – **Soul:** `release-planner`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`; **Writes:** `release/**`; **Required:** `release/plan.md`, `release/rollback.md`.
 
 | ID | Rule |
