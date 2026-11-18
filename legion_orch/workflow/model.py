@@ -488,6 +488,17 @@ class GateResult(Record):
     added: bool = False
 
 
+class ChangeEnd(Record):
+    """Who ended a change before it could ship, where and why: abandoned at an escalation, or
+    rejected at H-3. The retrospective reads it (``change.json``)."""
+    by: str
+    node: str
+    action: str                       # abandon | reject
+    reason: str | None = None
+    at: str = Field(default_factory=now_iso)
+    attestation: str | None = None    # control/ended.json
+
+
 class Readiness(Record):
     verdict: ReadinessVerdict
     tier: str
@@ -521,17 +532,6 @@ class EnvironmentBuild(Record):
     attestation: str | None = None        # the stored build record
 
 
-class ChangeEnd(Record):
-    """Who ended a change before it could ship, where and why: abandoned at an escalation, or
-    rejected at H-3. The retrospective reads it (``change.json``)."""
-    by: str
-    node: str
-    action: str                       # abandon | reject
-    reason: str | None = None
-    at: str = Field(default_factory=now_iso)
-    attestation: str | None = None    # control/ended.json
-
-
 class Change(Record):
     id: str
     goal: str
@@ -548,13 +548,13 @@ class Change(Record):
     panel: list[str] = []
     requirements: list[str] = []
     first_build_at: str | None = None
+    ended: ChangeEnd | None = None                        # abandoned or rejected: by, where, why
     attestations: dict[str, AttestationRecord] = {}       # kind -> latest record
     overrides: list[GateOverride] = []
     protected_approvals: list[ProtectedPathApproval] = []
     surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
     ship: Readiness | None = None
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
-    ended: ChangeEnd | None = None                        # abandoned or rejected: by, where, why
 
 
 def _parse_ts_safe(ts: str):
