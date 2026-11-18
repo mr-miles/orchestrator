@@ -51,6 +51,10 @@ class RoleHandler:
     sees_requirements = True      # accepted requirements and risk (H-1 pins)
     sees_draft_plan = False       # latest plan documents, even after H-2 approval
     sees_oracle_commit = True     # the protected oracle commit
+    sees_risk = True              # intake/risk.json among the H-1 pins
+    # A build task's roles: of the approved delta specs, only those of the task's own
+    # requirements (the others are about other tasks).
+    task_scoped_specs = False
 
     @property
     def keeps_sandbox(self) -> bool:

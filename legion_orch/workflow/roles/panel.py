@@ -13,6 +13,7 @@ class Panel(RoleHandler):
     roles = ("reviewer", "security", "architecture")
     judge = True
     panel = True
+    task_scoped_specs = True
 
     def extra_context(self, e: RoleContext, node) -> list[str]:
         refs = build_context(e, node)

@@ -13,6 +13,8 @@ class Implementer(RoleHandler):
     pushes = True
     reuses_sandbox = True
     needs_fresh_approval = True
+    sees_risk = False             # the risk signals set the tier; they don't shape the code
+    task_scoped_specs = True
 
     def extra_context(self, e: RoleContext, node) -> list[str]:
         return build_context(e, node)
