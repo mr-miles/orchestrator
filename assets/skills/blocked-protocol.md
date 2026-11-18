@@ -1,3 +1,7 @@
+---
+description: "When and how to report BLOCKED instead of guessing. Load when something stops you: missing files, conflicting instructions, a decision only a human can make."
+---
+
 ## Skill: BLOCKED protocol
 
 Report `BLOCKED` (never guess) when: required files are missing, instructions conflict, the scope

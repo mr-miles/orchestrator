@@ -1,3 +1,7 @@
+---
+description: "MANDATORY for every legion run: load it before your first action. The rules every agent follows: read before write, scope, verification, how to report."
+---
+
 ## Skill: Harness contract (mandatory)
 
 You follow `read-before-write -> evidence-before-action -> minimal diff -> verify-before-report`.

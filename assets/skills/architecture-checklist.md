@@ -1,3 +1,7 @@
+---
+description: "Checklist for reviewing a diff's architecture against the approved delta specs. Load when you review code for architecture."
+---
+
 ## Skill: Architecture checklist
 
 For `git diff {{base_sha}}..{{candidate_sha}}`, against the approved delta spec(s):

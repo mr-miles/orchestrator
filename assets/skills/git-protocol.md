@@ -1,3 +1,7 @@
+---
+description: "Working copy, commits, pushing your branch, rebasing, and what judges do instead. Load before you commit, push or attest a git sha."
+---
+
 ## Skill: Git protocol
 
 - Your working copy is the `workdir` in your assignment (your current directory), cloned from the controller's remote (`origin`) and checked

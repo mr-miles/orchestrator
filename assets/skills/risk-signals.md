@@ -1,3 +1,7 @@
+---
+description: "The twelve risk signals and how to score them in intake/risk.json. Load when you write intake/risk.json."
+---
+
 ## Skill: Risk signals
 
 Write `intake/risk.json` as:

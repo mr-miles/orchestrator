@@ -24,6 +24,10 @@ for _f in ("run.env", "mcp.json", "prompt.md", "soul.md"):
     if os.path.exists(_p):
         assert TOKEN not in open(_p).read(), f"credential leaked into payload {_f}"
 assert "LEGION_TOKEN" not in open(os.path.join(SB, "payload", "run.env")).read()
+# the local runner gives the agent its own Claude config dir, where run-agent.sh put the skills
+_cc = os.environ["CLAUDE_CONFIG_DIR"]
+assert _cc == os.path.join(SB, "claude"), _cc
+assert os.path.isfile(os.path.join(_cc, "skills", "legion-harness-contract", "SKILL.md"))
 REPO = "app"
 _id = 0
 

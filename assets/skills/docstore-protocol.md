@@ -1,3 +1,7 @@
+---
+description: "How to read and write documents in the versioned document store (paths, versions, schemas, dry runs). Load before your first docs_write."
+---
+
 ## Skill: Versioned document store
 
 The document store is immutable and versioned. Every write that changes a document creates a new

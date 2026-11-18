@@ -49,6 +49,15 @@ else
 fi
 # The agent command finds its inputs through these, under any runner (/sandbox in OpenShell).
 export LEGION_PAYLOAD="$P" LEGION_MCP_CONFIG="$P/mcp.json"
+# The run's skills, loaded on demand by the agent: replace any legion-* skills an earlier run in
+# this sandbox installed (a payload without skills keeps them).
+if [ -d "$P/skills" ]; then
+  SKILLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+  mkdir -p "$SKILLS"
+  rm -rf "$SKILLS"/legion-*
+  cp -R "$P/skills/." "$SKILLS/"
+  echo "[legion] installed $(ls "$P/skills" | wc -l | tr -d ' ') skills into $SKILLS"
+fi
 # A rework continues the earlier session (Claude Code keeps it under its config dir) if the
 # sandbox still has it; otherwise the agent starts a new one.
 if [ -n "${LEGION_RESUME_SESSION:-}" ]; then

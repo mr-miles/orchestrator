@@ -1,3 +1,7 @@
+---
+description: "OWASP Top 10 and STRIDE checklist for reviewing a diff. Load when you review code for security."
+---
+
 ## Skill: Security checklist (OWASP Top 10 + STRIDE)
 
 For the diff under review, check: broken access control, cryptographic failures, injection
