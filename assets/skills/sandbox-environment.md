@@ -1,3 +1,7 @@
+---
+description: "How to write plan/environment.json: profiles, tools, network policies, resources, role mapping, library proposals. Load when you write or critique a sandbox environment."
+---
+
 ## Skill: Sandbox environment spec
 
 When your assignment asks for it, `plan/environment.json` declares the sandboxes that run or work

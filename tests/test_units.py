@@ -49,15 +49,26 @@ def test_assets_folder_validation(tmp_path):
     with pytest.raises(AssetError, match="not referenced"):
         Assets(tmp_path / "a")
     (tmp_path / "a/souls/orphan.md").unlink()
-    (tmp_path / "a/skills/pre-mortem.md").write_text("{{nope}}")
+    skill = tmp_path / "a/skills/pre-mortem.md"
+    skill.write_text('---\ndescription: "Critique a plan."\n---\n\n{{nope}}')
     with pytest.raises(AssetError, match="unknown template variable"):
         Assets(tmp_path / "a")
-    (tmp_path / "a/skills/pre-mortem.md").unlink()
+    for bad, match in (("no frontmatter", "starts with frontmatter"),
+                       ("---\ndescription: x\nallowed-tools: Bash\n---\nbody", "only 'description'"),
+                       ("---\ndescription: ''\n---\nbody", "non-empty"),
+                       ("---\ndescription: [unclosed\n---\nbody", "invalid frontmatter")):
+        skill.write_text(bad)
+        with pytest.raises(AssetError, match=match):
+            Assets(tmp_path / "a")
+    skill.unlink()
     with pytest.raises(AssetError, match="skills/pre-mortem.md not found"):
         Assets(tmp_path / "a")
 
 
-def test_assets_render_and_pin():
+def test_assets_render_and_pin(tmp_path):
+    import shutil
+
+    import yaml
     a = Assets(ROOT / "assets")
     vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
@@ -65,8 +76,21 @@ def test_assets_render_and_pin():
                               "required_docs", "workdir")}
     vars_["task_soul"] = "backend-engineer"
     r = a.render_role("implementer", vars_)
-    assert "Backend Engineer" in r.soul and "Harness contract" in r.prompt
-    assert r.pin.startswith("sha256:")
+    assert "Backend Engineer" in r.soul and r.pin.startswith("sha256:")
+    # the prompt is only the assignment and which skills to load first; every run gets every skill
+    assert "Harness contract" not in r.prompt and "`legion-harness-contract`" in r.prompt
+    assert "`legion-git-protocol`" in r.prompt
+    assert set(r.skills) == {f"legion-{n}" for n in a.skills_}
+    md = r.skills["legion-git-protocol"]
+    head, body = md.split("\n---\n", 1)
+    assert yaml.safe_load(head.removeprefix("---\n")) == {
+        "name": "legion-git-protocol", "description": a.skill_descriptions["git-protocol"]}
+    assert "branch `x`" in body and "{{" not in md                      # rendered for the run
+    # the pin covers every skill, even one the role is not told to load first
+    shutil.copytree(ROOT / "assets", tmp_path / "a")
+    sec = tmp_path / "a/skills/security-checklist.md"
+    sec.write_text(sec.read_text() + "\nOne more check.\n")
+    assert Assets(tmp_path / "a").render_role("implementer", vars_).pin != r.pin
     vars_["task_soul"] = "code-reviewer"
     with pytest.raises(AssetError):
         a.render_role("implementer", vars_)
@@ -871,6 +895,7 @@ def test_default_agent_command_finds_the_payload(tmp_path):
     (here a payload that is not at /sandbox) – with a stub `claude` on PATH."""
     import os
     import shlex
+    import shutil
     import subprocess
 
     from legion_orch.config import SandboxConfig, agent_command
@@ -880,16 +905,29 @@ def test_default_agent_command_finds_the_payload(tmp_path):
     bin_dir.mkdir()
     for name, text in (("soul.md", "SOUL"), ("prompt.md", "PROMPT"), ("mcp.json", "{}")):
         (sb / "payload" / name).write_text(text)
+    (sb / "payload/skills/legion-new").mkdir(parents=True)
+    (sb / "payload/skills/legion-new/SKILL.md").write_text("new")
+    cc = tmp_path / "claude-config"
+    for old in ("legion-old", "mine"):                   # an earlier run's, and the image's own
+        (cc / "skills" / old).mkdir(parents=True)
+        (cc / "skills" / old / "SKILL.md").write_text(old)
     assert agent_command(SandboxConfig()).startswith("claude -p ")
+    assert '--tools Skill ' in agent_command(SandboxConfig(), tools=False)
+    assert "--tools" not in agent_command(SandboxConfig())
     # an absolute agent_bin, as `bash -lc` may reset PATH
     cmd = agent_command(SandboxConfig(agent_bin=str(bin_dir / "claude")))
     (sb / "payload" / "run.env").write_text(f"LEGION_NEEDS_REPO=0\nLEGION_AGENT_COMMAND={shlex.quote(cmd)}\n")
     (sb / "payload" / "run-agent.sh").write_text(RUN_AGENT_SH)
     (bin_dir / "claude").write_text('#!/bin/sh\nprintf "%s\\n" "$@"; echo "stdin=$(cat)"\n')
     (bin_dir / "claude").chmod(0o755)
-    env = {**os.environ, "SANDBOX_ROOT": str(sb)}
+    env = {**os.environ, "SANDBOX_ROOT": str(sb), "CLAUDE_CONFIG_DIR": str(cc)}
     out = subprocess.run(["bash", str(sb / "payload" / "run-agent.sh")], env=env, check=True,
                          capture_output=True, text=True).stdout.splitlines()
+    assert sorted(p.name for p in (cc / "skills").iterdir()) == ["legion-new", "mine"]
+    shutil.rmtree(sb / "payload/skills")                 # a reflection's payload brings none
+    subprocess.run(["bash", str(sb / "payload" / "run-agent.sh")], env=env, check=True,
+                   capture_output=True)
+    assert sorted(p.name for p in (cc / "skills").iterdir()) == ["legion-new", "mine"]
     assert out[out.index("--mcp-config") + 1] == str(sb / "payload" / "mcp.json")
     assert out[out.index("--append-system-prompt") + 1] == "SOUL"
     assert out[-1] == "stdin=PROMPT"
@@ -937,6 +975,32 @@ def test_sandbox_root_and_user_follow_the_image(tmp_path):
     local = LocalRunner(cfg, gateway=None)
     assert local._map("sb", "/home/agent/work") == str(local._root("sb") / "work")
     assert local._map("sb", "/home/agentx") == "/home/agentx"          # only the root itself
+
+
+def test_local_sandboxes_get_their_own_claude_config_dir(tmp_path, monkeypatch):
+    """The local runner's agent runs as the operator: it gets a Claude config dir of its own (the
+    skills and sessions go there, never into the operator's ~/.claude), with the operator's
+    credentials linked in."""
+    import asyncio
+
+    from legion_orch.sandbox import LocalRunner, SandboxSpec
+    own = tmp_path / "operator-claude"
+    own.mkdir()
+    (own / ".credentials.json").write_text("{}")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(own))
+    cfg = _os_cfg(tmp_path)
+
+    async def gateway(name):
+        return "tok"
+    local = LocalRunner(cfg, gateway=gateway)
+    (tmp_path / "payload").mkdir()
+    asyncio.run(local.create(SandboxSpec(name="lg-r0001-0123456789", payload_dir=tmp_path / "payload",
+                                         policy_file=tmp_path / "p.yaml", change="c1", task="t",
+                                         role="implementer", run="r0001")))
+    d = local._root("lg-r0001-0123456789") / "claude"
+    assert (d / ".credentials.json").resolve() == own / ".credentials.json"
+    env = asyncio.run(local._env("lg-r0001-0123456789"))
+    assert env["CLAUDE_CONFIG_DIR"] == str(d) and not (own / "skills").exists()
 
 
 def test_mcp_policy_allows_every_core_method_the_server_answers(tmp_path):

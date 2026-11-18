@@ -5,8 +5,13 @@ Layout (naming convention)::
     assets/
       roles.yaml             role -> soul, skills, write scope, required docs, git requirement
       souls/<soul>.md        agent persona, injected verbatim
-      skills/<skill>.md      instruction module appended to the prompt
+      skills/<skill>.md      skill: frontmatter with only a ``description`` (when to load it),
+                             then the body; every run gets every skill as ``legion-<skill>``
       prompts/<role>.md      task prompt template (file name = role name)
+
+Skills are not put in the prompt. Each is rendered with the run's variables into an Agent Skill
+(``legion-<skill>/SKILL.md``) that the agent loads on demand; the prompt only names the ones the
+role should load first (``roles.yaml`` ``skills``).
 """
 from __future__ import annotations
 
@@ -57,11 +62,34 @@ class Role:
     report_schema: str = "report-none"
 
 
+SKILL_PREFIX = "legion-"
+MAX_DESCRIPTION = 1024
+
+
 @dataclass
 class RenderedPrompt:
     soul: str
     prompt: str
-    pin: str  # sha256 over soul + prompt
+    pin: str  # sha256 over soul, prompt and every rendered skill
+    skills: dict[str, str] = field(default_factory=dict)   # skill name -> SKILL.md
+
+
+def skill_name(name: str) -> str:
+    return SKILL_PREFIX + name
+
+
+def _split_frontmatter(path: Path, text: str) -> tuple[dict, str]:
+    """A skill file's frontmatter (YAML between ``---`` lines) and its body."""
+    if not text.startswith("---\n"):
+        raise AssetError(f"{path}: a skill starts with frontmatter: ---, description: ..., ---")
+    head, sep, body = text[4:].partition("\n---\n")
+    if not sep:
+        raise AssetError(f"{path}: unterminated frontmatter")
+    try:
+        meta = yaml.safe_load(head) or {}
+    except yaml.YAMLError as e:
+        raise AssetError(f"{path}: invalid frontmatter: {e}") from None
+    return meta, body.lstrip("\n")
 
 
 def render(template: str, variables: dict[str, Any]) -> str:
@@ -86,7 +114,7 @@ class Assets:
         if not (self.root / "roles.yaml").is_file():
             raise AssetError(f"{self.root}/roles.yaml not found")
         self.souls_ = self._load_dir("souls")
-        self.skills_ = self._load_dir("skills")
+        self.skills_, self.skill_descriptions = self._load_skills()
         self.prompts_ = self._load_dir("prompts")
         raw = yaml.safe_load((self.root / "roles.yaml").read_text()) or {}
         self.roles: dict[str, Role] = {}
@@ -114,6 +142,23 @@ class Assets:
                 raise AssetError(f"{p}: asset files must be named <lowercase-name>.md")
             out[p.stem] = p.read_text()
         return out
+
+    def _load_skills(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Skill bodies and descriptions. The frontmatter holds only ``description``: other keys
+        (``allowed-tools`` …) would change what the agent may do, which roles.yaml governs."""
+        bodies, descriptions = {}, {}
+        for name, text in self._load_dir("skills").items():
+            path = self.root / "skills" / f"{name}.md"
+            meta, body = _split_frontmatter(path, text)
+            if set(meta) != {"description"}:
+                raise AssetError(f"{path}: frontmatter must hold only 'description' "
+                                 f"(got {sorted(meta)})")
+            d = meta["description"]
+            if not isinstance(d, str) or not d.strip() or len(d) > MAX_DESCRIPTION or "{{" in d:
+                raise AssetError(f"{path}: description must be a non-empty string of at most "
+                                 f"{MAX_DESCRIPTION} characters, without template variables")
+            bodies[name], descriptions[name] = body, d.strip()
+        return bodies, descriptions
 
     def _files(self) -> list[Path]:
         return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
@@ -170,7 +215,7 @@ class Assets:
             raise AssetError(f"G-D2: asset {sub}/{name}.md not found in {self.root}") from None
 
     def _validate(self) -> None:
-        used_souls, used_skills = set(), set()
+        used_souls = set()
         for role in self.roles.values():
             for s in role.souls_allowed or [role.soul]:
                 if "{{" not in s:
@@ -178,8 +223,8 @@ class Assets:
                     used_souls.add(s)
             for sk in role.skills:
                 self.skill(sk)
-                used_skills.add(sk)
             self.prompt(role.name)
+        self.skill("harness-contract")              # every prompt tells the agent to load it
         used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
         for r in self.roles.values():
             if r.report_schema not in self.schemas.schemas:
@@ -188,7 +233,6 @@ class Assets:
                 raise AssetError(f"role {r.name}: report_schema must be a JSON schema")
         orphans = ([f"schemas/{s}.json" for s in set(self.schemas.schemas) - used_schemas]
                    + [f"souls/{s}.md" for s in set(self.souls_) - used_souls]
-                   + [f"skills/{s}.md" for s in set(self.skills_) - used_skills]
                    + [f"prompts/{p}.md" for p in set(self.prompts_) - set(self.roles)])
         if orphans:
             raise AssetError(f"asset files not referenced by roles.yaml: {sorted(orphans)}")
@@ -211,11 +255,26 @@ class Assets:
         if role.souls_allowed and soul_name not in role.souls_allowed:
             raise AssetError(f"G-D2: soul {soul_name!r} not allowed for role {role_name}")
         soul = self.soul(soul_name)
-        parts = [render(self.prompt(role_name), variables)]
-        parts += [render(self.skill(sk), variables) for sk in role.skills]
-        prompt = "\n\n---\n\n".join(parts)
-        pin = "sha256:" + hashlib.sha256((soul + "\x00" + prompt).encode()).hexdigest()
-        return RenderedPrompt(soul=soul, prompt=prompt, pin=pin)
+        prompt = render(self.prompt(role_name), variables).rstrip() + "\n\n" + self._load_first(role)
+        skills = {skill_name(n): self._skill_md(n, variables) for n in sorted(self.skills_)}
+        h = hashlib.sha256((soul + "\x00" + prompt).encode())
+        for n, text in skills.items():
+            h.update(b"\x00" + n.encode() + b"\x00" + text.encode())
+        return RenderedPrompt(soul=soul, prompt=prompt, pin="sha256:" + h.hexdigest(), skills=skills)
+
+    @staticmethod
+    def _load_first(role: Role) -> str:
+        names = ", ".join(f"`{skill_name(s)}`" for s in role.skills if s != "harness-contract")
+        return ("Your instructions are legion skills (Skill tool). Load `legion-harness-contract` "
+                "before your first action" + (f", and when you reach their step: {names}" if names
+                                              else "") + ". Load any other legion skill whose "
+                "description fits what you are doing.\n")
+
+    def _skill_md(self, name: str, variables: dict[str, Any]) -> str:
+        """``SKILL.md`` of one skill, rendered with the run's variables."""
+        head = yaml.safe_dump({"name": skill_name(name), "description": self.skill_descriptions[name]},
+                              sort_keys=False, allow_unicode=True, width=10_000)
+        return f"---\n{head}---\n\n{render(self.skill(name), variables)}"
 
     def role_paths(self, role_name: str, variables: dict[str, Any]) -> tuple[list[str], list[str]]:
         role = self.roles[role_name]

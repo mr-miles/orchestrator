@@ -150,7 +150,11 @@ async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
     await f.human("H-2", "approve")
     await f.settle()
     (sb, prompt), = [x for x in f.runner.reflected if x[0] == plan.sandbox]
-    assert "You have no tools in this turn" in prompt and "## Time sinks" in prompt
+    assert "Your only tool in this turn is the Skill tool" in prompt and "## Time sinks" in prompt
+    # it brings no skills: the sandbox keeps those its run installed (run-agent.sh), so the
+    # reflection reopens exactly what the run was given
+    assert f.runner.reflection_skills[sb] == []
+    assert any(k.startswith("skills/legion-") for k in f.runner.payloads[plan.sandbox])
     assert sb in f.runner.restarted                      # it was stopped between runs
     env = next(e for e in reversed(f.runner.run_envs) if "LEGION_REQUIRE_SESSION" in e)
     assert "LEGION_RESUME_SESSION=plan-session" in env and "LEGION_NEEDS_REPO=0" in env

@@ -240,10 +240,16 @@ class LocalRunner(Runner):
         root = self.cfg.sandbox.root
         return str(self._root(name)) + s[len(root):] if s == root or s.startswith(root + "/") else s
 
+    def _claude_dir(self, name: str) -> Path:
+        return self._root(name) / "claude"
+
     async def _env(self, name: str) -> dict:
         env = dict(os.environ)
         env["SANDBOX_ROOT"] = str(self._root(name))
         env["LEGION_ACCESS_TOKEN"] = await self.gateway(name)
+        # The agent runs as the operator: its own Claude config dir keeps the run's skills and
+        # sessions out of the operator's (and other sandboxes') ~/.claude.
+        env["CLAUDE_CONFIG_DIR"] = str(self._claude_dir(name))
         return env
 
     async def create(self, spec):
@@ -252,8 +258,18 @@ class LocalRunner(Runner):
         if r.exists():
             raise SandboxError(f"sandbox {spec.name} already exists")
         r.mkdir(parents=True)
+        self._link_credentials(spec.name)
         await self.upload(spec.name, spec.payload_dir)
         return spec.name
+
+    def _link_credentials(self, name: str) -> None:
+        """The operator's Claude login, linked into the sandbox's config dir (an API key or OAuth
+        token in the environment needs nothing)."""
+        d = self._claude_dir(name)
+        d.mkdir(parents=True, exist_ok=True)
+        own = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / ".credentials.json"
+        if own.is_file() and not (d / ".credentials.json").exists():
+            (d / ".credentials.json").symlink_to(own)
 
     async def upload(self, name, payload_dir):
         shutil.copytree(payload_dir, self._root(name) / payload_dir.name, dirs_exist_ok=True)

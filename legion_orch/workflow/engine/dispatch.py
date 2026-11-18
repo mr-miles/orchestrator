@@ -36,7 +36,7 @@ from ..model import (
 )
 from ..roles import handler_for
 from ..view import RoleContext
-from .common import PLAN_DOCS, _slug
+from .common import PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
 from .provision import sandbox_env
 from .runs import RunLifecycle
@@ -216,6 +216,7 @@ class Dispatcher:
         d.mkdir(parents=True, exist_ok=True)
         (d / "soul.md").write_text(rendered.soul)
         (d / "prompt.md").write_text(rendered.prompt)
+        write_skills(d / SKILLS_DIR, rendered.skills)
         # No credential: the OpenShell gateway injects the bearer for the controller endpoint.
         # With the local runner the bearer is in the process env (gateway emulation) and Claude
         # Code expands ${LEGION_ACCESS_TOKEN} in the MCP config at start-up.

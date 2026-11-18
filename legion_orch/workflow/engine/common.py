@@ -2,12 +2,23 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 
 from ..governance.approvals import ENV_SPEC  # noqa: F401  (re-exported: the environment spec)
 
 log = logging.getLogger("legion")
 PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
+SKILLS_DIR = "skills"      # payload/skills/<name>/SKILL.md, installed by run-agent.sh
+
+
+def write_skills(root: Path, skills: dict[str, str]) -> None:
+    """A run's rendered skills, one ``<name>/SKILL.md`` each (replacing any earlier set)."""
+    shutil.rmtree(root, ignore_errors=True)
+    for name, text in skills.items():
+        (root / name).mkdir(parents=True)
+        (root / name / "SKILL.md").write_text(text)
 
 
 class WorkflowError(Exception):

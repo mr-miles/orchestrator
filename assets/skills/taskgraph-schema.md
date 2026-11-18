@@ -1,3 +1,7 @@
+---
+description: "The plan/taskgraph.json and plan/oracle.json formats and their rules. Load when you write or critique a task graph or oracle."
+---
+
 ## Skill: Task graph and oracle schema
 
 `plan/taskgraph.json`:

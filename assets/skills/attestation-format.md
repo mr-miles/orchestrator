@@ -1,3 +1,7 @@
+---
+description: "How to cite evidence as file: and git: attestations in documents and reports. Load before writing a report or a finding."
+---
+
 ## Skill: Attestations
 
 Every claim you make must be backed by an attestation the controller can resolve:

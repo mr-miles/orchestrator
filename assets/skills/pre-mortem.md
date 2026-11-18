@@ -1,3 +1,7 @@
+---
+description: "How to critique a plan: failure stories, assumptions, completeness, parallel safety, oracle integrity, sandbox environment. Load when you critique a plan."
+---
+
 ## Skill: Pre-mortem and assumption hunting
 
 Imagine the plan shipped and failed. For each plausible cause, check the plan:

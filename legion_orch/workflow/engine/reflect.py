@@ -25,8 +25,9 @@ Your part in this change is finished: {outcome}. Before your sandbox is deleted,
 this whole session. Your answer is read by whoever improves the instructions, tools and process
 you worked with, so that the next agent avoids what slowed you down or misled you.
 
-You have no tools in this turn and nothing is to change: answer in plain text, from what you
-remember of this session. Be specific and honest; name files, commands, instructions and turns.
+Your only tool in this turn is the Skill tool: load a legion skill again to check what your
+instructions said. Nothing is to change: answer in plain text, from what you remember of this
+session. Be specific and honest; name files, commands, instructions and turns.
 Estimate cost (turns or minutes) where you can. "Nothing" is a fine answer for a section.
 
 {context}
@@ -150,6 +151,8 @@ class Reflector:
         (payload / "prompt.md").write_text(prompt)
         (payload / "soul.md").write_text(soul)
         (payload / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+        # No skills in this payload: the sandbox still has those of the run that reflects (the
+        # last one in it), and run-agent.sh keeps installed skills when a payload brings none.
         env = {"LEGION_RUN_ID": rid, "LEGION_ROLE": last.role, "LEGION_NEEDS_REPO": "0",
                "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
                "LEGION_RESUME_SESSION": last.session_id, "LEGION_REQUIRE_SESSION": "1"}

@@ -71,6 +71,7 @@ class FakeRunner(Runner):
         self.payloads: dict[str, dict[str, str]] = {}    # sandbox -> payload files at create
         self._reflecting: dict[str, str] = {}             # sandbox -> reflection prompt
         self.reflected: list[tuple[str, str]] = []        # (sandbox, prompt) of each reflection
+        self.reflection_skills: dict[str, list[str]] = {}  # sandbox -> skills its reflection got
         self.reflection_text = "## Time sinks\nThe tests took long.\n"
         self.reflection_session: str | None = None     # set: the resume does not take
         self.commands: dict[str, tuple[int, str]] = {}   # verification command -> (rc, output)
@@ -98,6 +99,8 @@ class FakeRunner(Runner):
         self.run_envs.append(_run_env(payload_dir))
         if "LEGION_REQUIRE_SESSION" in self.run_envs[-1]:          # a reflection turn
             self._reflecting[name] = (Path(payload_dir) / "prompt.md").read_text()
+            self.reflection_skills[name] = sorted(
+                str(f.relative_to(payload_dir)) for f in Path(payload_dir).rglob("skills/*/SKILL.md"))
 
     async def stop(self, name):
         if self.fail_stop:

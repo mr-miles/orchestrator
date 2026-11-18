@@ -1,3 +1,7 @@
+---
+description: "The shape of review findings (severity, confidence, dimension, fix, attestations) and verdict rules. Load before writing findings as a reviewer, critic or integration verifier."
+---
+
 ## Skill: Finding format
 
 Report findings in `data.findings`, and mirror them in your markdown document:

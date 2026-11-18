@@ -670,19 +670,28 @@ Agent-facing text is stored as files under `assets/`, with this naming conventio
 assets/
   roles.yaml               role -> soul, skills, write scope, required docs, git requirement
   souls/<soul>.md          agent persona, injected verbatim (never summarised)
-  skills/<skill>.md        reusable instruction module appended to the prompt
+  skills/<skill>.md        skill: frontmatter `description` (when to load it), then the body
   prompts/<role>.md        task prompt template for the role (file name = role name)
 ```
 
-* A role's prompt is `prompts/<role>.md`. The rendered prompt is that template followed by each
-  skill in the order listed in `roles.yaml`. The soul is delivered separately as the system prompt
-  addition.
+* A role's prompt is `prompts/<role>.md`, kept light: the rendered template followed by one line
+  naming the skills to load first (`legion-harness-contract`, then the role's `skills` in
+  `roles.yaml`). The soul is delivered separately as the system prompt addition.
+* **Skills are loaded on demand.** Every run gets **every** skill, rendered with its variables,
+  as an Agent Skill `legion-<skill>/SKILL.md` (name and `description` up front, the body read when
+  the agent loads it). `run-agent.sh` installs them into the agent's skills directory
+  (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills`), first removing any `legion-*` skills an earlier
+  run in the sandbox left. A skill's frontmatter holds only `description`: keys such as
+  `allowed-tools` would change what the agent may do. The prompt pin covers the soul, the prompt
+  and every rendered skill. A reflection has only the Skill tool and brings no skills: its sandbox
+  keeps those of the run it reflects on. The local runner gives each sandbox its own `CLAUDE_CONFIG_DIR` (with a link to the
+  operator's Claude credentials), so runs never write to the operator's `~/.claude`.
 * Templates use `{{var}}` placeholders. Available variables: `change_id, goal, tier, repo_name,
   base_sha, head_sha, branch, task_id, task_title, task_json, cycle, role, context_refs, feedback,
   candidate_sha, write_scope, required_docs, workdir, task_soul, environment` (the planner's
   environment instructions with the library catalogue; only the planner is given it). An unknown or unbound variable
-  fails G-D2. Load-time validation rejects unknown variables, missing files, and files not referenced
-  by any role.
+  fails G-D2. Load-time validation rejects unknown variables, missing files, souls and prompts
+  not referenced by any role, and skills without a valid `description`.
 * The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.
 * Each role has a handler in `legion_orch/workflow/roles/`: its dispatch policy (`pushes`,
   `judge`, `panel`, `judges_head`, `reuses_sandbox`, `keeps_session_until`,
@@ -769,9 +778,12 @@ guards, because a per-file schema cannot express them.
 * [`risk-signals`](assets/skills/risk-signals.md)
 * [`taskgraph-schema`](assets/skills/taskgraph-schema.md)
 * [`sandbox-environment`](assets/skills/sandbox-environment.md)
-* [`language-preferences`](assets/skills/language-preferences.md) – the house conventions per
-  language (Python: uv, ruff, pytest; web frontends: React, TypeScript, Vite, bun), shared by every role that plans, writes, tests or judges
-  code; edit it to steer what the orchestrator produces
+* [`language-preferences`](assets/skills/language-preferences.md) – the index of the house
+  conventions per stack, shared by every role that plans, writes, tests or judges code; edit the
+  stack skills to steer what the orchestrator produces:
+  * [`stack-python`](assets/skills/stack-python.md) – uv, ruff, pytest
+  * [`stack-bun-typescript`](assets/skills/stack-bun-typescript.md) – React, TypeScript, Vite,
+    bun, oxlint, Prettier, bun test with happy-dom
 * [`pre-mortem`](assets/skills/pre-mortem.md)
 * [`finding-format`](assets/skills/finding-format.md)
 * [`security-checklist`](assets/skills/security-checklist.md)

@@ -708,7 +708,7 @@ def test_the_web_frontend_conventions_match_the_projects_own_frontend():
     the skill names exist."""
     import json
     import re
-    skill = Assets(ROOT / "assets").skill("language-preferences")
+    skill = Assets(ROOT / "assets").skill("stack-bun-typescript")
     scripts = json.loads((ROOT / "frontend/package.json").read_text())["scripts"]
     for name in re.findall(r"`bun run ([a-z0-9:_-]+)`", skill):
         assert name in scripts, f"the skill names `bun run {name}`, which frontend/ lacks"
