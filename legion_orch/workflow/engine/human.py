@@ -330,7 +330,8 @@ class HumanGates:
             node.status = REVIEWING
         elif resume == Resume.REWORK:
             node.status = REWORK
-        else:
+        else:                                         # a new run, in a new sandbox
+            self.lifecycle.retire_runs(node)
             node.status = READY
 
     def _promote(self, approver: str, payload: dict) -> str:
