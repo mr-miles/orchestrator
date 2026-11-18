@@ -5,3 +5,6 @@ Inputs: {{context_refs}}. Working copy `{{workdir}}` at integration head `{{head
 Run every acceptance and integration command from `plan/oracle.json`. Write `baseline/report.md`.
 Report `DONE` with `data.results = [{"command": …, "exit_code": …}]`, attesting
 `git:{{repo_name}}@{{head_sha}}` and the report.
+
+Human answers on earlier attempts (take them into account):
+{{feedback}}
