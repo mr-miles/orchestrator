@@ -1,6 +1,7 @@
 # Assignment: integration verification for change {{change_id}}
 
-Integration head `{{head_sha}}` checked out at `{{workdir}}`. Inputs: {{context_refs}}
+Integration head `{{head_sha}}` checked out at `{{workdir}}`. The protected acceptance tests are
+those of the oracle commit `{{oracle_sha}}`. Inputs: {{context_refs}}
 
 Run all acceptance and integration commands from `plan/oracle.json`, and the commands of every
 verification surface it declares (each surface is a real interface), exercise the real interfaces

@@ -86,7 +86,7 @@ def test_digest_summarises_tools_errors_repeats_and_timing():
 def test_a_prompt_is_checked_against_the_current_asset_files(tmp_path):
     shutil.copytree(ROOT / "assets", tmp_path / "assets")
     a = Assets(tmp_path / "assets")
-    values = {v: "x" for v in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
+    values = {v: "x" for v in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
                                "branch", "task_id", "task_title", "task_json", "cycle", "role",
                                "context_refs", "feedback", "candidate_sha", "write_scope",
                                "required_docs", "workdir", "task_soul", "environment")}

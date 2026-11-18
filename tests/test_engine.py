@@ -76,6 +76,70 @@ async def test_r2_change_with_oracle_integration_and_h3(f: Flow):
     assert f.ce.change.status == ChangeStatus.READY, f.ce.change.ship
 
 
+def _operator_commit(f: Flow) -> tuple[str, object]:
+    """Commit straight onto the integration branch, as an operator did in change c261118-53c3."""
+    import subprocess
+    wt = f.ctl.git.worktree(f.ce.cid)
+    g = lambda *a: subprocess.run(["git", *a], cwd=wt, check=True, capture_output=True,
+                                  text=True).stdout.strip()
+    (wt / "setup.ts").write_text("operator fix\n")
+    g("add", "-A")
+    g("-c", "user.name=op", "-c", "user.email=op@host", "commit", "-q", "-m", "Operator fix: blob")
+    return g("rev-parse", "HEAD"), g
+
+
+@scenario()
+async def test_integration_is_not_judged_at_a_head_moved_outside_the_workflow(f: Flow):
+    """G-H1: an operator commit on the integration branch is not adopted; the re-run escalates
+    instead of judging the stale recorded head. After a reset, the re-run is told which head the
+    human answered at, and the oracle commit."""
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    cmd = f.ce.oracle_commands()[0]
+    f.runner.commands[cmd] = (1, "152 failed\n")
+    await f.integration("PASS")                         # the controller's re-run fails (G-V1)
+    node, rec = f.ce.nodes["integration"], f.ce.change.integration_head
+    assert node.status == ESCALATED and node.escalation.kind == "integration_failed"
+    runs = len(f.runs("integration"))
+    moved, g = _operator_commit(f)
+    await f.human("integration", "answer", answer="test setup is fixed")
+    assert node.status == ESCALATED and node.escalation.kind == "head_moved", node.escalation
+    assert moved[:12] in node.escalation.reason and rec[:12] in node.escalation.reason
+    assert "G-H1" in node.escalation.reason and len(f.runs("integration")) == runs
+    assert f.ce.change.integration_head == rec          # nothing adopted
+    g("reset", "-q", "--hard", rec)
+    del f.runner.commands[cmd]
+    await f.human("integration", "retry")
+    r = f.run("integration")
+    assert len(f.runs("integration")) == runs + 1 and r.judged_sha == rec
+    assert f"human decision: test setup is fixed (given at integration head {rec[:12]}, the " \
+           "current head)" in r.template_vars["feedback"]
+    assert r.template_vars["oracle_sha"] == f.ce.change.oracle_sha != ""
+    await f.integration("PASS")
+    assert f.status("integration") == ACCEPTED
+
+
+@scenario()
+async def test_a_merge_does_not_absorb_commits_made_outside_the_workflow(f: Flow):
+    """G-H1 before a merge: git would merge the task on top of the operator's commit."""
+    await f.to_build(tier="R2")
+    await f.implement()
+    rec = f.ce.change.integration_head
+    _, g = _operator_commit(f)
+    await f.review()
+    node = f.ce.nodes["build:T1"]
+    assert node.status == ESCALATED and node.escalation.kind == "head_moved", node.escalation
+    assert f.ce.change.integration_head == rec
+    g("reset", "-q", "--hard", rec)
+    await f.human("build:T1", "retry")                  # resume MERGING: the merge runs again
+    assert node.status == ACCEPTED, (node.status, node.escalation)
+    head = f.ce.change.integration_head
+    assert head != rec and await f.ctl.git.is_ancestor(rec, head)
+    assert not await f.ctl.git.blob(head, "setup.ts")    # the operator's commit is not in it
+    assert f.status("integration") == RUNNING
+
+
 @scenario()
 async def test_h3_reject_abandons_the_change(f: Flow):
     await f.to_build(tier="R2")

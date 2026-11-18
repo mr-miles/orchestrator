@@ -59,7 +59,7 @@ def test_assets_folder_validation(tmp_path):
 
 def test_assets_render_and_pin():
     a = Assets(ROOT / "assets")
-    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
+    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
                               "context_refs", "feedback", "candidate_sha", "write_scope",
                               "required_docs", "workdir")}

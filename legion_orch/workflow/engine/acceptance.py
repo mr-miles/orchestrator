@@ -256,6 +256,10 @@ class Acceptance:
                 c.escalate(node, "accept_guard", "; ".join(v), resume=Resume.REWORK)
                 c.save()
                 return
+            if moved := c.head_moved(await c.git.integration_head(c.change.id)):
+                c.escalate(node, "head_moved", moved, resume=Resume.MERGING)
+                c.save()
+                return
             ok, out = await c.git.merge(c.cid, sha, f"legion {c.change.id}: {node.title} "
                                                     f"(cycle {node.cycle})")
             if not ok:

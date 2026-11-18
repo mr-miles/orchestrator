@@ -77,6 +77,19 @@ class ChangeCore:
                                      source=source)
         self.event("escalation", f"{kind}: {reason}", node.id, run)
 
+    def head_moved(self, branch_head: str) -> str | None:
+        """G-H1: the integration branch is written only by the controller. If it is not at the
+        head the controller recorded, someone committed outside the workflow: the reason to
+        escalate with (None: it is where it should be)."""
+        rec = self.change.integration_head
+        if branch_head == rec:
+            return None
+        return (f"G-H1: the integration branch {self.git.integration_branch(self.cid)} is at "
+                f"{branch_head[:12]}, but the controller's integration head is {rec[:12]}: "
+                "commits were added outside the workflow. They are not adopted (they bypass "
+                f"verification and review): reset the branch to {rec} and retry. To change "
+                "the code, rework it through the workflow.")
+
     def oracle_commands(self) -> list[str]:
         """The commands that verify the integration head (oracle and surfaces)."""
         orc = self.change.oracle or Oracle()

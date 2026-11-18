@@ -65,6 +65,7 @@ GUARDS: dict[str, str] = {
     "G-RV5": "review cycle budget and stale-loop abort",
     "G-A1": "verification + full panel PASS at same sha",
     "G-A2": "clean merge into integration",
+    "G-H1": "integration branch at the controller's head: no commits outside the workflow",
     # integration / release / acceptance
     "G-INT1": "integration verdict at head covering all commands",
     "G-INT2": "protected acceptance tests unchanged since oracle commit",
