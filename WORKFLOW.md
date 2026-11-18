@@ -242,6 +242,8 @@ the critic judges the planner's documents and `ACCEPTED` only when the critic pa
 Steps in `{…}` exist only when the controller is configured with an `environment:` section
 (§5.3a); the planner then also writes the sandbox environment spec. Without it the graph is
 unchanged.
+A late integration failure is fixed by a **fix round** (§5.10a, proposed): plan, critique, H-2,
+new build tasks and integration again, on top of the integration head.
 
 ### 4.2 Node status
 
@@ -522,6 +524,67 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 | G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
 | G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha. |
 | H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. |
+
+### 5.10a Fix rounds (proposed – not implemented yet)
+
+A late failure – the integration verifier reports FAIL, or the oracle commands fail at the head
+(`integration_failed`) – is fixed by **planning new work on top of the integration head**, as if
+the change started from existing code. Accepted tasks are never reopened: a round adds tasks.
+Round 1 is the original plan; each fix round `n ≥ 2` goes through plan, critique, H-2, build and
+integration again.
+
+**Start.** On an `integration_failed` escalation a decision owner chooses **Plan a fix**
+(`plan_fix`, optional comment). Refused after `limits.fix_rounds` rounds (default 2); the change
+can then still be answered, overridden at the gates or abandoned. The integration node's escalation
+is cleared, its finished runs are superseded and their sandboxes deleted (after they reflect); it
+returns to `PENDING`.
+
+**Plan (planner, new cycle in fix mode).** A fresh planner sandbox and session, at the integration
+head. Its assignment adds the round number, the integration report and findings, the comment, and
+every earlier round's tasks with their accepted commits; the approved documents are given at their
+approved versions. It writes:
+
+* `plan/rounds/<n>/fix.md` – what failed, the cause, and how the round's tasks fix it;
+* `plan/rounds/<n>/taskgraph.json` – the round's tasks only (same schema);
+* revisions of `plan/spec.md` or delta specs `plan/specs/<REQ>.md` where the cause is a shared
+  interface or contract;
+* a revision of `plan/oracle.json` **only if** the acceptance tests themselves must change;
+* a revision of `plan/environment.json` **only if** the sandboxes must change.
+
+| ID | Rule |
+| --- | --- |
+| G-FR1 | Requirements are unchanged: nothing under `intake/` is written and the H-1 pins stand. Every round task cites ≥1 accepted `REQ-*`; a round need not cover every requirement. |
+| G-FR2 | The round's task graph meets G-P1, G-P2, G-P4–G-P7 within the round; `depends_on` names tasks of the same round (earlier rounds are all accepted); `files_modified` may include files earlier rounds' tasks changed. Node ids are `build:R<n>-<task id>`. |
+
+**Critique.** The critic judges the round: `fix.md`, the round's task graph and every document the
+round changed, with the integration report as input (G-C1, G-C2, with the round's own cycle
+budget).
+
+**Environment.** Unchanged ⇒ the H-E1 approval and the build stand. Changed ⇒ H-E1 approves the new
+version and `provision` builds it, as in round 1 (§5.3a).
+
+**Oracle.** Unchanged ⇒ the oracle commit, protected paths and surface pins stand. Changed ⇒ the
+`oracle` node takes a new cycle: the test engineer works at the integration head and its commit
+must stay within the (new) protected paths (G-O1, G-O2); it is merged, becomes the oracle commit
+that G-INT2 and `protected_oracle` compare against, and its approval at H-2 re-pins the surfaces.
+
+**H-2 for the round.** The gate returns to `AWAITING_HUMAN`. The round (`fix.md` + its task graph)
+is always a subject; a changed plan, delta spec or oracle is one too, because its approval no
+longer matches the latest version (G-B1). Unchanged subjects keep their approval. **Revise** sends
+the round back to the planner with the feedback (not the whole plan: the full restart stays
+available as **Restart plan**).
+
+**Build.** The round's tasks are added to the graph (append-only) and dispatched from the
+integration head as usual: implementer, verification, review, merge (§5.6–5.9). Earlier rounds'
+tasks stay as accepted.
+
+**Integration, H-3, ship.** Integration depends on every build task of every round and runs again
+at the new head, given the round's `fix.md` and the earlier findings. H-3 and the ship gates cover
+all rounds' tasks: each task's scope, evidence and review are checked against its own base and
+accepted commit.
+
+**Open questions.** R3 baseline when a round changes the oracle (run it again before the round's
+builds?). Whether a FAIL from `release` (R3) should also offer a round.
 
 ### 5.11 `ship` – deterministic readiness verdict
 
