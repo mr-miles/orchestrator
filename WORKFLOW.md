@@ -519,6 +519,7 @@ HIGH findings attested as feedback (cycle + 1).
 | --- | --- |
 | G-A1 | Verification passed and every panel member returned PASS at the same candidate sha. |
 | G-A2 | `git merge --no-ff` of the candidate into `legion/<change>/integration` is clean. A conflict ⇒ `REWORK` with reason `rebase onto <head>` (counts as a cycle). |
+| G-H1 | Before a merge, and before dispatching a run at the integration head (integration, baseline, release), the integration branch is at the head the controller recorded. Otherwise commits were added outside the workflow: they are **not adopted** (they bypass verification and review); the node escalates `head_moved`, naming both shas, and a retry after the branch is reset to the recorded head resumes it (the merge, or a fresh run). |
 
 On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their sandboxes are deleted**.
 
@@ -687,7 +688,7 @@ assets/
   keeps those of the run it reflects on. The local runner gives each sandbox its own `CLAUDE_CONFIG_DIR` (with a link to the
   operator's Claude credentials), so runs never write to the operator's `~/.claude`.
 * Templates use `{{var}}` placeholders. Available variables: `change_id, goal, tier, repo_name,
-  base_sha, head_sha, branch, task_id, task_title, task_json, cycle, role, context_refs, feedback,
+  base_sha, head_sha, oracle_sha (the protected oracle commit; empty before the oracle), branch, task_id, task_title, task_json, cycle, role, context_refs, feedback,
   candidate_sha, write_scope, required_docs, workdir, task_soul, environment` (the planner's
   environment instructions with the library catalogue; only the planner is given it). An unknown or unbound variable
   fails G-D2. Load-time validation rejects unknown variables, missing files, souls and prompts

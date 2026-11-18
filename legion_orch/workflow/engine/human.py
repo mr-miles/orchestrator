@@ -250,7 +250,8 @@ class HumanGates:
                 raise WorkflowError("an answer is required")
             att = self._feedback_doc(node, approver, text, "decisions")
             node.feedback.append(Feedback(cycle=node.cycle, source="decisions",
-                                          text=f"human decision: {text}", attestations=[att]))
+                                          text=f"human decision: {text}", attestations=[att],
+                                          head=self.c.change.integration_head))
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)
@@ -328,6 +329,9 @@ class HumanGates:
             self.c.spawn(self.acceptance.verify_node(node.id))
         elif resume == Resume.REVIEWING:              # re-dispatch the missing panel member(s)
             node.status = REVIEWING
+        elif resume == Resume.MERGING:                # merge the accepted candidate again
+            node.status = MERGING
+            self.c.spawn(self.acceptance.merge_node(node.id))
         elif resume == Resume.REWORK:
             node.status = REWORK
         else:                                         # a new run, in a new sandbox

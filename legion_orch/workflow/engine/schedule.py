@@ -21,8 +21,10 @@ from ..model import (
     SHIP,
     VERIFYING,
     Node,
+    Resume,
     Run,
 )
+from ..roles import handler_for
 from .acceptance import Acceptance
 from .core import ChangeCore
 from .dispatch import Dispatcher
@@ -37,6 +39,7 @@ class Scheduler:
         self.c, self.graph, self.lifecycle = core, graph, lifecycle
         self.dispatcher, self.acceptance = dispatcher, acceptance
         self.provisioner = provisioner
+        self._branch_head: str | None = None
 
     async def tick(self) -> None:
         """Under the lock: promote nodes whose dependencies are accepted, fail timed-out runs
@@ -62,6 +65,10 @@ class Scheduler:
                             and (node.kind != PROVISION or self._environment_quiescent()):
                         self._promote(node)
             self.lifecycle.check_timeouts()
+            # G-H1: the branch head, if a head-judging run may be dispatched this tick
+            self._branch_head = (await c.git.integration_head(c.change.id)
+                                 if active and any(self._judges_head(n) for n in c.nodes.values())
+                                 else None)
             capacity = c.cfg.limits.max_parallel - c.host.live_count()
             for node in list(c.nodes.values()):
                 if capacity <= 0:
@@ -101,6 +108,13 @@ class Scheduler:
         prov, env = c.nodes.get(PROVISION), c.change.environment
         return bool(prov and env and prov.status != ACCEPTED and role in env.roles)
 
+    @staticmethod
+    def _judges_head(node: Node) -> bool:
+        """A node about to dispatch a run at the integration head (not the retrospective, which
+        reads an ended change)."""
+        return node.status in (READY, REWORK) and node.kind in ROLE_FOR_KIND \
+            and node.kind != RETRO and handler_for(ROLE_FOR_KIND[node.kind]).judges_head
+
     def _dispatch(self, node: Node, capacity: int) -> list[Run]:
         """Prepare at most ``capacity`` runs for the node: its role's run when it is ready (or
         in rework), or the missing panel members' runs while it is under review (the critic's,
@@ -119,6 +133,10 @@ class Scheduler:
             if node.kind == BUILD and self.graph.overlaps_running(node):
                 return []
             if self._waits_for_environment(ROLE_FOR_KIND[node.kind]):
+                return []
+            if self._judges_head(node) and self._branch_head \
+                    and (moved := c.head_moved(self._branch_head)):
+                c.escalate(node, "head_moved", moved, resume=Resume.READY)
                 return []
             run = self.dispatcher.prepare(node, ROLE_FOR_KIND[node.kind])
             return [run] if run else []

@@ -116,10 +116,14 @@ class Dispatcher:
     def _feedback_text(self, node: Node) -> str:
         if not node.feedback:
             return "(none)"
-        lines = []
+        lines, head = [], self.c.change.integration_head
         for f in node.feedback:
             atts = ", ".join(f.attestations)
-            lines.append(f"- cycle {f.cycle} [{f.source}] {f.text}"
+            at = ""
+            if f.head:
+                at = (f" (given at integration head {f.head[:12]}, the current head)" if f.head == head
+                      else f" (given at integration head {f.head[:12]}; the head is now {head[:12]})")
+            lines.append(f"- cycle {f.cycle} [{f.source}] {f.text}" + at
                          + (f" (evidence: {atts})" if atts else ""))
         return "\n".join(lines)
 
@@ -173,6 +177,7 @@ class Dispatcher:
             "change_id": ch.id, "goal": ch.goal, "tier": ch.tier or "unassessed",
             "repo_name": self.c.cfg.repo.name,
             "base_sha": node.base_sha or ch.base_sha, "head_sha": ch.integration_head,
+            "oracle_sha": ch.oracle_sha or "",
             "branch": branch, "task_id": task.id if task else node.id,
             "task_title": task.title if task else node.title,
             "task_json": json.dumps(task_json, indent=2),

@@ -147,6 +147,7 @@ class Resume(StrEnum):
     CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more plan cycle; the plan is reworked
     VERIFYING = "VERIFYING"               # re-run deterministic verification
     REVIEWING = "REVIEWING"               # re-dispatch the missing panel member(s)
+    MERGING = "MERGING"                   # merge the accepted candidate again
 
 
 # Short aliases used throughout the engine (members compare and serialise as their strings).
@@ -248,6 +249,7 @@ class Feedback(Record):
     source: str            # critique | review | verification | merge | feedback | decisions
     text: str
     attestations: list[str] = []
+    head: str | None = None  # decisions: the integration head the human answered at
 
 
 class ReviewResult(Record):
