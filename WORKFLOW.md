@@ -568,6 +568,12 @@ version and `provision` builds it, as in round 1 (§5.3a).
 must stay within the (new) protected paths (G-O1, G-O2); it is merged, becomes the oracle commit
 that G-INT2 and `protected_oracle` compare against, and its approval at H-2 re-pins the surfaces.
 
+**Baseline (R3).** Every round runs the baseline again at the integration head, after the oracle
+(changed or not) and before the round's builds: it records what fails before the fix – with an
+unchanged oracle the acceptance tests may all pass, if the integration verifier failed on its
+own checks – and G-BL2 lists at H-2 what already passes or disagrees. A decision owner attests the
+round's baseline (`independent-baseline`, for round `n`) before H-2 completes.
+
 **H-2 for the round.** The gate returns to `AWAITING_HUMAN`. The round (`fix.md` + its task graph)
 is always a subject; a changed plan, delta spec or oracle is one too, because its approval no
 longer matches the latest version (G-B1). Unchanged subjects keep their approval. **Revise** sends
@@ -583,8 +589,7 @@ at the new head, given the round's `fix.md` and the earlier findings. H-3 and th
 all rounds' tasks: each task's scope, evidence and review are checked against its own base and
 accepted commit.
 
-**Open questions.** R3 baseline when a round changes the oracle (run it again before the round's
-builds?). Whether a FAIL from `release` (R3) should also offer a round.
+**Open question.** Whether a FAIL from `release` (R3) should also offer a round.
 
 ### 5.11 `ship` – deterministic readiness verdict
 
