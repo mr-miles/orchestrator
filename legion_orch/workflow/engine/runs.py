@@ -65,6 +65,8 @@ class RunLifecycle:
     def __init__(self, core: ChangeCore):
         self.c = core
         self.reflector = Reflector(core)
+        self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
+        self._ended: set[str] = set()        # released because the change ended (tried once)
 
     def live_runs(self) -> list[Run]:
         return [r for r in self.c.runs.values() if r.status in LIVE_RUN]
@@ -109,20 +111,53 @@ class RunLifecycle:
                 self.c.event("sandbox", f"releasing {sb}: {node.id} is not reworked any more",
                              node.id)
                 self.delete_sandbox_later(sb, stopped)
+        if self.c.change.status != "ACTIVE":     # the change ended: no sandbox is needed any more
+            for r in self.c.runs.values():
+                sb = r.sandbox
+                if (sb and not r.sandbox_deleted and sb not in self.retiring
+                        and sb not in self._ended and not any(x.sandbox == sb and x.status in LIVE_RUN
+                                    for x in self.c.runs.values())):
+                    self.c.event("sandbox", f"releasing {sb}: the change has ended",
+                                 r.node_id, r.id)
+                    self._ended.add(sb)
+                    self.delete_sandbox_later(sb)
+                    changed = True
         return changed
+
+    def retire_runs(self, node: Node) -> None:
+        """The node starts again with a new run in a new sandbox (an escalation resumed): its
+        finished runs are superseded and their sandboxes deleted (after their agents reflect),
+        except the one the node holds for rework."""
+        retired: set[str] = set()
+        for rid in node.runs:
+            r = self.c.runs[rid]
+            if r.status == R_REPORTED:
+                r.status = R_SUPERSEDED
+            sb = r.sandbox
+            if (not sb or sb in retired or sb in self.retiring or r.sandbox_deleted
+                    or sb == node.sandbox
+                    or any(x.sandbox == sb and x.status in LIVE_RUN for x in self.c.runs.values())):
+                continue
+            retired.add(sb)
+            self.c.event("sandbox", f"releasing {sb}: {node.id} starts again", node.id, rid)
+            self.delete_sandbox_later(sb)
 
     def delete_sandbox_later(self, name: str, stopped: bool = False) -> None:
         """Delete a sandbox in the background (its work is done), after its agent has reflected
         on the session (see :mod:`.reflect`; ``stopped``: the sandbox has to be started first)."""
+        self.retiring.add(name)
         self.c.spawn(self._retire(name, stopped))
 
     async def _retire(self, name: str, stopped: bool) -> None:
         self.reflector.pending.add(name)
         try:
-            await self.reflector.reflect(name, stopped)
+            try:
+                await self.reflector.reflect(name, stopped)
+            finally:
+                self.reflector.pending.discard(name)
+            await self.delete_sandbox(name)
         finally:
-            self.reflector.pending.discard(name)
-        await self.delete_sandbox(name)
+            self.retiring.discard(name)
 
     def fail_run(self, run: Run, reason: str, source: FailureSource,
                  exit_code: int | None = None) -> None:

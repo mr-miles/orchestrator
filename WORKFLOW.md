@@ -279,6 +279,11 @@ resumes, so the new run always starts in a fresh sandbox. If OpenShell will not 
 retry still goes ahead and the failure is reported. A fresh implementer sandbox continues from
 the task branch as pushed to the controller; work that was never pushed is lost.
 
+Whenever an escalation is resolved with a new run (**Retry**, or an answer that resumes it), the
+node's earlier finished runs are superseded and their sandboxes deleted, after their agents
+reflect – except a sandbox the node keeps for rework. When a change ends (shipped, rejected or
+abandoned), every sandbox it still has is deleted.
+
 ---
 
 ## 5. Task catalogue: guards, prompt, skills, soul

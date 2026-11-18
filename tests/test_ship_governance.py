@@ -2,6 +2,8 @@
 overrides, waivers, human attestations, protected-path approvals and surface drift."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from engine_harness import REPO, TASKS, Flow, scenario
 
@@ -281,6 +283,52 @@ async def test_higher_tier_gates_added_to_an_r1_change(f: Flow):
     rollback = g["rollback_or_forward_fix_evidence"]
     assert rollback.status == SAT and rollback.human_judgement
     assert g["architecture_or_security_review"].status == SAT
+
+
+@scenario()
+async def test_an_answer_to_an_integration_failure_reaches_the_next_run(f: Flow):
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    f.runner.commands["sh tests/acceptance/test_greet.sh"] = (1, "FAIL\n")
+    await f.integration(verdict="PASS")
+    assert f.ce.nodes["integration"].escalation.kind == "integration_failed"
+    del f.runner.commands["sh tests/acceptance/test_greet.sh"]
+    await f.human("integration", "answer", answer="the greeting test needs LANG=C")
+    prompt = f.runner.payloads[f.run("integration").sandbox]["prompt.md"]
+    assert "the greeting test needs LANG=C" in prompt
+
+
+@scenario()
+async def test_a_resumed_integration_deletes_the_failed_runs_sandbox(f: Flow):
+    f.cfg.retrospective.reflect = True
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    f.runner.commands["sh tests/acceptance/test_greet.sh"] = (1, "FAIL\n")
+    first = f.run("integration")
+    with open(f.ce.run_dir(first.id) / "agent.log", "a") as fh:
+        fh.write(json.dumps({"type": "system", "subtype": "init", "session_id": "s-int"}) + "\n")
+    await f.integration(verdict="PASS")
+    assert f.ce.nodes["integration"].escalation.kind == "integration_failed"
+    del f.runner.commands["sh tests/acceptance/test_greet.sh"]
+    await f.human("integration", "answer", answer="fixed the environment")
+    assert first.sandbox in f.runner.deleted and first.status == "SUPERSEDED"
+    assert first.sandbox in [sb for sb, _ in f.runner.reflected]
+    assert f.run("integration").sandbox != first.sandbox
+
+
+@scenario()
+async def test_an_abandoned_change_leaves_no_sandbox(f: Flow):
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    f.runner.commands["sh tests/acceptance/test_greet.sh"] = (1, "FAIL\n")
+    await f.integration(verdict="PASS")
+    await f.human("integration", "abandon")
+    await f.settle()
+    assert all(r.sandbox_deleted for r in f.ce.runs.values() if r.sandbox), \
+        {r.sandbox: (r.node_id, r.status) for r in f.ce.runs.values() if not r.sandbox_deleted}
 
 
 # ====================================================================== baseline (R3)
