@@ -1,4 +1,4 @@
-"""planner: spec, delta specs, oracle and task graph (G-P1..G-P10) and, with the environment
+"""planner: spec, delta specs, oracle and task graph (G-P1..G-P11) and, with the environment
 stage configured, the sandbox environment spec composed from the library (G-E1..G-E4)."""
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..model import H_ENV, H_SPEC, REVIEWING, Node
 from ..view import RoleContext
-from .base import Report, RoleHandler, fix_round_note, register
+from .base import Report, RoleHandler, fix_round_note, register, scaffold_note
 
 NO_ENVIRONMENT = (f"No sandbox environment stage is configured: do not write `{ENV_SPEC}`; "
                   "every sandbox uses the default image.")
@@ -29,7 +29,8 @@ class Planner(RoleHandler):
         """The environment part of the assignment: the library catalogue (an invalid library is
         reported, not raised: the spec is then rejected by G-E1 until an operator fixes it);
         in a fix round, what the round asks."""
-        return self._environment_vars(e) | {"fix_round": fix_round_note(e, "planner")}
+        return self._environment_vars(e) | {"fix_round": fix_round_note(e, "planner"),
+                                            "scaffold": scaffold_note(e, "planner")}
 
     def _environment_vars(self, e: RoleContext) -> dict[str, str]:
         if H_ENV not in e.nodes:
@@ -54,7 +55,7 @@ class Planner(RoleHandler):
                                  e.cfg.protected_paths, souls, e.docs.schemas, built)
         else:
             v = guards.plan(tg, orc, e.change.requirements, e.change.tier, e.cfg.protected_paths,
-                            souls, e.docs.schemas)
+                            souls, e.docs.schemas, blank_repo=e.change.blank_repo)
         _, vs = guards.required_docs(r.run.id, [e.p(f"plan/specs/{q}.md") for q in e.change.requirements],
                                      r.parsed, e.docs, r.run.confirmed_docs)
         return v + [x.replace("G-R4", "G-P9") for x in vs] + self._environment(e, r)

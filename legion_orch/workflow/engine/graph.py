@@ -90,17 +90,26 @@ class StageGraph:
         return node
 
     def materialize_builds(self, taskgraph: dict) -> None:
-        """Replace the build nodes by one per task of an accepted task graph."""
+        """Replace the build nodes by one per task of an accepted task graph. A blank
+        repository's scaffold task (§5.3b) follows the plan (and provisioning) instead of H-2;
+        the oracle and H-2 wait for it."""
         c = self.c
         for n in c.build_nodes():
             del c.nodes[n.id]
+        for nid in (ORACLE, H_SPEC):     # an earlier plan's scaffold (also after Restart plan)
+            if nid in c.nodes:
+                c.nodes[nid].depends_on = [d for d in c.nodes[nid].depends_on
+                                           if not d.startswith("build:")]
         wv = guards.waves(taskgraph["tasks"])
         ids = []
         for t in taskgraph["tasks"]:
             nid = f"build:{t['id']}"
             ids.append(nid)
+            first = [PROVISION if PROVISION in c.nodes else PLAN] if t.get("scaffold") else [H_SPEC]
             c.add_node(Node(id=nid, kind=BUILD, title=f"{t['id']}: {t['title']}", task=t, wave=wv[t["id"]],
-                            depends_on=[H_SPEC] + [f"build:{d}" for d in t["depends_on"]]))
+                            depends_on=first + [f"build:{d}" for d in t["depends_on"]]))
+            if t.get("scaffold"):
+                self._place_scaffold(nid, first[0])
         # downstream of builds
         if INTEGRATION in c.nodes:
             c.nodes[INTEGRATION].depends_on = list(ids)
@@ -110,6 +119,17 @@ class StageGraph:
         for nid in (INTEGRATION, RELEASE, H_CHANGE, SHIP):
             if nid in c.nodes:
                 c.nodes[nid] = c.nodes.pop(nid)
+
+    def _place_scaffold(self, nid: str, after: str) -> None:
+        """The oracle and H-2 depend on the scaffold, which is shown right after ``after``."""
+        c = self.c
+        for dep in (ORACLE, H_SPEC):
+            if dep in c.nodes:
+                c.nodes[dep].depends_on = list(dict.fromkeys(c.nodes[dep].depends_on + [nid]))
+        order = [k for k in c.nodes if k != nid]
+        order.insert(order.index(after) + 1, nid)
+        for k in order:
+            c.nodes[k] = c.nodes.pop(k)
 
     def add_round_builds(self, taskgraph: dict, n: int) -> list[str]:
         """Fix round ``n``: one build node per task the round appended to the task graph

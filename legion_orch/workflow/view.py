@@ -47,6 +47,8 @@ class ChangeView(Protocol):
 
     def build_nodes(self) -> list[Node]: ...
 
+    def scaffold_node(self) -> Node | None: ...
+
 
 class RoleContext(ChangeView, Protocol):
     """What a role handler (workflow/roles/) may use: the change view plus the engine operations

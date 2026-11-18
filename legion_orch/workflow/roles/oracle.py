@@ -4,7 +4,7 @@ from __future__ import annotations
 from .. import guards
 from ..model import H_SPEC, Oracle, Resume
 from ..view import RoleContext
-from .base import Report, RoleHandler, register
+from .base import Report, RoleHandler, register, scaffold_note
 
 
 @register
@@ -14,6 +14,14 @@ class OracleAuthor(RoleHandler):
     pushes = True
     sees_draft_plan = True
     sees_oracle_commit = False
+
+    def extra_context(self, e: RoleContext, node) -> list[str]:
+        """The scaffold's accepted commit: the oracle's tests run under its configuration."""
+        s = e.scaffold_node()
+        return [f"git:{e.cfg.repo.name}@{s.accepted_sha}"] if s and s.accepted_sha else []
+
+    def extra_variables(self, e: RoleContext, node) -> dict[str, str]:
+        return {"scaffold": scaffold_note(e, "oracle")}
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         orc = Oracle.model_validate(e.json_doc("plan/oracle.json"))

@@ -199,10 +199,10 @@ Each gate is reported as `satisfied`, `unsatisfied` or `unevaluable` by the dete
 | Gate | Evidence |
 | --- | --- |
 | `approved_delta_spec` | every delta spec `plan/specs/<REQ>.md` (and the plan) approved at H-2 against its current version |
-| `approved_spec_and_oracle` | all H-2 subjects approved and fresh, the **last** approval before the first build run |
+| `approved_spec_and_oracle` | all H-2 subjects approved and fresh, the **last** approval before the first build run (a blank repository's scaffold excepted, §5.3b) |
 | `protected_oracle` / `protected_acceptance_tests` | acceptance-test blobs unchanged since the oracle commit, except paths a human approved beforehand (G-PP1); acceptance commands pass at head |
 | `integration_or_real_interface_checks` | integration verifier PASS, oracle and **surface** commands pass at head, surface pins unchanged or re-affirmed (G-SF1) |
-| `independent_baseline` | human `independent-baseline` attestation (pass), recorded **before** the first build run |
+| `independent_baseline` | human `independent-baseline` attestation (pass), recorded **before** the first build run (the scaffold excepted) |
 | `security_or_e2e_evaluator` | human `security-evaluation` or `e2e-evaluation` attestation; any `fail` blocks |
 | `architecture_or_security_review` | architecture or security panel PASS on every task, or a human `architecture-review` attestation; a `fail` attestation blocks |
 | `rollback_or_forward_fix_evidence` | human `rollback-evidence` or `forward-fix-evidence` attestation |
@@ -223,6 +223,8 @@ listed in the readiness result.
        +-------------------------------------------------------------------+
                          {(H-E1 approve sandbox environment, pinned) -> [provision]}
                                                              |
+                                        <blank repository: [build scaffold]>
+                                                             |
                                                   R2+: [oracle] -> R3: [baseline]
                                                              |
                                     (H-2 approve spec + oracle, pinned)
@@ -241,7 +243,7 @@ Like a build task with its review, the plan node holds its own critique: it is `
 the critic judges the planner's documents and `ACCEPTED` only when the critic passes them.
 Steps in `{…}` exist only when the controller is configured with an `environment:` section
 (§5.3a); the planner then also writes the sandbox environment spec. Without it the graph is
-unchanged.
+unchanged. The step in `<…>` exists only when the change starts from a blank repository (§5.3b).
 A late integration failure is fixed by a **fix round** (§5.10a): plan, critique, H-2, new build
 tasks and integration again, on top of the integration head.
 
@@ -343,6 +345,7 @@ Universal guards apply to every task and are listed once.
 | G-P8 | R2+: `oracle.json` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
 | G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
+| G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
 
 ### 5.3 critique (part of `plan`)
 
@@ -426,6 +429,36 @@ released, after their agent reflects, so each node's next run starts fresh in th
 continues from its pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps
 its session to H-2 through H-E1 and provisioning.
 
+### 5.3b Scaffold (blank repository)
+
+When a change starts, the controller lists the base commit's tree. It is **blank** if every file
+is documentation (`*.md`, `*.rst`, `*.adoc`), a top-level licence or notice file (`LICENSE*`,
+`LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`
+or under `.github/` – including a repository with no files at all (`repo.path` omitted). The
+change record keeps it (`blank_repo`). Without this the oracle would have to guess the layout,
+test runner and configuration the first build task will create.
+
+In a blank repository the planner's assignment (`{{scaffold}}`) asks for one **scaffold task**
+(`"scaffold": true`, G-P11): the project's layout, manifest, build, lint and test tooling, their
+configuration and a placeholder entry point – none of the requirements' behaviour – whose
+instructions fix every choice the acceptance tests depend on, and whose verification commands
+pass without them. The critic is told to check this.
+
+The scaffold is a build node (`build:<id>`) at every tier, but it depends on the plan (or
+`provision`) instead of H-2, and the oracle and H-2 depend on it:
+
+```
+plan (critique PASS) -> {H-E1 -> provision} -> build scaffold -> R2+: oracle -> R3: baseline -> H-2 -> other builds
+```
+
+It is implemented, verified, reviewed and merged like any build task (§5.6–5.9); the critic's
+PASS releases it, with no human gate of its own. G-B1 does not apply to it, and it does not count
+as the first build run for `approved_spec_and_oracle` and `independent_baseline`. The oracle then
+works at the integration head that contains it, with the scaffold's commit in its context, and
+writes its tests for that project. At H-2 the plan subject (the task graph, scaffold included) is
+approved as usual, after the scaffold was built. **Restart plan** drops the scaffold with every
+other build node; a fix round never adds one.
+
 ### 5.4 `oracle` (R2+) – protected acceptance tests
 
 * **Soul:** `test-engineer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
@@ -436,8 +469,9 @@ its session to H-2 through H-E1 and provisioning.
 | G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`. |
 | G-O2 | Every acceptance test path exists at the commit. |
 
-The oracle commit is merged to the integration branch before any build task starts. From then on
-these paths are **protected**: any later diff touching them fails G-B3 and the `protected_oracle` gate.
+The oracle commit is merged to the integration branch before any build task starts (a blank
+repository's scaffold excepted, §5.3b). From then on these paths are **protected**: any later
+diff touching them fails G-B3 and the `protected_oracle` gate.
 
 ### 5.5 `baseline` (R3) – independent baseline
 
@@ -457,7 +491,7 @@ change is built) and which failures were already there. The integration verifier
 | ID | Rule |
 | --- | --- |
 | H-2 | Separate decisions, possibly by different approvers ∈ `decision_owners`: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md`, and the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). The node completes when every subject is approved against current versions; at R3 it also requires an `independent-baseline` pass attestation, so the baseline is recorded before any build run. |
-| G-B1 | (dispatch of any build run) every H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
+| G-B1 | (dispatch of any build run but the scaffold, §5.3b) every H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
 
 ### 5.6 `build` – one node per task in `plan/taskgraph.json`
 
@@ -712,7 +746,9 @@ assets/
   base_sha, head_sha, oracle_sha (the protected oracle commit; empty before the oracle), branch, task_id, task_title, task_json, cycle, role, context_refs, feedback,
   candidate_sha, write_scope, required_docs, workdir, task_soul, environment` (the planner's
   environment instructions with the library catalogue; only the planner is given it), `fix_round` (in a
-  fix round, what it asks of the planner or the critic; empty otherwise). An unknown or unbound variable
+  fix round, what it asks of the planner or the critic; empty otherwise), `scaffold` (in a blank
+  repository, what the scaffold task asks of the planner, the critic or the oracle; empty
+  otherwise). An unknown or unbound variable
   fails G-D2. Load-time validation rejects unknown variables, missing files, souls and prompts
   not referenced by any role, and skills without a valid `description`.
 * The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.

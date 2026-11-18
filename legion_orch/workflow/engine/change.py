@@ -69,14 +69,18 @@ class ChangeEngine(ChangeCore):
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
 
-    def start(self, goal: str, base: str) -> None:
-        """Initialise a new change at ``base`` (the caller holds the lock)."""
-        self.st.change = Change(id=self.cid, goal=goal, base_sha=base, integration_head=base)
+    def start(self, goal: str, base: str, *, blank_repo: bool = False) -> None:
+        """Initialise a new change at ``base`` (the caller holds the lock); ``blank_repo``: the
+        base has no build tooling or code yet (§5.3b)."""
+        self.st.change = Change(id=self.cid, goal=goal, base_sha=base, integration_head=base,
+                                blank_repo=blank_repo)
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
         self.add_node(Node(id=INTAKE, kind=INTAKE, title="Intake: requirements & risk"))
         self.add_node(Node(id=H_REQUIREMENTS, kind=HUMAN, title="Accept requirements & tier",
                            depends_on=[INTAKE]))
-        self.event("change", f"change {self.cid} started at {base[:12]}")
+        self.event("change", f"change {self.cid} started at {base[:12]}"
+                   + (" (a blank repository: the plan starts with a scaffold task)" if blank_repo
+                      else ""))
         self.save()
 
     def recover(self) -> None:

@@ -9,7 +9,7 @@ import threading
 from datetime import UTC, datetime
 
 from ...config import Config
-from ...git import GitRemote
+from ...git import GitRemote, is_blank_tree
 from ...sandbox import (
     EnvironmentBuilder,
     Runner,
@@ -183,6 +183,7 @@ class Controller:
             raise WorkflowError("goal is required")
         async with self.svc.lock:
             base = await self.git.resolve_base()
+            blank = is_blank_tree(await self.git.tree_paths(base))
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:
@@ -190,7 +191,7 @@ class Controller:
             await self.git.init_integration(cid, base)
             ce = ChangeEngine(self.svc, self, cid)
             self.changes[cid] = ce
-            ce.start(goal, base)
+            ce.start(goal, base, blank_repo=blank)
             return ce
 
     def get(self, cid: str) -> ChangeEngine:

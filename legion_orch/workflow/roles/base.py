@@ -128,6 +128,44 @@ def fix_round_note(e: RoleContext, role: str) -> str:
         "sandboxes must change.")
 
 
+def scaffold_note(e: RoleContext, role: str) -> str:
+    """The ``scaffold`` prompt variable (§5.3b): in a blank repository, what the scaffold task
+    asks of the planner, the critic or the oracle (empty otherwise)."""
+    if not e.change.blank_repo:
+        return ""
+    if role == "oracle":
+        s = e.scaffold_node()
+        if s is None or not s.accepted_sha:
+            return ""
+        return (f"## Scaffold\n\nThe repository was blank; scaffold task {s.task.id} "
+                f"(\"{s.task.title}\") set up its build tooling and is merged at "
+                f"`{s.accepted_sha[:12]}`, in your working copy. Write the acceptance tests "
+                "for that layout, test runner and configuration – do not invent another or "
+                "change the scaffold's files – so that every failure means \"the implementation "
+                "is missing\".")
+    head = ("## Blank repository\n\nThe repository has no build tooling or code yet (only "
+            "documentation, licence or git settings). ")
+    if role == "critic":
+        return head + (
+            "The plan must start with one scaffold task (`\"scaffold\": true`, G-P11), built "
+            "before the oracle: check that it only sets up the project – layout, build and test "
+            "tooling, configuration, a placeholder entry point – and none of the requirements' "
+            "behaviour; that its verification commands prove the tooling works on its own (no "
+            "acceptance test exists yet); and that it fixes every choice the oracle's tests "
+            "depend on (test runner, its configuration, paths, how the system is started).")
+    return head + (
+        "Plan one **scaffold task** first, marked `\"scaffold\": true` (G-P11): no dependencies, "
+        "and every other task depends on it. It is built, verified and reviewed before the "
+        "oracle, so the acceptance tests are written against a real project instead of a guess. "
+        "It sets up only the project – layout, package manifest, build, lint and test tooling "
+        "and their configuration, a placeholder entry point – none of the requirements' "
+        "behaviour (cite the requirements whose stack it sets up). Its `instructions` fix every "
+        "choice the tests depend on: test runner and configuration, file layout, how the system "
+        "is started. Its `verification` commands must pass on the scaffold alone (no acceptance "
+        "test exists yet). Keep the oracle's acceptance tests and `protected_support` out of "
+        "its `files_modified`.")
+
+
 def evidence_of(e: RoleContext, node: Node) -> str | None:
     return e.latest_att(f"tasks/{node.task.id}/evidence/cycle-{node.cycle}.md")
 
