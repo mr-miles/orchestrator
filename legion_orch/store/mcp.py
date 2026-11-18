@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .docstore import DocStore, DocStoreError, DocVersion
+from .docstore import DocCheck, DocStore, DocStoreError, DocVersion
 from .schemas import SchemaError
 
 STORE_TOOLS = ("docs_list", "docs_read", "docs_history", "docs_write", "docs_schema", "schema_get")
@@ -30,7 +30,8 @@ class StoreSession:
     docs: DocStore
     resolve: Callable[[str], str]                    # caller path -> store path (namespacing)
     readable: Callable[[str], bool]                  # store path -> may the caller read it?
-    write: Callable[[str, str, int | None], Awaitable[DocVersion]]  # store path, content, base
+    # store path, content, base version, dry run -> the version written (or what it would be)
+    write: Callable[[str, str, int | None, bool], Awaitable[DocVersion | DocCheck]]
 
 
 def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSession]) -> None:
@@ -66,13 +67,18 @@ def register_store_tools(server: MCPServer, session: Callable[[Context], StoreSe
                              "the attestation file:<path>@<version> to cite. At most 2 MiB of "
                              "content per version. Content identical to the latest version "
                              "creates no new version: that version is returned with "
-                             "unchanged=true.")
-    async def docs_write(ctx: Context, path: str, content: str, base_version: int | None = None) -> dict:
+                             "unchanged=true. dry_run=true makes every check and writes nothing: "
+                             "it returns the attestation the write would produce, or the "
+                             "reason it would be refused.")
+    async def docs_write(ctx: Context, path: str, content: str, base_version: int | None = None,
+                         dry_run: bool = False) -> dict:
         s = session(ctx)
         try:
-            v = await s.write(s.resolve(path), content, base_version)
+            v = await s.write(s.resolve(path), content, base_version, dry_run)
         except DocStoreError as e:
             raise ToolError(str(e)) from None
+        if isinstance(v, DocCheck):
+            return v.to_json() | {"dry_run": True}
         # identical to the latest version: no new version was created
         return v.meta().to_json() | {"unchanged": v.version == base_version}
 

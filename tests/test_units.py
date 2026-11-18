@@ -250,6 +250,15 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     assert (run.docs_written, run.doc_bytes) == (3, 3)
     with pytest.raises(WorkflowError, match="G-W4.*versions"):
         ce.docs_write(run, "plan/c.md", "w", None)
+    # a dry run makes the same checks, and writes and counts nothing
+    with pytest.raises(WorkflowError, match="G-W4.*versions"):
+        ce.docs_write(run, "plan/c.md", "w", None, dry_run=True)
+    run.docs_written = 0
+    with pytest.raises(WorkflowError, match="G-W1"):
+        ce.docs_write(run, "control/x.json", "{}", None, dry_run=True)
+    c = ce.docs_write(run, "plan/c.md", "w", None, dry_run=True)
+    assert c.attestation == "file:changes/c1/plan/c.md@1" and docs.latest_version(c.path) is None
+    assert (run.docs_written, run.doc_bytes) == (0, 3)
 
 
 def test_review_panels():
@@ -272,6 +281,25 @@ def test_protected_path_approval_timing_and_coverage():
     assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
     assert governance.coverage_ok(types.SimpleNamespace(covers=None), {"T1", "T2"})
     assert not governance.coverage_ok(types.SimpleNamespace(covers=["T1"]), {"T1", "T2"})
+
+
+def test_docstore_check_makes_every_write_check_and_writes_nothing():
+    from legion_orch.store import SchemaViolation
+    d = _store()
+    c = d.check("changes/c1/plan/spec.md", "one")
+    assert (c.attestation, c.unchanged, c.schema) == ("file:changes/c1/plan/spec.md@1", False, "markdown")
+    assert d.latest_version("changes/c1/plan/spec.md") is None          # nothing written
+    v1 = d.write("changes/c1/plan/spec.md", "one", author="r1", role="planner")
+    assert c.sha256 == v1.sha256
+    assert d.check("changes/c1/plan/spec.md", "one", base_version=1).unchanged
+    assert d.check("changes/c1/plan/spec.md", "two", base_version=1).version == 2
+    with pytest.raises(VersionConflict, match="G-W2"):
+        d.check("changes/c1/plan/spec.md", "two")                       # base missing
+    with pytest.raises(SchemaViolation, match="G-W3.*missing heading 'Change'"):
+        d.check("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n")
+    with pytest.raises(DocStoreError, match="invalid document path"):
+        d.check("../x.md", "x")
+    assert d.latest_version("changes/c1/plan/spec.md") == 1
 
 
 def test_store_enforces_bound_schemas():

@@ -24,11 +24,14 @@ class ActionResult(Record):
 
 class ReportOutcome(Record):
     """The result of an agent's report: accepted (with the node's next status) or rejected
-    with the violated guards."""
+    with the violated guards. A dry run is never accepted: ``would_accept`` says whether the
+    same report would be, and ``violations`` lists what it would be rejected for."""
     accepted: bool
     violations: list[str] = []
     attempts_left: int | None = None
     next: NodeStatus | None = None
+    dry_run: bool | None = None
+    would_accept: bool | None = None
 
     @classmethod
     def reject(cls, *violations: str, attempts_left: int | None = None) -> ReportOutcome:

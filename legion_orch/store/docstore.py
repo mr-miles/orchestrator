@@ -83,6 +83,24 @@ class DocVersion(DocMeta):
         return DocMeta(**{f.name: getattr(self, f.name) for f in fields(DocMeta)})
 
 
+@dataclass(frozen=True)
+class DocCheck:
+    """What a write would do (:meth:`DocStore.check`): the version it would create, or the
+    latest version when the content is unchanged."""
+    path: str
+    version: int
+    sha256: str
+    schema: str
+    unchanged: bool
+
+    @property
+    def attestation(self) -> str:
+        return f"file:{self.path}@{self.version}"
+
+    def to_json(self) -> dict:
+        return asdict(self) | {"attestation": self.attestation}
+
+
 def now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -104,14 +122,8 @@ class DocStore:
                                       f"DEFAULT '{'legacy' if col == 'schema' else ''}'")
             self.conn.commit()
 
-    def write(self, path: str, content: str, *, author: str, role: str,
-              base_version: int | None = None, schema: str | None = None) -> DocVersion:
-        """Create a new version. ``base_version`` must equal the current latest version
-        (``None`` only for a new path) – optimistic concurrency (guard G-W2). The content must
-        match the schema bound to ``path``; ``schema``, if given, must name that schema (G-W3).
-
-        Content identical to the latest version creates nothing: that version is returned (its
-        ``version`` then equals ``base_version``)."""
+    def _validate(self, path: str, content: str, schema: str | None):
+        """Path, size and schema checks (G-W3); returns the bound schema and the content digest."""
         if not PATH_RE.match(path) or len(path) > 512:
             raise DocStoreError(f"invalid document path {path!r}")
         data = content.encode()
@@ -121,16 +133,39 @@ class DocStore:
             sch = self.schemas.check(path, content, schema)
         except SchemaError as e:
             raise SchemaViolation(str(e)) from None
+        return sch, "sha256:" + hashlib.sha256(data).hexdigest()
+
+    def _unchanged(self, path: str, base_version: int | None, digest: str) -> tuple[int | None, bool]:
+        """Under the lock: optimistic concurrency (G-W2); returns the latest version and whether
+        ``digest`` equals its content."""
+        latest = self._latest_version(path)
+        if latest != base_version:
+            raise VersionConflict(f"G-W2: base_version {base_version} != latest {latest} for {path}")
+        return latest, latest is not None and self.read(path, latest).sha256 == digest
+
+    def check(self, path: str, content: str, *, base_version: int | None = None,
+              schema: str | None = None) -> DocCheck:
+        """Every check :meth:`write` makes (path, size, G-W3 schema, G-W2 base version), without
+        writing: what the write would create, or that it would change nothing."""
+        sch, digest = self._validate(path, content, schema)
         with self.lock:
-            latest = self._latest_version(path)
-            if latest != base_version:
-                raise VersionConflict(
-                    f"G-W2: base_version {base_version} != latest {latest} for {path}")
-            digest = "sha256:" + hashlib.sha256(data).hexdigest()
-            if latest is not None:
-                current = self.read(path, latest)
-                if current.sha256 == digest:
-                    return current
+            latest, unchanged = self._unchanged(path, base_version, digest)
+        return DocCheck(path=path, version=latest if unchanged else (latest or 0) + 1,
+                        sha256=digest, schema=sch.name, unchanged=unchanged)
+
+    def write(self, path: str, content: str, *, author: str, role: str,
+              base_version: int | None = None, schema: str | None = None) -> DocVersion:
+        """Create a new version. ``base_version`` must equal the current latest version
+        (``None`` only for a new path) – optimistic concurrency (guard G-W2). The content must
+        match the schema bound to ``path``; ``schema``, if given, must name that schema (G-W3).
+
+        Content identical to the latest version creates nothing: that version is returned (its
+        ``version`` then equals ``base_version``)."""
+        sch, digest = self._validate(path, content, schema)
+        with self.lock:
+            latest, unchanged = self._unchanged(path, base_version, digest)
+            if unchanged:
+                return self.read(path, latest)
             v = DocVersion(path=path, version=(latest or 0) + 1, content=content,
                            sha256=digest,
                            author=author, role=role, created_at=now_iso(),

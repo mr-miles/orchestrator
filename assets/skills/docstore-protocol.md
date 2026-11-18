@@ -16,5 +16,7 @@ attest it in your report (so a rework need not change a document that is still r
   cite it as returned in your report.
 - Every path is bound to a schema and every write is validated against it. Call
   `docs_schema(path)` before writing a structured document; a refused write lists the errors.
+  `docs_write(..., dry_run=true)` makes every check and writes nothing: it returns the
+  attestation the write would produce, or why it would be refused.
   Your report's `data` must match your role's `report_schema` (`schema_get(name)`).
 - Prefer markdown for prose and JSON for anything the controller parses.

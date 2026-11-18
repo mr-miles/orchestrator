@@ -15,7 +15,7 @@ Each is given only the parts it uses, so the dependencies are explicit and acycl
 """
 from __future__ import annotations
 
-from ...store import DocVersion
+from ...store import DocCheck, DocVersion
 from ..model import (
     H_REQUIREMENTS,
     HUMAN,
@@ -102,9 +102,9 @@ class ChangeEngine(ChangeCore):
         await self._scheduler.tick()
 
     # ------------------------------------------------------------------ agents (MCP)
-    async def agent_write(self, run: Run, path: str, content: str,
-                          base_version: int | None) -> DocVersion:
-        return await self._reports.agent_write(run, path, content, base_version)
+    async def agent_write(self, run: Run, path: str, content: str, base_version: int | None,
+                          dry_run: bool = False) -> DocVersion | DocCheck:
+        return await self._reports.agent_write(run, path, content, base_version, dry_run)
 
     def connected(self, run: Run) -> None:
         self._reports.connected(run)
@@ -114,9 +114,9 @@ class ChangeEngine(ChangeCore):
 
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
-                            missing_decision: str | None) -> ReportOutcome:
+                            missing_decision: str | None, dry_run: bool = False) -> ReportOutcome:
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
-                                                 blocked_reason, missing_decision)
+                                                 blocked_reason, missing_decision, dry_run)
 
     # ------------------------------------------------------------------ operators (web)
     async def human_action(self, node_id: str, action: str, approver: str,
