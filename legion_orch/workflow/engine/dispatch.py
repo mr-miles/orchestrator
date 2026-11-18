@@ -114,10 +114,12 @@ class Dispatcher:
         return list(dict.fromkeys(refs))
 
     def _feedback_text(self, node: Node) -> str:
-        if not node.feedback:
+        if not any(f.cycle >= node.round_start_cycle for f in node.feedback):
             return "(none)"
         lines, head = [], self.c.change.integration_head
         for f in node.feedback:
+            if f.cycle < node.round_start_cycle:     # an earlier round's (a fix round starts fresh)
+                continue
             atts = ", ".join(f.attestations)
             at = ""
             if f.head:
@@ -145,7 +147,10 @@ class Dispatcher:
         if h.judges_head:
             judged_sha = ch.integration_head
         run_id = self.c.host.next_run_id()
-        branch = f"legion/{ch.id}/{_slug(node.id)}" if h.pushes else f"legion/{ch.id}/{run_id}-{role}"
+        # a fix round's oracle starts from the integration head, not from round 1's oracle branch
+        again = f"-r{ch.round}" if node.kind == ORACLE and ch.round > 1 else ""
+        branch = (f"legion/{ch.id}/{_slug(node.id)}{again}" if h.pushes
+                  else f"legion/{ch.id}/{run_id}-{role}")
         asg = self._assignment(node, role, branch, judged_sha)
         try:
             rendered = self.c.assets.render_role(role, asg.variables)
@@ -183,6 +188,7 @@ class Dispatcher:
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
+            "fix_round": "",
         } | handler_for(role).extra_variables(self.roles, node)
         write, required = self.c.assets.role_paths(role, variables)
         write, required = [self.c.p(w) for w in write], [self.c.p(d) for d in required]
@@ -226,8 +232,12 @@ class Dispatcher:
             node.status = RUNNING
         if h.keeps_sandbox and node.sandbox is None:
             node.sandbox = run.sandbox
-        if node.kind == BUILD and h.pushes and ch.first_build_at is None:
-            ch.first_build_at = now_iso()          # approved_spec_and_oracle compares with this
+        if node.kind == BUILD and h.pushes:     # approved_spec_and_oracle compares with these
+            if ch.first_build_at is None:
+                ch.first_build_at = now_iso()
+            rnd = next((x for x in ch.rounds if x.number == node.round), None)
+            if rnd and rnd.first_build_at is None:
+                rnd.first_build_at = now_iso()
 
     def _payload(self, run: Run, rendered) -> None:
         d = self.c.run_dir(run.id) / "payload"

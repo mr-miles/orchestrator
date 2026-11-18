@@ -35,6 +35,8 @@ GUARDS: dict[str, str] = {
     "G-P8": "R2+ oracle completeness",
     "G-P9": "a delta spec per accepted requirement",
     "G-P10": "R2+ oracle declares verification surfaces",
+    "G-FR1": "fix round: requirements unchanged; every round task cites an accepted requirement",
+    "G-FR2": "fix round: task graph valid within the round, new task ids, same-round dependencies",
     "G-C1": "critique verdict and findings",
     "G-C2": "critique cycle budget",
     "G-O1": "oracle diff only touches acceptance tests",

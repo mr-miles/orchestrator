@@ -25,6 +25,7 @@ from ..model import (
     SHIP,
     Node,
 )
+from .common import ENV_SPEC
 from .core import ChangeCore
 
 
@@ -59,7 +60,11 @@ class StageGraph:
         if r >= 3:
             c.add_node(Node(id=BASELINE, kind=BASELINE, title="Independent baseline", depends_on=[ORACLE]))
             h2_deps = [BASELINE]
-        c.add_node(Node(id=H_SPEC, kind=HUMAN, title="Approve spec & oracle", depends_on=h2_deps))
+        # H-2 also waits for the plan and the environment directly: in a fix round, oracle and
+        # baseline may still be accepted from round 1 while the round is planned or its
+        # environment provisioned again (§5.10a)
+        c.add_node(Node(id=H_SPEC, kind=HUMAN, title="Approve spec & oracle",
+                        depends_on=list(dict.fromkeys([PLAN, after_critique, *h2_deps]))))
         if r >= 2:
             c.add_node(Node(id=INTEGRATION, kind=INTEGRATION, title="Integration verification",
                             depends_on=[H_SPEC]))  # replaced by build ids at critique PASS
@@ -105,6 +110,63 @@ class StageGraph:
         for nid in (INTEGRATION, RELEASE, H_CHANGE, SHIP):
             if nid in c.nodes:
                 c.nodes[nid] = c.nodes.pop(nid)
+
+    def add_round_builds(self, taskgraph: dict, n: int) -> list[str]:
+        """Fix round ``n``: one build node per task the round appended to the task graph
+        (earlier rounds' tasks stay as accepted). Integration then waits for them too."""
+        c = self.c
+        built = {b.task.id for b in c.build_nodes()}
+        new = [t for t in taskgraph["tasks"] if t["id"] not in built]
+        new_ids = {t["id"] for t in new}
+        # earlier tasks are accepted: only the new ones (and their dependencies among each
+        # other) form waves
+        wv = guards.waves([dict(t, depends_on=[d for d in t["depends_on"] if d in new_ids])
+                           for t in new])
+        base = max((b.wave for b in c.build_nodes()), default=0)
+        ids = []
+        for t in new:
+            nid = f"build:{t['id']}"
+            ids.append(nid)
+            c.add_node(Node(id=nid, kind=BUILD, title=f"{t['id']}: {t['title']}", task=t,
+                            wave=base + wv[t["id"]], round=n,
+                            depends_on=[H_SPEC] + [f"build:{d}" for d in t["depends_on"]]))
+        if INTEGRATION in c.nodes:
+            c.nodes[INTEGRATION].depends_on = list(dict.fromkeys(
+                c.nodes[INTEGRATION].depends_on + ids))
+        for nid in (INTEGRATION, RELEASE, H_CHANGE, SHIP):
+            if nid in c.nodes:
+                c.nodes[nid] = c.nodes.pop(nid)
+        return ids
+
+    def start_round(self, n: int) -> list[str]:
+        """Fix round ``n`` passed its critique (§5.10a): what the round changed runs again – the
+        environment (H-E1, provision) if its spec changed, the oracle if `plan/oracle.json`
+        changed, and (R3) the baseline in any case – and the round's tasks are added. H-2 then
+        waits for all of it."""
+        c = self.c
+        env = c.change.approvals.get(H_ENV)
+        if H_ENV in c.nodes and env and env.pins.get(c.p(ENV_SPEC)) != c.latest(ENV_SPEC):
+            self.reset_environment()
+        orc = c.change.approvals.get("oracle")
+        oracle_doc = "plan/oracle.json"
+        if ORACLE in c.nodes and orc and orc.pins.get(c.p(oracle_doc)) != c.latest(oracle_doc):
+            node = c.nodes[ORACLE]
+            node.status, node.cycle = PENDING, node.cycle + 1
+            node.base_sha = node.candidate_sha = node.accepted_sha = None
+        if BASELINE in c.nodes:
+            node = c.nodes[BASELINE]
+            node.status, node.cycle, node.candidate_sha = PENDING, node.cycle + 1, None
+        return self.add_round_builds(c.json_doc("plan/taskgraph.json"), n)
+
+    def remove_round_builds(self, n: int) -> None:
+        """The round's plan is sent back at H-2: its (not yet dispatched) build nodes go."""
+        c = self.c
+        gone = {b.id for b in c.build_nodes() if b.round == n}
+        for nid in gone:
+            del c.nodes[nid]
+        if INTEGRATION in c.nodes:
+            c.nodes[INTEGRATION].depends_on = [d for d in c.nodes[INTEGRATION].depends_on
+                                               if d not in gone]
 
     def reset_environment(self) -> None:
         """The plan (with its environment spec) is being reworked: the environment's approval

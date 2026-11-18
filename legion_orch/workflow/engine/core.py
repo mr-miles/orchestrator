@@ -88,7 +88,7 @@ class ChangeCore:
                 f"{branch_head[:12]}, but the controller's integration head is {rec[:12]}: "
                 "commits were added outside the workflow. They are not adopted (they bypass "
                 f"verification and review): reset the branch to {rec} and retry. To change "
-                "the code, rework it through the workflow.")
+                "the code after integration fails, plan a fix round (Plan a fix).")
 
     def oracle_commands(self) -> list[str]:
         """The commands that verify the integration head (oracle and surfaces)."""

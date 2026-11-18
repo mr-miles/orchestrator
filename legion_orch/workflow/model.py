@@ -323,6 +323,10 @@ class Node(Record):
     escalation: Escalation | None = None
     extra_cycles: int = 0                 # granted by a human on escalation
     override: Override | None = None
+    # fix rounds (§5.10a): a build task's round; for the plan node, the round being planned and
+    # the cycle it started at (the round's critique budget and feedback count from there)
+    round: int = 1
+    round_start_cycle: int = 1
     updated_at: str = Field(default_factory=now_iso)
 
     @staticmethod
@@ -521,6 +525,18 @@ class EnvironmentBuild(Record):
     attestation: str | None = None        # the stored build record
 
 
+class FixRound(Record):
+    """A fix round (§5.10a): planned on top of the integration head after a late failure."""
+    number: int                       # 2, 3, …
+    approver: str
+    comment: str | None = None
+    head: str                         # the integration head the round starts from
+    at: str = Field(default_factory=now_iso)
+    failure: list[str] = []           # the integration report, verification and findings
+    first_build_at: str | None = None  # the round's first build run
+    attestation: str | None = None    # control/rounds/<n>.json
+
+
 class Change(Record):
     id: str
     goal: str
@@ -543,6 +559,14 @@ class Change(Record):
     surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
     ship: Readiness | None = None
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
+    round: int = 1                                         # 1, or the current fix round
+    rounds: list[FixRound] = []                            # fix rounds since the last restart
+
+    def round_first_build_at(self) -> str | None:
+        """When the current round's first build started (round 1: the change's first build);
+        None while the round has built nothing. Approvals and the independent baseline must
+        precede it."""
+        return self.rounds[-1].first_build_at if self.rounds else self.first_build_at
 
 
 def _parse_ts_safe(ts: str):

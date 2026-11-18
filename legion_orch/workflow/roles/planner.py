@@ -7,7 +7,7 @@ from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..model import H_ENV, H_SPEC, REVIEWING, Node
 from ..view import RoleContext
-from .base import Report, RoleHandler, register
+from .base import Report, RoleHandler, fix_round_note, register
 
 NO_ENVIRONMENT = (f"No sandbox environment stage is configured: do not write `{ENV_SPEC}`; "
                   "every sandbox uses the default image.")
@@ -19,9 +19,19 @@ class Planner(RoleHandler):
     keeps_session_until = H_SPEC       # reworked (sent back) until this gate passes
     sees_oracle_commit = False
 
+    def extra_context(self, e: RoleContext, node: Node) -> list[str]:
+        """In a fix round: the round record and the integration failure (the approved plan
+        documents are the common context)."""
+        rnd = e.change.rounds[-1] if node.round > 1 and e.change.rounds else None
+        return [a for a in ([rnd.attestation, *rnd.failure] if rnd else []) if a]
+
     def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
         """The environment part of the assignment: the library catalogue (an invalid library is
-        reported, not raised: the spec is then rejected by G-E1 until an operator fixes it)."""
+        reported, not raised: the spec is then rejected by G-E1 until an operator fixes it);
+        in a fix round, what the round asks."""
+        return self._environment_vars(e) | {"fix_round": fix_round_note(e, "planner")}
+
+    def _environment_vars(self, e: RoleContext) -> dict[str, str]:
         if H_ENV not in e.nodes:
             return {"environment": NO_ENVIRONMENT}
         try:
@@ -37,8 +47,14 @@ class Planner(RoleHandler):
         orc, e2 = guards.load_json(e.docs, r.docs[e.p("plan/oracle.json")], "G-P1")
         if e1 or e2:
             return e1 + e2
-        v = guards.plan(tg, orc, e.change.requirements, e.change.tier, e.cfg.protected_paths,
-                        e.assets.roles["implementer"].souls_allowed, e.docs.schemas)
+        souls = e.assets.roles["implementer"].souls_allowed
+        if r.node.round > 1:          # a fix round appends to the task graph (G-FR1, G-FR2)
+            built = {b.task.id: b.task.model_dump(mode="json") for b in e.build_nodes()}
+            v = guards.fix_round(tg, orc, e.change.requirements, e.change.tier,
+                                 e.cfg.protected_paths, souls, e.docs.schemas, built)
+        else:
+            v = guards.plan(tg, orc, e.change.requirements, e.change.tier, e.cfg.protected_paths,
+                            souls, e.docs.schemas)
         _, vs = guards.required_docs(r.run.id, [e.p(f"plan/specs/{q}.md") for q in e.change.requirements],
                                      r.parsed, e.docs, r.run.confirmed_docs)
         return v + [x.replace("G-R4", "G-P9") for x in vs] + self._environment(e, r)

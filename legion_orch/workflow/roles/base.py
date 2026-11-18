@@ -97,6 +97,37 @@ def build_context(e: RoleContext, node: Node) -> list[str]:
     return refs
 
 
+def fix_round_note(e: RoleContext, role: str) -> str:
+    """The ``fix_round`` prompt variable: what a fix round asks of the planner or the critic
+    (empty outside a round)."""
+    rnd = e.change.rounds[-1] if e.change.rounds else None
+    if rnd is None or e.change.round != rnd.number:
+        return ""
+    built = [b for b in e.build_nodes() if b.round < rnd.number]
+    tasks = "\n".join(f"- {b.task.id} (round {b.round}): {b.task.title}, accepted at "
+                      f"`{(b.accepted_sha or '?')[:12]}`" for b in built) or "- (none)"
+    failure = "\n".join(f"- {a}" for a in rnd.failure) or "- (the integration escalation)"
+    head = (f"## Fix round {rnd.number}\n\nIntegration failed at `{rnd.head[:12]}`. The "
+            f"failure (read all of it):\n{failure}\n\nDecision owner's comment: "
+            f"{rnd.comment or '(none)'}\n\nTasks already built:\n{tasks}\n\n")
+    if role == "critic":
+        return head + (
+            "Judge the round: the tasks it appends to `plan/taskgraph.json` and any document "
+            "it revised. Together the new tasks must address every failure named above, and "
+            "each must say in its `instructions` which failure it fixes and why.")
+    return head + (
+        "Plan new work on top of the integration head, as if the change started from the "
+        "existing code; accepted tasks are never reopened. Revise `plan/taskgraph.json` by "
+        "**appending** one or more tasks with ids no task has used, keeping every task above "
+        "exactly as it is (G-FR2). Each new task's `instructions` say which failure it fixes "
+        "and why, and its `context` cites the integration report. A new task may depend on "
+        "accepted tasks and modify their files, and cites at least one accepted requirement "
+        "(G-FR1); requirements are unchanged. Revise `plan/spec.md` or a delta spec only if "
+        "the cause is a shared interface or contract, `plan/oracle.json` only if the "
+        "acceptance tests themselves must change, and the sandbox environment only if the "
+        "sandboxes must change.")
+
+
 def evidence_of(e: RoleContext, node: Node) -> str | None:
     return e.latest_att(f"tasks/{node.task.id}/evidence/cycle-{node.cycle}.md")
 

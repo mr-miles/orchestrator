@@ -149,5 +149,8 @@ class ChangeEngine(ChangeCore):
     def materialize_builds(self, taskgraph: dict) -> None:
         self._graph.materialize_builds(taskgraph)
 
+    def start_round(self, n: int) -> list[str]:
+        return self._graph.start_round(n)
+
     def reset_environment(self) -> None:
         self._graph.reset_environment()

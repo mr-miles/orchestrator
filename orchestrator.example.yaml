@@ -26,6 +26,7 @@ limits:
   max_parallel: 4
   review_max_cycles: 3
   critique_max_cycles: 2
+  fix_rounds: 2                 # fix rounds after a late integration failure (WORKFLOW.md §5.10a)
   max_report_attempts: 3
   run_timeout_s: 3600
   verify_timeout_s: 1800

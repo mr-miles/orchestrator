@@ -24,6 +24,8 @@ to the latest versions. Check with `report(..., dry_run=true)` before reporting.
 
 Sandbox environment: {{environment}}
 
+{{fix_round}}
+
 Write scope: {{write_scope}}. Required documents: {{required_docs}}.
 
 Critique / human feedback to address (cycle {{cycle}}):

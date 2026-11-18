@@ -90,8 +90,8 @@ class GateEvaluator:
             if r.verdict in (AttestationVerdict.PASS, AttestationVerdict.NOT_APPLICABLE):
                 if not governance.coverage_ok(r, self.task_ids):
                     return _g(UNSAT, f"{r.kind}: covers {r.covers}, not every task")
-                if need_before_build and self.ch.first_build_at and \
-                        _parse_ts_safe(r.at) >= _parse_ts_safe(self.ch.first_build_at):
+                started = self.ch.round_first_build_at()
+                if need_before_build and started and _parse_ts_safe(r.at) >= _parse_ts_safe(started):
                     return _g(UNSAT, f"{r.kind} recorded after execution started")
                 how = "waived (not_applicable)" if r.verdict == AttestationVerdict.NOT_APPLICABLE else "pass"
                 return _g(SAT, f"{r.kind} {how} by {r.attested_by}: {', '.join(r.sources)}", True)
@@ -107,7 +107,7 @@ class GateEvaluator:
             return _g(UNSAT, "approved task graph is stale")
         rec = self.ch.approvals["spec:plan"]
         tg = self.e.json_doc("plan/taskgraph.json", rec.pins[self.e.p("plan/taskgraph.json")])
-        ids = {t["id"] for t in tg["tasks"]}
+        ids = {t["id"] for t in tg["tasks"]}     # every round's tasks (a round appends its own)
         if ids != self.task_ids:
             return _g(UNSAT, f"build tasks {sorted(self.task_ids)} != contract {sorted(ids)}")
         return _g(SAT, f"{len(ids)} task contract(s) at {rec.attestation}")
@@ -131,10 +131,12 @@ class GateEvaluator:
             return _g(UNEVAL, "spec/oracle not fully approved")
         if any(s.status != ApprovalState.APPROVED for s in self.h2.values()):
             return _g(UNSAT, "a spec/oracle approval is stale")
-        last = governance.last_h2_approval_at(self.e)
-        if self.ch.first_build_at and _parse_ts_safe(last) >= _parse_ts_safe(self.ch.first_build_at):
+        # the current round's builds ran under these approvals; earlier rounds' builds were
+        # dispatched only while every approval of their time was fresh (G-B1)
+        last, started = governance.last_h2_approval_at(self.e), self.ch.round_first_build_at()
+        if started and _parse_ts_safe(last) >= _parse_ts_safe(started):
             return _g(UNSAT, "last approval recorded after build started")
-        return _g(SAT, f"last approval {last} before first build {self.ch.first_build_at}")
+        return _g(SAT, f"last approval {last} before first build {started}")
 
     # ---- execution evidence
     @checks("deterministic_verification")

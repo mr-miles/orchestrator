@@ -18,7 +18,7 @@ from ..model import (
     Verdict,
 )
 from ..view import RoleContext
-from .base import Report, RoleHandler, brief_findings, register
+from .base import Report, RoleHandler, brief_findings, fix_round_note, register
 
 
 @register
@@ -32,7 +32,11 @@ class Critic(RoleHandler):
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
         att = e.latest_att(ENV_SPEC) if H_ENV in e.nodes else None
-        return [att] if att else []
+        rnd = e.change.rounds[-1] if node.round > 1 and e.change.rounds else None
+        return [a for a in [att, *([rnd.attestation, *rnd.failure] if rnd else [])] if a]
+
+    def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
+        return {"fix_round": fix_round_note(e, "critic")}
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         plan_atts = {a.path: a.version for a in r.parsed if a.kind == "file"}
@@ -51,6 +55,11 @@ class Critic(RoleHandler):
         if data.verdict == Verdict.PASS:
             node.status = ACCEPTED
             e.accept_runs(node)      # the critic's sandbox goes; the planner's is held to H-2
+            if node.round > 1:       # a fix round: rerun what it changed, add its tasks
+                ids = e.start_round(node.round)
+                e.event("plan", f"fix round {node.round} accepted by critic; {len(ids)} new "
+                        f"build task(s): {', '.join(ids)}")
+                return
             e.materialize_builds(e.json_doc("plan/taskgraph.json"))
             e.event("plan", f"plan accepted by critic; {len(e.build_nodes())} build task(s)")
             return
@@ -63,8 +72,9 @@ class Critic(RoleHandler):
             + "; ".join(f"{f.severity}: {f.title}" for f in data.findings),
             attestations=[str(a) for a in r.docs.values()]))
         limit = e.cfg.limits.critique_max_cycles + node.extra_cycles
-        if node.cycle >= limit:
-            e.escalate(node, "critique_budget", f"G-C2: {node.cycle} critique cycles without PASS",
+        cycles = node.cycle - node.round_start_cycle + 1      # a fix round has its own budget
+        if cycles >= limit:
+            e.escalate(node, "critique_budget", f"G-C2: {cycles} critique cycles without PASS",
                        resume=Resume.CRITIQUE_BUDGET)
         else:
             node.cycle += 1

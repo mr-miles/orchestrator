@@ -57,3 +57,8 @@ acceptance tests or `protected_support` files (G-P7). Acceptance tests are writt
 task, not implementers, and must be **black-box and out of process**: they run the system as a
 separate process and check its outputs, so code under test cannot fake a passing exit code. List
 any runner configuration the acceptance commands depend on in `protected_support`.
+
+**Fix rounds** (when your assignment says "Fix round n"): revise `plan/taskgraph.json` by
+**appending** tasks; every task already built stays exactly as it is, and new tasks use ids no
+task has used (G-FR2). A new task may depend on accepted tasks and modify their files; it cites at
+least one accepted requirement (G-FR1), and only the new tasks are checked for parallel overlap.

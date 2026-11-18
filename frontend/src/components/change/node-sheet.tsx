@@ -142,6 +142,7 @@ function Details({ node, state }: { node: Node; state: ChangeState }) {
       <>
         <code>{node.id}</code> · {node.kind}
         {node.wave ? ` · wave ${node.wave}` : ''}
+        {node.kind === 'build' && (node.round ?? 1) > 1 ? ` · fix round ${node.round}` : ''}
       </>,
     ],
     [
