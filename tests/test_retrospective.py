@@ -357,3 +357,48 @@ async def test_the_retrospective_starts_by_itself_once_reflections_are_done(f: F
     doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
     await f.report(run, [doc])
     assert f.status("retrospective") == ACCEPTED and len(f.runs("retrospective")) == 1
+
+
+# ---------------------------------------------------------------------------- abandoning
+@scenario()
+async def test_abandoning_records_the_reason_and_runs_the_retrospective(f: Flow):
+    """Abandoned early (at intake): the reason is recorded, and the retrospective runs on what
+    exists so far although retrospectives do not run automatically here."""
+    assert not f.cfg.retrospective.auto
+    r = f.run("intake")
+    await f.report(r, [], status="BLOCKED",
+                   blocked_reason="the goal is unclear", missing_decision="which game?")
+    assert f.status("intake") == "ESCALATED"
+    res = await f.human("intake", "abandon", reason="wrong goal: we wanted chess, not Connect 4")
+    ch = f.ce.change
+    assert ch.status == ChangeStatus.ABANDONED and res.attestation == ch.ended.attestation
+    assert (ch.ended.by, ch.ended.node, ch.ended.action) == ("miles", "intake", "abandon")
+    assert ch.ended.reason == "wrong goal: we wanted chess, not Connect 4"
+    assert f.ce.json_doc("control/ended.json")["reason"] == ch.ended.reason
+    assert "abandoned the change at intake: wrong goal" in f.ce.timeline()
+    run = f.run("retrospective")
+    files = f.runner.payloads[run.sandbox]
+    assert json.loads(files["retro/change.json"])["ended"]["reason"] == ch.ended.reason
+    assert "`change.json` `ended`" in files["prompt.md"]
+
+
+@scenario()
+async def test_abandoning_can_skip_the_retrospective_and_h3_reject_records_its_reason(f: Flow):
+    r = f.run("intake")
+    await f.report(r, [], status="BLOCKED", blocked_reason="x", missing_decision="y")
+    await f.human("intake", "abandon", retrospective=False)
+    assert f.ce.change.ended.reason is None and "retrospective" not in f.ce.nodes
+    assert "(no reason given)" in f.ce.timeline()
+
+
+@scenario()
+async def test_rejecting_at_h3_records_why(f: Flow):
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    await f.integration()
+    await f.human("H-3", "reject", reason="the UI is not what we asked for")
+    ch = f.ce.change
+    assert ch.status == ChangeStatus.ABANDONED and ch.ended.action == "reject"
+    assert ch.ended.node == "H-3" and ch.ended.reason == "the UI is not what we asked for"
+    assert f.status("retrospective") in ("READY", "RUNNING")

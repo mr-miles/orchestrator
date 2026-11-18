@@ -33,6 +33,7 @@ function Escalated({ node }: { node: Node }) {
   const act = useAct(nav.cid)
   const [answer, setAnswer] = useState('')
   const [reason, setReason] = useState('')
+  const [why, setWhy] = useState('')
   const e = node.escalation
   if (!e) return null
   if (e.retrying)
@@ -110,9 +111,10 @@ function Escalated({ node }: { node: Node }) {
         )}
         <ConfirmButton
           title="Abandon the change?"
-          description="The change ends here; nothing more is dispatched for it."
+          description="The change ends here; nothing more is dispatched for it. A retrospective then runs on what it produced so far."
           confirm="Abandon"
-          onConfirm={() => act.node(node.id, 'abandon')}
+          body={<AbandonReason value={why} onChange={setWhy} />}
+          onConfirm={() => act.node(node.id, 'abandon', { reason: why }, 'Change abandoned')}
         >
           Abandon
         </ConfirmButton>
@@ -323,9 +325,23 @@ function ApproveEnvironment({ state }: { state: ChangeState }) {
   )
 }
 
+/** Why the operator ends the change: recorded, and read by the retrospective. */
+function AbandonReason({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <TextField
+      label="Reason"
+      value={value}
+      onChange={onChange}
+      multiline
+      description="Recorded with the change and given to the retrospective (optional)."
+    />
+  )
+}
+
 function AcceptChange({ state }: { state: ChangeState }) {
   const act = useAct(useNav().cid)
   const [note, setNote] = useState('')
+  const [why, setWhy] = useState('')
   return (
     <Card>
       <CardHeader>
@@ -343,9 +359,10 @@ function AcceptChange({ state }: { state: ChangeState }) {
         </Button>
         <ConfirmButton
           title="Reject the change?"
-          description="Rejecting abandons the change."
+          description="Rejecting abandons the change. A retrospective then runs on what it produced."
           confirm="Reject"
-          onConfirm={() => act.node('H-3', 'reject')}
+          body={<AbandonReason value={why} onChange={setWhy} />}
+          onConfirm={() => act.node('H-3', 'reject', { reason: why }, 'Change rejected')}
         >
           Reject
         </ConfirmButton>

@@ -2,7 +2,9 @@
 
 Goal of the change: {{goal}}  (tier {{tier}}; integration head `{{head_sha}}`)
 
-The change has ended. Your material is in `../payload/retro/` (relative to your working
+The change has ended. If it was abandoned or rejected, `change.json` `ended` says who ended it,
+at which node and why: find out what led there. A change can end early, so some material may be
+missing: work with what there is. Your material is in `../payload/retro/` (relative to your working
 directory, `{{workdir}}`): read its `README.md` first. Earlier changes' retrospectives, if any,
 are in your context (read them through `docs_read`): note lessons that keep coming back.
 

@@ -12,19 +12,21 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 
-/** A destructive action behind a confirmation. */
+/** A destructive action behind a confirmation; ``body`` goes in the dialog (e.g. a reason). */
 export function ConfirmButton({
   children,
   title,
   description,
   confirm,
   onConfirm,
+  body,
 }: {
   children: ReactNode
   title: string
   description: ReactNode
   confirm: string
   onConfirm: () => Promise<unknown>
+  body?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
   return (
@@ -35,6 +37,7 @@ export function ConfirmButton({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {body}
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction

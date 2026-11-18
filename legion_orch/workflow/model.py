@@ -521,6 +521,17 @@ class EnvironmentBuild(Record):
     attestation: str | None = None        # the stored build record
 
 
+class ChangeEnd(Record):
+    """Who ended a change before it could ship, where and why: abandoned at an escalation, or
+    rejected at H-3. The retrospective reads it (``change.json``)."""
+    by: str
+    node: str
+    action: str                       # abandon | reject
+    reason: str | None = None
+    at: str = Field(default_factory=now_iso)
+    attestation: str | None = None    # control/ended.json
+
+
 class Change(Record):
     id: str
     goal: str
@@ -543,6 +554,7 @@ class Change(Record):
     surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
     ship: Readiness | None = None
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
+    ended: ChangeEnd | None = None                        # abandoned or rejected: by, where, why
 
 
 def _parse_ts_safe(ts: str):

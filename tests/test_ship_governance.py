@@ -318,17 +318,22 @@ async def test_a_resumed_integration_deletes_the_failed_runs_sandbox(f: Flow):
     assert f.run("integration").sandbox != first.sandbox
 
 
-@scenario()
-async def test_an_abandoned_change_leaves_no_sandbox(f: Flow):
-    await f.to_build(tier="R2")
-    await f.implement()
-    await f.review()
-    f.runner.commands["sh tests/acceptance/test_greet.sh"] = (1, "FAIL\n")
-    await f.integration(verdict="PASS")
-    await f.human("integration", "abandon")
-    await f.settle()
-    assert all(r.sandbox_deleted for r in f.ce.runs.values() if r.sandbox), \
-        {r.sandbox: (r.node_id, r.status) for r in f.ce.runs.values() if not r.sandbox_deleted}
+@pytest.mark.parametrize("retrospective", [False, True])
+def test_an_abandoned_change_leaves_no_sandbox(tmp_path, retrospective):
+    """Abandoning deletes every sandbox of the change's work; only the retrospective it starts
+    (unless asked not to) has one."""
+    @scenario()
+    async def go(f: Flow):
+        await f.to_build(tier="R2")
+        await f.implement()
+        await f.review()
+        f.runner.commands["sh tests/acceptance/test_greet.sh"] = (1, "FAIL\n")
+        await f.integration(verdict="PASS")
+        await f.human("integration", "abandon", retrospective=retrospective)
+        await f.settle()
+        left = {r.sandbox: r.role for r in f.ce.runs.values() if r.sandbox and not r.sandbox_deleted}
+        assert set(left.values()) == ({"retrospective"} if retrospective else set()), left
+    go(tmp_path)
 
 
 # ====================================================================== baseline (R3)
