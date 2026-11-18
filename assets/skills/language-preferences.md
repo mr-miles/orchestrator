@@ -33,9 +33,33 @@ something differently, follow the repository and say so; never mix both ways in 
 * **Scripts run on bun, not Node:** a bun sandbox has no `node`, so a package's CLI is run as
   `bun --bun <cli>` (e.g. `bun --bun vite build`, `bun --bun prettier --check .`). Run
   `bun install --frozen-lockfile` first: before it no package CLI exists.
-* **A happy-dom test preload replaces DOM globals** (`Blob`, `fetch`, …) in every test file. A
-  test that spawns a process uses `stdin: "pipe"` and writes to `proc.stdin`, never
-  `stdin: new Blob(…)`.
+* **A happy-dom test preload replaces DOM globals** (`Blob`, `fetch`, …) in every test file, so
+  `Bun.spawn({ stdin: new Blob(…) })` fails with "stdio must be an array of 'inherit', 'ignore',
+  or null". A test that runs a CLI as a process pipes its stdin and returns named results:
+
+  ```ts
+  async function runCli(args: string[], input: string) {
+    const proc = Bun.spawn(["bun", "src/cli.ts", ...args], {
+      stdin: "pipe", // never `new Blob(…)`: the preload replaces Blob
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    proc.stdin.write(input);
+    proc.stdin.end();
+    const [stdout, stderr, exitCode] = await Promise.all([
+      Bun.readableStreamToText(proc.stdout),
+      Bun.readableStreamToText(proc.stderr),
+      proc.exited,
+    ]);
+    return { exitCode, stdout, stderr }; // named, not a positional array
+  }
+
+  test("rejects a bad move", async () => {
+    const r = await runCli(["--fail"], "1");
+    expect(r).toMatchObject({ exitCode: 2 });
+    expect(r.stderr).toContain("bad move");
+  });
+  ```
 * **oxlint for linting, Prettier (with `prettier-plugin-tailwindcss`) for formatting, `bun test`
   for tests** (happy-dom and Testing Library for components). Use the `package.json` scripts
   `typecheck` (`tsc -b`), `lint`, `format:check` and `test`.
