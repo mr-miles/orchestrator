@@ -6,6 +6,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from ..model import (
+    BASELINE,
     H_ENV,
     Approval,
     ApprovalState,
@@ -36,6 +37,7 @@ class SubjectStatus(BaseModel):
     status: ApprovalState
     approver: str | None = None
     at: str | None = None
+    warnings: list[str] = []      # for the human to weigh before approving (G-BL2)
 
 
 def h2_status(e: ChangeView) -> list[SubjectStatus]:
@@ -47,7 +49,30 @@ def h2_status(e: ChangeView) -> list[SubjectStatus]:
         out.append(SubjectStatus(subject=subj, paths=list(pins),
                                  status=ApprovalState.APPROVED if fresh
                                  else ApprovalState.STALE if a else ApprovalState.PENDING,
-                                 approver=a.approver if a else None, at=a.at if a else None))
+                                 approver=a.approver if a else None, at=a.at if a else None,
+                                 warnings=baseline_warnings(e) if subj == "oracle" else []))
+    return out
+
+
+def baseline_warnings(e: ChangeView) -> list[str]:
+    """G-BL2 (R3): what the baseline – the oracle commands the controller ran at the head before
+    any build – says about the oracle. An acceptance command that already passes cannot show
+    that the change works; a result that differs from the baseline verifier's is suspect."""
+    node = e.nodes.get(BASELINE)
+    ver = node.verification.get("baseline") if node and node.status == "ACCEPTED" else None
+    if ver is None:
+        return []
+    orc = e.change.oracle or Oracle()
+    got = {r.command: r.exit_code for r in ver.results}
+    out = [f"G-BL2: acceptance command `{c}` already passes at the baseline (before any build): "
+           "it may not test the change" for c in orc.acceptance_commands if got.get(c) == 0]
+    run = e.runs.get(node.current_run) if node.current_run else None
+    data = run.report.data if run and run.report else {}
+    for r in data.get("results", []):
+        c, rc = r.get("command"), r.get("exit_code")
+        if c in got and rc != got[c]:
+            out.append(f"G-BL2: the baseline verifier reported `{c}` exit {rc}; "
+                       f"the controller got exit {got[c]}")
     return out
 
 
