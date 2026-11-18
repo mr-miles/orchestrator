@@ -24,7 +24,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import METHOD_NOT_FOUND
 
-from ..store import DocStoreError, DocVersion
+from ..store import DocCheck, DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
 from ..workflow import attest
@@ -38,7 +38,8 @@ versioned and schema-validated (docs_write creates a new version; pass base_vers
 docs_schema(path) shows what a path must contain). Paths are relative to your change unless they
 start with changes/. Back every claim with attestations: file:<path>@<version>,
 git:<repo>/<path>@<sha> or git:<repo>@<sha>. Finish with exactly one accepted
-report(status="DONE"|"BLOCKED"). Rejected reports list violated guard ids."""
+report(status="DONE"|"BLOCKED"). Rejected reports list violated guard ids and use up an attempt;
+check first with report(..., dry_run=true) and docs_write(..., dry_run=true), which use none."""
 
 AGENT_HIDDEN = ("/control/logs/",)
 WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report")
@@ -97,9 +98,10 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     def store_session(ctx: Context) -> StoreSession:
         ce, run = current(ctx)
 
-        async def write(path: str, content: str, base_version: int | None) -> DocVersion:
+        async def write(path: str, content: str, base_version: int | None,
+                        dry_run: bool) -> DocVersion | DocCheck:
             try:
-                return await ce.agent_write(run, path, content, base_version)
+                return await ce.agent_write(run, path, content, base_version, dry_run)
             except (WorkflowError, DocStoreError) as e:
                 raise ToolError(str(e)) from None
 
@@ -150,10 +152,12 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     @server.tool(description="Submit the result of this run. status is DONE or BLOCKED. "
                              "attestations: list of file:/git: references. data: role-specific "
                              "structured result matching your report_schema. BLOCKED needs "
-                             "blocked_reason and missing_decision. Returns accepted or violations.")
+                             "blocked_reason and missing_decision. Returns accepted or violations. "
+                             "dry_run=true runs every check without submitting or using up an "
+                             "attempt: it returns would_accept and the violations.")
     async def report(ctx: Context, status: str, summary: str, attestations: list[str],
                      data: dict[str, Any] | str | None = None, blocked_reason: str | None = None,
-                     missing_decision: str | None = None) -> dict:
+                     missing_decision: str | None = None, dry_run: bool = False) -> dict:
         ce, r = current(ctx)
         if isinstance(data, str):
             try:
@@ -165,7 +169,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
             return ReportOutcome.reject("data must be a JSON object").model_dump(
                 mode="json", exclude_none=True)
         outcome = await ce.handle_report(r.id, status, summary, attestations, data,
-                                         blocked_reason, missing_decision)
+                                         blocked_reason, missing_decision, dry_run)
         return outcome.model_dump(mode="json", exclude_none=True)
 
     # the gateway's MCP allowlist must match exactly what is served

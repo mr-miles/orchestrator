@@ -88,7 +88,19 @@ def main():
         if "R3" in a["goal"]:
             signals = [x for x in signals if x["name"] != "security"] + [
                 {"name": "security", "score": 3, "rationale": "pretend secrets are involved"}]
-        risk = write("intake/risk.json", json.dumps({"signals": signals}))
+        risk_doc = json.dumps({"signals": signals})
+        # dry runs over MCP: they write and count nothing
+        bad = call("report", status="DONE", summary="requirements captured", attestations=[req],
+                   dry_run=True)
+        assert bad["dry_run"] and not bad["would_accept"] and not bad["accepted"], bad
+        assert any(v.startswith("G-R4") for v in bad["violations"]), bad
+        check = call("docs_write", path="intake/risk.json", content=risk_doc, dry_run=True)
+        assert check["dry_run"] and check["version"] == 1 and not check["unchanged"], check
+        risk = write("intake/risk.json", risk_doc)
+        assert risk == check["attestation"], (risk, check)
+        ok = call("report", status="DONE", summary="requirements captured", attestations=[req, risk],
+                  dry_run=True)
+        assert ok["would_accept"] and ok["attempts_left"] == a["attempts_left"], (ok, a)
         print(call("report", status="DONE", summary="requirements captured", attestations=[req, risk]))
     elif role == "planner":
         spec = write("plan/spec.md", f"# Spec (cycle {cycle})\n\nWrite greet/bye files and docs.\n")

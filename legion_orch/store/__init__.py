@@ -4,6 +4,7 @@ Self-contained: nothing here imports the orchestrator. The orchestrator plugs in
 :class:`~legion_orch.store.mcp.StoreSession` (namespace, read filter, write policy).
 """
 from .docstore import (
+    DocCheck,
     DocMeta,
     DocStore,
     DocStoreError,
@@ -14,5 +15,5 @@ from .docstore import (
 )
 from .schemas import Schema, SchemaError, SchemaRegistry
 
-__all__ = ["DocMeta", "DocStore", "DocStoreError", "DocVersion", "SchemaViolation", "VersionConflict",
-           "now_iso", "Schema", "SchemaError", "SchemaRegistry"]
+__all__ = ["DocCheck", "DocMeta", "DocStore", "DocStoreError", "DocVersion", "SchemaViolation",
+           "VersionConflict", "now_iso", "Schema", "SchemaError", "SchemaRegistry"]

@@ -110,6 +110,22 @@ async def test_rejected_reports_count_attempts_then_fail_the_run(f: Flow):
     assert f.status("intake") == ACCEPTED
 
 
+@scenario(max_report_attempts=1)
+async def test_dry_run_reports_check_everything_and_use_no_attempt(f: Flow):
+    r = f.run("intake")
+    for _ in range(3):                                   # one attempt only, yet dry runs are free
+        out = await f.ce.handle_report(r.id, "DONE", "s", [], None, None, None, dry_run=True)
+        assert out.dry_run and not out.accepted and not out.would_accept
+        assert any(v.startswith("G-R4") for v in out.violations) and out.attempts_left == 1
+    assert r.attempts == 0 and not r.violations and f.status("intake") == RUNNING
+    atts = [await f.write(r, "intake/requirements.md", "# Requirements\n\n- REQ-1: hi\n"),
+            await f.write(r, "intake/risk.json", signals())]
+    out = await f.ce.handle_report(r.id, "DONE", "s", atts, None, None, None, dry_run=True)
+    assert out.would_accept and not out.violations and r.report is None
+    assert f.status("intake") == RUNNING                 # nothing applied
+    assert (await f.report(r, atts)).accepted and f.status("intake") == ACCEPTED
+
+
 @scenario(max_report_attempts=20)
 async def test_report_shape_and_limit_guards(f: Flow):
     r = f.run("intake")

@@ -133,10 +133,10 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 | `docs_read(path, version?)` | read an immutable version (latest by default) |
 | `docs_history(path)` | all versions with author/run and sha256 |
 | `docs_schema(path)` / `schema_get(name)` | the schema a path is bound to / a schema by name |
-| `docs_write(path, content, base_version?)` | create version N+1; content must match the path's schema (G-W3). `base_version` must equal the current latest (optimistic concurrency); omit only for a new path. Scope-checked. Returns `file:<path>@<N>` |
+| `docs_write(path, content, base_version?, dry_run?)` | create version N+1; content must match the path's schema (G-W3). `base_version` must equal the current latest (optimistic concurrency); omit only for a new path. Scope-checked. Returns `file:<path>@<N>`. `dry_run`: every check (G-W1..G-W4), nothing written or counted; returns the attestation the write would produce (or `unchanged`) |
 | `verify_attestation(ref)` | check that a `file:`/`git:` reference resolves |
 | `progress(message, percent?)` | heartbeat shown live in the UI |
-| `report(status, summary, attestations, data?, blocked_reason?, missing_decision?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations |
+| `report(status, summary, attestations, data?, blocked_reason?, missing_decision?, dry_run?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations. `dry_run`: every guard, but no attempt is counted (G-R6) and nothing is recorded or applied; returns `would_accept` and the violations (timeline event `report_checked`) |
 
 ### 2.1 State and persistence
 
@@ -305,7 +305,7 @@ Universal guards apply to every task and are listed once.
 | G-R3 | report | Every attestation parses and resolves (`file:` version exists; `git:` object exists in the controller's git remote). |
 | G-R4 | report | The role's required documents are attested at their **latest** version and were **written by this run** – or written again unchanged by it, which creates no new version (G-W2) but counts as its own. |
 | G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
-| G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. |
+| G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. Dry runs (`report(..., dry_run=true)`) are not attempts. |
 | G-R7 | report | `data` matches the role's `report_schema` (`roles.yaml`): verdicts, findings, results. |
 | G-R8 | report | Size limits: summary and reasons ≤ 2,000 characters, ≤ 100 attestations, `data` ≤ 256 KiB (report schemas also cap item counts and text lengths); the checks of one report are time-limited (`limits.report_check_timeout_s`). Applying an accepted report is transactional: any controller error restores the state and escalates. |
 | G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
