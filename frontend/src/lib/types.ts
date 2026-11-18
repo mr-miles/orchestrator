@@ -100,6 +100,7 @@ export interface Node {
   reviews: Record<string, ReviewResult>
   verification: Record<string, Verification>
   escalation?: Escalation | null
+  round?: number
 }
 
 export interface Progress {
@@ -196,9 +197,21 @@ export interface EnvironmentRole {
   driver_config?: string | null
 }
 
+export interface FixRound {
+  number: number
+  approver: string
+  comment?: string | null
+  head: string
+  at: string
+  failure: string[]
+  attestation?: string | null
+}
+
 export interface Change {
   id: string
   goal: string
+  round?: number
+  rounds?: FixRound[]
   status: ChangeStatus
   tier?: string | null
   base_sha: string

@@ -1,0 +1,245 @@
+"""Fix rounds (WORKFLOW.md §5.10a): a late integration failure is fixed by new tasks planned on
+top of the integration head – plan (fix mode), critique, H-2, build, integration again."""
+from __future__ import annotations
+
+import pytest
+from engine_harness import ORACLE, REPO, TASKS, Flow, scenario
+
+from legion_orch.workflow import governance
+from legion_orch.workflow.engine import Controller, WorkflowError
+from legion_orch.workflow.model import (
+    ACCEPTED,
+    AWAITING_HUMAN,
+    ESCALATED,
+    PENDING,
+    REWORK,
+    RUNNING,
+    ApprovalState,
+    ChangeStatus,
+    Resume,
+)
+
+# the round's fix: a new task that may modify the accepted T1's file and depend on it
+T2 = dict(TASKS[0], id="T2", title="greet.txt ends with a newline", depends_on=["T1"],
+          instructions="Fixes the failing acceptance test: greet.txt lacks its newline.",
+          verification=["test -f src/greet.txt"])
+
+
+async def _fail_integration(f: Flow) -> str:
+    """Integration reports PASS but the controller's oracle run fails at the head (G-V1)."""
+    cmd = f.ce.oracle_commands()[0]
+    f.runner.commands[cmd] = (1, "152 failed\n")
+    await f.integration("PASS")
+    node = f.ce.nodes["integration"]
+    assert node.status == ESCALATED and node.escalation.kind == "integration_failed"
+    return cmd
+
+
+async def _to_round(f: Flow, **kw) -> str:
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    cmd = await _fail_integration(f)
+    await f.human("integration", "plan_fix", **kw)
+    return cmd
+
+
+@scenario()
+async def test_a_fix_round_adds_tasks_on_top_of_the_integration_head(f: Flow):
+    await f.to_build(tier="R2")
+    await f.implement()
+    await f.review()
+    cmd = await _fail_integration(f)
+    head, integ = f.ce.change.integration_head, f.ce.nodes["integration"]
+    await f.human("integration", "plan_fix", comment="greet.txt needs a trailing newline")
+    ch = f.ce.change
+    rnd = ch.rounds[0]
+    assert ch.round == 2 and (rnd.number, rnd.head, rnd.approver) == (2, head, "miles")
+    assert integ.verification["integration"].attestation in rnd.failure
+    assert f.ce.latest("control/rounds/2.json") == 1
+    assert integ.status == PENDING and integ.cycle == 2 and "H-2" in integ.depends_on
+    assert f.status("H-2") == PENDING and f.status("build:T1") == ACCEPTED
+    # a fresh planner, told about the round
+    plan = f.run("plan")
+    note = plan.template_vars["fix_round"]
+    assert "## Fix round 2" in note and "greet.txt needs a trailing newline" in note
+    assert "T1 (round 1)" in note and head[:12] in note
+    assert rnd.attestation in plan.context_refs and set(rnd.failure) <= set(plan.context_refs)
+    assert plan.template_vars["feedback"] == "(none)"          # earlier rounds' feedback is history
+    out = await f.plan(tasks=TASKS + [T2])
+    assert out.accepted, out
+    critic = f.run("plan", "critic")
+    assert "## Fix round 2" in critic.template_vars["fix_round"]
+    await f.critique("PASS")
+    t2 = f.ce.nodes["build:T2"]
+    assert t2.round == 2 and t2.status == PENDING and f.ce.nodes["build:T1"].round == 1
+    assert "build:T2" in integ.depends_on
+    assert f.status("oracle") == ACCEPTED                     # unchanged: it stands
+    assert f.status("H-2") == AWAITING_HUMAN
+    h2 = {s.subject: s.status for s in governance.h2_status(f.ce)}
+    assert h2["plan"] == ApprovalState.STALE and h2["oracle"] == ApprovalState.APPROVED
+    await f.human("H-2", "approve")
+    impl = f.run("build:T2", "implementer")
+    assert impl.base_sha == head and rnd.first_build_at
+    del f.runner.commands[cmd]
+    await f.implement("T2")
+    await f.review("T2")
+    assert t2.status == ACCEPTED and integ.status == RUNNING
+    assert f.run("integration").judged_sha == ch.integration_head != head
+    assert rnd.attestation in f.run("integration").context_refs
+    await f.integration("PASS")
+    assert integ.status == ACCEPTED
+    await f.human("H-3", "accept")
+    assert ch.status == ChangeStatus.READY, ch.ship
+    contract = ch.ship.gates["task_contract"]
+    assert contract.status == "satisfied" and "2 task contract(s)" in contract.detail, contract
+
+
+@scenario(fix_rounds=1, max_report_attempts=20)
+async def test_the_round_must_append_tasks_and_the_round_budget_is_kept(f: Flow):
+    await _to_round(f)
+    r = f.run("plan")
+    for tasks, expect in (
+            ([dict(TASKS[0], title="renamed")], ["G-FR2: task T1 was changed", "adds no task"]),
+            ([T2 | {"depends_on": []}], ["G-FR2: task T1 was removed"]),
+            (TASKS + [T2 | {"requirements": ["REQ-9"]}], ["G-FR1: task T2 cites unknown requirement"]),
+            (TASKS + [T2, T2 | {"id": "T3", "depends_on": []}], ["G-P6: parallel tasks T2 and T3"])):
+        out = await f.plan(tasks=tasks)
+        assert not out.accepted, tasks
+        for e in expect:
+            assert any(e in v for v in out.violations), (e, out.violations)
+    assert f.run("plan").id == r.id and (await f.plan(tasks=TASKS + [T2])).accepted
+    await f.critique("PASS")
+    await f.human("H-2", "approve")
+    await f.implement("T2")
+    await f.review("T2")
+    await f.integration("PASS")                                # the oracle command still fails
+    with pytest.raises(WorkflowError, match=r"limits.fix_rounds \(1\) reached"):
+        await f.human("integration", "plan_fix")
+
+
+@scenario()
+async def test_plan_fix_needs_an_integration_failure(f: Flow):
+    await f.to_build(tier="R2")
+    node = f.ce.nodes["build:T1"]
+    f.ce.escalate(node, "blocked", "needs a decision", resume=Resume.REWORK)
+    with pytest.raises(WorkflowError, match="only available when integration failed"):
+        await f.human("build:T1", "plan_fix")
+
+
+@scenario()
+async def test_revise_sends_the_round_back_and_restart_restarts_the_plan(f: Flow):
+    await _to_round(f)
+    await f.plan(tasks=TASKS + [T2])
+    await f.critique("PASS")
+    assert "build:T2" in f.ce.nodes
+    res = await f.human("H-2", "revise", feedback="T2 must also fix the docs")
+    assert "goes back to the planner" in res.note
+    assert "build:T2" not in f.ce.nodes and "build:T2" not in f.ce.nodes["integration"].depends_on
+    plan = f.ce.nodes["plan"]
+    assert plan.status == RUNNING and plan.round == 2 and f.ce.change.round == 2
+    assert "T2 must also fix the docs" in f.run("plan").template_vars["feedback"]
+    await f.plan(tasks=TASKS + [T2])
+    await f.critique("PASS")
+    assert f.status("H-2") == AWAITING_HUMAN
+    await f.human("H-2", "restart", feedback="start again from the requirements")
+    ch = f.ce.change
+    assert ch.round == 1 and ch.rounds == [] and plan.round == 1
+    assert f.ce.build_nodes() == [] and ch.integration_head == ch.base_sha and ch.oracle_sha is None
+
+
+@scenario()
+async def test_a_revised_oracle_runs_again_from_the_integration_head(f: Flow):
+    await _to_round(f)
+    head = f.ce.change.integration_head
+    oracle = dict(ORACLE, criteria=ORACLE["criteria"] + [
+        {"id": "AC-2", "requirement": "REQ-1", "text": "greet.txt ends with a newline"}])
+    assert (await f.plan(tasks=TASKS + [T2], oracle=oracle)).accepted
+    await f.critique("PASS")
+    node = f.ce.nodes["oracle"]
+    assert node.status == RUNNING and node.cycle == 2
+    run = f.run("oracle")
+    assert run.base_sha == head and run.branch.endswith("/oracle-r2")
+    await f.oracle({"tests/acceptance/test_greet.sh":
+                    "grep -q hello src/greet.txt\ngrep -c '' src/greet.txt\n"})
+    assert node.status == ACCEPTED and f.ce.change.oracle_sha == node.accepted_sha
+    assert await f.ctl.git.is_ancestor(head, f.ce.change.integration_head)
+    h2 = {s.subject: s.status for s in governance.h2_status(f.ce)}
+    assert h2["oracle"] == ApprovalState.STALE
+    await f.human("H-2", "approve")
+    assert f.ce.change.oracle.criteria[-1].id == "AC-2"
+
+
+async def _baseline(f: Flow) -> None:
+    r = f.run("baseline")
+    doc = await f.write(r, "baseline/report.md", f"results before the build (cycle {r.cycle})")
+    out = await f.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {"results": [
+        {"command": c, "exit_code": 1} for c in f.ce.baseline_commands()]})
+    assert out.accepted, out
+
+
+async def _attest_baseline(f: Flow) -> None:
+    await f.change_action("attest", kind="independent-baseline", verdict="pass",
+                          sources=[f.ce.latest_att("baseline/report.md")])
+
+
+@scenario()
+async def test_r3_reruns_the_baseline_and_needs_a_new_attestation(f: Flow):
+    await f.to_h2(tier="R3")
+    cmd = f.ce.oracle_commands()[0]
+    f.runner.commands[cmd] = (1, "FAIL\n")
+    await _baseline(f)
+    await _attest_baseline(f)
+    await f.human("H-2", "approve")
+    await f.implement()
+    for role in f.ce.change.panel:
+        await f.review(role=role)
+    await f.integration("PASS")
+    assert f.ce.nodes["integration"].escalation.kind == "integration_failed"
+    await f.human("integration", "plan_fix")
+    await f.plan(tasks=TASKS + [T2])
+    await f.critique("PASS")
+    base = f.ce.nodes["baseline"]
+    assert base.cycle == 2 and base.status == RUNNING
+    await _baseline(f)
+    assert base.status == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
+    res = await f.human("H-2", "approve")
+    assert res.pending == ["independent-baseline"]           # round 1's attestation is too old
+    await _attest_baseline(f)
+    res = await f.human("H-2", "approve")
+    assert res.pending == [] and f.status("H-2") == ACCEPTED
+
+
+@scenario()
+async def test_a_change_in_a_fix_round_is_rebuilt_from_the_store(f: Flow):
+    await _to_round(f, comment="why")
+    await f.plan(tasks=TASKS + [T2])
+    await f.critique("PASS")
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    ce2 = ctl2.changes[f.ce.cid]
+    assert ce2.change.round == 2 and ce2.change.rounds[0].comment == "why"
+    assert ce2.nodes["build:T2"].round == 2 and ce2.nodes["plan"].round == 2
+    assert ce2.nodes["plan"].round_start_cycle == f.ce.nodes["plan"].round_start_cycle
+    assert ce2.nodes["H-2"].status == AWAITING_HUMAN and REWORK != ce2.nodes["plan"].status
+
+
+@scenario(environment={})
+async def test_the_environment_stands_unless_the_round_changes_it(f: Flow):
+    await _to_round(f)
+    assert (await f.plan(tasks=TASKS + [T2], keep_environment=True)).accepted
+    await f.critique("PASS")
+    assert f.status("H-E1") == ACCEPTED and f.status("provision") == ACCEPTED
+    assert f.status("H-2") == AWAITING_HUMAN
+
+
+@scenario(environment={})
+async def test_a_round_that_changes_the_environment_is_approved_and_provisioned_again(f: Flow):
+    from engine_harness import ENVIRONMENT
+    await _to_round(f)
+    changed = dict(ENVIRONMENT, rationale=ENVIRONMENT["rationale"] + "; the fix needs more memory")
+    assert (await f.plan(tasks=TASKS + [T2], environment=changed)).accepted
+    await f.critique("PASS")
+    assert f.status("H-E1") == AWAITING_HUMAN and f.status("H-2") == PENDING
+    await f.human("H-E1", "approve")
+    assert f.status("provision") == ACCEPTED and f.status("H-2") == AWAITING_HUMAN

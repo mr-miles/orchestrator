@@ -16,6 +16,7 @@ from ..model import (
     H_SPEC,
     HUMAN,
     INTAKE,
+    INTEGRATION,
     LIVE_RUN,
     MERGING,
     ORACLE,
@@ -36,6 +37,7 @@ from ..model import (
     AttestationVerdict,
     ChangeStatus,
     Feedback,
+    FixRound,
     Node,
     Override,
     Resume,
@@ -104,6 +106,7 @@ class HumanGates:
         (H_REQUIREMENTS, "revise"): "_revise_requirements",
         (H_SPEC, "approve"): "_approve_spec",
         (H_SPEC, "revise"): "_revise_spec",
+        (H_SPEC, "restart"): "_restart_plan",
         (H_ENV, "approve"): "_approve_environment",
         (H_ENV, "revise"): "_revise_environment",
         (H_CHANGE, "accept"): "_accept_change",
@@ -163,7 +166,9 @@ class HumanGates:
             return ActionResult(approved=done, pending=pending)
         if risk.rank(self.c.change.tier) >= 3:
             b = self.c.change.attestations.get("independent-baseline")
-            if not b or b.verdict != AttestationVerdict.PASS:
+            base = self.c.nodes.get(BASELINE)
+            ver = base.verification.get("baseline") if base else None
+            if not b or b.verdict != AttestationVerdict.PASS or (ver and b.at <= ver.at):
                 return ActionResult(approved=done, pending=["independent-baseline"],
                                     note="R3: attest independent-baseline (pass) before build "
                                          "starts, then approve again to release the build")
@@ -171,10 +176,27 @@ class HumanGates:
         return ActionResult(approved=done, pending=[])
 
     async def _revise_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2 revise: the plan is reworked (and critiqued again); everything derived from it
-        starts over (oracle, baseline, build nodes, the integration branch and surface pins)."""
+        """H-2 revise. In a fix round, the round goes back to the planner (its build tasks are
+        withdrawn; earlier rounds stand). Otherwise the whole plan restarts (Restart plan)."""
         ch = self.c.change
+        if ch.round == 1:
+            return await self._restart_plan(node, approver, payload)
         self._send_back(self.c.nodes[PLAN], approver, payload)
+        self.graph.remove_round_builds(ch.round)
+        node.status = PENDING
+        return ActionResult(note=f"fix round {ch.round} goes back to the planner; Restart plan "
+                                 "restarts the whole plan")
+
+    async def _restart_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """H-2 restart: the plan is reworked from the start (and critiqued again); everything
+        derived from it starts over (oracle, baseline, every round's build nodes, the
+        integration branch and surface pins)."""
+        ch = self.c.change
+        plan = self.c.nodes[PLAN]
+        self._send_back(plan, approver, payload)
+        if ch.round > 1:          # restarted from a fix round: the rounds' feedback is history
+            plan.round, plan.round_start_cycle = 1, plan.cycle
+        ch.round, ch.rounds = 1, []
         self.graph.reset_environment()
         for nid in (ORACLE, BASELINE):
             if nid in self.c.nodes:
@@ -233,6 +255,8 @@ class HumanGates:
             return ActionResult()
         if action == "override_accept":
             return self._override_accept(node, approver, payload)
+        if action == "plan_fix":
+            return self._plan_fix(node, approver, payload)
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
         if node.escalation and node.escalation.retrying:
@@ -255,6 +279,46 @@ class HumanGates:
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)
+
+    def _plan_fix(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """Plan a fix (§5.10a): integration failed late, so a fix round plans new work on top of
+        the integration head – planner (fix mode), critique, H-2, new build tasks and
+        integration again. Accepted tasks are never reopened."""
+        ch, limit = self.c.change, self.c.cfg.limits.fix_rounds
+        if node.kind != INTEGRATION or not node.escalation \
+                or node.escalation.kind != "integration_failed":
+            raise WorkflowError("plan_fix is only available when integration failed")
+        if len(ch.rounds) >= limit:
+            raise WorkflowError(f"limits.fix_rounds ({limit}) reached: answer, override at the "
+                                "gates or abandon the change")
+        run = self.c.runs.get(node.current_run) if node.current_run else None
+        ver = node.verification.get("integration")
+        failure = list(dict.fromkeys(
+            [a for a in (run.report.attestations if run and run.report else [])
+             if a.startswith("file:")] + ([ver.attestation] if ver and ver.attestation
+                                         and not ver.ok else [])))
+        n = ch.round + 1
+        rec = FixRound(number=n, approver=approver, head=ch.integration_head, failure=failure,
+                       comment=(payload.get("comment") or payload.get("feedback") or "").strip()
+                       or None)
+        rec.attestation = self.c.write_record(f"control/rounds/{n}.json", rec).attestation
+        ch.round = n
+        ch.rounds.append(rec)
+        node.escalation = None
+        self.lifecycle.retire_runs(node)
+        # integration waits for the round's H-2 and (added at its critique PASS) its tasks
+        node.status, node.cycle = PENDING, node.cycle + 1
+        node.depends_on = list(dict.fromkeys([*node.depends_on, H_SPEC]))
+        plan = self.c.nodes[PLAN]
+        plan.cycle += 1
+        plan.round, plan.round_start_cycle, plan.status = n, plan.cycle, READY
+        h2 = self.c.nodes[H_SPEC]
+        h2.status = PENDING
+        waits = [PLAN] + ([PROVISION] if PROVISION in self.c.nodes else [])
+        h2.depends_on = list(dict.fromkeys([*waits, *h2.depends_on]))
+        self.c.event("fix_round", f"{approver}: fix round {n} planned on top of "
+                     f"{(ch.integration_head or '')[:12]}", node.id)
+        return ActionResult(note=f"fix round {n}: the planner plans it on top of the integration head")
 
     def _sandbox_to_remove(self, node: Node) -> str | None:
         """The escalated run's sandbox, if it still exists and no live run uses it."""

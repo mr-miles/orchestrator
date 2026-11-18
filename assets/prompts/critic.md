@@ -10,4 +10,6 @@ Run the pre-mortem skill. Write `critique/cycle-{{cycle}}.md`. Report with
 among your inputs) – G-C1 – and every attestation your findings cite. Check with
 `report(..., dry_run=true)` before reporting.
 
+{{fix_round}}
+
 Previous critique cycles: {{feedback}}

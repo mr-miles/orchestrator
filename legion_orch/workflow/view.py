@@ -72,6 +72,9 @@ class RoleContext(ChangeView, Protocol):
     def materialize_builds(self, taskgraph: dict) -> None:
         """Create the build nodes from an accepted task graph."""
 
+    def start_round(self, n: int) -> list[str]:
+        """Fix round ``n`` passed its critique: rerun what it changed and add its tasks."""
+
     def panel_complete(self, node: Node) -> None:
         """Decide the review panel outcome once every member has reported."""
 

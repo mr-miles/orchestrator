@@ -51,6 +51,7 @@ export function TaskGraph({
             const live = runs.filter((r) => r.node_id === n.id && isLive(r))
             const sub = [
               nodeState(n, live),
+              n.kind === 'build' && (n.round ?? 1) > 1 && `round ${n.round}`,
               n.cycle > 1 && `cycle ${n.cycle}`,
               live.length > 0 && live.map((r) => r.role).join('+'),
             ]

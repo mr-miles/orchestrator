@@ -48,6 +48,54 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
     return v
 
 
+def fix_round(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
+              protected_cfg: list[str], implementer_souls: list[str], schemas: SchemaRegistry,
+              built: dict[str, dict]) -> list[str]:
+    """A fix round's revision of the task graph (§5.10a). ``built``: the tasks that already have
+    build nodes (id -> contract). G-FR2: the revision keeps every one of them exactly as it is
+    and appends at least one task with a new id; the whole graph meets G-P1 and G-P2, the new
+    tasks G-P4–G-P7 (they may depend on, and modify the files of, accepted tasks). G-FR1: every
+    new task cites accepted requirements (requirements are unchanged and already covered)."""
+    v = shape(taskgraph, oracle, schemas)
+    if v:
+        return v
+    tasks = taskgraph["tasks"]
+    by_id = {t["id"]: t for t in tasks}
+    for tid, contract in built.items():
+        if tid not in by_id:
+            v.append(f"G-FR2: task {tid} was removed; a fix round only appends tasks")
+        elif _contract(by_id[tid]) != _contract(contract):
+            v.append(f"G-FR2: task {tid} was changed; tasks of earlier rounds stay exactly as "
+                     "they were built – add a new task instead")
+    new = [t for t in tasks if t["id"] not in built]
+    if not new:
+        v.append("G-FR2: the fix round adds no task")
+    graph = {t["id"]: list(t["depends_on"]) for t in tasks}
+    v += dependencies(tasks, graph)
+    known = set(requirements)
+    for t in new:
+        if not t["requirements"]:
+            v.append(f"G-FR1: task {t['id']} cites no requirement")
+        v += [f"G-FR1: task {t['id']} cites unknown requirement {r}"
+              for r in t["requirements"] if r not in known]
+    v += task_fields(new, implementer_souls)
+    v += paths_valid(new)
+    if not v:      # accepted tasks have finished: only the new ones may run in parallel
+        new_ids = {t["id"] for t in new}
+        v += parallel_overlap(new, {tid: [d for d in deps if d in new_ids]
+                                    for tid, deps in graph.items() if tid in new_ids})
+    v += protected_untouched(new, oracle, protected_cfg)
+    if risk.rank(tier) >= 2:              # the oracle may have been revised in the round
+        v += oracle_strength(oracle, requirements)
+        v += surfaces(oracle)
+    return v
+
+
+def _contract(task: dict) -> dict:
+    """A task contract with its schema defaults filled in, for comparing two versions."""
+    return {"depends_on": [], "files_forbidden": [], "context": []} | dict(task)
+
+
 def shape(taskgraph: Any, oracle: Any, schemas: SchemaRegistry) -> list[str]:
     """G-P1: both documents match their schemas."""
     return ([f"G-P1: taskgraph.json {e}" for e in schemas.validate_data("taskgraph", taskgraph)]

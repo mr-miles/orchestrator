@@ -35,6 +35,8 @@ function Escalated({ node }: { node: Node }) {
   const [reason, setReason] = useState('')
   const e = node.escalation
   if (!e) return null
+  // a late integration failure is fixed by a fix round: new tasks on top of the head (§5.10a)
+  const planFix = node.kind === 'integration' && e.kind === 'integration_failed'
   if (e.retrying)
     return (
       <Alert>
@@ -77,7 +79,11 @@ function Escalated({ node }: { node: Node }) {
             value={answer}
             onChange={setAnswer}
             multiline
-            description="Attested as feedback for the next run."
+            description={
+              planFix
+                ? 'Attested as feedback for the next run; for Plan a fix, the comment the planner is given.'
+                : 'Attested as feedback for the next run.'
+            }
           />
           {node.kind === 'build' && (
             <TextField
@@ -106,6 +112,15 @@ function Escalated({ node }: { node: Node }) {
             onClick={() => act.node(node.id, 'override_accept', { reason })}
           >
             Override accept
+          </Button>
+        )}
+        {planFix && (
+          <Button
+            variant="secondary"
+            title="The planner plans new tasks on top of the integration head: critique, H-2, build and integration again. Accepted tasks are not reopened."
+            onClick={() => act.node(node.id, 'plan_fix', { comment: answer }, 'Fix round planned')}
+          >
+            Plan a fix
           </Button>
         )}
         <ConfirmButton
@@ -210,6 +225,7 @@ function AcceptRequirements({ state }: { state: ChangeState }) {
 const H2_DOT = { approved: 'ACCEPTED', stale: 'ESCALATED', pending: 'REVIEWING' } as const
 
 function ApproveSpec({ state }: { state: ChangeState }) {
+  const round = state.change?.round ?? 1
   const nav = useNav()
   const act = useAct(nav.cid)
   const [feedback, setFeedback] = useState('')
@@ -283,10 +299,25 @@ function ApproveSpec({ state }: { state: ChangeState }) {
         </Button>
         <Button
           variant="outline"
+          title={
+            round > 1
+              ? `Sends fix round ${round} back to the planner; earlier rounds stand`
+              : undefined
+          }
           onClick={() => act.node('H-2', 'revise', { feedback }, 'Revision requested')}
         >
-          Request revision
+          {round > 1 ? `Revise round ${round}` : 'Request revision'}
         </Button>
+        {round > 1 && (
+          <ConfirmButton
+            title="Restart the whole plan?"
+            description="Every build task of every round, the integration branch, the oracle and the surface pins start over."
+            confirm="Restart plan"
+            onConfirm={() => act.node('H-2', 'restart', { feedback }, 'Plan restarted')}
+          >
+            Restart plan
+          </ConfirmButton>
+        )}
       </CardFooter>
     </Card>
   )

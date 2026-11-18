@@ -55,7 +55,7 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
         warnings.append(f"attestation_verdict_superseded: {prev.verdict} -> {verdict}")
     if covers is not None and tasks - set(covers):
         warnings.append(f"attestation_partial_coverage: missing {sorted(tasks - set(covers))}")
-    if kind == "independent-baseline" and e.change.first_build_at:
+    if kind == "independent-baseline" and e.change.round_first_build_at():
         warnings.append("attestation_after_execution: a task run already started, so "
                         "independent_baseline can no longer be satisfied for this change")
     rec = AttestationRecord(kind=kind, verdict=verdict, attested_by=attested_by, sources=sources,
