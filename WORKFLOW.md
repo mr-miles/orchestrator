@@ -553,8 +553,8 @@ approved versions. It writes:
 
 | ID | Rule |
 | --- | --- |
-| G-FR1 | Requirements are unchanged: nothing under `intake/` is written and the H-1 pins stand. Every round task cites ≥1 accepted `REQ-*`; a round need not cover every requirement. |
-| G-FR2 | The round's task graph meets G-P1, G-P2, G-P4–G-P7 within the round; `depends_on` names tasks of the same round (earlier rounds are all accepted); `files_modified` may include files earlier rounds' tasks changed. Node ids are `build:R<n>-<task id>`. |
+| (proposed) FR1 | Requirements are unchanged: nothing under `intake/` is written and the H-1 pins stand. Every round task cites ≥1 accepted `REQ-*`; a round need not cover every requirement. |
+| (proposed) FR2 | The round's task graph meets G-P1, G-P2, G-P4–G-P7 within the round; `depends_on` names tasks of the same round (earlier rounds are all accepted); `files_modified` may include files earlier rounds' tasks changed. Node ids are `build:R<n>-<task id>`. |
 
 **Critique.** The critic judges the round: `fix.md`, the round's task graph and every document the
 round changed, with the integration report as input (G-C1, G-C2, with the round's own cycle
