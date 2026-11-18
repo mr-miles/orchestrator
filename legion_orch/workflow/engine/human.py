@@ -35,6 +35,7 @@ from ..model import (
     Approval,
     ApprovalState,
     AttestationVerdict,
+    ChangeEnd,
     ChangeStatus,
     Feedback,
     FixRound,
@@ -243,16 +244,31 @@ class HumanGates:
         return ActionResult()
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        self.c.change.status = ChangeStatus.ABANDONED
+        return self._end_change(node, approver, payload, "reject")
+
+    def _end_change(self, node: Node, approver: str, payload: dict, action: str) -> ActionResult:
+        """Abandon the change (at an escalation, or rejected at H-3): record who, where and
+        the operator's reason, and run the retrospective on what the change produced so far
+        (unless ``retrospective`` is false), whether or not retrospectives run automatically."""
+        c = self.c
+        reason = (payload.get("reason") or payload.get("feedback") or "").strip() or None
+        rec = ChangeEnd(by=approver, node=node.id, action=action, reason=reason)
+        rec.attestation = c.write_record("control/ended.json", rec).attestation
+        c.change.ended = rec
+        c.change.status = ChangeStatus.ABANDONED
         node.status = FAILED
-        return ActionResult()
+        verb = "abandoned the change" if action == "abandon" else "rejected the change"
+        c.event("abandoned", f"{approver} {verb} at {node.id}: {reason or '(no reason given)'}",
+                node.id)
+        if payload.get("retrospective", True) is not False and RETRO not in c.nodes:
+            self.graph.add_retrospective()
+            c.event("retrospective", "the change was abandoned: retrospective queued", RETRO)
+        return ActionResult(attestation=rec.attestation)
 
     # ------------------------------------------------------------------ escalations
     def _resolve_escalation(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
         if action == "abandon":
-            node.status = FAILED
-            self.c.change.status = ChangeStatus.ABANDONED
-            return ActionResult()
+            return self._end_change(node, approver, payload, "abandon")
         if action == "override_accept":
             return self._override_accept(node, approver, payload)
         if action == "plan_fix":

@@ -661,6 +661,13 @@ reflections of the sandboxes released at the end have finished, as they are part
 `retrospective.auto: false` leaves it to a decision owner, who can also ask for another at any time
 after the change has ended (UI, or `change_action retrospective` with an optional `focus`).
 
+**Abandoning.** A decision owner ends a change early with **Abandon** on any escalation, or
+**Reject** at H-3, optionally giving a `reason`. Who, at which node and why is recorded in
+`control/ended.json` and the change record (`ended`, which the retrospective reads in
+`change.json`) and in the timeline. The retrospective then runs on whatever the change has
+produced so far – also with `retrospective.auto: false`, unless the action passes
+`retrospective: false`.
+
 * **Soul:** `retrospective-analyst`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`
 * **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and node
   records, the change's documents, the current assets and a prompt check per run (agents cannot
