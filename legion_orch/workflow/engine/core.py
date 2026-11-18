@@ -61,6 +61,10 @@ class ChangeCore:
     def build_nodes(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.kind == BUILD]
 
+    def scaffold_node(self) -> Node | None:
+        """The blank repository's scaffold build node (§5.3b), if the plan has one."""
+        return next((n for n in self.build_nodes() if n.task and n.task.scaffold), None)
+
     def save(self) -> None:
         """Persist the state (the caller holds the lock) and wake the scheduler and UI."""
         self.st.save()

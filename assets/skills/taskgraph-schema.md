@@ -18,7 +18,8 @@ description: "The plan/taskgraph.json and plan/oracle.json formats and their rul
   "context": ["git:app/src/api/__init__.py@<sha>"],   // only what this task needs beyond the defaults
   "instructions": "decision-complete instructions; no choices left to the implementer",
   "acceptance": ["GET /users/{id} returns 404 for unknown ids"],
-  "verification": ["pytest -q tests/unit/test_users.py"]
+  "verification": ["pytest -q tests/unit/test_users.py"],
+  "scaffold": false                  // true only for a blank repository's scaffold task (G-P11)
 }]}
 ```
 
@@ -57,6 +58,11 @@ acceptance tests or `protected_support` files (G-P7). Acceptance tests are writt
 task, not implementers, and must be **black-box and out of process**: they run the system as a
 separate process and check its outputs, so code under test cannot fake a passing exit code. List
 any runner configuration the acceptance commands depend on in `protected_support`.
+
+**Scaffold** (when your assignment says the repository is blank): exactly one task is marked
+`"scaffold": true`. It has no dependencies, and every other task depends on it (G-P11). It is
+built before the oracle, so it sets up the project and its tooling only, and its `verification`
+cannot use the acceptance tests. In a repository that is not blank, no task is a scaffold.
 
 **Fix rounds** (when your assignment says "Fix round n"): revise `plan/taskgraph.json` by
 **appending** tasks; every task already built stays exactly as it is, and new tasks use ids no

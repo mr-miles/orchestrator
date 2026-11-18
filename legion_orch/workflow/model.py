@@ -188,6 +188,8 @@ class TaskContract(Record):
     instructions: str
     acceptance: list[str]
     verification: list[str]
+    # the blank repository's scaffold (§5.3b): built before the oracle and H-2
+    scaffold: bool = False
 
 
 class Criterion(Record):
@@ -554,6 +556,8 @@ class Change(Record):
     created_at: str = Field(default_factory=now_iso)
     status: ChangeStatus = ChangeStatus.ACTIVE
     base_sha: str | None = None
+    # the base has no build tooling or code yet (§5.3b): the plan starts with a scaffold task
+    blank_repo: bool = False
     tier: str | None = None
     risk: RiskAssessment | None = None
     tier_override: TierOverride | None = None

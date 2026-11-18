@@ -77,6 +77,18 @@ def paths_overlap(a: str, b: str) -> bool:
     return False
 
 
+# What a repository may hold and still be blank (§5.3b): documentation, licence files and git or
+# forge settings – nothing that builds, tests or runs code.
+BLANK_REPO_FILES = ("*.md", "*.rst", "*.adoc", "LICENSE*", "LICENCE*", "COPYING*", "NOTICE*",
+                    "AUTHORS*", ".gitignore", ".gitattributes", ".editorconfig", ".github/")
+
+
+def is_blank_tree(paths: list[str]) -> bool:
+    """A tree with no build tooling or code yet: every file matches ``BLANK_REPO_FILES``
+    (documentation anywhere – fnmatch's ``*`` crosses ``/`` – the rest at the top level)."""
+    return all(any(path_matches(p, pat) for pat in BLANK_REPO_FILES) for p in paths)
+
+
 class GitRemote:
     """Bare hub repository + controller-private integration worktree."""
 
@@ -155,6 +167,11 @@ class GitRemote:
     async def changed_paths(self, base: str, head: str) -> list[str]:
         out = await self.git("diff", "--name-only", "--no-renames", f"{base}..{head}")
         return [line for line in out.splitlines() if line]
+
+    async def tree_paths(self, sha: str) -> list[str]:
+        """Every file path in the commit's tree."""
+        out = await self.git("ls-tree", "-r", "--name-only", "-z", sha)
+        return [p for p in out.split("\0") if p]
 
     async def blob(self, sha: str, path: str) -> str | None:
         rc, out = await run("git", "rev-parse", f"{sha}:{path}", cwd=self.repo, check=False)

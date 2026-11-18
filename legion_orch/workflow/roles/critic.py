@@ -18,7 +18,14 @@ from ..model import (
     Verdict,
 )
 from ..view import RoleContext
-from .base import Report, RoleHandler, brief_findings, fix_round_note, register
+from .base import (
+    Report,
+    RoleHandler,
+    brief_findings,
+    fix_round_note,
+    register,
+    scaffold_note,
+)
 
 
 @register
@@ -36,7 +43,7 @@ class Critic(RoleHandler):
         return [a for a in [att, *([rnd.attestation, *rnd.failure] if rnd else [])] if a]
 
     def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
-        return {"fix_round": fix_round_note(e, "critic")}
+        return {"fix_round": fix_round_note(e, "critic"), "scaffold": scaffold_note(e, "critic")}
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         plan_atts = {a.path: a.version for a in r.parsed if a.kind == "file"}

@@ -133,7 +133,8 @@ class Dispatcher:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or escalate the
         node and return None."""
         ch, h = self.c.change, handler_for(role)
-        if h.needs_fresh_approval:
+        # the blank repository's scaffold is built before H-2, on the critique's PASS (§5.3b)
+        if h.needs_fresh_approval and not (node.task and node.task.scaffold):
             stale = self._approval_fresh()
             if stale:
                 self.c.escalate(node, "approval", "; ".join(stale), resume=Resume.REWORK)
@@ -188,7 +189,7 @@ class Dispatcher:
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
-            "fix_round": "",
+            "fix_round": "", "scaffold": "",
         } | handler_for(role).extra_variables(self.roles, node)
         write, required = self.c.assets.role_paths(role, variables)
         write, required = [self.c.p(w) for w in write], [self.c.p(d) for d in required]
@@ -232,7 +233,8 @@ class Dispatcher:
             node.status = RUNNING
         if h.keeps_sandbox and node.sandbox is None:
             node.sandbox = run.sandbox
-        if node.kind == BUILD and h.pushes:     # approved_spec_and_oracle compares with these
+        # approved_spec_and_oracle compares with these (the scaffold precedes H-2, §5.3b)
+        if node.kind == BUILD and h.pushes and not node.task.scaffold:
             if ch.first_build_at is None:
                 ch.first_build_at = now_iso()
             rnd = next((x for x in ch.rounds if x.number == node.round), None)

@@ -1,4 +1,5 @@
-"""Plan guards: task graph, oracle, traceability, waves and file overlap (G-P1..G-P10)."""
+"""Plan guards: task graph, oracle, traceability, waves, file overlap and the blank
+repository's scaffold (G-P1..G-P11)."""
 from __future__ import annotations
 
 import re
@@ -26,7 +27,8 @@ Graph = dict[str, list[str]]
 
 
 def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
-         protected_cfg: list[str], implementer_souls: list[str], schemas: SchemaRegistry) -> list[str]:
+         protected_cfg: list[str], implementer_souls: list[str], schemas: SchemaRegistry,
+         blank_repo: bool = False) -> list[str]:
     """Cross-document plan rules. Shape (G-P1) is the ``taskgraph`` / ``oracle`` JSON Schemas –
     the same ones the store enforces on write – so they are defined in exactly one place. The
     remaining guards assume the shape; the file-overlap check also needs every earlier one."""
@@ -41,6 +43,7 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
     v += paths_valid(tasks)
     if not v:      # needs an acyclic graph and valid paths
         v += parallel_overlap(tasks, graph)
+        v += scaffold(tasks, graph, blank_repo)
     v += protected_untouched(tasks, oracle, protected_cfg)
     if risk.rank(tier) >= 2:
         v += oracle_strength(oracle, requirements)
@@ -80,6 +83,8 @@ def fix_round(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
               for r in t["requirements"] if r not in known]
     v += task_fields(new, implementer_souls)
     v += paths_valid(new)
+    v += [f"G-P11: task {t['id']} is marked scaffold; only the first round of a blank "
+          "repository has a scaffold task" for t in new if t.get("scaffold")]
     if not v:      # accepted tasks have finished: only the new ones may run in parallel
         new_ids = {t["id"] for t in new}
         v += parallel_overlap(new, {tid: [d for d in deps if d in new_ids]
@@ -93,7 +98,7 @@ def fix_round(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
 
 def _contract(task: dict) -> dict:
     """A task contract with its schema defaults filled in, for comparing two versions."""
-    return {"depends_on": [], "files_forbidden": [], "context": []} | dict(task)
+    return {"depends_on": [], "files_forbidden": [], "context": [], "scaffold": False} | dict(task)
 
 
 def shape(taskgraph: Any, oracle: Any, schemas: SchemaRegistry) -> list[str]:
@@ -181,6 +186,23 @@ def protected_untouched(tasks: list[dict], oracle: dict, protected_cfg: list[str
     return [f"G-P7: task {t['id']} modifies protected path {prot}"
             for t in tasks for p in t["files_modified"] for prot in protected
             if paths_overlap(p, prot) or path_matches(p, prot)]
+
+
+def scaffold(tasks: list[dict], graph: Graph, blank_repo: bool) -> list[str]:
+    """G-P11: a blank repository's plan starts with exactly one scaffold task – no dependencies,
+    and every other task depends on it (directly or not); otherwise no task is a scaffold."""
+    marked = [t["id"] for t in tasks if t.get("scaffold")]
+    if not blank_repo:
+        return [f"G-P11: task {tid} is marked scaffold, but the repository is not blank"
+                for tid in marked]
+    if len(marked) != 1:
+        return [f"G-P11: the repository is blank: mark exactly one task `scaffold: true` (the "
+                f"build tooling the oracle and every other task build on); found {marked or 'none'}"]
+    sid = marked[0]
+    v = [f"G-P11: scaffold task {sid} must not depend on other tasks"] if graph[sid] else []
+    v += [f"G-P11: task {tid} must depend on scaffold task {sid}" for tid in graph
+          if tid != sid and sid not in _reachable(graph, tid)]
+    return v
 
 
 def oracle_strength(oracle: dict, requirements: list[str]) -> list[str]:

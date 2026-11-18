@@ -11,8 +11,10 @@ Commit them, document the mapping in `oracle/tests.md`, and report `DONE` attest
 Before you commit, run the acceptance commands under the repository's real test configuration
 (its config files, setup and preload files): every failure must mean "the implementation is
 missing", never a harness or configuration error. Do not rely on runtime globals a setup file may
-replace. Say in `oracle/tests.md` which tests can only pass once a scaffold exists. Put fixtures
-several tests share (known game states, sample data) in a `protected_support` file instead of
-rebuilding them in each test, and prefer named results over positional arrays.
+replace. Put fixtures several tests share (known game states, sample data) in a
+`protected_support` file instead of rebuilding them in each test, and prefer named results over
+positional arrays.
+
+{{scaffold}}
 
 Feedback: {{feedback}}

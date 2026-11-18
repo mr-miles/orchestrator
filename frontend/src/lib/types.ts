@@ -78,6 +78,7 @@ export interface TaskContract {
   files_modified?: string[]
   requirements?: string[]
   verification?: string[]
+  scaffold?: boolean
   [key: string]: unknown
 }
 
@@ -210,6 +211,7 @@ export interface FixRound {
 export interface Change {
   id: string
   goal: string
+  blank_repo?: boolean
   round?: number
   rounds?: FixRound[]
   status: ChangeStatus

@@ -109,6 +109,10 @@
               "maxLength": 2000
             },
             "maxItems": 20
+          },
+          "scaffold": {
+            "type": "boolean",
+            "description": "The blank repository's scaffold task (G-P11): build tooling only, built before the oracle"
           }
         },
         "additionalProperties": false
