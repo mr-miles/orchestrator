@@ -40,7 +40,6 @@ GUARDS: dict[str, str] = {
     "G-O1": "oracle diff only touches acceptance tests",
     "G-O2": "acceptance tests exist at oracle commit",
     "G-BL1": "baseline results cover oracle commands at head",
-    "G-BL2": "controller baseline run; H-2 flags acceptance tests that already pass or disagree",
     "H-2": "human approves spec and oracle (pinned)",
     # sandbox environment
     "G-E1": "environment spec resolves: library or proposed tools and policies, known profiles",

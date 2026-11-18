@@ -223,7 +223,6 @@ export interface H2Subject {
   paths: string[]
   status: 'approved' | 'stale' | 'pending'
   approver?: string | null
-  warnings?: string[]
 }
 
 export interface Surface {

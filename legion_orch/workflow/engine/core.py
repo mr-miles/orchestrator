@@ -84,11 +84,6 @@ class ChangeCore:
             + governance.surface_commands(self)
         return list(dict.fromkeys(cmds))
 
-    def baseline_commands(self) -> list[str]:
-        """The commands the baseline runs before any build: acceptance and integration."""
-        orc = self.change.oracle or Oracle()
-        return list(dict.fromkeys(orc.acceptance_commands + orc.integration_commands))
-
     # ------------------------------------------------------------------ events and tasks
     def event(self, kind: str, message: str, node: str | None = None,
               run: str | None = None) -> None:

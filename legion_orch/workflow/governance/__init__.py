@@ -14,7 +14,6 @@ from .approvals import (
     SubjectStatus,
     approval_key,
     approve_subjects,
-    baseline_warnings,
     h2_status,
     h2_subjects,
     last_h2_approval_at,
@@ -35,8 +34,7 @@ from .surfaces import pin_surfaces, surface_commands, surface_drift, surfaces
 
 __all__ = [
     "ATTESTATION_KINDS", "GovernanceError", "SubjectStatus", "all_approved_protected",
-    "approval_key", "approve_subjects", "approved_protected_for", "baseline_warnings",
-    "coverage_ok", "gate_set",
+    "approval_key", "approve_subjects", "approved_protected_for", "coverage_ok", "gate_set",
     "h2_status", "h2_subjects", "last_h2_approval_at", "pin_surfaces", "protected_paths",
     "protected_unchanged",
     "record_attestation", "record_override", "record_protected_approval", "stale_approvals",

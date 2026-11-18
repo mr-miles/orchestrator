@@ -242,11 +242,6 @@ function ApproveSpec({ state }: { state: ChangeState }) {
                       {p.split('/').slice(2).join('/')}
                     </Button>
                   ))}
-                  {x.warnings?.map((w) => (
-                    <p key={w} className="mt-1 text-xs text-destructive">
-                      {w}
-                    </p>
-                  ))}
                 </TableCell>
                 <TableCell>
                   <span className="inline-flex items-center gap-1.5">

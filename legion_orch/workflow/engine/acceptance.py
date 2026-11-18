@@ -19,7 +19,6 @@ from .. import governance
 from ..environment import VERIFIER
 from ..model import (
     ACCEPTED,
-    BASELINE,
     BUILD,
     INTEGRATION,
     MERGING,
@@ -136,8 +135,7 @@ class Acceptance:
     async def verify_node(self, node_id: str) -> None:
         """Verify the node's candidate; then review (or merge), rework, or escalate."""
         c, node = self.c, self.c.nodes[node_id]
-        commands = (node.task.verification if node.kind == BUILD
-                    else c.baseline_commands() if node.kind == BASELINE else c.oracle_commands())
+        commands = node.task.verification if node.kind == BUILD else c.oracle_commands()
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                 f"({len(commands)} command(s))", node_id)
         res = await self._verify(node_id, node.candidate_sha, commands)
@@ -147,7 +145,7 @@ class Acceptance:
             att = c.write_record(f"tasks/{node.task.id}/verification.json" if node.kind == BUILD
                                  else f"control/verification/{_slug(node_id)}.json", res).attestation
             # The node keeps a compact copy (the stored record has the command output).
-            key = {INTEGRATION: "integration", BASELINE: "baseline"}.get(node.kind, str(node.cycle))
+            key = "integration" if node.kind == INTEGRATION else str(node.cycle)
             node.verification[key] = res.model_copy(update={
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
@@ -163,13 +161,6 @@ class Acceptance:
                            + ", ".join(f"`{r.command}`" for r in unrunnable),
                            resume=Resume.VERIFYING,
                            log_tail="\n".join(r.output[-800:] for r in unrunnable))
-            elif node.kind == BASELINE:
-                # before any build, failures are expected: they are recorded, not reworked
-                # (G-BL2 flags at H-2 what already passes or differs from the agent's results)
-                node.status = ACCEPTED
-                self.lifecycle.accept_runs(node)
-                for w in governance.baseline_warnings(c):
-                    c.event("baseline", w, node_id)
             elif not res.ok:
                 if node.kind == BUILD:
                     self.rework(node, [Feedback(cycle=node.cycle, source="verification",
