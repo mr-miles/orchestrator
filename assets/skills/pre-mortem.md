@@ -8,12 +8,16 @@ Imagine the plan shipped and failed. For each plausible cause, check the plan:
    or data. Verify each against the repository (cite `git:` attestations). Unverified high-impact
    assumptions are BLOCKERs.
 3. **Completeness:** every requirement covered, every task decision-complete (no "choose an
-   approach"), verification commands that actually exercise the acceptance criteria.
+   approach"), verification commands that actually exercise the acceptance criteria – and that can
+   exit 0 from the task's `files_modified` alone (type-checker includes of other tasks' or protected
+   files, coverage thresholds on files the task may not touch).
 4. **Parallel safety:** tasks without dependency edges must not touch the same files or rely on
    each other's outputs.
 5. **Oracle integrity:** acceptance tests are black-box and out of process (they never import the
    code under test), and every runner config/fixture they rely on is in `protected_support`.
    Otherwise an implementer could make the oracle pass without the behaviour – a BLOCKER.
+   They must also run under the repository's real test configuration: global setup or preload
+   files that replace runtime globals can break them for reasons unrelated to the code.
 
 6. **Sandbox environment** (when `plan/environment.json` is among your inputs): every
    verification, acceptance and integration command can run in the profile of the role that runs

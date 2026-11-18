@@ -31,7 +31,11 @@ something differently, follow the repository and say so; never mix both ways in 
   (commit it). Add with `bun add <pkg>` (dev tools: `bun add -d <pkg>`), install with
   `bun install --frozen-lockfile`.
 * **Scripts run on bun, not Node:** a bun sandbox has no `node`, so a package's CLI is run as
-  `bun --bun <cli>` (e.g. `bun --bun vite build`, `bun --bun prettier --check .`).
+  `bun --bun <cli>` (e.g. `bun --bun vite build`, `bun --bun prettier --check .`). Run
+  `bun install --frozen-lockfile` first: before it no package CLI exists.
+* **A happy-dom test preload replaces DOM globals** (`Blob`, `fetch`, …) in every test file. A
+  test that spawns a process uses `stdin: "pipe"` and writes to `proc.stdin`, never
+  `stdin: new Blob(…)`.
 * **oxlint for linting, Prettier (with `prettier-plugin-tailwindcss`) for formatting, `bun test`
   for tests** (happy-dom and Testing Library for components). Use the `package.json` scripts
   `typecheck` (`tsc -b`), `lint`, `format:check` and `test`.
