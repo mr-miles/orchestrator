@@ -7,5 +7,16 @@ verification surface it declares (each surface is a real interface), exercise th
 where possible, write `integration/report.md`, and report `data.verdict`, `data.results`
 (`[{"command", "exit_code"}]`) and `data.findings`, attesting `git:{{repo_name}}@{{head_sha}}`.
 
+Report rules:
+
+1. `data.results` has one entry for **every exact command string** in `acceptance_commands`,
+   `integration_commands` and each surface's `commands` (a command listed twice is run once and
+   listed under each string).
+2. On a re-run `integration/report.md` already exists: `docs_read` it and pass its version as
+   `base_version`.
+3. You cannot commit or push. If the feedback asks you to fix something, report `FAIL` with a
+   finding that names the exact fix and file.
+4. Check with `report(..., dry_run=true)` before reporting.
+
 Human answers on earlier attempts (take them into account):
 {{feedback}}
