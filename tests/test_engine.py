@@ -427,6 +427,38 @@ async def test_agent_writes_are_scoped(f: Flow):
         await f.write(r, "control/change.json", "{}")
 
 
+@scenario()
+async def test_build_task_context_is_scoped_to_the_task(f: Flow):
+    """Retro finding 7: a task's runs got every requirement's delta spec (18-26 refs) and agents
+    stopped reading them. Implementers and the panel get only their task's own delta specs; the
+    implementer no longer gets the risk signals; a document the controller gives at its approved
+    version is not repeated at a stale version from the task's declared context."""
+    await f.intake(reqs="- REQ-1: greet.txt says hello\n- REQ-2: bye.txt says goodbye\n")
+    await f.human("H-1", "accept")
+    t2 = dict(TASKS[0], id="T2", title="bye", requirements=["REQ-2"], files_modified=["src/bye.txt"],
+              verification=["test -f src/bye.txt"])
+    tasks = [dict(TASKS[0], context=["file:plan/spec.md@1", "file:plan/specs/REQ-2.md@1"]), t2]
+    await f.plan(tasks=tasks)
+    await f.critique("REWORK")                          # the plan is rewritten: spec.md is now v2
+    await f.plan(tasks=tasks)
+    await f.critique("PASS")
+    await f.human("H-2", "approve")
+    p = f.ce.p
+    ctx = f.run("build:T1", "implementer").context_refs
+    assert f"file:{p('plan/spec.md')}@2" in ctx and f"file:{p('plan/spec.md')}@1" not in ctx
+    assert f"file:{p('plan/specs/REQ-1.md')}@2" in ctx
+    # the planner's explicit pick of another requirement's spec stays, as cited
+    assert f"file:{p('plan/specs/REQ-2.md')}@1" in ctx and f"file:{p('plan/specs/REQ-2.md')}@2" not in ctx
+    assert not any("intake/risk.json" in a for a in ctx)
+    assert any("intake/requirements.md" in a for a in ctx) and any("plan/oracle.json" in a for a in ctx)
+    ctx2 = f.run("build:T2", "implementer").context_refs
+    assert not any("plan/specs/REQ-1.md" in a for a in ctx2) and any("plan/specs/REQ-2.md" in a for a in ctx2)
+    await f.implement("T1")
+    review = f.run("build:T1", "reviewer").context_refs
+    assert any("intake/risk.json" in a for a in review)
+    assert not any("plan/specs/REQ-2.md@2" in a for a in review)
+
+
 # ====================================================================== build: review panel
 @scenario()
 async def test_review_fail_is_rework_and_identical_findings_twice_is_a_stale_loop(f: Flow):

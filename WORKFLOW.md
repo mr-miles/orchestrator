@@ -697,7 +697,13 @@ assets/
   `judge`, `panel`, `judges_head`, `reuses_sandbox`, `keeps_session_until`,
   `needs_fresh_approval`, which context it
   sees), its role-specific guards, and the transition after an accepted report. Handlers work
-  against the narrow `RoleContext` interface, not engine internals. Adding a role means assets
+  against the narrow `RoleContext` interface, not engine internals.
+* **Context is scoped.** A build task's implementer and review panel get the accepted requirements,
+  the approved `plan/spec.md`, oracle and task graph, the delta specs of **the task's own
+  requirements only**, the task's declared `context`, its dependencies' commits and the oracle
+  commit; the implementer is not given `intake/risk.json`. A document the controller gives at its
+  approved version is not repeated from the task's `context` at another version, and relative
+  `file:` refs there are qualified to the change. Adding a role means assets
   plus one handler module; the controller refuses to start if a role in `roles.yaml` has none.
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)

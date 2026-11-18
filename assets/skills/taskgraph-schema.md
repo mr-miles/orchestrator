@@ -15,12 +15,17 @@ description: "The plan/taskgraph.json and plan/oracle.json formats and their rul
   "depends_on": [],
   "files_modified": ["src/api/users.py", "tests/unit/test_users.py"],   // exact paths or dir/ prefixes
   "files_forbidden": ["src/auth/"],
-  "context": ["file:plan/spec.md@2", "git:app/src/api/__init__.py@<sha>"],
+  "context": ["git:app/src/api/__init__.py@<sha>"],   // only what this task needs beyond the defaults
   "instructions": "decision-complete instructions; no choices left to the implementer",
   "acceptance": ["GET /users/{id} returns 404 for unknown ids"],
   "verification": ["pytest -q tests/unit/test_users.py"]
 }]}
 ```
+
+A task's runs are always given the accepted requirements, the approved spec, oracle and task graph,
+the delta specs of the task's own `requirements`, and its dependencies' commits. List in `context`
+only what else the task needs, typically a few files: every entry is something the implementer
+must read.
 
 `plan/oracle.json`:
 

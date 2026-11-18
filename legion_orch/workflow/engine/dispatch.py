@@ -17,7 +17,7 @@ from ...sandbox import (
     is_name_clash,
 )
 from ...util import now_iso
-from .. import governance
+from .. import attest, governance
 from ..assets import AssetError
 from ..model import (
     ACCEPTED,
@@ -59,6 +59,11 @@ class Assignment:
             "feedback_items": [f.model_dump(mode="json") for f in node.feedback]}
 
 
+def _file_path(ref: str) -> str | None:
+    """The document path of a ``file:<path>@<version>`` attestation (None for git refs)."""
+    return ref[5:].rsplit("@", 1)[0] if ref.startswith("file:") and "@" in ref else None
+
+
 def assets_record(sha: str) -> str:
     return f"control/assets/{sha.removeprefix('sha256:')[:16]}.json"
 
@@ -82,20 +87,28 @@ class Dispatcher:
         return PLAN_DOCS + [f"plan/specs/{r}.md" for r in self.c.change.requirements]
 
     def _context_refs(self, node: Node, role: str) -> list[str]:
-        """Common context plus the role handler's own (workflow/roles/)."""
-        h = handler_for(role)
+        """Common context plus the role handler's own (workflow/roles/). A build task's roles get
+        only its own requirements' delta specs; a document the controller gives (at its approved
+        version) is not repeated at another version from the task's declared context."""
+        h, cid = handler_for(role), self.c.cid
         refs: list[str] = []
         appr1 = self.c.change.approvals.get(H_REQUIREMENTS)
         if appr1 and h.sees_requirements:
-            refs += [f"file:{p}@{v}" for p, v in appr1.pins.items()]
+            refs += [f"file:{p}@{v}" for p, v in appr1.pins.items()
+                     if h.sees_risk or p != self.c.p("intake/risk.json")]
         if h.sees_draft_plan or not self.c.change.approvals.get("oracle"):
             if self.c.nodes.get(PLAN) and self.c.nodes[PLAN].status == ACCEPTED:
                 refs += [a for a in (self.c.latest_att(p) for p in self._plan_docs()) if a]
         else:
+            own = ({self.c.p(f"plan/specs/{r}.md") for r in node.task.requirements}
+                   if h.task_scoped_specs and node.task else None)
             for key, appr in self.c.change.approvals.items():
                 if key == "oracle" or key.startswith("spec:"):
-                    refs += [f"file:{p}@{v}" for p, v in appr.pins.items()]
-        refs += h.extra_context(self.roles, node)
+                    refs += [f"file:{p}@{v}" for p, v in appr.pins.items()
+                             if own is None or not p.startswith(self.c.p("plan/specs/")) or p in own]
+        given = {_file_path(a) for a in refs} - {None}
+        refs += [a for a in (attest.normalize(x, cid) for x in h.extra_context(self.roles, node))
+                 if _file_path(a) not in given]
         if self.c.change.oracle_sha and h.sees_oracle_commit:
             refs.append(f"git:{self.c.cfg.repo.name}@{self.c.change.oracle_sha}")
         return list(dict.fromkeys(refs))
