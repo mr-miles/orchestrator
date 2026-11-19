@@ -153,6 +153,11 @@ class FakeBuilder(EnvironmentBuilder):
         self.built: list[str] = []                 # image tags built
         self.recipes: dict[str, object] = {}       # tag -> ImageRecipe
         self.fail: str | None = None
+        self.removed: list[str] = []               # changes whose images were removed
+
+    async def remove_change_images(self, change):
+        self.removed.append(change)
+        return f"removed the images of {change}"
 
     async def ensure_image(self, recipe):
         if self.fail:

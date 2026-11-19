@@ -44,6 +44,7 @@ from ..model import (
     TierOverride,
 )
 from ..results import ActionResult
+from . import cleanup
 from .acceptance import Acceptance
 from .common import ENV_SPEC, WorkflowError, _slug
 from .core import ChangeCore
@@ -75,7 +76,8 @@ class HumanGates:
                 res = await self._resolve_escalation(node, action, approver, payload)
             elif node.kind == HUMAN and node.status == AWAITING_HUMAN:
                 res = await self._human_gate(node, action, approver, payload)
-            elif node.kind == SHIP and action == "recheck" and node.status in (ACCEPTED, FAILED):
+            elif node.kind == SHIP and action == "recheck" and node.status in (ACCEPTED, FAILED) \
+                    and not self.c.change.pruned_at:
                 node.status = RUNNING
                 self.c.spawn(self.acceptance.ship())
                 res = ActionResult()
@@ -220,6 +222,8 @@ class HumanGates:
         await self.c.git.init_integration(ch.id, ch.base_sha)
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
         ch.setup_pin = await setup.pin_at_base(self.c.git, ch.base_sha)   # the base's again
+        # a restarted task of the same name must not continue the old plan's commits
+        await cleanup.delete_run_branches(self.c, "plan restarted")
         ch.surface_pins = {}
         node.status = PENDING
         return ActionResult()
@@ -569,7 +573,7 @@ class HumanGates:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface,
         promote_proposal (an approved environment proposal into the library), reprovision
         (rebuild the environment against the current library), retrospective (of an ended
-        change)."""
+        change), prune (an ended change's integration branch and evidence refs, §5.14)."""
         payload = payload or {}
         async with self.c.lock:
             self._check_approver(approver)
@@ -590,6 +594,8 @@ class HumanGates:
                     res = ActionResult(note=self._reprovision(approver, payload))
                 elif action == "retrospective":
                     res = ActionResult(note=self._start_retrospective(approver, payload))
+                elif action == "prune":
+                    res = ActionResult(note=await cleanup.prune(self.c, approver))
                 elif action == "approve_surface":
                     if not risk.valid_reason(payload.get("reason")):
                         raise governance.GovernanceError("a reason of ≥24 chars is required to re-affirm")

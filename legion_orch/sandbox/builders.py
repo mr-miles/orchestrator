@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ..config import Config
 from ..util import stop_process
-from .images import ImageRecipe
+from .images import CHANGE_LABEL, ImageRecipe
 
 
 class BuildError(Exception):
@@ -24,6 +24,11 @@ class EnvironmentBuilder:
         """Build (or find) the image; return the reference sandboxes use (None: the runner's
         default image) and a log."""
         raise NotImplementedError
+
+    async def remove_change_images(self, change: str) -> str:
+        """Remove this host's images built for ``change`` (its label); layers other images use
+        stay. Never raises: what could not be removed is in the returned log."""
+        return ""
 
 
 class NoBuilder(EnvironmentBuilder):
@@ -72,11 +77,27 @@ class PodmanBuilder(EnvironmentBuilder):
         with tempfile.TemporaryDirectory(prefix="legion-env-") as ctx:
             for name, text in recipe.files.items():
                 (Path(ctx) / name).write_text(text)
-            await self._step(log, [pod, "build", "--pull=newer", "-t", recipe.tag, ctx],
+            labels = [a for k, v in recipe.labels.items() for a in ("--label", f"{k}={v}")]
+            await self._step(log, [pod, "build", "--pull=newer", *labels, "-t", recipe.tag, ctx],
                              timeout=self.env.build_timeout_s)
         if self.env.registry:
             await self._step(log, [pod, "push", recipe.tag], timeout=self.env.build_timeout_s)
         return recipe.tag, "\n".join(log)
+
+
+    async def remove_change_images(self, change):
+        """Local images only: a registry is shared, so deleting there is the operator's call."""
+        pod, log = self.env.podman_bin, []
+        rc, out = await _run([pod, "images", "-q", "--no-trunc", "--filter",
+                              f"label={CHANGE_LABEL}={change}"], 120)
+        ids = sorted(set(out.split())) if rc == 0 else []
+        if rc != 0:
+            return f"$ podman images: failed ({rc}): {out.strip()[-500:]}"
+        for image in ids:
+            rc, out = await _run([pod, "rmi", image], 300)
+            log.append(f"$ {pod} rmi {image[:19]}: " + ("removed" if rc == 0 else
+                                                       f"kept ({rc}): {out.strip()[-300:]}"))
+        return "\n".join(log) or f"no images labelled {CHANGE_LABEL}={change}"
 
 
 def make_builder(cfg: Config) -> EnvironmentBuilder:

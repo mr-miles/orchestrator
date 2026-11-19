@@ -81,13 +81,23 @@ def dockerfile(base: str, tools: list[Tool], mise_version: str, user: str) -> st
     ])
 
 
-def image_tag(files: dict[str, str], registry: str | None) -> str:
-    """Content-addressed tag: the same recipe always names the same image."""
+CHANGE_LABEL, RECIPE_LABEL = "org.legion.change", "org.legion.recipe"
+
+
+def recipe_hash(files: dict[str, str]) -> str:
+    """The build context's hash: the same recipe always has the same one."""
     h = hashlib.sha256()
     for k, v in sorted(files.items()):
         h.update(f"{k}\n{v}".encode() + b"\0")
+    return h.hexdigest()[:16]
+
+
+def image_tag(files: dict[str, str], registry: str | None, change: str) -> str:
+    """One tag per change and recipe: roles of a change with the same recipe share it, and a
+    change's images are its own to remove when it ends. Another change with the same recipe
+    gets its own tag on the same layers (the build cache makes it nearly free)."""
     repo = f"{registry.rstrip('/')}/{IMAGE_REPO}" if registry else f"localhost/{IMAGE_REPO}"
-    return f"{repo}:{h.hexdigest()[:16]}"
+    return f"{repo}:{change}-{recipe_hash(files)}"
 
 
 @dataclass
@@ -97,10 +107,12 @@ class ImageRecipe:
     tools: list[Tool]
     files: dict[str, str] = field(default_factory=dict)    # Dockerfile, mise.toml
     tag: str = ""
+    labels: dict[str, str] = field(default_factory=dict)   # the change and the recipe hash
 
     @classmethod
     def make(cls, base: str, tools: list[Tool], *, mise_version: str, user: str,
-             registry: str | None) -> ImageRecipe:
+             registry: str | None, change: str) -> ImageRecipe:
         files = {"Dockerfile": dockerfile(base, tools, mise_version, user),
                  "mise.toml": mise_toml(tools)}
-        return cls(base=base, tools=tools, files=files, tag=image_tag(files, registry))
+        return cls(base=base, tools=tools, files=files, tag=image_tag(files, registry, change),
+                   labels={CHANGE_LABEL: change, RECIPE_LABEL: recipe_hash(files)})

@@ -240,6 +240,20 @@ class GitRemote:
         rc, out = await run("git", "rev-parse", f"{sha}:{path}", cwd=self.repo, check=False)
         return out.strip() if rc == 0 else None
 
+    async def run_branches(self, change_id: str) -> list[str]:
+        """The change's run branches on the hub (``legion/<change>/…``, not its integration
+        branch): what agents pushed."""
+        out = await self.git("for-each-ref", "--format=%(refname:short)",
+                             f"refs/heads/legion/{change_id}/", check=False)
+        keep = self.integration_branch(change_id)
+        return sorted(b for b in out.split() if b != keep)
+
+    async def delete_ref(self, ref: str) -> bool:
+        """Delete a ref on the hub (the controller only: pushes may never delete); False when
+        there was none."""
+        rc, _ = await run("git", "update-ref", "-d", ref, cwd=self.repo, check=False)
+        return rc == 0
+
     async def pin(self, name: str, sha: str) -> None:
         await self.git("update-ref", f"refs/legion/evidence/{name}", sha)
 
