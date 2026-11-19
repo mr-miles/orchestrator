@@ -45,8 +45,10 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
     env = change.environment.roles.get(role) if change.environment else None
     if env is None:
         return None
-    return SandboxEnv(image=env.image, network=dict(env.network), cpu=env.cpu,
-                      memory=env.memory, driver_config=env.driver_config)
+    # once the ended change was cleaned up its images are gone: a later run (a retrospective
+    # asked for again) uses the default image; the record still says what was built
+    return SandboxEnv(image=None if change.cleaned_at else env.image, network=dict(env.network),
+                      cpu=env.cpu, memory=env.memory, driver_config=env.driver_config)
 
 
 class Provisioner:
@@ -84,7 +86,8 @@ class Provisioner:
             prof = profiles[pname]
             base = (sc.verifier_image or sc.image) if role == VERIFIER else sc.image
             plan.recipes[role] = ImageRecipe.make(base or "", prof.tools, mise_version=env.mise_version,
-                                                  user=sc.run_as_user, registry=env.registry)
+                                                  user=sc.run_as_user, registry=env.registry,
+                                                  change=c.cid)
             plan.roles[role] = RoleEnvironment(
                 profile=pname, network=dict(policy_entry(p) for p in prof.policies),
                 cpu=prof.resources.cpu, memory=prof.resources.memory,

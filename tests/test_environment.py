@@ -558,11 +558,16 @@ def test_image_recipe_rendering_is_content_addressed():
     toml = mise_toml([uv, py])
     assert toml.splitlines()[-2:] == ['"python" = "3.12"', '"uv" = "0.9"']
     files = {"Dockerfile": df, "mise.toml": toml}
-    assert image_tag(files, None) == image_tag(dict(files), None)
-    assert image_tag(files, None) != image_tag(files | {"mise.toml": toml + "#"}, None)
-    r = ImageRecipe.make("b", [py], mise_version="v1", user="u", registry="reg.example.com/legion/")
-    assert r.tag.startswith("reg.example.com/legion/legion-env:")
+    assert image_tag(files, None, "c1") == image_tag(dict(files), None, "c1")
+    assert image_tag(files, None, "c1") != image_tag(files | {"mise.toml": toml + "#"}, None, "c1")
+    # one tag per change: the same recipe in another change is its own (on the same layers)
+    assert image_tag(files, None, "c1") != image_tag(files, None, "c2")
+    assert image_tag(files, None, "c1").startswith("localhost/legion-env:c1-")
+    r = ImageRecipe.make("b", [py], mise_version="v1", user="u", registry="reg.example.com/legion/",
+                         change="c1")
+    assert r.tag.startswith("reg.example.com/legion/legion-env:c1-")
     assert set(r.files) == {"Dockerfile", "mise.toml"}
+    assert r.labels == {"org.legion.change": "c1", "org.legion.recipe": r.tag.rsplit("-", 1)[1]}
 
 
 def test_network_policy_becomes_a_sandbox_policy_rule(tmp_path):
@@ -617,9 +622,12 @@ def test_podman_builder_commands(tmp_path, monkeypatch):
     monkeypatch.setattr(builders, "_run", fake_run)
     b = builders.PodmanBuilder(cfg)
     recipe = ImageRecipe.make("registry/agent:1", [Tool("uv", "uv", {"uv": "0.9"})],
-                              mise_version="v1", user="sandbox", registry=cfg.environment.registry)
+                              mise_version="v1", user="sandbox", registry=cfg.environment.registry,
+                              change="c1")
     ref, _ = asyncio.run(b.ensure_image(recipe))
     assert ref == recipe.tag and [c[1] for c in calls] == ["image", "build", "push"]
+    build = calls[1]
+    assert build[build.index("--label") + 1] == "org.legion.change=c1"
     exists.add(recipe.tag)
     calls.clear()
     asyncio.run(b.ensure_image(recipe))
@@ -632,6 +640,25 @@ def test_podman_builder_commands(tmp_path, monkeypatch):
     recipe.base = ""
     with pytest.raises(builders.BuildError, match="sandbox.image"):
         asyncio.run(b.ensure_image(recipe))
+
+
+def test_podman_removes_a_changes_images_by_label(tmp_path, monkeypatch):
+    """Local images labelled for the change are removed; one still in use is kept and logged."""
+    from legion_orch.sandbox import builders
+    cfg = make_config(tmp_path, environment={})
+    calls: list[list[str]] = []
+
+    async def fake_run(argv, timeout):
+        calls.append(argv)
+        if argv[1] == "images":
+            return 0, "sha256:aaa\nsha256:bbb\nsha256:aaa\n"
+        return (0, "") if argv[-1] == "sha256:aaa" else (2, "image is in use by a container")
+    monkeypatch.setattr(builders, "_run", fake_run)
+    log = asyncio.run(builders.PodmanBuilder(cfg).remove_change_images("c1"))
+    assert calls[0][-2:] == ["--filter", "label=org.legion.change=c1"]
+    assert [c[-1] for c in calls[1:]] == ["sha256:aaa", "sha256:bbb"]
+    assert "sha256:aaa: removed" in log and "kept (2): image is in use" in log
+    assert asyncio.run(builders.NoBuilder().remove_change_images("c1")) == ""
 
 
 def test_builder_runs_time_out():

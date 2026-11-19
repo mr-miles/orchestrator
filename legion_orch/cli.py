@@ -51,6 +51,10 @@ def _parser() -> argparse.ArgumentParser:
                                         "approve_protected_paths | approve_surface")
     gov.add_argument("change")
     gov.add_argument("action")
+    pn = sub.add_parser("prune", help="an ended change, once its integration branch is taken: "
+                        "remove that branch and the change's evidence refs from the hub")
+    pn.add_argument("change")
+    pn.add_argument("--approver", required=True)
     lib = sub.add_parser("library", help="the environment library: list | promote an approved "
                                          "proposal into it")
     lsub = lib.add_subparsers(dest="library_cmd", required=True)
@@ -227,6 +231,10 @@ def cmd_govern(cfg: Config, args) -> int:
                                                    args.payload))
 
 
+def cmd_prune(cfg: Config, args) -> int:
+    return _show(OperatorClient(cfg).change_action(args.change, "prune", args.approver, {}))
+
+
 def cmd_library(cfg: Config, args) -> int:
     if cfg.environment is None:
         print("no environment: section in the config", file=sys.stderr)
@@ -247,7 +255,7 @@ def _show(result: Any) -> int:
 
 COMMANDS = {"check": cmd_check, "serve": cmd_serve, "setup-openshell": cmd_setup_openshell,
             "changes": cmd_changes, "attention": cmd_attention, "digest": cmd_digest,
-            "trace": cmd_trace, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
+            "trace": cmd_trace, "prune": cmd_prune, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
             "library": cmd_library}
 
 

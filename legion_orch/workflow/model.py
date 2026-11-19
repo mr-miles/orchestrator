@@ -587,6 +587,8 @@ class Change(Record):
     ship: Readiness | None = None
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
     setup_pin: SetupPin | None = None                     # None: no setup task, nothing runs
+    cleaned_at: str | None = None    # ended, retrospective done: run branches and images removed
+    pruned_at: str | None = None     # a human removed the integration branch and evidence refs
     round: int = 1                                         # 1, or the current fix round
     rounds: list[FixRound] = []                            # fix rounds since the last restart
 

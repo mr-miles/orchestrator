@@ -41,6 +41,7 @@ from ..model import (
 )
 from ..setup import SETUP_COMMAND
 from ..ship import evaluate
+from . import cleanup
 from .auth import VerifierGrant
 from .common import _slug
 from .core import ChangeCore
@@ -304,6 +305,8 @@ class Acceptance:
             c.change.integration_head = out
             node.accepted_sha = sha
             node.status = ACCEPTED
+            run = c.runs.get(node.current_run) if node.current_run else None
+            await cleanup.delete_run_branch(c, run.branch if run else None, node_id)
             c.event("accepted", f"merged {sha[:12]} -> integration {out[:12]}", node_id)
             self.lifecycle.accept_runs(node)  # deletes the implementer sandbox (principle 8)
             c.save()

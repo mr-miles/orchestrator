@@ -44,4 +44,7 @@ class OracleAuthor(RoleHandler):
         ch.oracle_sha, ch.integration_head = r.sha, head
         ch.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
         node.accepted_sha = r.sha
+        # merged: the branch's commit is in the integration history, the evidence ref pins it
+        if r.run.branch and await e.git.delete_ref(f"refs/heads/{r.run.branch}"):
+            e.event("cleanup", f"deleted branch {r.run.branch} (merged)", node.id)
         await super().on_done(e, r)
