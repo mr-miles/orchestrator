@@ -4,8 +4,12 @@ description: "Working copy, commits, pushing your branch, rebasing, and what jud
 
 ## Skill: Git protocol
 
-- Your working copy is the `workdir` in your assignment (your current directory), cloned from the controller's remote (`origin`) and checked
-  out on branch `{{branch}}` at base `{{base_sha}}`. Credentials are already configured.
+- Your working copy is the `workdir` in your assignment (your current directory), cloned from the
+  controller's remote (`origin`). A role that commits is on branch `{{branch}}` at base
+  `{{base_sha}}`. Every other role (judges, and roles that only read the tree) has a **detached**
+  checkout of the commit it works at, in a partial clone: history is all there, and older file
+  contents are fetched when a command needs them (`git diff`, `git log -p`, `git show`). Do not
+  create branches or commits there. Credentials are already configured.
 - Commit with clear messages: `<task-id>: <imperative summary>`. Do not rewrite `{{base_sha}}` or
   anything before it, and do not create merge commits.
 - When you finish: leave the tree clean (`git status --porcelain` empty), then

@@ -8,13 +8,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from ...sandbox import (
-    MISE_SETUP_SH,
     VERIFIER_PREFIX,
-    VERIFY_SETUP_SH,
     Runner,
     SandboxError,
     SandboxSpec,
     is_name_clash,
+    payload_scripts,
 )
 from .. import governance
 from ..environment import VERIFIER
@@ -119,8 +118,8 @@ class Acceptance:
         payload = base / "payload"
         payload.mkdir(parents=True, exist_ok=True)
         (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.c.git_url)}\n")
-        (payload / "verify-setup.sh").write_text(VERIFY_SETUP_SH)
-        (payload / "mise-setup.sh").write_text(MISE_SETUP_SH)
+        for script, text in payload_scripts().items():
+            (payload / script).write_text(text)
         ref = None
         try:
             env = sandbox_env(self.c.change, VERIFIER)
@@ -135,10 +134,13 @@ class Acceptance:
             self.c.svc.auth.register_verifier(
                 ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
             root = self.c.cfg.sandbox.root
-            rc, out = await self.c.runner.exec(name, ["bash", f"{root}/payload/verify-setup.sh", sha],
-                                               timeout=600)
-            if rc != 0:
-                raise SandboxError(f"verifier setup failed ({rc}): {out[-1500:]}")
+            # the same steps as an agent's detached checkout: clone, then the commit
+            for step in (["clone.sh"], ["checkout.sh", sha]):
+                rc, out = await self.c.runner.exec(
+                    name, ["bash", f"{root}/payload/{step[0]}", *step[1:]], timeout=600,
+                    workdir=None if step[0] == "clone.sh" else f"{root}/work")
+                if rc != 0:
+                    raise SandboxError(f"verifier {step[0]} failed ({rc}): {out[-1500:]}")
             yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s,
                                   f"{root}/work", f"{root}/payload/mise-setup.sh")
         finally:

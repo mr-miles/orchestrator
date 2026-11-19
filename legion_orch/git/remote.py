@@ -123,6 +123,8 @@ class GitRemote:
                      ("receive.maxInputSize", str(self.max_push_bytes)),
                      ("uploadpack.allowAnySHA1InWant", "false"),
                      ("uploadpack.allowReachableSHA1InWant", "true"),
+                     # partial clones for roles that only read (blobs fetched on demand)
+                     ("uploadpack.allowFilter", "true"),
                      ("user.name", "legion-controller"),
                      ("user.email", "legion-controller@localhost")):
             await self.git("config", k, v)

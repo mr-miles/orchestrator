@@ -55,13 +55,14 @@ def test_a_base_setup_task_runs_first_in_every_verifier_and_agent_sandbox(tmp_pa
         assert pin.blob == subprocess.run(["git", "rev-parse", "HEAD:mise.toml"],
                                           cwd=tmp_path / "src-repo", capture_output=True,
                                           text=True).stdout.strip()
-        assert "LEGION_SETUP_PIN" not in envs(f)[0]       # intake only reads the tree: no setup
+        [intake] = f.runs("intake")
+        assert ["mise-setup.sh", pin.blob] not in f.steps(intake)   # intake only reads the tree
         await f.to_build()
         await f.implement()
         r = first(f, "build:T1", "1")
         assert (r.command, r.setup, r.exit_code) == ("mise run setup", True, 0)
-        impl = next(e for e in envs(f) if e.get("LEGION_ROLE") == "implementer")
-        assert impl["LEGION_SETUP_PIN"] == pin.blob and impl["LEGION_SETUP_TIMEOUT"] == "900"
+        [impl], [rev] = f.runs("build:T1", "implementer"), f.runs("build:T1", "reviewer")
+        assert f.steps(impl)[-1] == f.steps(rev)[-1] == ["mise-setup.sh", pin.blob]
     run(go())
 
 
@@ -74,7 +75,8 @@ def test_no_setup_task_means_no_setup(tmp_path):
         await f.to_build()
         await f.implement()
         assert not first(f, "build:T1", "1").setup
-        assert all("LEGION_SETUP_PIN" not in e for e in envs(f))
+        assert not any(a[1].endswith("mise-setup.sh") for _, a in f.runner.execs
+                       if a[0] == "bash")
     run(go())
 
 

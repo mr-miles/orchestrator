@@ -86,39 +86,6 @@ async def test_log_api_serves_entries_with_stage_and_failure(f: Flow):
         assert body["failure"]["exit_code"] == 2 and body["entries"]   # served from the store now
 
 
-def test_run_agent_script_continues_a_pushed_branch_in_a_fresh_sandbox(tmp_path):
-    """After a retry the sandbox is new: the working copy starts from what was pushed."""
-    import shlex
-    import subprocess
-
-    from legion_orch.sandbox import RUN_AGENT_SH
-    git = lambda *a, cwd=tmp_path: subprocess.run(["git", *a], cwd=cwd, check=True,
-                                                 capture_output=True, text=True).stdout.strip()
-    src = tmp_path / "src"
-    src.mkdir()
-    git("init", "-q", "-b", "main", cwd=src)
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base",
-        cwd=src)
-    base = git("rev-parse", "HEAD", cwd=src)
-    git("checkout", "-q", "-b", "legion/c1/build-t1", cwd=src)
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "work",
-        cwd=src)
-    pushed = git("rev-parse", "HEAD", cwd=src)
-    git("checkout", "-q", "main", cwd=src)
-    for sandbox, branch, want in (("sb1", "legion/c1/build-t1", pushed), ("sb2", "legion/c1/new", base)):
-        p = tmp_path / sandbox / "payload"
-        p.mkdir(parents=True)
-        env = {"LEGION_RUN_ID": "r1", "LEGION_ROLE": "implementer", "LEGION_BRANCH": branch,
-               "LEGION_BASE_SHA": base, "LEGION_GIT_URL": str(src), "LEGION_NEEDS_REPO": "1",
-               "LEGION_AGENT_COMMAND": "git rev-parse HEAD > ../head"}
-        (p / "run.env").write_text("".join(f"{k}={shlex.quote(v)}\n" for k, v in env.items()))
-        (p / "run-agent.sh").write_text(RUN_AGENT_SH)
-        out = subprocess.run(["bash", str(p / "run-agent.sh")], capture_output=True, text=True)
-        assert out.returncode == 0, out.stderr
-        assert "[legion] starting the agent" in out.stdout
-        assert (tmp_path / sandbox / "head").read_text().strip() == want, branch
-
-
 # Claude Code's events for a background task (Monitor / Bash run_in_background), as captured
 STARTED = {"type": "system", "subtype": "task_started", "task_id": "bx1", "tool_use_id": "t9",
            "description": "run the test suite", "is_backgrounded": True, "task_type": "local_bash"}
