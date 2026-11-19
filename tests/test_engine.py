@@ -1041,3 +1041,20 @@ async def test_a_rework_may_leave_a_required_document_unchanged(f: Flow):
     out = await f.plan()                    # rewrites oracle.json and the task graph unchanged
     assert out.accepted, out.violations
     assert f.ce.latest("plan/taskgraph.json") == 1 and f.ce.latest("plan/spec.md") == 2
+
+
+@scenario()
+async def test_only_roles_that_push_get_a_branch(f: Flow):
+    import shlex
+    await f.to_build()
+    await f.implement()
+    envs = {e["LEGION_ROLE"]: e for e in
+            (dict(kv.split("=", 1) for kv in shlex.split(t)) for t in f.runner.run_envs)
+            if "LEGION_ROLE" in e}
+    impl, rev = envs["implementer"], envs["reviewer"]
+    assert impl["LEGION_DETACHED"] == "0" and impl["LEGION_BRANCH"] == f"legion/{f.ce.cid}/build-t1"
+    assert rev["LEGION_DETACHED"] == "1" and rev["LEGION_BRANCH"] == ""
+    assert rev["LEGION_BASE_SHA"] == f.ce.nodes["build:T1"].candidate_sha   # the candidate
+    assert envs["intake"]["LEGION_DETACHED"] == "1"
+    assert f.run("build:T1", "reviewer").branch is None
+    assert "(none: a detached checkout" in f.run("build:T1", "reviewer").template_vars["branch"]

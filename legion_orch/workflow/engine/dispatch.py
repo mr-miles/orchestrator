@@ -151,8 +151,8 @@ class Dispatcher:
         run_id = self.c.host.next_run_id()
         # a fix round's oracle starts from the integration head, not from round 1's oracle branch
         again = f"-r{ch.round}" if node.kind == ORACLE and ch.round > 1 else ""
-        branch = (f"legion/{ch.id}/{_slug(node.id)}{again}" if h.pushes
-                  else f"legion/{ch.id}/{run_id}-{role}")
+        # only roles that push get a branch; the others check their commit out detached
+        branch = f"legion/{ch.id}/{_slug(node.id)}{again}" if h.pushes else None
         asg = self._assignment(node, role, branch, judged_sha)
         try:
             rendered = self.c.assets.render_role(role, asg.variables)
@@ -176,7 +176,8 @@ class Dispatcher:
                      f"pin {rendered.pin[7:19]})", node.id, run_id)
         return run
 
-    def _assignment(self, node: Node, role: str, branch: str, judged_sha: str | None) -> Assignment:
+    def _assignment(self, node: Node, role: str, branch: str | None,
+                    judged_sha: str | None) -> Assignment:
         """The template variables, document scopes and context of a run (guard G-D2 binds them)."""
         ch, task = self.c.change, node.task
         task_json = task.model_dump(mode="json") if task else {}
@@ -185,7 +186,8 @@ class Dispatcher:
             "repo_name": self.c.cfg.repo.name,
             "base_sha": node.base_sha or ch.base_sha, "head_sha": ch.integration_head,
             "oracle_sha": ch.oracle_sha or "",
-            "branch": branch, "task_id": task.id if task else node.id,
+            "branch": branch or "(none: a detached checkout of the commit you work at)",
+            "task_id": task.id if task else node.id,
             "task_title": task.title if task else node.title,
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
@@ -257,7 +259,8 @@ class Dispatcher:
         (d / "mcp.json").write_text(json.dumps({"mcpServers": {"legion": server}}, indent=2))
         env = {
             "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
-            "LEGION_BRANCH": run.branch, "LEGION_BASE_SHA": run.judged_sha or run.base_sha,
+            "LEGION_BRANCH": run.branch or "", "LEGION_DETACHED": "0" if run.branch else "1",
+            "LEGION_BASE_SHA": run.judged_sha or run.base_sha,
             "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
             "LEGION_NEEDS_REPO": "1" if self.c.assets.roles[run.role].repo else "0",
             "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),

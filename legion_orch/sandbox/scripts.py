@@ -21,7 +21,23 @@ P="$SB/payload"
 set -a; source "$P/run.env"; set +a
 """ + GIT_AUTH + r"""
 echo "[legion] setup: run ${LEGION_RUN_ID:-?} (${LEGION_ROLE:-?}) in $SB"
-if [ "$LEGION_NEEDS_REPO" = "1" ]; then
+if [ "$LEGION_NEEDS_REPO" = "1" ] && [ "${LEGION_DETACHED:-0}" = "1" ]; then
+  # A role that does not push (a judge, or one that only reads the tree): a partial clone –
+  # history without file contents, fetched on demand – checked out detached at its commit.
+  if [ ! -d "$SB/work/.git" ]; then
+    echo "[legion] cloning $LEGION_GIT_URL (partial, detached at ${LEGION_BASE_SHA:0:12})"
+    git_auth clone --quiet --filter=blob:none --no-checkout "$LEGION_GIT_URL" "$SB/work"
+  fi
+  cd "$SB/work"
+  git config --unset-all http.extraHeader 2>/dev/null || true
+  if [ -n "${LEGION_ACCESS_TOKEN:-}" ]; then
+    # local development only: emulate the gateway's injection (also for on-demand fetches)
+    git config http.extraHeader "Authorization: Bearer $LEGION_ACCESS_TOKEN"
+  fi
+  git cat-file -e "$LEGION_BASE_SHA^{commit}" 2>/dev/null \
+    || git fetch --quiet --filter=blob:none origin "$LEGION_BASE_SHA"
+  git checkout --quiet --detach "$LEGION_BASE_SHA"
+elif [ "$LEGION_NEEDS_REPO" = "1" ]; then
   if [ ! -d "$SB/work/.git" ]; then
     echo "[legion] cloning $LEGION_GIT_URL"
     git_auth clone --quiet "$LEGION_GIT_URL" "$SB/work"
@@ -44,18 +60,18 @@ if [ "$LEGION_NEEDS_REPO" = "1" ]; then
   else
     git checkout --quiet -B "$LEGION_BRANCH" "$LEGION_BASE_SHA"
   fi
-  # the repository's setup (mise.toml's `setup` task, pinned): the agent starts with it done;
-  # a failure is logged, and the agent may still work
-  if [ -n "${LEGION_SETUP_PIN:-}" ]; then
-    echo "[legion] setup: mise run setup"
-    if timeout "${LEGION_SETUP_TIMEOUT:-900}" bash "$P/mise-setup.sh"; then
-      echo "[legion] setup done"
-    else
-      echo "[legion] setup failed (exit $?): the working copy may lack its dependencies" >&2
-    fi
-  fi
 else
   mkdir -p "$SB/work"; cd "$SB/work"
+fi
+# the repository's setup (mise.toml's `setup` task, pinned): the agent starts with it done; a
+# failure is logged, and the agent may still work
+if [ "$LEGION_NEEDS_REPO" = "1" ] && [ -n "${LEGION_SETUP_PIN:-}" ]; then
+  echo "[legion] setup: mise run setup"
+  if timeout "${LEGION_SETUP_TIMEOUT:-900}" bash "$P/mise-setup.sh"; then
+    echo "[legion] setup done"
+  else
+    echo "[legion] setup failed (exit $?): the working copy may lack its dependencies" >&2
+  fi
 fi
 # The agent command finds its inputs through these, under any runner (/sandbox in OpenShell).
 export LEGION_PAYLOAD="$P" LEGION_MCP_CONFIG="$P/mcp.json"

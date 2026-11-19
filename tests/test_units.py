@@ -1109,3 +1109,49 @@ def test_a_cancelled_command_does_not_leave_its_process_running(tmp_path):
     with pytest.raises(ProcessLookupError):        # killed and reaped, not a zombie
         os.kill(int(pidfile.read_text()), 0)
     assert git_exec_path() and os.path.isdir(git_exec_path())
+
+
+def test_a_role_that_does_not_push_gets_a_partial_detached_checkout(tmp_path):
+    """run-agent.sh: a judge (or a read-only role) gets a partial clone – no file contents beyond
+    its commit until asked – checked out detached at that commit, with no branch or identity;
+    `git diff` against an older commit still works (contents are fetched on demand)."""
+    import os
+    import shlex
+    import subprocess
+
+    from legion_orch.sandbox import RUN_AGENT_SH
+    g = lambda *a, cwd=tmp_path / "src": subprocess.run(["git", *a], cwd=cwd, check=True,
+                                                        capture_output=True, text=True).stdout.strip()
+    (tmp_path / "src").mkdir()
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    (tmp_path / "src" / "a.txt").write_text("one\n")
+    g("add", "-A")
+    g("commit", "-q", "-m", "one")
+    base = g("rev-parse", "HEAD")
+    (tmp_path / "src" / "a.txt").write_text("two\n")
+    g("commit", "-q", "-am", "two")
+    cand = g("rev-parse", "HEAD")
+    hub = tmp_path / "hub.git"
+    g("clone", "-q", "--bare", str(tmp_path / "src"), str(hub), cwd=tmp_path)
+    g("config", "uploadpack.allowFilter", "true", cwd=hub)
+    sb = tmp_path / "sb"
+    (sb / "payload").mkdir(parents=True)
+    cmd = (f"git rev-parse HEAD; git branch --show-current; echo branch-done; "
+           f"git config user.name || echo no-identity; git diff --stat {base} {cand}; "
+           "git config remote.origin.promisor")
+    env_file = {"LEGION_NEEDS_REPO": "1", "LEGION_DETACHED": "1", "LEGION_ROLE": "reviewer",
+                "LEGION_RUN_ID": "r1", "LEGION_GIT_URL": f"file://{hub}",
+                "LEGION_BASE_SHA": cand, "LEGION_BRANCH": "", "LEGION_AGENT_COMMAND": cmd}
+    (sb / "payload" / "run.env").write_text("".join(f"{k}={shlex.quote(v)}\n" for k, v in env_file.items()))
+    (sb / "payload" / "run-agent.sh").write_text(RUN_AGENT_SH)
+    out = subprocess.run(["bash", str(sb / "payload" / "run-agent.sh")], check=True,
+                         capture_output=True, text=True,
+                         env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(tmp_path)}
+                         ).stdout.splitlines()
+    i = out.index(cand)
+    assert out[i + 1] == "branch-done"                  # no branch: detached
+    assert "no-identity" in out                         # nothing set up to commit with
+    assert any("a.txt | 2 +-" in x for x in out)        # the older commit's contents, on demand
+    assert out[-1] == "true"                            # a partial (promisor) clone
