@@ -1,8 +1,8 @@
 import {
-  ChevronsUpDownIcon,
+  ChevronRightIcon,
+  MenuIcon,
   MonitorIcon,
   MoonIcon,
-  PlusIcon,
   SettingsIcon,
   SunIcon,
 } from 'lucide-react'
@@ -35,21 +35,14 @@ import { FieldGroup } from '@/components/ui/field'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { startChange } from '@/lib/api'
 import { useSettings } from '@/lib/settings'
-import { humanize } from '@/lib/status'
+import { CHANGE_DOT, humanize } from '@/lib/status'
 import type { Connection } from '@/lib/streams'
 import type { Attention, AttentionItem, ChangeSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { AttentionMenu } from './attention-menu'
 import { TextField } from './fields'
-import { StatusBadge, StatusDot } from './status'
+import { StatusBadge } from './status'
 import { useTheme, type Theme } from './theme-provider'
-
-const CHANGE_DOT: Record<ChangeSummary['status'], string> = {
-  ACTIVE: 'RUNNING',
-  READY: 'ACCEPTED',
-  NOT_READY: 'REWORK',
-  ABANDONED: 'FAILED',
-}
 
 /** Starts a change: intake runs on the goal. */
 export function NewChangeDialog({
@@ -202,93 +195,86 @@ function ConnectionDot({ connection }: { connection: Connection }) {
   )
 }
 
+export interface Crumb {
+  label: string
+  href?: string
+  mono?: boolean
+}
+
+/** Where you are: ``Workloads › <workspace> › <change>``, or ``Configuration › Skills``. */
+function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
+  return (
+    <nav aria-label="Breadcrumb" className="min-w-0">
+      <ol className="flex min-w-0 items-center gap-1.5 text-sm">
+        {crumbs.map((c, i) => {
+          const last = i === crumbs.length - 1
+          return (
+            <li key={`${i}:${c.label}`} className="flex min-w-0 items-center gap-1.5">
+              {i > 0 && <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground" />}
+              {last || !c.href ? (
+                <span
+                  aria-current={last ? 'page' : undefined}
+                  className={cn(
+                    'truncate',
+                    last ? 'font-medium' : 'text-muted-foreground',
+                    c.mono && 'font-mono',
+                  )}
+                >
+                  {c.label}
+                </span>
+              ) : (
+                <a
+                  href={c.href}
+                  className={cn(
+                    'truncate text-muted-foreground hover:text-foreground',
+                    c.mono && 'font-mono',
+                  )}
+                >
+                  {c.label}
+                </a>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </nav>
+  )
+}
+
 export function Header({
-  project,
-  changes,
-  cid,
+  crumbs,
+  status,
   connection,
   attention,
-  onPick,
-  onNew,
   onOpenItem,
+  onMenu,
 }: {
-  project: string
-  changes: ChangeSummary[]
-  cid: string | null
+  crumbs: Crumb[]
+  /** the open change's status, beside the breadcrumbs */
+  status?: ChangeSummary['status'] | null
   connection: Connection | null
   attention: Attention | null
-  onPick: (cid: string) => void
-  onNew: () => void
   onOpenItem: (item: AttentionItem) => void
+  /** opens the main menu (narrow screens) */
+  onMenu: () => void
 }) {
   const s = useSettings()
   const { theme, setTheme } = useTheme()
   const [settings, setSettings] = useState(false)
-  const current = changes.find((c) => c.id === cid)
   return (
     <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-screen-2xl items-center gap-3 px-4">
-        <span className="font-heading font-semibold">Legion</span>
-        <span className="hidden text-sm text-muted-foreground md:inline">{project}</span>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={<Button variant="outline" className="max-w-md min-w-0 justify-between gap-2" />}
-          >
-            {current ? (
-              <>
-                <StatusDot status={CHANGE_DOT[current.status]} />
-                <span className="font-mono">{current.id}</span>
-                <span className="hidden truncate text-muted-foreground lg:inline">
-                  {current.goal}
-                </span>
-              </>
-            ) : (
-              'Choose a change'
-            )}
-            <ChevronsUpDownIcon data-icon="inline-end" className="text-muted-foreground" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-96 max-w-[calc(100vw-2rem)]">
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Changes</DropdownMenuLabel>
-              {changes.map((c) => (
-                <DropdownMenuItem
-                  key={c.id}
-                  onClick={() => onPick(c.id)}
-                  className="items-start gap-2"
-                >
-                  <StatusDot status={CHANGE_DOT[c.status]} className="mt-1.5" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono">{c.id}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {humanize(c.status)}
-                        {c.tier && ` · ${c.tier}`}
-                        {c.live_runs > 0 && ` · ${c.live_runs} live`}
-                        {c.retrospective &&
-                          c.retrospective !== 'ACCEPTED' &&
-                          ` · retrospective ${humanize(c.retrospective)}`}
-                      </span>
-                      {(c.needs_you ?? 0) > 0 && (
-                        <span className="text-xs font-medium text-destructive">
-                          {c.needs_you} need you
-                        </span>
-                      )}
-                    </div>
-                    <p className="truncate text-xs text-muted-foreground">{c.goal}</p>
-                  </div>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={onNew}>
-              <PlusIcon />
-              New change…
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {current && (
-          <StatusBadge status={CHANGE_DOT[current.status]} label={humanize(current.status)} />
-        )}
+      <div className="flex h-14 items-center gap-3 px-4">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="md:hidden"
+          aria-label="Menu"
+          onClick={onMenu}
+        >
+          <MenuIcon />
+        </Button>
+        <Breadcrumbs crumbs={crumbs} />
+        {status && <StatusBadge status={CHANGE_DOT[status]} label={humanize(status)} />}
         <div className="ml-auto flex items-center gap-3">
           <AttentionMenu attention={attention} onOpen={onOpenItem} />
           {connection && <ConnectionDot connection={connection} />}

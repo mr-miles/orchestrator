@@ -54,6 +54,26 @@ export function useChangeStream(cid: string | null) {
   }
 }
 
+/** The change list and every change's attention items, pushed by ``/api/events`` – for the
+ * pages that show no single change (``enabled`` false: nothing is opened). */
+export function useOverviewStream(enabled: boolean) {
+  const [changes, setChanges] = useState<ChangeSummary[] | null>(null)
+  const [attention, setAttention] = useState<Attention | null>(null)
+  const [connection, setConnection] = useState<Connection>('connecting')
+  useEffect(() => {
+    if (!enabled) return
+    const es = new EventSource('/api/events')
+    es.addEventListener('changes', (e) => setChanges(JSON.parse((e as MessageEvent<string>).data)))
+    es.addEventListener('attention', (e) =>
+      setAttention(JSON.parse((e as MessageEvent<string>).data)),
+    )
+    es.onopen = () => setConnection('open')
+    es.onerror = () => setConnection(connectionOf(es))
+    return () => es.close()
+  }, [enabled])
+  return { changes, attention, connection }
+}
+
 export interface LogView {
   update: Omit<LogUpdate, 'from' | 'entries'> | null
   entries: LogEntry[]

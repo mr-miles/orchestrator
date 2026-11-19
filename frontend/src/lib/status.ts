@@ -1,4 +1,4 @@
-import type { FailureSource, Node, NodeStatus, Run, RunStage } from './types'
+import type { ChangeSummary, FailureSource, Node, NodeStatus, Run, RunStage } from './types'
 
 export const STATUSES: NodeStatus[] = [
   'PENDING',
@@ -65,3 +65,18 @@ export const nodeLabel = (n: Node) =>
   n.kind === 'human' ? `${n.id} ${n.title}` : (n.title.split(':')[0] ?? n.title)
 
 export const shortSha = (sha?: string | null) => (sha ? sha.slice(0, 10) : '—')
+
+/** A change's status drawn as a node status (its colour). */
+export const CHANGE_DOT: Record<ChangeSummary['status'], string> = {
+  ACTIVE: 'RUNNING',
+  READY: 'ACCEPTED',
+  NOT_READY: 'FAILED',
+  ABANDONED: 'FAILED',
+}
+
+export const CHANGE_STATUSES: ChangeSummary['status'][] = [
+  'ACTIVE',
+  'NOT_READY',
+  'READY',
+  'ABANDONED',
+]

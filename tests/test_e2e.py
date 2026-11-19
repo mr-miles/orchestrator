@@ -287,6 +287,11 @@ async def _event_streams(ctl, cfg, ce):
         assert log[0][1]["from"] == 0 and log[0][1]["entries"] and not log[0][1]["live"]
         bad = await c.get(f"{base}/changes/nope/events")
         assert bad.status_code == 400
+        stream = _sse(c, f"{base}/events")                     # pages without a change: no state
+        first = [await anext(stream), await anext(stream)]
+        assert [n for n, _ in first] == ["changes", "attention"]
+        assert {x["workspace"] for x in first[0][1]} == {cfg.repo.name}
+        await stream.aclose()
 
 
 async def _identity_checks(ctl, cfg):

@@ -41,7 +41,8 @@ from ..store import DocStoreError
 from ..util import bearer
 from ..workflow.engine import Controller, WorkflowError
 from ..workflow.model import LIVE_RUN
-from . import views
+from . import browse, views
+from .browse import BrowseError
 from .mcp import build_mcp
 
 log = logging.getLogger("legion.server")
@@ -189,7 +190,7 @@ def build_app(ctl: Controller) -> Starlette:
                     return JSONResponse({"error": str(e)}, status_code=403)
                 except (WorkflowError, BadRequest) as e:
                     return JSONResponse({"error": str(e)}, status_code=400)
-                except DocStoreError as e:
+                except (DocStoreError, BrowseError) as e:
                     return JSONResponse({"error": str(e)}, status_code=404)
                 if isinstance(data, Response):
                     return data
@@ -288,6 +289,48 @@ def build_app(ctl: Controller) -> Starlette:
     async def acceptance(request: Request):
         return await views.acceptance(ctl.get(request.path_params["cid"]))
 
+    # ---- browsing: workspaces, the repository, documents, configuration
+    @api()
+    async def list_workspaces(_: Request):
+        return browse.workspaces(ctl)
+
+    def workspace(request: Request) -> None:
+        browse.check_workspace(ctl, request.path_params["ws"])
+
+    @api()
+    async def git_refs(request: Request):
+        workspace(request)
+        return await browse.git_refs(ctl)
+
+    @api()
+    async def git_tree(request: Request):
+        workspace(request)
+        return await browse.git_tree(ctl, request.query_params.get("ref", ""))
+
+    @api()
+    async def git_file(request: Request):
+        workspace(request)
+        q = request.query_params
+        return await browse.git_file(ctl, q.get("ref", ""), q.get("path", ""),
+                                     raw=q.get("download") == "1")
+
+    @api()
+    async def doc_raw(request: Request):
+        path = request.query_params.get("path")
+        if not path:
+            raise BadRequest("path is required")
+        return browse.doc_download(ctl, path, int_param(request, "version", None))
+
+    @api()
+    async def config_files(request: Request):
+        return browse.config_files(ctl, request.path_params["group"])
+
+    @api()
+    async def config_file(request: Request):
+        q = request.query_params
+        return browse.config_file(ctl, request.path_params["group"], q.get("path", ""),
+                                  raw=q.get("download") == "1")
+
     @api()
     async def run_log(request: Request):
         """The agent log: plain text, or ``?format=entries`` – the run's stage and failure with
@@ -316,8 +359,15 @@ def build_app(ctl: Controller) -> Starlette:
         ``changes`` (the change list) and ``attention`` (every change's attention items, §2.2) –
         each sent on connect and then whenever it differs, never polled. A comment line
         every ``SSE_HEARTBEAT_S`` keeps idle connections open."""
-        ce = ctl.get(request.path_params["cid"])
+        return events(request, ctl.get(request.path_params["cid"]))
 
+    @api()
+    async def all_events(request: Request):
+        """Server-sent events for the pages that show no single change: ``changes`` and
+        ``attention``, as for a change's stream."""
+        return events(request, None)
+
+    def events(request: Request, ce) -> StreamingResponse:
         async def gen():
             yield f"retry: {SSE_RETRY_MS}\n\n"
             sent: dict[str, str] = {}
@@ -325,9 +375,11 @@ def build_app(ctl: Controller) -> Starlette:
             while not ctl.stopping.is_set() and not await request.is_disconnected():
                 if ctl.version != seen:
                     seen, quiet = ctl.version, 0.0
-                    for name, data in (("changes", views.change_list(ctl)),
-                                       ("attention", views.attention(ctl)),
-                                       ("state", views.change_state(ctl, ce))):
+                    streams = [("changes", views.change_list(ctl)),
+                               ("attention", views.attention(ctl))]
+                    if ce is not None:
+                        streams.append(("state", views.change_state(ctl, ce)))
+                    for name, data in streams:
                         payload = compact(data)
                         if sent.get(name) != payload:
                             sent[name] = payload
@@ -408,12 +460,20 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/changes/{cid}/events", change_events),
+        Route("/api/events", all_events),
+        Route("/api/workspaces", list_workspaces),
+        Route("/api/workspaces/{ws}/git/refs", git_refs),
+        Route("/api/workspaces/{ws}/git/tree", git_tree),
+        Route("/api/workspaces/{ws}/git/file", git_file),
+        Route("/api/config/{group}", config_files),
+        Route("/api/config/{group}/file", config_file),
         Route("/api/changes/{cid}/trace", trace),
         Route("/api/changes/{cid}/acceptance", acceptance),
         Route("/api/runs/{run_id}/log/events", log_events),
         Route("/api/docs", docs),
         Route("/api/doc", doc),
         Route("/api/doc/diff", doc_diff),
+        Route("/api/doc/raw", doc_raw),
         Route("/api/runs/{run_id}/log", run_log),
         # last: the UI's bundle and public files (anything else, by any method, is a 404)
         Route("/{path:path}", ui_file, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),
