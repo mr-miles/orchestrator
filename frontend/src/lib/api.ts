@@ -3,12 +3,17 @@ import type {
   ActionResult,
   Attention,
   ChangeSummary,
+  ConfigFiles,
   Digest,
   Doc,
   DocDiff,
   DocMeta,
+  FileView,
+  GitRef,
+  GitTree,
   Meta,
   Traceability,
+  Workspace,
 } from './types'
 
 export class ApiError extends Error {}
@@ -110,3 +115,30 @@ export function parseFileAttestation(att: string): { path: string; version: numb
   const m = /^file:(.+)@(\d+)$/.exec(att)
   return m ? { path: m[1] ?? '', version: Number(m[2]) } : null
 }
+
+const q = (params: Record<string, string | number | undefined>) =>
+  Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+    .join('&')
+
+export const getWorkspaces = () => api<Workspace[]>('/api/workspaces')
+
+const wsBase = (ws: string) => `/api/workspaces/${encodeURIComponent(ws)}/git`
+export const getGitRefs = (ws: string) => api<GitRef[]>(`${wsBase(ws)}/refs`)
+export const getGitTree = (ws: string, ref: string) =>
+  api<GitTree>(`${wsBase(ws)}/tree?${q({ ref })}`)
+export const getGitFile = (ws: string, ref: string, path: string) =>
+  api<FileView>(`${wsBase(ws)}/file?${q({ ref, path })}`)
+export const gitDownloadUrl = (ws: string, ref: string, path: string) =>
+  `${wsBase(ws)}/file?${q({ ref, path, download: 1 })}`
+
+export const docDownloadUrl = (path: string, version?: number) =>
+  `/api/doc/raw?${q({ path, version })}`
+
+export const getConfigFiles = (group: string) =>
+  api<ConfigFiles>(`/api/config/${encodeURIComponent(group)}`)
+export const getConfigFile = (group: string, path: string) =>
+  api<FileView>(`/api/config/${encodeURIComponent(group)}/file?${q({ path })}`)
+export const configDownloadUrl = (group: string, path: string) =>
+  `/api/config/${encodeURIComponent(group)}/file?${q({ path, download: 1 })}`

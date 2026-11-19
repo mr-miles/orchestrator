@@ -47,7 +47,7 @@ beforeEach(() => {
   install()
   localStorage.clear()
   sessionStorage.clear()
-  location.hash = ''
+  location.hash = '#/ws/app/c/c1/overview' // most tests open the change
   calls = fakeFetch({
     '/api/meta': {
       project: 'demo',
@@ -174,7 +174,7 @@ describe('the operator UI', () => {
     expect(
       await within(sheet).findByText('Accept requirements', { selector: '[data-slot=card-title]' }),
     ).toBeTruthy()
-    expect(location.hash).toBe('#c1/overview')
+    expect(location.hash).toBe('#/ws/app/c/c1/overview') // the old-style link, in its workspace
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
@@ -199,8 +199,13 @@ describe('the operator UI', () => {
         inbox: [],
       },
     })
+    location.hash = '#/work' // shown where you land
     renderApp()
-    await push()
+    const es = await waitFor(() => FakeEventSource.last('/api/events'))
+    act(() => {
+      es.open()
+      es.emit('changes', CHANGES)
+    })
     expect(await screen.findByText('While you were away')).toBeTruthy()
     expect(screen.getByText(/2 runs started/)).toBeTruthy()
     expect(calls.some((c) => c.url.startsWith('/api/digest?since='))).toBe(true)
@@ -522,9 +527,10 @@ describe('the operator UI', () => {
 
   test('with no changes it offers to start one', async () => {
     fakeFetch({ '/api/meta': {}, '/api/changes': [] })
+    location.hash = ''
     renderApp()
-    expect(await screen.findByText('No changes yet')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: /Start a change/ }))
+    expect(await screen.findByText('No changes yet: start one.')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: /New change/ }))
     expect(await screen.findByRole('dialog', { name: 'Start a change' })).toBeTruthy()
   })
 })

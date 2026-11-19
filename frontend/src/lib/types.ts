@@ -317,6 +317,7 @@ export interface ChangeState {
 
 export interface ChangeSummary {
   id: string
+  workspace?: string
   goal: string
   status: ChangeStatus
   tier?: string | null
@@ -516,4 +517,49 @@ export interface DocDiff {
   from: number
   to: number
   diff: string
+}
+
+/** A repository and its document store (a controller serves one). */
+export interface Workspace {
+  id: string
+  name: string
+  repo: string
+  base_branch: string
+  source?: string | null
+  /** changes by status */
+  changes: Record<string, number>
+  documents: number
+}
+
+export interface GitRef {
+  name: string
+  sha: string
+  base: boolean
+}
+
+export interface FileEntry {
+  path: string
+  size?: number | null
+}
+
+export interface GitTree {
+  ref: string
+  sha: string
+  truncated: boolean
+  files: FileEntry[]
+}
+
+/** A file for the viewer: its text, or why it is not shown. */
+export interface FileView {
+  path: string
+  size?: number | null
+  text: string | null
+  reason?: string | null
+}
+
+export interface ConfigFiles {
+  group: string
+  root: string
+  assets_sha: string
+  files: FileEntry[]
 }

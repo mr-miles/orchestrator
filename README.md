@@ -63,7 +63,13 @@ Four listeners, one purpose each:
 | `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → task-scoped token) | the OpenShell gateway supervisor |
 
 The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS and shadcn/ui,
-built with bun) follows a change over server-sent events: `/api/changes/<id>/events` pushes the
+built with bun) has a left-hand menu in two groups. **Workloads**: *Work* (every change, counted by
+status, in a table by workspace or all together), each workspace (its changes, a document store
+browser and a repository browser at any branch, with copy and download), and the *Inbox*.
+**Configuration**: *Skills*, *Workflows* and *Agents*, each a browser over the definition files the
+controller reads from its assets. Breadcrumbs show where you are (`Workloads › <workspace> ›
+<change>`). A controller serves one workspace: its repository and document store. The UI follows a
+change over server-sent events: `/api/changes/<id>/events` pushes the
 change's state, the change list and every change's attention items whenever they differ, and
 `/api/runs/<run>/log/events` an agent's log as it grows. The header's bell lists what **needs
 you** (gates, escalations and changes the ship check found not ready, across all changes) and the **inbox** (ended changes, retrospective

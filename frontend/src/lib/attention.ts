@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useSyncExternalStore, useEffect, useRef, useState } from 'react'
 import type { AttentionItem } from './types'
 
 /** Browser-side attention state (WORKFLOW.md §2.2): which inbox items were read, when this
@@ -34,15 +34,39 @@ function readSet(): string[] {
   }
 }
 
+// One read state for every component (the bell, the Inbox page), kept in localStorage: a
+// change made in one is seen by the others at once, and by other tabs through ``storage``.
+const readListeners = new Set<() => void>()
+let readRaw: string | null | undefined
+let readParsed: string[] = []
+
+function readSnapshot(): string[] {
+  const raw = localStorage.getItem(READ_KEY)
+  if (raw !== readRaw) {
+    readRaw = raw
+    readParsed = readSet()
+  }
+  return readParsed
+}
+
+function subscribeRead(listener: () => void) {
+  readListeners.add(listener)
+  const onStorage = (e: StorageEvent) => e.key === READ_KEY && listener()
+  addEventListener('storage', onStorage)
+  return () => {
+    readListeners.delete(listener)
+    removeEventListener('storage', onStorage)
+  }
+}
+
 /** Which inbox items this browser has read (the newest ``MAX_READ`` keys are kept). */
 export function useInboxRead() {
-  const [read, setRead] = useState<string[]>(readSet)
+  const read = useSyncExternalStore(subscribeRead, readSnapshot)
   const markRead = useCallback((keys: string[]) => {
-    setRead((cur) => {
-      const next = [...cur.filter((k) => !keys.includes(k)), ...keys].slice(-MAX_READ)
-      localStorage.setItem(READ_KEY, JSON.stringify(next))
-      return next
-    })
+    const cur = readSnapshot()
+    const next = [...cur.filter((k) => !keys.includes(k)), ...keys].slice(-MAX_READ)
+    localStorage.setItem(READ_KEY, JSON.stringify(next))
+    readListeners.forEach((l) => l())
   }, [])
   const isRead = useCallback((key: string) => read.includes(key), [read])
   return { isRead, markRead }
