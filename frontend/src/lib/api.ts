@@ -1,4 +1,15 @@
-import type { ActionResult, Attention, ChangeSummary, Digest, Doc, DocMeta, Meta } from './types'
+import type {
+  Acceptance,
+  ActionResult,
+  Attention,
+  ChangeSummary,
+  Digest,
+  Doc,
+  DocDiff,
+  DocMeta,
+  Meta,
+  Traceability,
+} from './types'
 
 export class ApiError extends Error {}
 
@@ -39,6 +50,17 @@ export function getDoc(path: string, version?: number) {
   const v = version ? `&version=${version}` : ''
   return api<Doc>(`/api/doc?path=${encodeURIComponent(path)}${v}`)
 }
+
+/** The unified diff of a document from version ``from`` to ``to`` (else the latest). */
+export function getDocDiff(path: string, from: number, to?: number) {
+  const t = to ? `&to=${to}` : ''
+  return api<DocDiff>(`/api/doc/diff?path=${encodeURIComponent(path)}&from=${from}${t}`)
+}
+
+export const getTrace = (cid: string) =>
+  api<Traceability>(`/api/changes/${encodeURIComponent(cid)}/trace`)
+export const getAcceptance = (cid: string) =>
+  api<Acceptance>(`/api/changes/${encodeURIComponent(cid)}/acceptance`)
 
 export function listDocs(prefix: string, all: boolean) {
   return api<DocMeta[]>(`/api/docs?prefix=${encodeURIComponent(prefix)}${all ? '&all=1' : ''}`)

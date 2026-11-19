@@ -1,5 +1,5 @@
 """Plan guards: task graph, oracle, traceability, waves, file overlap and the blank
-repository's scaffold (G-P1..G-P11)."""
+repository's scaffold (G-P1..G-P12)."""
 from __future__ import annotations
 
 import re
@@ -48,6 +48,7 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
     if risk.rank(tier) >= 2:
         v += oracle_strength(oracle, requirements)
         v += surfaces(oracle)
+        v += criterion_links(oracle)
     return v
 
 
@@ -93,6 +94,7 @@ def fix_round(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
     if risk.rank(tier) >= 2:              # the oracle may have been revised in the round
         v += oracle_strength(oracle, requirements)
         v += surfaces(oracle)
+        v += criterion_links(oracle)
     return v
 
 
@@ -217,6 +219,22 @@ def oracle_strength(oracle: dict, requirements: list[str]) -> list[str]:
         v.append("G-P8: oracle.criteria must map acceptance criteria to requirements")
     v += [f"G-P8: criterion {c!r:.60} must reference an accepted requirement" for c in crit
           if not isinstance(c, dict) or c.get("requirement") not in set(requirements)]
+    return v
+
+
+def criterion_links(oracle: dict) -> list[str]:
+    """G-P12 (tier >= 2): a criterion's ``tests`` are among the oracle's acceptance tests and its
+    ``commands`` among its acceptance commands (both optional: an unlinked criterion is a warning
+    on the gate screens, not a violation)."""
+    tests, cmds = set(oracle.get("acceptance_tests") or []), set(oracle.get("acceptance_commands") or [])
+    v = []
+    for c in oracle.get("criteria") or []:
+        if not isinstance(c, dict):
+            continue
+        v += [f"G-P12: criterion {c.get('id')} names test {t!r}, which is not in "
+              "oracle.acceptance_tests" for t in c.get("tests") or [] if t not in tests]
+        v += [f"G-P12: criterion {c.get('id')} names command {x!r}, which is not in "
+              "oracle.acceptance_commands" for x in c.get("commands") or [] if x not in cmds]
     return v
 
 

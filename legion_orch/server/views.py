@@ -1,7 +1,11 @@
 """JSON views of the controller for the operator UI (presentation only: read, never mutate)."""
 from __future__ import annotations
 
-from ..workflow import governance
+import difflib
+
+from ..git import GitError
+from ..store import DocStore
+from ..workflow import governance, ship, traceability
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.engine.common import ENV_SPEC
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
@@ -99,3 +103,30 @@ def digest(ctl: Controller, since: str) -> dict:
     att = attention(ctl)
     return {"since": since, "changes": changes, "needs_you": att["needs_you"],
             "inbox": [i for i in att["inbox"] if i["since"] >= since]}
+
+
+# ---------------------------------------------------------------------------- gate screens (§2.3)
+def trace(ce: ChangeEngine) -> dict:
+    return traceability.traceability(ce).model_dump(mode="json")
+
+
+async def acceptance(ce: ChangeEngine) -> dict:
+    """What H-3 accepts: the diff (whole and per task), the protected paths it changes, and a dry
+    evaluation of the ship gates at the integration head (what would not be satisfied yet)."""
+    out = {"diff": None, "readiness": None, "error": None}
+    try:
+        out["diff"] = (await traceability.diffstat(ce)).model_dump(mode="json")
+        if ce.change.tier and ce.change.integration_head:
+            out["readiness"] = (await ship.evaluate(ce)).model_dump(mode="json")
+    except GitError as e:
+        out["error"] = str(e)
+    return out
+
+
+def doc_diff(docs: DocStore, path: str, old: int, new: int | None) -> dict:
+    """A unified diff between two versions of a document (``new``: the latest)."""
+    a, b = docs.read(path, old), docs.read(path, new)
+    lines = difflib.unified_diff(a.content.splitlines(keepends=True),
+                                 b.content.splitlines(keepends=True),
+                                 fromfile=f"{path}@{a.version}", tofile=f"{path}@{b.version}")
+    return {"path": path, "from": a.version, "to": b.version, "diff": "".join(lines)}

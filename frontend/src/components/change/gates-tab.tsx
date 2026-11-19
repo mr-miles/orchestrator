@@ -24,6 +24,7 @@ import { SelectField, TextField } from '../fields'
 import { FormDialog } from '../form-dialog'
 import { AttestationLink, Attestations, Muted, Sha, StatusDot, Verdict } from '../status'
 import { useNav } from './nav'
+import { TraceabilityCard } from './traceability'
 
 const GATE_DOT: Record<GateResult['status'], string> = {
   satisfied: 'ACCEPTED',
@@ -462,6 +463,7 @@ export function GatesTab({ state }: { state: ChangeState }) {
     )
   return (
     <div className="flex flex-col gap-4">
+      <TraceabilityCard state={state} />
       <ShipGates state={state} />
       <AttestationsCard state={state} />
       <OverridesCard state={state} />

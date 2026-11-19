@@ -27,6 +27,7 @@ import { SelectField, TextField } from '../fields'
 import { Pre, Sha, SourceBadge, StatusDot } from '../status'
 import { EnvironmentSpec } from './environment'
 import { useNav } from './nav'
+import { AcceptancePreview, TraceSummary } from './traceability'
 
 function Escalated({ node }: { node: Node }) {
   const nav = useNav()
@@ -244,22 +245,37 @@ function ApproveSpec({ state }: { state: ChangeState }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <TraceSummary state={state} />
         <Table>
           <TableBody>
             {state.h2.map((x) => (
               <TableRow key={x.subject}>
                 <TableCell className="font-medium">{x.subject}</TableCell>
                 <TableCell className="whitespace-normal">
-                  {x.paths.map((p) => (
-                    <Button
-                      key={p}
-                      variant="link"
-                      className="block h-auto p-0 font-mono text-xs"
-                      onClick={() => nav.openDoc(p)}
-                    >
-                      {p.split('/').slice(2).join('/')}
-                    </Button>
-                  ))}
+                  {x.paths.map((p) => {
+                    const was = x.approved?.[p]
+                    const changed = x.status === 'stale' && was != null && was !== x.latest?.[p]
+                    return (
+                      <div key={p} className="flex flex-wrap items-baseline gap-x-2">
+                        <Button
+                          variant="link"
+                          className="h-auto p-0 font-mono text-xs"
+                          onClick={() => nav.openDoc(p)}
+                        >
+                          {p.split('/').slice(2).join('/')}
+                        </Button>
+                        {changed && (
+                          <Button
+                            variant="link"
+                            className="h-auto p-0 text-xs text-destructive"
+                            onClick={() => nav.openDiff(p, was)}
+                          >
+                            changed since v{was} was approved
+                          </Button>
+                        )}
+                      </div>
+                    )
+                  })}
                   {x.warnings?.map((w) => (
                     <p key={w} className="mt-1 text-xs text-destructive">
                       {w}
@@ -381,7 +397,9 @@ function AcceptChange({ state }: { state: ChangeState }) {
           At integration head <Sha sha={state.change?.integration_head} />
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
+        <TraceSummary state={state} />
+        <AcceptancePreview state={state} />
         <TextField label="Note" value={note} onChange={setNote} multiline />
       </CardContent>
       <CardFooter className="flex gap-2">

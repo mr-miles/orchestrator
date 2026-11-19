@@ -21,6 +21,8 @@ export interface Nav {
   openLog: (run: string) => void
   /** Open a document (at ``version``, else the latest). */
   openDoc: (path: string, version?: number) => void
+  /** Open a document's diff from ``from`` (the version approved) to the latest. */
+  openDiff: (path: string, from: number) => void
 }
 
 export const NavContext = createContext<Nav | null>(null)

@@ -274,6 +274,21 @@ def build_app(ctl: Controller) -> Starlette:
         return d.to_json() | {"history": [m.to_json() for m in ctl.docs.history(path)]}
 
     @api()
+    async def doc_diff(request: Request):
+        path, old = request.query_params.get("path"), int_param(request, "from", None)
+        if not path or old is None:
+            raise BadRequest("path and from (a version) are required")
+        return views.doc_diff(ctl.docs, path, old, int_param(request, "to", None))
+
+    @api()
+    async def trace(request: Request):
+        return views.trace(ctl.get(request.path_params["cid"]))
+
+    @api()
+    async def acceptance(request: Request):
+        return await views.acceptance(ctl.get(request.path_params["cid"]))
+
+    @api()
     async def run_log(request: Request):
         """The agent log: plain text, or ``?format=entries`` – the run's stage and failure with
         the log parsed into display entries (sandbox output and agent events)."""
@@ -393,9 +408,12 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/changes/{cid}/events", change_events),
+        Route("/api/changes/{cid}/trace", trace),
+        Route("/api/changes/{cid}/acceptance", acceptance),
         Route("/api/runs/{run_id}/log/events", log_events),
         Route("/api/docs", docs),
         Route("/api/doc", doc),
+        Route("/api/doc/diff", doc_diff),
         Route("/api/runs/{run_id}/log", run_log),
         # last: the UI's bundle and public files (anything else, by any method, is a 404)
         Route("/{path:path}", ui_file, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]),

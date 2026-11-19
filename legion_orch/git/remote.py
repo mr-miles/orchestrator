@@ -168,6 +168,20 @@ class GitRemote:
         out = await self.git("diff", "--name-only", "--no-renames", f"{base}..{head}")
         return [line for line in out.splitlines() if line]
 
+    async def numstat(self, base: str, head: str, *, since_fork: bool = False
+                      ) -> list[tuple[str, int | None, int | None]]:
+        """(path, lines added, lines deleted) per file changed in ``base..head`` (``since_fork``:
+        since their merge base, ``base...head``); binary files have no line counts (None)."""
+        out = await self.git("diff", "--numstat", "--no-renames", "-z",
+                             f"{base}{'...' if since_fork else '..'}{head}")
+        rows = []
+        for rec in out.split("\0"):
+            parts = rec.split("\t", 2)
+            if len(parts) == 3:
+                a, d, path = parts
+                rows.append((path, int(a) if a.isdigit() else None, int(d) if d.isdigit() else None))
+        return rows
+
     async def tree_paths(self, sha: str) -> list[str]:
         """Every file path in the commit's tree."""
         out = await self.git("ls-tree", "-r", "--name-only", "-z", sha)
