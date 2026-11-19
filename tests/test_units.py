@@ -806,9 +806,9 @@ def test_report_and_work_guard_branches(tmp_path):
     assert guards.scoped_diff([], ["src/"], [], [], "G-B3") == ["G-B3: commit changes no files"]
     assert guards.scoped_diff(["src/k.pem"], ["src/"], ["*.pem"], [], "G-B3") == \
         ["G-B3: src/k.pem is forbidden for this task"]
-    assert len(guards.release_docs("# plan\n", "revert", SHA)) == 2
+    assert len(guards.release_docs("# plan\n", "revert", SHA)) == 3      # + no strategy line
     ok_plan = "## Health criteria\n## Rollback criteria\n"
-    assert guards.release_docs(ok_plan, f"git revert to {SHA}", SHA) == []
+    assert guards.release_docs(ok_plan, f"Strategy: rollback\ngit revert to {SHA}", SHA) == []
     assert guards.intake("- REQ-1: a\n- REQ-1: b\n", _signals(), None, "DONE")[0] == \
         "G-I1: duplicate requirement ids ['REQ-1']"
     many = "".join(f"- REQ-{i}: r\n" for i in range(101))

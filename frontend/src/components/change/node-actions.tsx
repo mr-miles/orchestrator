@@ -458,17 +458,50 @@ interface AttestDraft {
   kind: string
   off: string[]
   extra: string
+  /** waivable gates: attest that no evaluation applies, with a reason */
+  na: boolean
+  reason: string
+  /** a recommendation: confirmed as read */
+  confirmed: boolean
+}
+
+interface AttestPayload {
+  kind: string
+  verdict: 'pass' | 'not_applicable'
+  sources: string[]
+  waiver_reason?: string
 }
 
 const draftFor = (g: GateAttestation, d?: AttestDraft): AttestDraft =>
-  d ?? { kind: g.kinds[0] ?? '', off: [], extra: '' }
+  d ?? { kind: g.kinds[0] ?? '', off: [], extra: '', na: false, reason: '', confirmed: false }
 
-const sourcesOf = (g: GateAttestation, d: AttestDraft) => [
-  ...g.suggested.map((s) => s.att).filter((a) => !d.off.includes(a)),
-  ...csv(d.extra),
-]
+/** What a row attests, once it is complete (else null: the gate is left for later). */
+function attestationOf(g: GateAttestation, d: AttestDraft): AttestPayload | null {
+  const all = g.suggested.map((s) => s.att)
+  if (g.recommended)
+    return d.confirmed ? { kind: g.recommended, verdict: 'pass', sources: all } : null
+  if (g.waivable && d.na)
+    return d.reason.trim() && all.length
+      ? { kind: d.kind, verdict: 'not_applicable', sources: all, waiver_reason: d.reason.trim() }
+      : null
+  const sources = [...all.filter((a) => !d.off.includes(a)), ...csv(d.extra)]
+  return sources.length ? { kind: d.kind, verdict: 'pass', sources } : null
+}
 
-/** H-3: a gate only a human attestation satisfies – the kind, and the evidence to cite. */
+const pending = (gates: GateAttestation[], drafts: Record<string, AttestDraft>) =>
+  gates
+    .filter((g) => g.status !== 'attested')
+    .map((g) => attestationOf(g, draftFor(g, drafts[g.gate])))
+    .filter((a): a is AttestPayload => a !== null)
+
+const STRATEGY: Record<string, string> = {
+  'rollback-evidence': 'Roll back',
+  'forward-fix-evidence': 'Fix forward',
+}
+
+/** H-3 / ship: a gate only a human attestation satisfies. A recommendation (the release
+ * planner's recovery strategy) is confirmed as read; otherwise the kind and the evidence to cite,
+ * or – where allowed – not applicable, with a reason. */
 function GateAttestationRow({
   gate,
   draft,
@@ -480,6 +513,15 @@ function GateAttestationRow({
 }) {
   const id = useId()
   const done = gate.status === 'attested'
+  const links = (
+    <div className="flex flex-wrap gap-x-3">
+      {gate.suggested.map((s) => (
+        <span key={s.att} className="text-sm">
+          {s.label} <AttestationLink att={s.att} />
+        </span>
+      ))}
+    </div>
+  )
   return (
     <div className="space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -493,7 +535,26 @@ function GateAttestationRow({
             : 'needs your attestation'}
         </span>
       </div>
-      {!done && (
+      {!done && gate.recommended && (
+        <div className="space-y-2">
+          <p className="text-sm">
+            Recommended recovery: <b>{STRATEGY[gate.recommended] ?? gate.recommended}</b>
+            {gate.rationale && <span className="text-muted-foreground"> – {gate.rationale}</span>}
+          </p>
+          {links}
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id={`${id}-ok`}
+              checked={draft.confirmed}
+              onCheckedChange={(v) => onChange({ ...draft, confirmed: Boolean(v) })}
+            />
+            <Label htmlFor={`${id}-ok`} className="font-normal">
+              I have read the plan and confirm it ({gate.recommended})
+            </Label>
+          </div>
+        </div>
+      )}
+      {!done && !gate.recommended && (
         <FieldGroup>
           <SelectField
             label="Attest"
@@ -501,35 +562,61 @@ function GateAttestationRow({
             onChange={(kind) => onChange({ ...draft, kind })}
             options={options(gate.kinds)}
           />
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium">Evidence</p>
-            {gate.suggested.map((s, i) => (
-              <div key={s.att} className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  id={`${id}-${i}`}
-                  checked={!draft.off.includes(s.att)}
-                  onCheckedChange={(v) =>
-                    onChange({
-                      ...draft,
-                      off: v ? draft.off.filter((a) => a !== s.att) : [...draft.off, s.att],
-                    })
-                  }
-                />
-                <Label htmlFor={`${id}-${i}`} className="font-normal">
-                  {s.label}
-                </Label>
-                <AttestationLink att={s.att} />
+          {gate.waivable && (
+            <SelectField
+              label="Verdict"
+              value={draft.na ? 'not_applicable' : 'pass'}
+              onChange={(v) => onChange({ ...draft, na: v === 'not_applicable' })}
+              options={[
+                { value: 'pass', label: 'Pass – evaluated' },
+                { value: 'not_applicable', label: 'Not applicable – no evaluation' },
+              ]}
+            />
+          )}
+          {gate.waivable && draft.na ? (
+            <>
+              <TextField
+                label="Reason"
+                value={draft.reason}
+                onChange={(reason) => onChange({ ...draft, reason })}
+                multiline
+                description="Why no evaluation applies (at least 24 characters). Recorded against:"
+              />
+              {links}
+            </>
+          ) : (
+            <>
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium">Evidence</p>
+                {gate.suggested.map((s, i) => (
+                  <div key={s.att} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id={`${id}-${i}`}
+                      checked={!draft.off.includes(s.att)}
+                      onCheckedChange={(v) =>
+                        onChange({
+                          ...draft,
+                          off: v ? draft.off.filter((a) => a !== s.att) : [...draft.off, s.att],
+                        })
+                      }
+                    />
+                    <Label htmlFor={`${id}-${i}`} className="font-normal">
+                      {s.label}
+                    </Label>
+                    <AttestationLink att={s.att} />
+                  </div>
+                ))}
+                {!gate.suggested.length && <Muted>Nothing on record to suggest.</Muted>}
               </div>
-            ))}
-            {!gate.suggested.length && <Muted>Nothing on record to suggest.</Muted>}
-          </div>
-          <TextField
-            label="Other sources"
-            value={draft.extra}
-            onChange={(extra) => onChange({ ...draft, extra })}
-            placeholder="file:changes/<id>/…@1, git:<repo>@<sha>"
-            description="Comma-separated attestations, e.g. your own evaluation notes."
-          />
+              <TextField
+                label="Other sources"
+                value={draft.extra}
+                onChange={(extra) => onChange({ ...draft, extra })}
+                placeholder="file:changes/<id>/…@1, git:<repo>@<sha>"
+                description="Comma-separated attestations, e.g. your own evaluation notes."
+              />
+            </>
+          )}
         </FieldGroup>
       )}
     </div>
@@ -542,13 +629,7 @@ function AcceptChange({ state }: { state: ChangeState }) {
   const [why, setWhy] = useState('')
   const [drafts, setDrafts] = useState<Record<string, AttestDraft>>({})
   const gates = state.h3 ?? []
-  const attestations = gates
-    .filter((g) => g.status !== 'attested')
-    .map((g) => {
-      const d = draftFor(g, drafts[g.gate])
-      return { kind: d.kind, sources: sourcesOf(g, d) }
-    })
-    .filter((a) => a.sources.length > 0)
+  const attestations = pending(gates, drafts)
   return (
     <Card>
       <CardHeader>
@@ -602,16 +683,9 @@ function ShipReadiness({ state }: { state: ChangeState }) {
   const res = state.change?.ship
   const bad = Object.entries(res?.gates ?? {}).filter(([, g]) => g.status !== 'satisfied')
   const gates = (state.h3 ?? []).filter((g) => g.status !== 'attested')
-  const attestations = gates
-    .map((g) => {
-      const d = draftFor(g, drafts[g.gate])
-      return { kind: d.kind, sources: sourcesOf(g, d) }
-    })
-    .filter((a) => a.sources.length > 0)
+  const attestations = pending(gates, drafts)
   const rerun = async () => {
-    for (const a of attestations)
-      if (!(await act.change('attest', { kind: a.kind, verdict: 'pass', sources: a.sources })))
-        return
+    for (const a of attestations) if (!(await act.change('attest', { ...a }))) return
     await act.node('ship', 'recheck', {}, 'Re-running the readiness check')
   }
   return (

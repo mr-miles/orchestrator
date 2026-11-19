@@ -436,3 +436,51 @@ async def test_h3_attests_the_gates_only_a_human_can_satisfy_with_the_acceptance
     assert [i.kind for i in attention.items(f.ce)] == ["change_ended"]
     assert any("resolved" in e["message"] and "Not ready" in e["message"]
                for e in f.ce.timeline_events() if e["kind"] == "attention")
+
+
+def test_recovery_strategy_is_read_from_the_rollback_plan():
+    from legion_orch.workflow.guards import recovery_strategy, release_docs
+    assert recovery_strategy("Strategy: rollback\nRationale: no data changes\n") == \
+        ("rollback", "no data changes")
+    assert recovery_strategy("# Plan\n\n**Strategy:** Forward fix\n**Rationale:** drops a column")[0] \
+        == "forward-fix"
+    assert recovery_strategy("revert to abc") == (None, "")
+    plan = "## Health criteria\nok\n## Rollback criteria\nbad\n"
+    assert release_docs(plan, "Strategy: rollback\nRevert to abc123", "abc123") == []
+    [v] = release_docs(plan, "Revert to abc123", "abc123")
+    assert v.startswith("G-REL1") and "Strategy: rollback" in v
+
+
+@scenario()
+async def test_h3_shows_the_recommended_recovery_and_e2e_can_be_not_applicable(f: Flow):
+    await f.to_build(tier="R2")
+    for gate in ("security_or_e2e_evaluator", "rollback_or_forward_fix_evidence"):
+        await f.change_action("override", kind="add_gate", gate=gate, reason=REASON)
+    await f.implement()
+    await f.review()
+    await f.integration()
+    f.ce.write_record("release/rollback.md", "Strategy: forward-fix\nRationale: drops a column\n"
+                                             f"Revert to {f.ce.change.base_sha}\n")
+    rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
+    rb, sec = rows["rollback_or_forward_fix_evidence"], rows["security_or_e2e_evaluator"]
+    assert (rb.recommended, rb.rationale) == ("forward-fix-evidence", "drops a column")
+    assert sec.waivable and not rb.waivable
+    report = f.ce.latest_att("integration/report.md")
+    with pytest.raises(WorkflowError, match="only be attested pass"):
+        await f.human("H-3", "accept", attestations=[
+            {"kind": "forward-fix-evidence", "verdict": "not_applicable", "sources": [report],
+             "waiver_reason": REASON}])
+    with pytest.raises(WorkflowError, match="waiver_reason"):
+        await f.human("H-3", "accept", attestations=[
+            {"kind": "e2e-evaluation", "verdict": "not_applicable", "sources": [report]}])
+    res = await f.human("H-3", "accept", attestations=[
+        {"kind": "e2e-evaluation", "verdict": "not_applicable", "sources": [report],
+         "waiver_reason": REASON},
+        {"kind": "forward-fix-evidence", "sources": [f.ce.latest_att("release/rollback.md")]}])
+    assert res.warnings == []
+    g = f.ce.change.ship.gates
+    sec = g["security_or_e2e_evaluator"]
+    assert sec.status == SAT and "not_applicable" in sec.detail
+    assert g["rollback_or_forward_fix_evidence"].status == SAT
+    assert "security_or_e2e_evaluator" in f.ce.change.ship.waived_gates
+    assert f.ce.change.status == ChangeStatus.READY

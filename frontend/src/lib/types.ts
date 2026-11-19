@@ -263,6 +263,11 @@ export interface GateAttestation {
   verdict?: string | null
   attested_by?: string | null
   suggested: { label: string; att: string }[]
+  /** rollback_or_forward_fix_evidence: the release planner's recommended kind, and why */
+  recommended?: string | null
+  rationale?: string
+  /** security_or_e2e_evaluator: may be attested not_applicable with a reason */
+  waivable?: boolean
 }
 
 export interface Surface {

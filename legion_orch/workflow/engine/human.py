@@ -257,10 +257,18 @@ class HumanGates:
         if bad:
             raise WorkflowError(f"H-3: attestation kind(s) {bad} not needed; choose from "
                                 f"{sorted(allowed)}")
+        waivable = {k for r in rows.values() if r.waivable for k in r.kinds}
+        for a in wanted:
+            if a.get("verdict", "pass") not in ("pass", "not_applicable") or (
+                    a.get("verdict") == "not_applicable" and a["kind"] not in waivable):
+                raise WorkflowError(f"H-3: {a['kind']} can only be attested pass here")
         try:
             for a in wanted:
                 await governance.record_attestation(self.c, approver, {
-                    "kind": a["kind"], "verdict": "pass", "sources": a.get("sources") or []})
+                    "kind": a["kind"], "verdict": a.get("verdict", "pass"),
+                    "sources": a.get("sources") or [],
+                    **({"waiver_reason": a.get("waiver_reason")}
+                       if a.get("verdict") == "not_applicable" else {})})
         except governance.GovernanceError as e:
             raise WorkflowError(str(e)) from None
         missing = [r.gate for r in governance.h3_attestations(self.c) if r.status != "attested"]

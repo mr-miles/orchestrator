@@ -318,6 +318,7 @@ describe('the operator UI', () => {
           gate: 'security_or_e2e_evaluator',
           kinds: ['security-evaluation', 'e2e-evaluation'],
           status: 'pending' as const,
+          waivable: true,
           suggested: [
             {
               label: 'T1 security review',
@@ -355,6 +356,7 @@ describe('the operator UI', () => {
           attestations: [
             {
               kind: 'security-evaluation',
+              verdict: 'pass',
               sources: ['file:changes/c1/tasks/T1/reviews/security-cycle-1.md@1'],
             },
           ],
@@ -410,6 +412,8 @@ describe('the operator UI', () => {
           suggested: [
             { label: 'release/rollback.md', att: 'file:changes/c1/release/rollback.md@1' },
           ],
+          recommended: 'forward-fix-evidence',
+          rationale: 'drops a column',
         },
       ],
     }
@@ -423,6 +427,9 @@ describe('the operator UI', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Not ready to ship')).toBeTruthy()
     expect(within(dialog).getByText(/1 of 2 gates not satisfied/)).toBeTruthy()
+    expect(within(dialog).getByText('Fix forward')).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: 'Re-run readiness check' })).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /I have read the plan/ }))
     await userEvent.click(
       within(dialog).getByRole('button', { name: 'Attest & re-run readiness check' }),
     )
@@ -432,7 +439,7 @@ describe('the operator UI', () => {
     expect(calls.find((c) => c.url === '/api/changes/c1/action')?.body).toMatchObject({
       action: 'attest',
       payload: {
-        kind: 'rollback-evidence',
+        kind: 'forward-fix-evidence',
         verdict: 'pass',
         sources: ['file:changes/c1/release/rollback.md@1'],
       },

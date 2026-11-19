@@ -18,11 +18,11 @@ from .intake import intake, requirements_ids
 from .plan import fix_round, plan, waves
 from .report import report_limits, report_shape, required_docs, required_git
 from .review import critique, findings, verdict
-from .work import evidence_mentions, release_docs, results_cover, scoped_diff
+from .work import evidence_mentions, recovery_strategy, release_docs, results_cover, scoped_diff
 
 __all__ = [
     "GUARDS", "critique", "environment", "evidence_mentions", "findings", "fix_round", "intake",
     "load_json",
     "plan", "release_docs", "report_limits", "report_shape", "required_docs", "required_git",
-    "requirements_ids", "results_cover", "scoped_diff", "verdict", "waves",
+    "recovery_strategy", "requirements_ids", "results_cover", "scoped_diff", "verdict", "waves",
 ]

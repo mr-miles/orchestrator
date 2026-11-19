@@ -91,6 +91,12 @@ class GateAttestation(BaseModel):
     verdict: str | None = None
     attested_by: str | None = None
     suggested: list[SuggestedSource] = []
+    # rollback_or_forward_fix_evidence: the release planner's recommendation (its kind) and why;
+    # confirming it attests that kind
+    recommended: str | None = None
+    rationale: str = ""
+    # security_or_e2e_evaluator: may be attested not_applicable (with a reason) instead of pass
+    waivable: bool = False
 
 
 def _suggested(e: ChangeView, gate: str) -> list[SuggestedSource]:
@@ -125,8 +131,14 @@ def h3_attestations(e: ChangeView) -> list[GateAttestation]:
                                                         AttestationVerdict.NOT_APPLICABLE)
                        and coverage_ok(r, tasks)), None)
         cur = failed or passed or (recs[0] if recs else None)
-        rows.append(GateAttestation(
+        row = GateAttestation(
             gate=gate, kinds=kinds, status="failed" if failed else "attested" if passed
             else "pending", kind=cur.kind if cur else None, verdict=cur.verdict if cur else None,
-            attested_by=cur.attested_by if cur else None, suggested=_suggested(e, gate)))
+            attested_by=cur.attested_by if cur else None, suggested=_suggested(e, gate),
+            waivable=gate == "security_or_e2e_evaluator")
+        if gate == "rollback_or_forward_fix_evidence" and e.latest("release/rollback.md"):
+            from ..guards import recovery_strategy
+            strategy, row.rationale = recovery_strategy(e.doc("release/rollback.md").content)
+            row.recommended = f"{strategy}-evidence" if strategy else None
+        rows.append(row)
     return rows
