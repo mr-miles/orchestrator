@@ -153,7 +153,7 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | Where | What |
 | --- | --- |
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
-| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller) |
+| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
 | `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
 | `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
@@ -465,7 +465,7 @@ overwrites a library entry.
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
-| G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that works on the repository, and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
+| G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that runs the setup (those that work with a commit), and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
 | H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `plan` is reworked with the feedback attested and critiqued again. H-2 revise and a critique-budget rework drop the approval and the build. |
 
 ### `provision` – build the environment (controller, no agent)

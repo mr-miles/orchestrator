@@ -17,12 +17,14 @@ from ...sandbox import (
     is_name_clash,
     payload_scripts,
 )
+from ...store import DocStoreError
 from ...util import now_iso
 from .. import attest, governance
 from ..assets import AssetError, GitMode
 from ..model import (
     ACCEPTED,
     BUILD,
+    H_ENV,
     H_REQUIREMENTS,
     LIVE_RUN,
     ORACLE,
@@ -38,7 +40,7 @@ from ..model import (
 from ..roles import handler_for
 from ..setup import SETUP_COMMAND
 from ..view import RoleContext
-from .common import PLAN_DOCS, SKILLS_DIR, _slug, write_skills
+from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
 from .provision import sandbox_env
 from .runs import RunLifecycle
@@ -177,6 +179,27 @@ class Dispatcher:
                      f"pin {rendered.pin[7:19]})", node.id, run_id)
         return run
 
+    def _sandbox_tools(self, role: str) -> str:
+        """What the role's sandbox has for the project, stated as a fact: its environment
+        profile's tools, or – without a provisioned environment – the default image, to check."""
+        ch = self.c.change
+        env = ch.environment.roles.get(role) if ch.environment else None
+        appr = ch.approvals.get(H_ENV)
+        tools: list[str] = []
+        if env is not None and appr is not None:
+            try:
+                spec = self.c.json_doc(ENV_SPEC, appr.pins.get(self.c.p(ENV_SPEC)))
+                tools = list(spec["profiles"][env.profile]["tools"])
+            except (KeyError, TypeError, ValueError, DocStoreError):
+                tools = []
+        if not tools:
+            return ("the operator's default image: check a tool with `command -v` before relying "
+                    "on it – do not assume python3, node or rsync; verification runs in the "
+                    "verifier image, which may have less")
+        return (f"profile `{env.profile}`: {', '.join(tools)}. Build, test and verify only with "
+                "these (the verifier has them too); anything else on PATH, such as python3, is "
+                "at most for your own edits, never for a verification command")
+
     def _assignment(self, node: Node, role: str, branch: str | None,
                     judged_sha: str | None) -> Assignment:
         """The template variables, document scopes and context of a run (guard G-D2 binds them)."""
@@ -193,7 +216,7 @@ class Dispatcher:
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
-            "fix_round": "", "scaffold": "",
+            "fix_round": "", "scaffold": "", "sandbox_tools": self._sandbox_tools(role),
         } | handler_for(role).extra_variables(self.roles, node)
         write, required = self.c.assets.role_paths(role, variables)
         write, required = [self.c.p(w) for w in write], [self.c.p(d) for d in required]

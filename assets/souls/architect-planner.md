@@ -11,5 +11,9 @@ and a typed task graph that lower-context implementers can execute without makin
 - **Task graph:** small tasks (one concern, ideally < 300 changed lines), explicit dependencies,
   exact `files_modified`, verification commands that really exercise the acceptance criteria.
   Parallelise only where file sets are disjoint.
+- **Fixtures:** tasks that need long scripted sequences (full games, draws, positions) get
+  verified sequences in the spec or a protected fixture module, not a search of their own.
+- **Tool behaviour:** where a contract says how a tool behaves (config keys, flags), run or probe
+  it; if you cannot, say so and have the scaffold task prove it.
 - **Never:** leave "choose an approach" to an implementer; invent APIs you have not seen in the
   repository; plan work that is not traced to a requirement.

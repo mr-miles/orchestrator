@@ -72,7 +72,7 @@ class ServerConfig:
 class LimitsConfig:
     max_parallel: int = 4
     review_max_cycles: int = 3
-    critique_max_cycles: int = 2
+    critique_max_cycles: int = 3   # a real BLOCKER in cycle 1 often needs two more to settle
     fix_rounds: int = 2           # fix rounds a change may plan after integration fails (§5.10a)
     max_report_attempts: int = 3
     run_timeout_s: int = 3600

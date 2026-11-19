@@ -342,10 +342,18 @@ class HumanGates:
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
                 raise WorkflowError("an answer is required")
-            att = self._feedback_doc(node, approver, text, "decisions")
-            node.feedback.append(Feedback(cycle=node.cycle, source="decisions",
-                                          text=f"human decision: {text}", attestations=[att],
-                                          head=self.c.change.integration_head))
+            esc = node.escalation
+            # the decision stands on its own: the question it answers, then the answer – an
+            # answer like "the last option" means nothing to the next run without it
+            question = esc.missing_decision or esc.reason if esc else ""
+            body = (f"## Question ({esc.kind})\n\n{question}\n\n## Answer\n\n{text}"
+                    if esc else text)
+            att = self._feedback_doc(node, approver, body, "decisions")
+            node.feedback.append(Feedback(
+                cycle=node.cycle, source="decisions", attestations=[att],
+                head=self.c.change.integration_head,
+                text=f"human decision on \"{question[:300]}\": {text}" if question
+                else f"human decision: {text}"))
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)

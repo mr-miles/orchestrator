@@ -42,6 +42,12 @@ House conventions for TypeScript and web frontend projects (see `legion-language
     expect(r.stderr).toContain("bad move");
   });
   ```
+* **Test timeouts:** bun 1.4 has no `[test] timeout` key in `bunfig.toml` (it is ignored): set the
+  timeout with the CLI flag in the `test` script, `bun test --timeout=<ms>`.
+* **React effects that schedule timers** depend on primitives, not on state objects recreated each
+  render, or the timer restarts on every render. Set `globalThis.IS_REACT_ACT_ENVIRONMENT = true`
+  in the test preload (the scaffold task writes it) so Testing Library's updates are not reported
+  as `act(...)` warnings.
 * **oxlint for linting, Prettier (with `prettier-plugin-tailwindcss`) for formatting, `bun test`
   for tests** (happy-dom and Testing Library for components). Use the `package.json` scripts
   `typecheck` (`tsc -b`), `lint`, `format:check` and `test`.

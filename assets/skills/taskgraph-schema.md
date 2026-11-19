@@ -67,6 +67,16 @@ task, not implementers, and must be **black-box and out of process**: they run t
 separate process and check its outputs, so code under test cannot fake a passing exit code. List
 any runner configuration the acceptance commands depend on in `protected_support`.
 
+The usual pattern: a protected driver script in `protected_support` (e.g.
+`tests/acceptance/support/driver.ts`) reads a scenario as JSON on stdin, runs it against the code,
+and prints one JSON result on stdout; each acceptance test spawns it as a process and asserts on
+that result (the stack skill shows how to spawn one). Runner configuration that a task writes – a
+blank repository's scaffold writes the test config and preload – cannot be `protected_support`
+(no task may modify a protected path, G-P7): pin it as a verification surface instead. Long
+fixtures the tests and several tasks need (a drawn game, a winning sequence, position builders)
+go in a protected support module, verified once, that tasks import read-only – never leave each
+task to search for them.
+
 **Scaffold** (when your assignment says the repository is blank): exactly one task is marked
 `"scaffold": true`. It has no dependencies, and every other task depends on it (G-P11). It is
 built before the oracle, so it sets up the project and its tooling only, and its `verification`

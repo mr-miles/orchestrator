@@ -117,10 +117,12 @@ command, because it must read the payload, use the controller's MCP config and r
 session on rework and for reflection.
 
 The image is the agent's whole toolset: sandboxes reach no package registry, so nothing can be
-installed at run time. Claude Code expects `python3` and `node`; `images/agent/Dockerfile` adds them
-to an existing Debian/Ubuntu-based agent image (`--build-arg BASE=<image>`). Bake in any packages
-the project's agents and verification commands need as well (`sandbox.verifier_image` runs the
-verification commands).
+installed at run time. `images/agent/Dockerfile` adds what agents use for their own work –
+`python3` (scripted edits) and `rsync` – to an existing Debian/Ubuntu-based agent image
+(`--build-arg BASE=<image>`). The project's toolchain (bun, node, uv, …) comes from the
+environment stage's profiles, which put it in both the agent and the verifier images; without that
+stage, bake it into `sandbox.image` and `sandbox.verifier_image` alike, since verification commands
+may only use what the verifier has.
 
 ### Sandbox environments
 
