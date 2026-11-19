@@ -69,3 +69,17 @@ identity:                        # SPIFFE/SPIRE workload identity (see legion_or
   svid_audience: legion-controller
   token_audience: legion-controller
   subject_field: id              # field of `openshell sandbox get -o json` used in the SPIFFE ID
+notify:                          # what needs a decision, sent to people (WORKFLOW.md §2.2); optional
+  ui_url: http://127.0.0.1:8765/ # links in notifications open the item here
+  items: [gate, escalation]      # also: change_ended, retrospective (the inbox)
+  remind_after_s: 3600           # send a waiting gate or escalation again (0 = never)
+  # resolved: true               # also say when it was decided
+  sinks: []
+  # - kind: ntfy
+  #   url: https://ntfy.sh/your-private-topic
+  # - kind: webhook              # JSON POST; signed when secret_env names a variable with the secret
+  #   url: https://hooks.example.com/legion
+  #   secret_env: LEGION_WEBHOOK_SECRET
+  # - kind: command              # JSON on stdin: mail, chat, anything else
+  #   argv: [/usr/local/bin/legion-notify]
+  #   items: [gate, escalation, change_ended, retrospective]

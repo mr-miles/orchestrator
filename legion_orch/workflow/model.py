@@ -306,6 +306,7 @@ class Node(Record):
     title: str
     depends_on: list[str] = []
     status: NodeStatus = PENDING
+    status_since: str | None = None       # when it last changed status (stamped on save)
     cycle: int = 1
     task: TaskContract | None = None      # build contract from plan/taskgraph.json
     wave: int = 0

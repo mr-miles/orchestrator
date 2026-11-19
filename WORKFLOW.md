@@ -172,6 +172,43 @@ restart the controller rebuilds every change from the store; runs that were live
 process, so they are failed and escalated (no automatic retry), and interrupted verification,
 merge or ship steps are resumed.
 
+### 2.2 Attention and notifications
+
+What a decision owner should look at is derived from the change's state by one function
+(`legion_orch/workflow/attention.py`), which the UI, the CLI, the change list and the notifier
+all use. Nothing here gates the workflow; it only says what is waiting.
+
+| Item | When | Blocking |
+| --- | --- | --- |
+| `gate` | a human gate is `AWAITING_HUMAN` (H-1, H-E1, H-2, H-3) | yes |
+| `escalation` | a node is `ESCALATED` (its kind and reason) | yes |
+| `change_ended` | the change is `READY`, `NOT_READY` or `ABANDONED` | no (inbox) |
+| `retrospective` | the retrospective report is ready (each cycle is a new item) | no (inbox) |
+
+**Needs you** lists the blocking items: they stay until the decision is made. The **inbox** holds
+the others: nothing waits for them, and the UI keeps which ones this browser has read.
+
+Every save compares the items with those of the previous save: a new item is recorded on the
+timeline (`attention`, `raised: …`) and notified, a resolved one is recorded with how long it
+waited (`resolved after 9h02m: …`). A node's `status_since` records when it last changed
+status. After a restart the items already waiting are taken as known: they are neither raised
+nor notified again.
+
+**Notifications** (config `notify:`) go from the controller only; sandboxes never reach a sink.
+Each sink – `webhook` (JSON POST, optionally signed `X-Legion-Signature: sha256=<HMAC>`), `ntfy`
+(a topic URL) or `command` (JSON on stdin) – receives the item kinds in `notify.items` (default the
+blocking ones) or its own `items`. A blocking item still waiting after `notify.remind_after_s` is
+sent again; `notify.resolved: true` also sends its resolution. A delivery is tried three times,
+then recorded on the timeline (`notified`) as sent or failed; it never blocks or fails the
+change. The payload carries the item, the decision owners and a link to it in the UI
+(`notify.ui_url` + `#<change>/overview/<node>`). An escalation's reason can quote agent output,
+so it is cut to 300 characters; no document content is sent.
+
+**While you were away.** `GET /api/digest?since=<iso>` (UI: shown after 30 minutes away;
+CLI: `legion-orch digest --since 8h`) counts each change's timeline events since then – runs
+started, reports accepted and rejected, reworks, merges, escalations, human decisions – without a
+model call, and lists everything that needs you in full.
+
 ---
 
 ## 3. Risk tiers and gates

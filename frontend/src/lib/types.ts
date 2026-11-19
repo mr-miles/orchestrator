@@ -293,6 +293,41 @@ export interface ChangeSummary {
   nodes: number
   live_runs: number
   retrospective?: NodeStatus | null
+  needs_you?: number
+}
+
+/** What a human should look at (WORKFLOW.md §2.2): blocking items wait for a decision owner;
+ * inbox items are to read. ``key`` identifies the item (the same decision raised again later is
+ * a new key). */
+export interface AttentionItem {
+  key: string
+  change: string
+  goal: string
+  node: string | null
+  kind: 'gate' | 'escalation' | 'change_ended' | 'retrospective'
+  detail: string
+  title: string
+  reason: string
+  since: string
+  blocking: boolean
+}
+
+export interface Attention {
+  needs_you: AttentionItem[]
+  inbox: AttentionItem[]
+}
+
+export interface Digest {
+  since: string
+  changes: {
+    id: string
+    goal: string
+    status: ChangeStatus | null
+    events: number
+    counts: Record<string, number>
+  }[]
+  needs_you: AttentionItem[]
+  inbox: AttentionItem[]
 }
 
 export interface Meta {

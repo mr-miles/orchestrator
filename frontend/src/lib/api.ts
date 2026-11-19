@@ -1,4 +1,4 @@
-import type { ActionResult, ChangeSummary, Doc, DocMeta, Meta } from './types'
+import type { ActionResult, Attention, ChangeSummary, Digest, Doc, DocMeta, Meta } from './types'
 
 export class ApiError extends Error {}
 
@@ -28,6 +28,9 @@ export async function api<T>(path: string, body?: unknown, token?: string): Prom
 
 export const getMeta = () => api<Meta>('/api/meta')
 export const getChanges = () => api<ChangeSummary[]>('/api/changes')
+export const getAttention = () => api<Attention>('/api/attention')
+export const getDigest = (since: string) =>
+  api<Digest>(`/api/digest?since=${encodeURIComponent(since)}`)
 export const getWorkflow = () => api<string>('/api/workflow')
 export const getRawLog = (run: string) =>
   api<string>(`/api/runs/${encodeURIComponent(run)}/log?lines=5000`)

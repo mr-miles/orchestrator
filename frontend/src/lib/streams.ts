@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ChangeState, ChangeSummary, LogEntry, LogUpdate } from './types'
+import type { Attention, ChangeState, ChangeSummary, LogEntry, LogUpdate } from './types'
 
 export type Connection = 'connecting' | 'open' | 'closed'
 
@@ -18,12 +18,14 @@ interface Streamed {
   connection: Connection
 }
 
-/** A change's live state and the change list, pushed by ``/api/changes/<cid>/events`` whenever
- * either differs (the browser reconnects by itself after a dropped connection). What arrived is
- * kept per change, so switching changes never shows the previous one's state. */
+/** A change's live state, the change list and every change's attention items, pushed by
+ * ``/api/changes/<cid>/events`` whenever one differs (the browser reconnects by itself after a
+ * dropped connection). What arrived is kept per change, so switching changes never shows the
+ * previous one's state. */
 export function useChangeStream(cid: string | null) {
   const [got, setGot] = useState<Streamed | null>(null)
   const [changes, setChanges] = useState<ChangeSummary[] | null>(null)
+  const [attention, setAttention] = useState<Attention | null>(null)
   useEffect(() => {
     if (!cid) return
     const es = new EventSource(`/api/changes/${encodeURIComponent(cid)}/events`)
@@ -36,12 +38,20 @@ export function useChangeStream(cid: string | null) {
       update({ state: JSON.parse((e as MessageEvent<string>).data) }),
     )
     es.addEventListener('changes', (e) => setChanges(JSON.parse((e as MessageEvent<string>).data)))
+    es.addEventListener('attention', (e) =>
+      setAttention(JSON.parse((e as MessageEvent<string>).data)),
+    )
     es.onopen = () => update({ connection: 'open' })
     es.onerror = () => update({ connection: connectionOf(es) })
     return () => es.close()
   }, [cid])
   const mine = got && got.cid === cid ? got : null
-  return { state: mine?.state ?? null, changes, connection: mine?.connection ?? 'connecting' }
+  return {
+    state: mine?.state ?? null,
+    changes,
+    attention,
+    connection: mine?.connection ?? 'connecting',
+  }
 }
 
 export interface LogView {

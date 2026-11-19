@@ -172,6 +172,71 @@ class IdentityConfig:
     dev_spire: bool | None = None        # in-process SPIRE stand-in; defaults to runner == local
 
 
+# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates and escalations,
+# and the inbox's ended changes and retrospective reports.
+ATTENTION_KINDS = ("gate", "escalation", "change_ended", "retrospective")
+SINK_KINDS = ("webhook", "ntfy", "command")
+
+
+@dataclass
+class NotifySink:
+    """Where notifications go. ``webhook``: POST the JSON item to ``url`` (signed with HMAC-SHA256
+    in ``X-Legion-Signature`` when ``secret_env`` names an environment variable holding the
+    secret). ``ntfy``: publish to the topic URL ``url`` (e.g. https://ntfy.sh/my-topic).
+    ``command``: run ``argv`` with the JSON item on stdin (email, chat, anything else)."""
+    kind: str
+    url: str | None = None
+    secret_env: str | None = None
+    argv: list[str] = field(default_factory=list)
+    items: list[str] | None = None      # this sink's item kinds (default: the section's ``items``)
+    name: str | None = None             # shown in the timeline (default: the kind)
+
+    @property
+    def label(self) -> str:
+        return self.name or self.kind
+
+
+@dataclass
+class NotifyConfig:
+    """Outbound notifications for attention items (WORKFLOW.md §2.2). Sent by the controller
+    only – sandboxes never reach a sink. Without sinks nothing is sent; the UI shows the items
+    either way."""
+    # Base URL of the operator UI, for links to the item (e.g. https://legion.example/).
+    ui_url: str | None = None
+    # Item kinds to notify: gate and escalation (blocking), change_ended, retrospective (inbox).
+    items: list[str] = field(default_factory=lambda: ["gate", "escalation"])
+    # Repeat a blocking item while it is still waiting (seconds; 0 = never). Inbox items are
+    # sent once.
+    remind_after_s: int = 3600
+    # Also notify when a blocking item is resolved (lets a chat thread or pager close it).
+    resolved: bool = False
+    timeout_s: int = 10                 # per delivery attempt
+    sinks: list[NotifySink] = field(default_factory=list)
+
+
+def _notify_config(raw: dict | None) -> NotifyConfig:
+    raw = dict(raw or {})
+    for d, where in [(raw, "notify")] + [(s, "a notify sink") for s in raw.get("sinks") or []
+                                         if isinstance(s, dict)]:
+        if True in d:      # YAML 1.1 reads a bare `on:` key as true
+            raise ValueError(f"{where}: `on:` is read as `true` in YAML; the key is `items:`")
+    sinks = [_build(NotifySink, s) for s in raw.pop("sinks", None) or []]
+    cfg = _build(NotifyConfig, raw)
+    cfg.sinks = sinks
+    for kinds, where in [(cfg.items, "notify.items")] + [(s.items or [], f"notify sink {s.label}.items")
+                                                  for s in sinks]:
+        if bad := sorted(set(kinds) - set(ATTENTION_KINDS)):
+            raise ValueError(f"{where}: unknown item kinds {bad} (known: {list(ATTENTION_KINDS)})")
+    for s in sinks:
+        if s.kind not in SINK_KINDS:
+            raise ValueError(f"notify sink kind {s.kind!r} is not one of {list(SINK_KINDS)}")
+        if s.kind in ("webhook", "ntfy") and not (s.url or "").startswith(("http://", "https://")):
+            raise ValueError(f"notify sink {s.label}: url must be an http(s) URL")
+        if s.kind == "command" and not s.argv:
+            raise ValueError(f"notify sink {s.label}: argv is required")
+    return cfg
+
+
 @dataclass
 class Config:
     project: str
@@ -186,6 +251,7 @@ class Config:
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
     retrospective: RetrospectiveConfig = field(default_factory=RetrospectiveConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -247,6 +313,7 @@ def load_config(path: str | Path) -> Config:
         identity=_build(IdentityConfig, raw.get("identity")),
         environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
         retrospective=_build(RetrospectiveConfig, raw.get("retrospective")),
+        notify=_notify_config(raw.get("notify")),
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )

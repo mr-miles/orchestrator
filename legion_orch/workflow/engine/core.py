@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,8 @@ from pydantic import BaseModel
 
 from ...store import DocVersion
 from ...util import now_iso
-from .. import attest, governance
+from .. import attention, attest, governance
+from ..attention import AttentionItem
 from ..model import (
     BUILD,
     ESCALATED,
@@ -30,6 +32,18 @@ from .services import EngineHost, Services
 from .state import StateStore
 
 
+def _waited(since: str) -> str:
+    """How long an item waited, e.g. "9h02m" (empty when unknown)."""
+    if not since:
+        return ""
+    try:
+        start = datetime.strptime(since, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+    except ValueError:
+        return ""
+    s = max(0, int((datetime.now(UTC) - start).total_seconds()))
+    return f"{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
+
+
 class ChangeCore:
     """State (through the :class:`StateStore`), documents and events of one change."""
 
@@ -41,6 +55,8 @@ class ChangeCore:
         self.st = StateStore(svc.docs, cid)
         self._timeline: list[str] = []                 # events not yet written to the store
         self._timeline_at = time.monotonic()
+        self._statuses: dict[str, str] = {}            # node statuses as of the last save
+        self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
 
     # ------------------------------------------------------------------ state
     @property
@@ -66,10 +82,47 @@ class ChangeCore:
         return next((n for n in self.build_nodes() if n.task and n.task.scaffold), None)
 
     def save(self) -> None:
-        """Persist the state (the caller holds the lock) and wake the scheduler and UI."""
+        """Persist the state (the caller holds the lock) and wake the scheduler and UI. Every
+        state change passes through here, so this is where status changes are stamped and
+        attention items are raised and resolved (§2.2)."""
+        self._stamp_statuses()
+        self._update_attention()
         self.st.save()
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.host.changed()
+
+    # ------------------------------------------------------------------ attention (§2.2)
+    @property
+    def attention_items(self) -> list[AttentionItem]:
+        """The change's attention items as of the last save."""
+        return list(self._attention.values())
+
+    def seed_attention(self) -> None:
+        """After loading from the store: take the current statuses and items as known, so a
+        restart neither re-stamps nor re-raises (nobody is notified again for old items)."""
+        self._statuses = {nid: n.status for nid, n in self.nodes.items()}
+        self._attention = {i.key: i for i in attention.items(self)}
+
+    def _stamp_statuses(self) -> None:
+        now = now_iso()
+        for nid, n in self.nodes.items():
+            if self._statuses.get(nid) != n.status:
+                n.status_since = now
+        self._statuses = {nid: n.status for nid, n in self.nodes.items()}
+
+    def _update_attention(self) -> None:
+        cur = {i.key: i for i in attention.items(self)}
+        for key in cur.keys() - self._attention.keys():
+            item = cur[key]
+            self.event("attention", f"raised: {item.title}", item.node)
+            self.host.attention(item, raised=True)
+        for key in self._attention.keys() - cur.keys():
+            item = self._attention[key]
+            waited = _waited(item.since)
+            self.event("attention", f"resolved{f' after {waited}' if waited else ''}: {item.title}",
+                       item.node)
+            self.host.attention(item, raised=False)
+        self._attention = cur
 
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
                  run: str | None = None, missing_decision: str | None = None,
@@ -139,6 +192,21 @@ class ChangeCore:
         self.flush_timeline(force=True)
         return "".join(self.docs.read(m.path, m.version).content
                        for m in self.docs.list(self.p("control/timeline/")))
+
+    def timeline_events(self, since: str = "") -> list[dict]:
+        """The change's events at or after ``since`` (ISO), stored and still buffered, without
+        writing a chunk (unlike :meth:`timeline`): for read-only views such as the digest."""
+        out = []
+        chunks = [self.docs.read(m.path, m.version).content
+                  for m in self.docs.list(self.p("control/timeline/"))]
+        for line in "".join(chunks).splitlines() + self._timeline:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(ev, dict) and str(ev.get("ts", "")) >= since:
+                out.append(ev)
+        return out
 
     def spawn(self, coro) -> None:
         """Run a background task; the controller logs a failure, the event marks the change."""

@@ -266,16 +266,18 @@ async def _sse(c, url: str):
 
 
 async def _event_streams(ctl, cfg, ce):
-    """The UI's streams: a change's state and the change list on connect, then only when they
-    change; a finished run's log, then its end."""
+    """The UI's streams: the change list, the attention items and a change's state on connect,
+    then only when they change; a finished run's log, then its end."""
     import httpx
     base = f"http://127.0.0.1:{cfg.server.port}/api"
     async with httpx.AsyncClient(timeout=10) as c:
         stream = _sse(c, f"{base}/changes/{ce.cid}/events")
-        first = [await anext(stream), await anext(stream)]
-        assert [n for n, _ in first] == ["changes", "state"]
+        first = [await anext(stream), await anext(stream), await anext(stream)]
+        assert [n for n, _ in first] == ["changes", "attention", "state"]
         assert {x["id"] for x in first[0][1]} == set(ctl.changes)
-        assert first[1][1]["change"]["id"] == ce.cid and "version" not in first[1][1]
+        assert set(first[1][1]) == {"needs_you", "inbox"}
+        assert {i["change"] for i in first[1][1]["inbox"]} <= set(ctl.changes)
+        assert first[2][1]["change"]["id"] == ce.cid and "version" not in first[2][1]
         ce.event("note", "an event alone changes nothing the UI shows")      # bumps the version
         await ce.change_action("attest", "miles", {
             "kind": "e2e-evaluation", "verdict": "pass", "sources": ["file:plan/spec.md@1"]})

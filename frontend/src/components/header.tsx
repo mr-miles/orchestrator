@@ -37,8 +37,9 @@ import { startChange } from '@/lib/api'
 import { useSettings } from '@/lib/settings'
 import { humanize } from '@/lib/status'
 import type { Connection } from '@/lib/streams'
-import type { ChangeSummary } from '@/lib/types'
+import type { Attention, AttentionItem, ChangeSummary } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { AttentionMenu } from './attention-menu'
 import { TextField } from './fields'
 import { StatusBadge, StatusDot } from './status'
 import { useTheme, type Theme } from './theme-provider'
@@ -206,15 +207,19 @@ export function Header({
   changes,
   cid,
   connection,
+  attention,
   onPick,
   onNew,
+  onOpenItem,
 }: {
   project: string
   changes: ChangeSummary[]
   cid: string | null
   connection: Connection | null
+  attention: Attention | null
   onPick: (cid: string) => void
   onNew: () => void
+  onOpenItem: (item: AttentionItem) => void
 }) {
   const s = useSettings()
   const { theme, setTheme } = useTheme()
@@ -263,6 +268,11 @@ export function Header({
                           c.retrospective !== 'ACCEPTED' &&
                           ` · retrospective ${humanize(c.retrospective)}`}
                       </span>
+                      {(c.needs_you ?? 0) > 0 && (
+                        <span className="text-xs font-medium text-destructive">
+                          {c.needs_you} need you
+                        </span>
+                      )}
                     </div>
                     <p className="truncate text-xs text-muted-foreground">{c.goal}</p>
                   </div>
@@ -280,6 +290,7 @@ export function Header({
           <StatusBadge status={CHANGE_DOT[current.status]} label={humanize(current.status)} />
         )}
         <div className="ml-auto flex items-center gap-3">
+          <AttentionMenu attention={attention} onOpen={onOpenItem} />
           {connection && <ConnectionDot connection={connection} />}
           <DropdownMenu>
             <DropdownMenuTrigger render={<Button variant="ghost" className="gap-2" />}>

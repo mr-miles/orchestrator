@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from ...config import Config
 from ...git import GitRemote, is_blank_tree
+from ...notify import Notifier
 from ...sandbox import (
     EnvironmentBuilder,
     Runner,
@@ -20,6 +21,7 @@ from ...sandbox import (
 from ...store import DocStore
 from ...util import stop_process
 from ..assets import Assets
+from ..attention import AttentionItem
 from ..environment import Library
 from ..model import (
     LIVE_RUN,
@@ -67,6 +69,8 @@ class Controller:
         self._tasks: set[asyncio.Task] = set()
         self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
+        self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
+                                 self._notified)
 
     # The pieces the HTTP layer reads.
     @property
@@ -92,6 +96,23 @@ class Controller:
 
     def touch(self) -> None:
         self._bump()
+
+    def attention(self, item: AttentionItem, raised: bool) -> None:
+        if raised:
+            self.notifier.raised(item)
+        else:
+            self.notifier.resolved(item)
+
+    def _notified(self, item: AttentionItem, event: str, sink: str, error: str | None) -> None:
+        ce = self.changes.get(item.change)
+        if ce is not None:
+            ce.event("notified", f"{event} via {sink}: " + (f"failed: {error}" if error else "sent")
+                     + f" ({item.title})", item.node)
+
+    def attention_items(self) -> list[AttentionItem]:
+        """Every change's attention items (§2.2): blocking first, oldest first."""
+        out = [i for ce in self.changes.values() for i in ce.attention_items]
+        return sorted(out, key=lambda i: (not i.blocking, i.since))
 
     def _bump(self) -> None:
         self.version += 1
@@ -131,6 +152,7 @@ class Controller:
                 ce = ChangeEngine(self.svc, self, parts[1])
                 ce.load()
                 self.changes[ce.cid] = ce
+                self.notifier.seed(ce.attention_items)
 
     async def start(self) -> None:
         await self.git.ensure()
@@ -170,6 +192,7 @@ class Controller:
                 except Exception as e:
                     log.exception("tick failed")
                     ce.event("error", f"scheduler error: {e}")
+            self.notifier.remind(self.attention_items())
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), 1.0)

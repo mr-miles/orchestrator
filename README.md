@@ -64,8 +64,12 @@ Four listeners, one purpose each:
 
 The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS and shadcn/ui,
 built with bun) follows a change over server-sent events: `/api/changes/<id>/events` pushes the
-change's state and the change list whenever they differ, and `/api/runs/<run>/log/events` an
-agent's log as it grows. Build it before packaging (`python -m build` ships whatever is in
+change's state, the change list and every change's attention items whenever they differ, and
+`/api/runs/<run>/log/events` an agent's log as it grows. The header's bell lists what **needs
+you** (gates and escalations, across all changes) and the **inbox** (ended changes, retrospective
+reports); `notify:` sends the same items to ntfy, a webhook or a command, with reminders while
+they wait (WORKFLOW.md §2.2). `legion-orch attention` and `legion-orch digest --since 8h` show
+them on the command line. Build it before packaging (`python -m build` ships whatever is in
 `static/dist`); without a build, `/` says how to make one.
 
 Sandboxes reach the agent-facing listeners at `server.public_host` (default

@@ -244,6 +244,17 @@ def build_app(ctl: Controller) -> Starlette:
         return views.change_list(ctl)
 
     @api()
+    async def attention(_: Request):
+        return views.attention(ctl)
+
+    @api()
+    async def digest(request: Request):
+        since = request.query_params.get("since", "")
+        if not since:
+            raise BadRequest("since (an ISO timestamp) is required")
+        return views.digest(ctl, since)
+
+    @api()
     async def state(request: Request):
         return views.change_state(ctl, ctl.get(request.path_params["cid"]))
 
@@ -286,9 +297,10 @@ def build_app(ctl: Controller) -> Starlette:
 
     @api()
     async def change_events(request: Request):
-        """Server-sent events for one change: ``state`` (everything the UI shows for it) and
-        ``changes`` (the change list) – each sent on connect and then whenever it differs, never
-        polled. A comment line every ``SSE_HEARTBEAT_S`` keeps idle connections open."""
+        """Server-sent events for one change: ``state`` (everything the UI shows for it),
+        ``changes`` (the change list) and ``attention`` (every change's attention items, §2.2) –
+        each sent on connect and then whenever it differs, never polled. A comment line
+        every ``SSE_HEARTBEAT_S`` keeps idle connections open."""
         ce = ctl.get(request.path_params["cid"])
 
         async def gen():
@@ -299,6 +311,7 @@ def build_app(ctl: Controller) -> Starlette:
                 if ctl.version != seen:
                     seen, quiet = ctl.version, 0.0
                     for name, data in (("changes", views.change_list(ctl)),
+                                       ("attention", views.attention(ctl)),
                                        ("state", views.change_state(ctl, ce))):
                         payload = compact(data)
                         if sent.get(name) != payload:
@@ -373,6 +386,8 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/workflow", workflow),
         Route("/api/meta", meta),
         Route("/api/changes", list_changes, methods=["GET"]),
+        Route("/api/attention", attention),
+        Route("/api/digest", digest),
         Route("/api/changes", start_change, methods=["POST"]),
         Route("/api/changes/{cid}/state", state),
         Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
