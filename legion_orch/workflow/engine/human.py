@@ -221,7 +221,8 @@ class HumanGates:
             del self.c.nodes[b.id]
         await self.c.git.init_integration(ch.id, ch.base_sha)
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
-        ch.setup_pin = await setup.pin_at_base(self.c.git, ch.base_sha)   # the base's again
+        ch.setup_pin = None if ch.blank_repo else \
+            await setup.pin_at_base(self.c.git, ch.base_sha)          # the base's again
         # a restarted task of the same name must not continue the old plan's commits
         await cleanup.delete_run_branches(self.c, "plan restarted")
         ch.surface_pins = {}

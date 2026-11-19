@@ -149,6 +149,10 @@ class Provisioner:
                 self.lifecycle.delete_sandbox_later(sb, stopped)
             pin = c.change.setup_pin
             check = self.acceptance is not None and pin is not None and pin.source == H_ENV
+            if check and c.setup_waits_for_scaffold():
+                check = False
+                c.event("provision", "the repository is blank: its setup is checked at the "
+                        "scaffold's verification (what it needs comes with the scaffold)", PROVISION)
             if not check:
                 node.status = ACCEPTED
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",

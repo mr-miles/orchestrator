@@ -76,7 +76,10 @@ task needs in `"setup_network"` (e.g. `["npm-registry"]` for `bun install`). Rul
 `[tools]` entry is a mise tool some library tool in the profile installs (`bun`, `python`, `uv`,
 `node` …) at a compatible version, in every profile of a role that runs the setup and the
 verifier's; every such profile has the `setup_network` policies – so neither the verifier's nor a
-reviewer's profile is `offline` when setup installs dependencies (reviewers run it too). After H-E1 the controller commits the approved
+reviewer's profile is `offline` when setup installs dependencies (reviewers run it too). In a **blank repository** the setup does what the scaffold task makes
+possible (e.g. `bun install` once the scaffold adds `package.json`): it first runs in the
+scaffold's verification, at the scaffold's commit, and in every sandbox after that – the
+scaffold's own sandbox starts without it. After H-E1 the controller commits the approved
 file and checks the setup task runs in the verifier (G-PV3); tasks may not change it afterwards.
 
 ```toml

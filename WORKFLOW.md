@@ -528,11 +528,19 @@ it; on approval the controller commits it to the integration branch (before any 
 it; provisioning checks its setup runs in the verifier (G-PV3). **Without it** the operator's
 images are assumed to have `mise`, and the base branch's setup task (if any) runs.
 
+**In a blank repository** (§5.3b) the base's setup task is never pinned: what it needs – a
+manifest, a lockfile – is what the scaffold creates. The setup comes with the environment stage,
+and until the scaffold is accepted provisioning does not check it (G-PV3) and the scaffold's own
+sandbox does not run it; the scaffold's **verification** does, at its candidate, so a setup that
+does not work is a failed scaffold verification (reworked). Every sandbox after the scaffold runs
+it as usual.
+
 ### 5.3b Scaffold (blank repository)
 
 When a change starts, the controller lists the base commit's tree. It is **blank** if every file
 is documentation (`*.md`, `*.rst`, `*.adoc`), a top-level licence or notice file (`LICENSE*`,
-`LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`
+`LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`,
+a top-level mise file (`mise.toml`, `.mise.toml`, `.tool-versions`: tool versions are not code)
 or under `.github/` – including a repository with no files at all (`repo.path` omitted). The
 change record keeps it (`blank_repo`). Without this the oracle would have to guess the layout,
 test runner and configuration the first build task will create.
