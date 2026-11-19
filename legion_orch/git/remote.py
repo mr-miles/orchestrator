@@ -182,6 +182,53 @@ class GitRemote:
                 rows.append((path, int(a) if a.isdigit() else None, int(d) if d.isdigit() else None))
         return rows
 
+    # ----------------------------------------------------------- read-only browsing (operator UI)
+    async def browse_refs(self) -> list[tuple[str, str]]:
+        """(branch, sha): the base branch, then each change's integration branch."""
+        out = await self.git("for-each-ref", "--format=%(refname:short)%09%(objectname)",
+                             "refs/heads/", check=False)
+        refs = [tuple(line.split("\t", 1)) for line in out.splitlines() if "\t" in line]
+        base = [r for r in refs if r[0] == self.base_branch]
+        rest = sorted(r for r in refs if r[0] != self.base_branch and r[0].startswith("legion/"))
+        return base + rest
+
+    async def browse_commit(self, ref: str) -> str | None:
+        """The commit sha of ``ref`` when it is a browsable branch (browse_refs) or a full sha
+        the hub has; None otherwise (nothing else is resolved)."""
+        branches = dict(await self.browse_refs())
+        if ref in branches:
+            return branches[ref]
+        if len(ref) == 40 and all(c in "0123456789abcdef" for c in ref) \
+                and await self.has_object(ref):
+            return ref
+        return None
+
+    async def browse_tree(self, sha: str, limit: int = 20000) -> tuple[list[tuple[str, int | None]], bool]:
+        """(path, size) of every file in the commit's tree (None: a submodule), and whether the
+        listing was cut at ``limit``."""
+        out = await self.git("ls-tree", "-r", "-l", "-z", sha)
+        files = []
+        for rec in out.split("\0"):
+            if "\t" not in rec:
+                continue
+            meta, path = rec.split("\t", 1)
+            parts = meta.split()
+            size = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+            files.append((path, size))
+        return files[:limit], len(files) > limit
+
+    async def browse_blob(self, sha: str, path: str, max_bytes: int) -> bytes | None:
+        """A file's bytes at ``sha`` (None: no such file, or larger than ``max_bytes``)."""
+        spec = f"{sha}:{path}"
+        rc, size = await run("git", "cat-file", "-s", spec, cwd=self.repo, check=False)
+        if rc != 0 or not size.strip().isdigit() or int(size) > max_bytes:
+            return None
+        proc = await asyncio.create_subprocess_exec(
+            "git", "cat-file", "blob", spec, cwd=str(self.repo),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        data, _ = await asyncio.wait_for(proc.communicate(), 60)
+        return data if proc.returncode == 0 else None
+
     async def tree_paths(self, sha: str) -> list[str]:
         """Every file path in the commit's tree."""
         out = await self.git("ls-tree", "-r", "--name-only", "-z", sha)

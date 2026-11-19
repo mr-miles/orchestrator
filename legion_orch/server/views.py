@@ -16,7 +16,8 @@ def change_list(ctl: Controller) -> list[dict]:
     out = []
     for ce in ctl.changes.values():
         c = ce.change
-        out.append({"id": c.id, "goal": c.goal, "status": c.status, "tier": c.tier,
+        out.append({"id": c.id, "workspace": ctl.cfg.repo.name, "goal": c.goal,
+                    "status": c.status, "tier": c.tier,
                     "created_at": c.created_at,
                     "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
                     "nodes": len(ce.nodes),
