@@ -17,6 +17,7 @@ from ...util import now_iso
 from .. import attention, attest, governance
 from ..attention import AttentionItem
 from ..model import (
+    ACCEPTED,
     BUILD,
     ESCALATED,
     Change,
@@ -76,6 +77,15 @@ class ChangeCore:
 
     def build_nodes(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.kind == BUILD]
+
+    def setup_waits_for_scaffold(self) -> bool:
+        """A blank repository (§5.3b, §5.3c): until the scaffold is accepted, what the setup task
+        needs does not exist – no sandbox runs it, and provisioning does not check it; the
+        scaffold's own verification runs it, at its candidate."""
+        if not self.change.blank_repo:
+            return False
+        s = self.scaffold_node()
+        return s is None or s.status != ACCEPTED
 
     def scaffold_node(self) -> Node | None:
         """The blank repository's scaffold build node (§5.3b), if the plan has one."""

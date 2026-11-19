@@ -338,7 +338,7 @@ class Dispatcher:
             steps.append((f"check out {sha[:12]} (detached)", ["bash", f"{p}/checkout.sh", sha],
                           True))
         pin = self.c.change.setup_pin
-        if pin and role.git != GitMode.NONE:
+        if pin and role.git != GitMode.NONE and not self.c.setup_waits_for_scaffold():
             steps.append((SETUP_COMMAND, ["bash", f"{p}/mise-setup.sh", pin.blob], False))
         return steps
 

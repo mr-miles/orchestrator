@@ -38,6 +38,9 @@ def _plan_guards(tasks, blank_repo: bool) -> list[str]:
     (["README.md", "pyproject.toml"], False),
     (["README.md", "src/greet.txt"], False),
     (["docs/LICENSE"], False),                 # licence files count only at the top level
+    (["README.md", "mise.toml", ".tool-versions"], True),    # tool versions are not code
+    (["README.md", ".mise.toml"], True),
+    (["config/mise.toml"], False),             # mise files count only at the top level
 ])
 def test_a_tree_is_blank_with_only_documentation_and_settings(paths, blank):
     assert is_blank_tree(paths) is blank
@@ -175,3 +178,55 @@ async def test_restart_plan_drops_the_scaffold_and_builds_it_again(f: Flow):
     assert "build:T1" not in f.ce.nodes["oracle"].depends_on
     assert "build:T3" in f.ce.nodes["oracle"].depends_on and "build:T3" in f.ce.nodes["H-2"].depends_on
     assert f.status("build:T3") == RUNNING and f.status("oracle") == PENDING
+
+
+def test_a_blank_repository_does_not_pin_its_base_setup(tmp_path):
+    """README + mise.toml is blank (it gets its scaffold), and the base's setup task is not
+    pinned: what it needs (a package.json) comes with the scaffold."""
+    import asyncio
+    import subprocess
+    path = tmp_path / "src-repo"
+    path.mkdir()
+    g = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
+    g("init", "-q", "-b", "main")
+    (path / "README.md").write_text("demo\n")
+    (path / "mise.toml").write_text('[tools]\nbun = "1.4"\n\n[tasks.setup]\nrun = "bun install"\n')
+    g("add", "-A")
+    g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
+
+    async def go():
+        f = await Flow.create(tmp_path)
+        assert f.ce.change.blank_repo and f.ce.change.setup_pin is None
+    asyncio.run(go())
+
+
+@scenario(blank_repo=True, environment={})
+async def test_in_a_blank_repository_the_setup_starts_with_the_scaffold(f: Flow):
+    """The approved setup is not checked at provision (there is nothing to install yet) and does
+    not run in the scaffold's sandbox; the scaffold's verification runs it at its candidate, and
+    every sandbox after the scaffold runs it."""
+    import copy
+
+    from engine_harness import ENVIRONMENT
+    spec = copy.deepcopy(ENVIRONMENT)
+    spec["profiles"]["check"]["offline"] = False
+    spec |= {"mise": {"content": '[tools]\npython = "3.12"\n\n[tasks.setup]\nrun = "make deps"\n'},
+             "setup_network": ["pypi"]}
+    await f.intake()
+    await f.human("H-1", "accept")
+    await f.plan(tasks=PLAN, environment=spec)
+    await f.critique("PASS")
+    await f.human("H-E1", "approve")
+    assert f.status("provision") == ACCEPTED and f.ce.change.setup_pin.source == "H-E1"
+    assert any("checked at the scaffold's verification" in e["message"]
+               for e in f.ce.timeline_events())
+    scaffold = f.run("build:T1", "implementer")
+    assert not any(s[0] == "mise-setup.sh" for s in f.steps(scaffold))
+    await f.implement("T1")
+    ver = f.ce.nodes["build:T1"].verification["1"].results
+    assert (ver[0].command, ver[0].setup) == ("mise run setup", True)    # at the candidate
+    await f.review("T1")
+    assert f.status("build:T1") == ACCEPTED
+    await f.human("H-2", "approve")
+    later = f.run("build:T2", "implementer")
+    assert f.steps(later)[-1] == ["mise-setup.sh", f.ce.change.setup_pin.blob]

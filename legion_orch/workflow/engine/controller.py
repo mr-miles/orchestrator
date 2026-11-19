@@ -208,7 +208,9 @@ class Controller:
         async with self.svc.lock:
             base = await self.git.resolve_base()
             blank = is_blank_tree(await self.git.tree_paths(base))
-            pin = await setup.pin_at_base(self.git, base)       # §5.3c: the base's setup task
+            # §5.3c: the base's setup task – not in a blank repository, where what a setup needs
+            # does not exist yet (it comes with the scaffold, through the environment stage)
+            pin = None if blank else await setup.pin_at_base(self.git, base)
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:

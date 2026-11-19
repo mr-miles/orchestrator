@@ -219,7 +219,8 @@ class HumanGates:
             del self.c.nodes[b.id]
         await self.c.git.init_integration(ch.id, ch.base_sha)
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
-        ch.setup_pin = await setup.pin_at_base(self.c.git, ch.base_sha)   # the base's again
+        ch.setup_pin = None if ch.blank_repo else \
+            await setup.pin_at_base(self.c.git, ch.base_sha)          # the base's again
         ch.surface_pins = {}
         node.status = PENDING
         return ActionResult()
