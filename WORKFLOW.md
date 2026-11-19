@@ -550,6 +550,14 @@ change is built) and which failures were already there. The integration verifier
 | G-BL1 | `data.results` lists every acceptance command with its exit code at the integration head; the attested head equals the current integration head. |
 | G-BL2 | The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's. |
 
+
+**Revise the plan from an escalation.** An oracle or baseline that escalates before H-2 (its
+commands cannot run, say) never reaches the H-2 card, where Request revision lives. Its
+escalation therefore also offers **Revise the plan** (`revise_plan`, `feedback` required): the
+plan goes back to the planner with the feedback exactly as Request revision does at H-2 – in
+round 1 the plan restarts (the oracle and baseline start over from it); in a fix round the round
+goes back, and the baseline reruns once the revised plan passes critique.
+
 ### H-2 approve spec and oracle
 
 | ID | Rule |

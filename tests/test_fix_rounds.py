@@ -272,3 +272,39 @@ async def test_r3_baseline_row_before_the_baseline_finishes(f: Flow):
     [row] = [s for s in views.h2_rows(f.ce) if s["kind"] == "attestation"]
     assert row["status"] == "pending" and row["note"] == "the baseline has not finished yet"
     assert row["results"] == [] and f.status("H-2") != AWAITING_HUMAN
+
+
+# ====================================================================== plan revised from an escalation
+@scenario()
+async def test_a_baseline_escalation_can_send_the_plan_back_to_the_planner(f: Flow):
+    """The oracle's commands cannot run at the baseline (G-V2): H-2 is never reached, so the
+    plan is revised from the escalation, and the oracle and baseline start over from it."""
+    await f.to_h2(tier="R3")
+    cmd = f.ce.baseline_commands()[0]
+    f.runner.commands[cmd] = (127, "bun: command not found\n")
+    await _baseline(f)
+    base = f.ce.nodes["baseline"]
+    assert base.status == ESCALATED and base.escalation.kind == "verify_unrunnable"
+    with pytest.raises(WorkflowError, match="feedback for the planner is required"):
+        await f.human("baseline", "revise_plan")
+    plan_cycle, base_cycle = f.ce.nodes["plan"].cycle, base.cycle
+    await f.human("baseline", "revise_plan", feedback="make every acceptance command self-contained")
+    plan = f.ce.nodes["plan"]
+    assert plan.cycle == plan_cycle + 1 and f.status("plan") == RUNNING
+    assert any("self-contained" in fb.text for fb in plan.feedback)
+    assert base.escalation is None and base.status == PENDING and base.cycle == base_cycle + 1
+    assert f.status("oracle") == PENDING and f.ce.change.oracle_sha is None
+    del f.runner.commands[cmd]
+    await f.plan()
+    await f.critique("PASS")
+    await f.oracle()
+    await _baseline(f)
+    assert base.status == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
+
+
+@scenario()
+async def test_revise_plan_is_only_for_oracle_and_baseline_escalations(f: Flow):
+    await f.to_build()
+    f.ce.escalate(f.ce.nodes["build:T1"], "blocked", "stuck", resume=Resume.READY)
+    with pytest.raises(WorkflowError, match="only available for an oracle or baseline"):
+        await f.human("build:T1", "revise_plan", feedback="replan please")

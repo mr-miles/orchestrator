@@ -72,7 +72,7 @@ class HumanGates:
             if node is None:
                 raise WorkflowError(f"unknown node {node_id}")
             if node.status == ESCALATED:
-                res = self._resolve_escalation(node, action, approver, payload)
+                res = await self._resolve_escalation(node, action, approver, payload)
             elif node.kind == HUMAN and node.status == AWAITING_HUMAN:
                 res = await self._human_gate(node, action, approver, payload)
             elif node.kind == SHIP and action == "recheck" and node.status in (ACCEPTED, FAILED):
@@ -302,13 +302,16 @@ class HumanGates:
         return ActionResult(attestation=rec.attestation)
 
     # ------------------------------------------------------------------ escalations
-    def _resolve_escalation(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
+    async def _resolve_escalation(self, node: Node, action: str, approver: str,
+                                  payload: dict) -> ActionResult:
         if action == "abandon":
             return self._end_change(node, approver, payload, "abandon")
         if action == "override_accept":
             return self._override_accept(node, approver, payload)
         if action == "plan_fix":
             return self._plan_fix(node, approver, payload)
+        if action == "revise_plan":
+            return await self._revise_plan(node, approver, payload)
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
         if node.escalation and node.escalation.retrying:
@@ -331,6 +334,30 @@ class HumanGates:
         node.escalation = None
         self._resume(node, resume)
         return ActionResult(status=node.status)
+
+    async def _revise_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """An oracle or baseline escalation the plan caused (an oracle whose commands cannot
+        work, say): the plan goes back to the planner with the human's feedback, as Request
+        revision does at H-2 – which this stage never reaches while it is escalated."""
+        ch = self.c.change
+        if node.kind not in (ORACLE, BASELINE) or self.c.nodes[H_SPEC].status == ACCEPTED:
+            raise WorkflowError("revise_plan is only available for an oracle or baseline "
+                                "escalation before H-2 is approved")
+        text = (payload.get("feedback") or payload.get("answer") or "").strip()
+        if not text:
+            raise WorkflowError("feedback for the planner is required")
+        node.escalation = None
+        if ch.round == 1:
+            node.status = PENDING        # the restart resets the oracle and baseline
+        elif node.kind == BASELINE:
+            # a fix round reruns the baseline once its revised plan passes critique; until then
+            # it stands as before the round (an oracle waits for the plan anyway)
+            node.status = ACCEPTED
+        else:
+            node.status, node.cycle = PENDING, node.cycle + 1
+        self.c.event("escalation", f"{approver}: plan sent back to the planner from {node.id}",
+                     node.id)
+        return await self._revise_spec(self.c.nodes[H_SPEC], approver, {"feedback": text})
 
     def _plan_fix(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """Plan a fix (§5.10a): integration failed late, so a fix round plans new work on top of

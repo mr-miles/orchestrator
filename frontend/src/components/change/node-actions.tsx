@@ -41,6 +41,8 @@ function Escalated({ node }: { node: Node }) {
   if (!e) return null
   // a late integration failure is fixed by a fix round: new tasks on top of the head (§5.10a)
   const planFix = node.kind === 'integration' && e.kind === 'integration_failed'
+  // before H-2, an oracle or baseline the plan cannot satisfy goes back to the planner
+  const revisePlan = node.kind === 'oracle' || node.kind === 'baseline'
   if (e.retrying)
     return (
       <Alert>
@@ -86,7 +88,9 @@ function Escalated({ node }: { node: Node }) {
             description={
               planFix
                 ? 'Attested as feedback for the next run; for Plan a fix, the comment the planner is given.'
-                : 'Attested as feedback for the next run.'
+                : revisePlan
+                  ? 'Attested as feedback for the next run; for Revise the plan, what the planner is told to change.'
+                  : 'Attested as feedback for the next run.'
             }
           />
           {node.kind === 'build' && (
@@ -116,6 +120,23 @@ function Escalated({ node }: { node: Node }) {
             onClick={() => act.node(node.id, 'override_accept', { reason })}
           >
             Override accept
+          </Button>
+        )}
+        {revisePlan && (
+          <Button
+            variant="secondary"
+            disabled={!answer.trim()}
+            title="Sends the plan back to the planner with this feedback, as Request revision does at H-2: the plan is critiqued again, then the oracle and baseline start over"
+            onClick={() =>
+              act.node(
+                node.id,
+                'revise_plan',
+                { feedback: answer },
+                'Plan sent back to the planner',
+              )
+            }
+          >
+            Revise the plan
           </Button>
         )}
         {planFix && (
