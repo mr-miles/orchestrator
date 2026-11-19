@@ -13,6 +13,7 @@ from ...git import GitRemote
 from ...sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
 from ...store import DocStore
 from ..assets import Assets
+from ..attention import AttentionItem
 from .auth import WorkloadAuth
 
 
@@ -60,6 +61,9 @@ class EngineHost(Protocol):
 
     def touch(self) -> None:
         """Something visible changed (UI refresh only)."""
+
+    def attention(self, item: AttentionItem, raised: bool) -> None:
+        """An attention item (§2.2) was raised or resolved: notify the decision owners."""
 
     def next_run_id(self) -> str: ...
 

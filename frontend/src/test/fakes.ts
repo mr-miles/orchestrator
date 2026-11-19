@@ -1,5 +1,5 @@
 import { mock } from 'bun:test'
-import type { ChangeState, ChangeSummary, Node, Run } from '@/lib/types'
+import type { Attention, ChangeState, ChangeSummary, Node, Run } from '@/lib/types'
 
 /** An EventSource the test drives: ``emit`` delivers a named event to the latest connection. */
 export class FakeEventSource extends EventTarget {
@@ -146,5 +146,36 @@ export function stateAtH1(): ChangeState {
     surfaces: [],
     environment: null,
     attestation_kinds: ['e2e-evaluation'],
+  }
+}
+
+/** What the controller's attention view says at H-1 (plus an ended change in the inbox). */
+export function attentionAtH1(): Attention {
+  const base = { goal: 'Say hello', reason: '', since: '2026-01-01T00:00:00.000Z' }
+  return {
+    needs_you: [
+      {
+        ...base,
+        key: 'c1|H-1|gate|H-1|t',
+        change: 'c1',
+        node: 'H-1',
+        kind: 'gate',
+        detail: 'H-1',
+        title: 'H-1: Accept requirements & tier',
+        blocking: true,
+      },
+    ],
+    inbox: [
+      {
+        ...base,
+        key: 'c0|None|change_ended|READY|t',
+        change: 'c0',
+        node: null,
+        kind: 'change_ended',
+        detail: 'READY',
+        title: 'Change is ready to ship',
+        blocking: false,
+      },
+    ],
   }
 }

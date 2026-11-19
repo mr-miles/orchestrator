@@ -20,13 +20,22 @@ export function ChangeView({
   state,
   tab,
   setTab,
+  focus,
 }: {
   cid: string
   state: ChangeState
   tab: TabId
   setTab: (t: TabId) => void
+  /** A node to open (from a link or an attention item); ``n`` changes on every request. */
+  focus?: { node: string; n: number } | null
 }) {
-  const [node, setNode] = useState<string | null>(null)
+  const [node, setNode] = useState<string | null>(focus?.node ?? null)
+  // a new request to open a node (React's "adjust state when a prop changes")
+  const [focused, setFocused] = useState(focus?.n)
+  if (focus && focus.n !== focused) {
+    setFocused(focus.n)
+    setNode(focus.node)
+  }
   const [log, setLog] = useState<string | null>(null)
   const [doc, setDoc] = useState<DocRef | null>(null)
   const nav = useMemo<Nav>(

@@ -68,6 +68,7 @@ class ChangeEngine(ChangeCore):
     def load(self) -> None:
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
+        self.seed_attention()
 
     def start(self, goal: str, base: str, *, blank_repo: bool = False) -> None:
         """Initialise a new change at ``base`` (the caller holds the lock); ``blank_repo``: the

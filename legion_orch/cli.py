@@ -11,7 +11,9 @@ import json
 import logging
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import Config, load_config
@@ -32,6 +34,11 @@ def _parser() -> argparse.ArgumentParser:
     st = sub.add_parser("start", help="start a change on a running controller")
     st.add_argument("goal")
     sub.add_parser("changes", help="list changes on a running controller")
+    sub.add_parser("attention", help="what needs a decision (gates, escalations) and the inbox "
+                                     "(ended changes, retrospective reports)")
+    dg = sub.add_parser("digest", help="what happened on a running controller since a time")
+    dg.add_argument("--since", default="8h",
+                    help="ISO timestamp or a duration back from now: 30m, 8h, 2d (default 8h)")
     act = sub.add_parser("act", help="perform a human action on a running controller")
     act.add_argument("change")
     act.add_argument("node")
@@ -81,6 +88,12 @@ class OperatorClient:
 
     def changes(self) -> list[dict]:
         return self._call("/api/changes")
+
+    def attention(self) -> dict:
+        return self._call("/api/attention")
+
+    def digest(self, since: str) -> dict:
+        return self._call("/api/digest?" + urllib.parse.urlencode({"since": since}))
 
     def start(self, goal: str) -> dict:
         return self._call("/api/changes", {"goal": goal})
@@ -148,6 +161,42 @@ def cmd_changes(cfg: Config, args) -> int:
     return 0
 
 
+def _print_items(title: str, items: list[dict], ui_url: str | None) -> None:
+    print(f"{title} ({len(items)})")
+    for i in items:
+        link = f"  {ui_url.rstrip('/')}/#{i['change']}/overview/{i['node']}" \
+            if ui_url and i.get("node") else ""
+        print(f"  {i['since'][:16]}  {i['change']}  {i['title']}{link}")
+        if i.get("reason"):
+            print(f"      {i['reason']}")
+
+
+def cmd_attention(cfg: Config, args) -> int:
+    a = OperatorClient(cfg).attention()
+    _print_items("Needs you", a["needs_you"], cfg.notify.ui_url)
+    _print_items("Inbox", a["inbox"], cfg.notify.ui_url)
+    return 0
+
+
+def _since(raw: str) -> str:
+    """An ISO timestamp as given, or ``<n>m|h|d`` back from now."""
+    if raw and raw[:-1].isdigit() and raw[-1] in "mhd":
+        delta = timedelta(**{{"m": "minutes", "h": "hours", "d": "days"}[raw[-1]]: int(raw[:-1])})
+        return (datetime.now(UTC) - delta).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return raw
+
+
+def cmd_digest(cfg: Config, args) -> int:
+    d = OperatorClient(cfg).digest(_since(args.since))
+    print(f"Since {d['since']}")
+    for c in d["changes"]:
+        counts = ", ".join(f"{n} {label}" for label, n in c["counts"].items()) or "no notable events"
+        print(f"  {c['id']}  {c['status']:<9} {counts}  {c['goal'][:50]}")
+    _print_items("Needs you", d["needs_you"], cfg.notify.ui_url)
+    _print_items("New in the inbox", d["inbox"], cfg.notify.ui_url)
+    return 0
+
+
 def cmd_start(cfg: Config, args) -> int:
     return _show(OperatorClient(cfg).start(args.goal))
 
@@ -181,7 +230,8 @@ def _show(result: Any) -> int:
 
 
 COMMANDS = {"check": cmd_check, "serve": cmd_serve, "setup-openshell": cmd_setup_openshell,
-            "changes": cmd_changes, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
+            "changes": cmd_changes, "attention": cmd_attention, "digest": cmd_digest,
+            "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
             "library": cmd_library}
 
 

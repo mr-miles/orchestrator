@@ -17,7 +17,8 @@ def change_list(ctl: Controller) -> list[dict]:
                     "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
                     "nodes": len(ce.nodes),
                     "live_runs": sum(r.status in LIVE_RUN for r in ce.runs.values()),
-                    "retrospective": ce.nodes[RETRO].status if RETRO in ce.nodes else None})
+                    "retrospective": ce.nodes[RETRO].status if RETRO in ce.nodes else None,
+                    "needs_you": sum(i.blocking for i in ce.attention_items)})
     return sorted(out, key=lambda c: c["created_at"], reverse=True)
 
 
@@ -55,3 +56,46 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "surfaces": [s.model_dump() for s in governance.surfaces(ce)] if ch else [],
             "environment": environment_spec(ce),
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}
+
+
+def _item(i) -> dict:
+    return i.model_dump(mode="json") | {"key": i.key}
+
+
+def attention(ctl: Controller) -> dict:
+    """Every change's attention items (WORKFLOW.md §2.2): ``needs_you`` (blocking: a gate or an
+    escalation waits for a decision owner) and ``inbox`` (to read: ended changes, retrospective
+    reports; the UI keeps which were read)."""
+    items = ctl.attention_items()
+    return {"needs_you": [_item(i) for i in items if i.blocking],
+            "inbox": [_item(i) for i in items if not i.blocking]}
+
+
+# What the "while you were away" digest counts, by timeline event kind (no model call).
+DIGEST_KINDS = {"dispatch": "runs started", "report": "reports accepted",
+                "report_rejected": "reports rejected", "run_failed": "runs failed",
+                "rework": "rework cycles", "accepted": "tasks merged",
+                "escalation": "escalations", "human_action": "human decisions",
+                "fix_round": "fix rounds", "ship": "ship checks", "abandoned": "abandoned"}
+
+
+def digest(ctl: Controller, since: str) -> dict:
+    """What happened since ``since`` (ISO), per change, from the timelines; changes with no
+    events are left out. What waits for a decision is never folded into the counts: it is
+    listed in full (``needs_you``)."""
+    changes = []
+    for ce in ctl.changes.values():
+        evs = ce.timeline_events(since)
+        counts: dict[str, int] = {}
+        for ev in evs:
+            label = DIGEST_KINDS.get(ev.get("kind"))
+            if label:
+                counts[label] = counts.get(label, 0) + 1
+        if evs:
+            ch = ce.change
+            changes.append({"id": ce.cid, "goal": ch.goal if ch else "",
+                            "status": ch.status if ch else None, "events": len(evs),
+                            "counts": counts})
+    att = attention(ctl)
+    return {"since": since, "changes": changes, "needs_you": att["needs_you"],
+            "inbox": [i for i in att["inbox"] if i["since"] >= since]}

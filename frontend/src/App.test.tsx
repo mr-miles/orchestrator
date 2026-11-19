@@ -6,6 +6,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { SettingsProvider } from '@/lib/settings'
 import App from './App'
 import {
+  attentionAtH1,
   CHANGES,
   FakeEventSource,
   fakeFetch,
@@ -127,6 +128,82 @@ describe('the operator UI', () => {
     expect(await screen.findByText('pytest -q')).toBeTruthy()
     act(() => log.emit('end', { run: 'r0002' }))
     expect(log.readyState).toBe(FakeEventSource.CLOSED)
+  })
+
+  test('the bell shows what needs you across changes and opens it', async () => {
+    renderApp()
+    const es = await push()
+    act(() => es.emit('attention', attentionAtH1()))
+    const bell = await screen.findByRole('button', { name: 'Needs you: 1; inbox: 1 unread' })
+    expect(document.title).toBe('(1) Legion Orchestrator')
+    await userEvent.click(bell)
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByText('Change is ready to ship')).toBeTruthy()
+    await userEvent.click(within(menu).getByText('H-1: Accept requirements & tier'))
+    const sheet = await screen.findByRole('dialog')
+    expect(
+      within(sheet).getByText('Accept requirements', { selector: '[data-slot=card-title]' }),
+    ).toBeTruthy()
+    act(() => es.emit('attention', { needs_you: [], inbox: [] }))
+    await waitFor(() => expect(document.title).toBe('Legion Orchestrator'))
+  })
+
+  test('reading an inbox item marks it read in this browser', async () => {
+    renderApp()
+    const es = await push()
+    act(() => es.emit('attention', attentionAtH1()))
+    await userEvent.click(await screen.findByRole('button', { name: /inbox: 1 unread/ }))
+    await userEvent.click(within(await screen.findByRole('menu')).getByText('Mark all read'))
+    await screen.findByRole('button', { name: 'Needs you: 1; inbox: 0 unread' })
+    expect(JSON.parse(localStorage.getItem('inbox-read') ?? '[]')).toEqual([
+      'c0|None|change_ended|READY|t',
+    ])
+  })
+
+  test('a link with a node opens its sheet once', async () => {
+    location.hash = '#c1/overview/H-1'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', stateAtH1()) // the sheet mounts open: let its effects settle in act
+    })
+    const sheet = await screen.findByRole('dialog')
+    expect(
+      await within(sheet).findByText('Accept requirements', { selector: '[data-slot=card-title]' }),
+    ).toBeTruthy()
+    expect(location.hash).toBe('#c1/overview')
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  test('after a long absence it shows what happened meanwhile', async () => {
+    localStorage.setItem('last-seen', new Date(Date.now() - 3 * 3600_000).toISOString())
+    calls = fakeFetch({
+      '/api/meta': {},
+      '/api/changes': CHANGES,
+      '/api/digest': {
+        since: 'x',
+        changes: [
+          {
+            id: 'c1',
+            goal: 'Say hello',
+            status: 'ACTIVE',
+            events: 9,
+            counts: { 'runs started': 2 },
+          },
+        ],
+        needs_you: attentionAtH1().needs_you,
+        inbox: [],
+      },
+    })
+    renderApp()
+    await push()
+    expect(await screen.findByText('While you were away')).toBeTruthy()
+    expect(screen.getByText(/2 runs started/)).toBeTruthy()
+    expect(calls.some((c) => c.url.startsWith('/api/digest?since='))).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(screen.queryByText('While you were away')).toBeNull())
   })
 
   test('with no changes it offers to start one', async () => {
