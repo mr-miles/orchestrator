@@ -288,7 +288,7 @@ listed in the readiness result.
                                                              |
                                         <blank repository: [build scaffold]>
                                                              |
-                                                  R2+: [oracle] -> R3: [baseline]
+                                    R2+: [oracle] -> [preflight] -> R3: [baseline]
                                                              |
                                     (H-2 approve spec + oracle, pinned)
                                                              |
@@ -410,6 +410,7 @@ Universal guards apply to every task and are listed once.
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
 | G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
 | G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. Unlinked criteria are allowed; the gate screens warn about them (§2.3). |
+| G-P13 | R2+: a command in `acceptance_commands` or `integration_commands` that only installs dependencies (`bun install …`, `npm ci`, `uv sync`, `pip install …`, …) belongs in `setup_commands`: the verifier runs the lists in order – setup, acceptance, integration – so an install placed later runs after the commands that need it. |
 
 ### 5.3 critique (part of `plan`)
 
@@ -537,6 +538,20 @@ The oracle commit is merged to the integration branch before any build task star
 repository's scaffold excepted, §5.3b). From then on these paths are **protected**: any later
 diff touching them fails G-B3 and the `protected_oracle` gate.
 
+### 5.4a `preflight` (R2+) – the oracle's commands run (controller, no agent)
+
+Once the oracle's tests are merged, the controller runs the oracle's `setup_commands`, then its
+`acceptance_commands`, at the integration head in a **fresh verifier sandbox** (G-V1 semantics:
+a new clone, the verifier image and environment profile) – not in the oracle's sandbox, whose
+installed dependencies and build output would hide what a clean run lacks. It confirms the
+commands can be run here, as the baseline and integration will run them. Before any build the
+acceptance commands are expected to fail; one that already passes is noted on the timeline.
+Results are recorded in `control/verification/preflight.json`; fix rounds run it again.
+
+| ID | Rule |
+| --- | --- |
+| G-PF1 | Every setup command exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the plan or the environment), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the plan back. |
+
 ### 5.5 `baseline` (R3) – independent baseline
 
 What is true of the code before any build: which acceptance tests fail (as they should, until the
@@ -551,7 +566,7 @@ change is built) and which failures were already there. The integration verifier
 | G-BL2 | The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's. |
 
 
-**Revise the plan from an escalation.** An oracle or baseline that escalates before H-2 (its
+**Revise the plan from an escalation.** An oracle, preflight or baseline that escalates before H-2 (its
 commands cannot run, say) never reaches the H-2 card, where Request revision lives. Its
 escalation therefore also offers **Revise the plan** (`revise_plan`, `feedback` required): the
 plan goes back to the planner with the feedback exactly as Request revision does at H-2 – in
@@ -593,6 +608,7 @@ Results are written by the controller to `tasks/{{task_id}}/verification.json` (
 | --- | --- |
 | G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
 | G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the node escalates `verify_unrunnable` instead of spending a rework cycle (oracle commands at integration likewise). **Retry** re-runs verification at the same candidate, e.g. after the image is fixed. |
+| G-V3 | The oracle's `setup_commands` run first, in order, in every verifier sandbox (task verification, preflight, baseline, integration); results mark them `setup`. The first that fails stops the run: no other command runs. In a task's verification or at integration it fails like any command; at preflight and the baseline – before any build – it is handled as G-PF1 says. |
 
 Exit codes are only as trustworthy as the code a command runs: a test process that imports the
 code under test can be made to exit 0. So the protected acceptance tests must be **black-box and

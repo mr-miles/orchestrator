@@ -24,6 +24,9 @@ from ..model import (
     FAILED,
     INTEGRATION,
     MERGING,
+    ORACLE,
+    PENDING,
+    PREFLIGHT,
     R_REPORTED,
     R_SUPERSEDED,
     REVIEWING,
@@ -34,6 +37,7 @@ from ..model import (
     CommandResult,
     Feedback,
     Node,
+    Oracle,
     ReadinessVerdict,
     Resume,
     Verdict,
@@ -75,9 +79,11 @@ class Acceptance:
         """Run the node's deterministic verification in the background (node is VERIFYING)."""
         self.c.spawn(self.verify_node(node_id))
 
-    async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
-        """G-V1: run commands at ``sha`` in a fresh verifier sandbox. Never raises. A name the
-        gateway already has (another controller) is replaced and the sandbox created again."""
+    async def _verify(self, label: str, sha: str, commands: list[str],
+                      setup: list[str] | None = None) -> Verification:
+        """G-V1: run commands at ``sha`` in a fresh verifier sandbox – after the oracle's setup
+        commands, which stop the run if one fails (G-V3). Never raises. A name the gateway
+        already has (another controller) is replaced and the sandbox created again."""
         result = Verification(sha=sha, sandbox=self.c.host.new_sandbox_name(VERIFIER_PREFIX))
         if not commands:
             result.infra_error = "no commands to verify"
@@ -85,8 +91,14 @@ class Acceptance:
         for attempt in range(3):
             try:
                 async with self._verifier_sandbox(result.sandbox, label, sha) as box:
-                    for cmd in commands:
-                        result.results.append(await box.run(cmd))
+                    for cmd in setup or []:
+                        r = (await box.run(cmd)).model_copy(update={"setup": True})
+                        result.results.append(r)
+                        if r.exit_code != 0:
+                            break
+                    else:
+                        for cmd in commands:
+                            result.results.append(await box.run(cmd))
                 result.ok = all(r.exit_code == 0 for r in result.results)
             except Exception as e:
                 if is_name_clash(e) and not result.results and attempt < 2:
@@ -139,22 +151,27 @@ class Acceptance:
         """Verify the node's candidate; then review (or merge), rework, or escalate."""
         c, node = self.c, self.c.nodes[node_id]
         commands = (node.task.verification if node.kind == BUILD
-                    else c.baseline_commands() if node.kind == BASELINE else c.oracle_commands())
+                    else c.baseline_commands() if node.kind == BASELINE
+                    else list((c.change.oracle or Oracle()).acceptance_commands)
+                    if node.kind == PREFLIGHT else c.oracle_commands())
+        setup = c.setup_commands()
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
-                f"({len(commands)} command(s))", node_id)
-        res = await self._verify(node_id, node.candidate_sha, commands)
+                f"({len(setup)} setup, {len(commands)} command(s))", node_id)
+        res = await self._verify(node_id, node.candidate_sha, commands, setup)
         async with c.lock:
             if node.status != VERIFYING:
                 return
             att = c.write_record(f"tasks/{node.task.id}/verification.json" if node.kind == BUILD
                                  else f"control/verification/{_slug(node_id)}.json", res).attestation
             # The node keeps a compact copy (the stored record has the command output).
-            key = {INTEGRATION: "integration", BASELINE: "baseline"}.get(node.kind, str(node.cycle))
+            key = {INTEGRATION: "integration", BASELINE: "baseline",
+                   PREFLIGHT: "preflight"}.get(node.kind, str(node.cycle))
             node.verification[key] = res.model_copy(update={
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
             fails = [r for r in res.results if r.exit_code != 0]
             unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND]
+            setup_failed = next((r for r in fails if r.setup), None)
             if res.infra_error:
                 c.escalate(node, "verify_infra", res.infra_error, resume=Resume.VERIFYING)
             elif unrunnable:
@@ -165,6 +182,16 @@ class Acceptance:
                            + ", ".join(f"`{r.command}`" for r in unrunnable),
                            resume=Resume.VERIFYING,
                            log_tail="\n".join(r.output[-800:] for r in unrunnable))
+            elif setup_failed and node.kind in (PREFLIGHT, BASELINE):   # before any build
+                self._setup_failed(node, setup_failed, att)
+            elif node.kind == PREFLIGHT:
+                # G-PF1: the commands can be run here; before the build they are expected to
+                # fail, so an acceptance command that already passes is only noted
+                node.status = ACCEPTED
+                for r in res.results:
+                    if not r.setup and r.exit_code == 0:
+                        c.event("preflight", f"acceptance command `{r.command}` already passes "
+                                "before any build: it may not test the change", node_id)
             elif node.kind == BASELINE:
                 # before any build, failures are expected: they are recorded, not reworked
                 # (G-BL2 flags at H-2 what already passes or differs from the agent's results)
@@ -193,6 +220,33 @@ class Acceptance:
                 node.status = ACCEPTED
                 self.lifecycle.accept_runs(node)
             c.save()
+
+    def _setup_failed(self, node: Node, r: CommandResult, att: str) -> None:
+        """G-V3: a setup command failed, so nothing after it ran. At preflight the oracle's
+        author is sent the output (one oracle cycle; fixing it may need the plan, which it then
+        reports BLOCKED); at the baseline a human decides. (In a build or at integration the
+        tasks may have caused it: it fails like any command there.)"""
+        c = self.c
+        what = (f"setup command `{r.command}` exited {r.exit_code} in a fresh verifier sandbox, "
+                "so no acceptance command ran")
+        oracle = c.nodes.get(ORACLE)
+        limit = c.cfg.limits.review_max_cycles + (oracle.extra_cycles if oracle else 0)
+        if node.kind == PREFLIGHT and oracle is not None and oracle.cycle < limit:
+            oracle.cycle += 1
+            oracle.feedback.append(Feedback(
+                cycle=oracle.cycle, source="verification", attestations=[att],
+                text=f"BLOCKER (preflight): {what}. Output: {r.output[-800:]}. The acceptance "
+                     "commands must run in a fresh clone after only the setup commands. Fix your "
+                     "tests or support files; if the fix is in plan/oracle.json (the commands or "
+                     "setup_commands) or the environment, report BLOCKED with it as "
+                     "missing_decision."))
+            oracle.candidate_sha = None
+            oracle.status = REWORK
+            node.status = PENDING        # runs again once the oracle is accepted
+            c.event("rework", f"preflight: {what}: oracle rework cycle {oracle.cycle}", ORACLE)
+            return
+        c.escalate(node, "setup_failed", f"G-V3: {what}", resume=Resume.VERIFYING,
+                   log_tail=r.output[-800:])
 
     def panel_complete(self, node: Node) -> None:
         """Once every panel member has reported: merge on a unanimous PASS at the candidate,

@@ -56,6 +56,12 @@ function KV({ rows }: { rows: [string, React.ReactNode][] }) {
   )
 }
 
+const VERIFICATION_LABEL: Record<string, string> = {
+  integration: 'Integration',
+  preflight: 'Preflight',
+  baseline: 'Baseline (controller)',
+}
+
 const SEVERITY: Record<Finding['severity'], 'destructive' | 'secondary' | 'outline'> = {
   BLOCKER: 'destructive',
   WARNING: 'secondary',
@@ -253,8 +259,7 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
             <Card key={k} size="sm">
               <CardHeader>
                 <CardTitle className="flex flex-wrap items-center gap-2">
-                  {k === 'integration' ? 'Integration' : `Cycle ${k}`} <Verdict ok={v.ok} />{' '}
-                  <Sha sha={v.sha} />
+                  {VERIFICATION_LABEL[k] ?? `Cycle ${k}`} <Verdict ok={v.ok} /> <Sha sha={v.sha} />
                 </CardTitle>
                 {v.infra_error && (
                   <CardDescription className="text-destructive">{v.infra_error}</CardDescription>
@@ -263,7 +268,8 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
               <CardContent className="space-y-1 font-mono text-xs">
                 {v.results.map((r, i) => (
                   <p key={i}>
-                    {r.exit_code === 0 ? '✓' : '✗'} {r.command} → {r.exit_code}
+                    {r.exit_code === 0 ? '✓' : '✗'}{' '}
+                    {r.setup && <Badge variant="outline">setup</Badge>} {r.command} → {r.exit_code}
                   </p>
                 ))}
                 {v.attestation && <AttestationLink att={v.attestation} />}

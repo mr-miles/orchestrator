@@ -49,6 +49,8 @@ export interface CommandResult {
   command: string
   exit_code: number
   output?: string
+  /** one of the oracle's setup_commands, run first */
+  setup?: boolean
 }
 
 export interface Verification {

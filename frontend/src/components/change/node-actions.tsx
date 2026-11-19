@@ -41,8 +41,8 @@ function Escalated({ node }: { node: Node }) {
   if (!e) return null
   // a late integration failure is fixed by a fix round: new tasks on top of the head (§5.10a)
   const planFix = node.kind === 'integration' && e.kind === 'integration_failed'
-  // before H-2, an oracle or baseline the plan cannot satisfy goes back to the planner
-  const revisePlan = node.kind === 'oracle' || node.kind === 'baseline'
+  // before H-2, an oracle, preflight or baseline the plan cannot satisfy goes back to the planner
+  const revisePlan = ['oracle', 'preflight', 'baseline'].includes(node.kind)
   if (e.retrying)
     return (
       <Alert>

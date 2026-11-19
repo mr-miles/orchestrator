@@ -22,6 +22,7 @@ from ..model import (
     ORACLE,
     PENDING,
     PLAN,
+    PREFLIGHT,
     PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
@@ -211,7 +212,7 @@ class HumanGates:
             plan.round, plan.round_start_cycle = 1, plan.cycle
         ch.round, ch.rounds = 1, []
         self.graph.reset_environment()
-        for nid in (ORACLE, BASELINE):
+        for nid in (ORACLE, PREFLIGHT, BASELINE):
             if nid in self.c.nodes:
                 n = self.c.nodes[nid]
                 n.status, n.cycle = PENDING, n.cycle + 1
@@ -336,22 +337,23 @@ class HumanGates:
         return ActionResult(status=node.status)
 
     async def _revise_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """An oracle or baseline escalation the plan caused (an oracle whose commands cannot
+        """An oracle, preflight or baseline escalation the plan caused (an oracle whose commands cannot
         work, say): the plan goes back to the planner with the human's feedback, as Request
         revision does at H-2 – which this stage never reaches while it is escalated."""
         ch = self.c.change
-        if node.kind not in (ORACLE, BASELINE) or self.c.nodes[H_SPEC].status == ACCEPTED:
-            raise WorkflowError("revise_plan is only available for an oracle or baseline "
-                                "escalation before H-2 is approved")
+        if node.kind not in (ORACLE, PREFLIGHT, BASELINE) \
+                or self.c.nodes[H_SPEC].status == ACCEPTED:
+            raise WorkflowError("revise_plan is only available for an oracle, preflight or "
+                                "baseline escalation before H-2 is approved")
         text = (payload.get("feedback") or payload.get("answer") or "").strip()
         if not text:
             raise WorkflowError("feedback for the planner is required")
         node.escalation = None
         if ch.round == 1:
             node.status = PENDING        # the restart resets the oracle and baseline
-        elif node.kind == BASELINE:
-            # a fix round reruns the baseline once its revised plan passes critique; until then
-            # it stands as before the round (an oracle waits for the plan anyway)
+        elif node.kind in (PREFLIGHT, BASELINE):
+            # a fix round reruns them once its revised plan passes critique; until then they
+            # stand as before the round (an oracle waits for the plan anyway)
             node.status = ACCEPTED
         else:
             node.status, node.cycle = PENDING, node.cycle + 1

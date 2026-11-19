@@ -17,6 +17,7 @@ from ..model import (
     ORACLE,
     PENDING,
     PLAN,
+    PREFLIGHT,
     PROVISION,
     READY,
     RELEASE,
@@ -56,9 +57,13 @@ class StageGraph:
         if r >= 2:
             c.add_node(Node(id=ORACLE, kind=ORACLE, title="Oracle: protected acceptance tests",
                             depends_on=[after_critique]))
-            h2_deps = [ORACLE]
+            # the controller runs the oracle's commands in a fresh verifier sandbox (§5.4a)
+            c.add_node(Node(id=PREFLIGHT, kind=PREFLIGHT, title="Preflight: the oracle's commands run",
+                            depends_on=[ORACLE]))
+            h2_deps = [PREFLIGHT]
         if r >= 3:
-            c.add_node(Node(id=BASELINE, kind=BASELINE, title="Independent baseline", depends_on=[ORACLE]))
+            c.add_node(Node(id=BASELINE, kind=BASELINE, title="Independent baseline",
+                            depends_on=[PREFLIGHT]))
             h2_deps = [BASELINE]
         # H-2 also waits for the plan and the environment directly: in a fix round, oracle and
         # baseline may still be accepted from round 1 while the round is planned or its
@@ -173,9 +178,10 @@ class StageGraph:
             node = c.nodes[ORACLE]
             node.status, node.cycle = PENDING, node.cycle + 1
             node.base_sha = node.candidate_sha = node.accepted_sha = None
-        if BASELINE in c.nodes:
-            node = c.nodes[BASELINE]
-            node.status, node.cycle, node.candidate_sha = PENDING, node.cycle + 1, None
+        for nid in (PREFLIGHT, BASELINE):     # run again at the round's head
+            if nid in c.nodes:
+                node = c.nodes[nid]
+                node.status, node.cycle, node.candidate_sha = PENDING, node.cycle + 1, None
         return self.add_round_builds(c.json_doc("plan/taskgraph.json"), n)
 
     def remove_round_builds(self, n: int) -> None:

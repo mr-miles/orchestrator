@@ -20,6 +20,7 @@ class NodeKind(StrEnum):
     PLAN = "plan"
     PROVISION = "provision"
     ORACLE = "oracle"
+    PREFLIGHT = "preflight"              # the controller runs the oracle's commands (R2+)
     BASELINE = "baseline"
     BUILD = "build"
     INTEGRATION = "integration"
@@ -154,7 +155,7 @@ class Resume(StrEnum):
 INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.SHIP, NodeKind.HUMAN)
-PROVISION, RETRO = NodeKind.PROVISION, NodeKind.RETROSPECTIVE
+PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKind.PREFLIGHT
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
@@ -211,6 +212,7 @@ class Oracle(Record):
     """``plan/oracle.json`` as approved (shape enforced by the oracle schema)."""
     acceptance_tests: list[str] = []
     protected_support: list[str] = []
+    setup_commands: list[str] = []      # run first in every verifier sandbox (installs, builds)
     acceptance_commands: list[str] = []
     integration_commands: list[str] = []
     criteria: list[Criterion] = []
@@ -269,6 +271,7 @@ class CommandResult(Record):
     command: str
     exit_code: int
     output: str = ""
+    setup: bool = False              # one of the oracle's setup_commands, run first
 
 
 class Verification(Record):
