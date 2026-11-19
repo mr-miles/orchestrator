@@ -49,8 +49,8 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
 
 
 class Provisioner:
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
-        self.c, self.lifecycle = core, lifecycle
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, acceptance=None):
+        self.c, self.lifecycle, self.acceptance = core, lifecycle, acceptance
 
     def _fail(self, reason: str, log: str = "") -> None:
         if log:
@@ -72,7 +72,8 @@ class Provisioner:
         except LibraryError as e:
             self._fail(f"the environment library is invalid: {e}")
             return None
-        profiles, v = guards.environment(spec, lib, c.cfg, set(c.assets.roles))
+        profiles, v = guards.environment(spec, lib, c.cfg, set(c.assets.roles),
+                                         {n for n, r in c.assets.roles.items() if r.repo})
         if v:
             self._fail("the approved spec no longer resolves against the library: " + "; ".join(v))
             return None
@@ -142,7 +143,32 @@ class Provisioner:
                         n.sandbox, n.sandbox_stopped = None, False
                 c.event("provision", f"released sandbox {sb}: not from this build", PROVISION)
                 self.lifecycle.delete_sandbox_later(sb, stopped)
-            node.status = ACCEPTED
-            c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
-                    PROVISION)
+            pin = c.change.setup_pin
+            check = self.acceptance is not None and pin is not None and pin.source == H_ENV
+            if not check:
+                node.status = ACCEPTED
+                c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
+                        PROVISION)
+            c.save()
+        if check:
+            await self._check_setup(sorted(roles))
+
+    async def _check_setup(self, roles: list[str]) -> None:
+        """G-PV3: the approved mise.toml's setup task succeeds at the integration head in a fresh
+        verifier sandbox from this build – before any sandbox relies on it."""
+        c = self.c
+        res = await self.acceptance._verify("provision", c.change.integration_head, [])
+        async with c.lock:
+            node = c.nodes.get(PROVISION)
+            if node is None or node.status != RUNNING:
+                return
+            r = res.results[0] if res.results else None
+            if res.infra_error or r is None or r.exit_code != 0:
+                why = res.infra_error or (f"`{r.command}` exited {r.exit_code}" if r else "did not run")
+                self._fail(f"G-PV3: the repository's setup failed in the verifier: {why}",
+                           r.output if r else "")
+            else:
+                node.status = ACCEPTED
+                c.event("provision", "environment ready; the repository's setup ran in the "
+                        f"verifier ({', '.join(roles) or 'no roles'})", PROVISION)
             c.save()

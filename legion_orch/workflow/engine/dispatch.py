@@ -11,6 +11,7 @@ from typing import Any
 from ...config import agent_command
 from ...sandbox import (
     AGENT_PREFIX,
+    MISE_SETUP_SH,
     RUN_AGENT_SH,
     SandboxSpec,
     agentlog,
@@ -18,7 +19,7 @@ from ...sandbox import (
 )
 from ...util import now_iso
 from .. import attest, governance
-from ..assets import AssetError
+from ..assets import AssetError, GitMode
 from ..model import (
     ACCEPTED,
     BUILD,
@@ -261,6 +262,13 @@ class Dispatcher:
             "LEGION_NEEDS_REPO": "1" if self.c.assets.roles[run.role].repo else "0",
             "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
         }
+        pin = self.c.change.setup_pin
+        # §5.3c: setup after checkout, for roles that work with a commit (they build, test or
+        # judge code); the read-only ones (intake, planner, critic, release) only read the tree
+        if pin and self.c.assets.roles[run.role].git != GitMode.NONE:
+            env["LEGION_SETUP_PIN"] = pin.blob
+            env["LEGION_SETUP_TIMEOUT"] = str(self.c.cfg.limits.setup_timeout_s)
+            (d / "mise-setup.sh").write_text(MISE_SETUP_SH)
         if found := self._resumable_session(run):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session

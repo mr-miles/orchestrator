@@ -79,6 +79,11 @@ class Proposals(_Entry):
         return self.tools if kind is Kind.TOOL else self.policies
 
 
+class MiseFile(_Entry):
+    """The repository's ``mise.toml`` as the spec proposes it (§5.3c): committed after H-E1."""
+    content: str
+
+
 class EnvironmentSpec(_Entry):
     """``plan/environment.json`` (shape enforced by the environment schema)."""
     summary: str
@@ -86,6 +91,8 @@ class EnvironmentSpec(_Entry):
     roles: dict[str, str]                           # role (or "verifier") -> profile
     proposed: Proposals = Proposals()
     rationale: str
+    mise: MiseFile | None = None                    # None: the repository's mise.toml as it is
+    setup_network: list[str] = []                   # policies the setup task needs (G-E8)
 
     def used_proposals(self) -> dict[Kind, list[str]]:
         """Proposals a profile actually uses: proposed tools in a profile, and proposed policies

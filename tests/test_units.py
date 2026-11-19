@@ -736,9 +736,10 @@ def test_protected_support_files_are_protected():
 
     from legion_orch.workflow import governance
     from legion_orch.workflow.model import Oracle
-    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support)),
-                              cfg=types.SimpleNamespace(
-        protected_paths=[".github/"]))
+    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support),
+                                                           setup_pin=None),
+                              cfg=types.SimpleNamespace(protected_paths=[".github/"]),
+                              latest=lambda _rel: None)
     assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
 
 

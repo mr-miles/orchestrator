@@ -264,6 +264,20 @@ class GitRemote:
     async def integration_head(self, change_id: str) -> str:
         return await self.rev_parse(f"refs/heads/{self.integration_branch(change_id)}")
 
+    async def commit_file(self, change_id: str, path: str, content: str, message: str) -> str:
+        """Write ``path`` in the change's integration worktree and commit it as the controller;
+        the new integration head (unchanged when the file already had this content)."""
+        wt = self.worktree(change_id)
+        async with self.lock:
+            f = wt / path
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(content)
+            await run("git", "add", "--", path, cwd=wt)
+            rc, _ = await run("git", "diff", "--cached", "--quiet", cwd=wt, check=False)
+            if rc != 0:
+                await run("git", "commit", "--quiet", "-m", message, cwd=wt)
+            return (await run("git", "rev-parse", "HEAD", cwd=wt))[1].strip()
+
     async def merge(self, change_id: str, sha: str, message: str) -> tuple[bool, str]:
         """Merge a candidate into the change's integration worktree. Returns (clean, head|detail)."""
         wt = self.worktree(change_id)

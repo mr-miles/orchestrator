@@ -30,6 +30,7 @@ from ..model import (
     FailureSource,
     Node,
     Run,
+    SetupPin,
 )
 from ..results import ActionResult, ReportOutcome
 from .acceptance import Acceptance
@@ -57,7 +58,7 @@ class ChangeEngine(ChangeCore):
         self._graph = StageGraph(self)
         self._lifecycle = RunLifecycle(self)
         self._acceptance = Acceptance(self, self._lifecycle)
-        self._provisioner = Provisioner(self, self._lifecycle)
+        self._provisioner = Provisioner(self, self._lifecycle, self._acceptance)
         self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
@@ -70,11 +71,12 @@ class ChangeEngine(ChangeCore):
         self.st.load()
         self.seed_attention()
 
-    def start(self, goal: str, base: str, *, blank_repo: bool = False) -> None:
+    def start(self, goal: str, base: str, *, blank_repo: bool = False,
+              setup_pin: SetupPin | None = None) -> None:
         """Initialise a new change at ``base`` (the caller holds the lock); ``blank_repo``: the
         base has no build tooling or code yet (§5.3b)."""
         self.st.change = Change(id=self.cid, goal=goal, base_sha=base, integration_head=base,
-                                blank_repo=blank_repo)
+                                blank_repo=blank_repo, setup_pin=setup_pin)
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
         self.add_node(Node(id=INTAKE, kind=INTAKE, title="Intake: requirements & risk"))
         self.add_node(Node(id=H_REQUIREMENTS, kind=HUMAN, title="Accept requirements & tier",

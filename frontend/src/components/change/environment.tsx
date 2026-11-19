@@ -84,6 +84,23 @@ export function EnvironmentSpec({ env }: { env: Spec | null }) {
           ))}
         </TableBody>
       </Table>
+      {spec.mise && (
+        <section className="space-y-1" aria-label="Repository setup">
+          <h4 className="font-medium">
+            Repository setup: <code>mise.toml</code>
+          </h4>
+          <p className="text-muted-foreground">
+            Committed to the integration branch on approval. Its <code>[tools]</code> are installed
+            in the images; its <code>setup</code> task runs after every checkout in the verifier and
+            in agents that work on code
+            {spec.setup_network?.length
+              ? `, with network: ${spec.setup_network.join(', ')}`
+              : ', with no network'}
+            . Tasks may not change it afterwards.
+          </p>
+          <Pre>{spec.mise.content}</Pre>
+        </section>
+      )}
       {env.problems.length > 0 && (
         <div className="space-y-1 text-destructive">
           {env.problems.map((p) => (
