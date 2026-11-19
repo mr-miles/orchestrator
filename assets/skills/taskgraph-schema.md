@@ -33,7 +33,6 @@ must read.
 ```json
 {"acceptance_tests": ["tests/acceptance/test_users_api.py"],
  "protected_support": ["tests/acceptance/conftest.py"],
- "setup_commands": ["uv sync --frozen"],
  "acceptance_commands": ["pytest -q tests/acceptance"],
  "integration_commands": ["pytest -q"],
  "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…",
@@ -45,14 +44,14 @@ must read.
                "pins": ["docker-compose.yml", "schema/openapi.yaml"]}]}
 ```
 
-**Commands run in a fresh clone, in order:** `setup_commands`, then `acceptance_commands`, then
-`integration_commands`, in one verifier sandbox – nothing is installed or built beforehand. Put
-every step the tests need first (dependency installs such as `bun install --frozen-lockfile` or
-`uv sync --frozen`, code generation, a build) in `setup_commands`; a command that only installs
-dependencies anywhere else is rejected (G-P13), since it would run after the acceptance commands
-that need it. Right after the oracle's tests are merged, the controller runs the setup and
-acceptance commands this way (preflight, G-PF1): a setup step that fails, or a command the
-verifier image lacks, stops the plan there.
+**Commands run in a fresh clone, in order:** the repository's setup (`mise run setup`, when its
+`mise.toml` has a `setup` task – proposed with the environment), then `acceptance_commands`, then
+`integration_commands`, in one verifier sandbox; nothing else is installed or built beforehand.
+Dependency installs, code generation and builds the tests need belong in that setup task, never
+in these lists: a command that only installs dependencies here is rejected (G-P13), since it
+would run after the acceptance commands that need it. Right after the oracle's tests are merged,
+the controller runs the setup and the acceptance commands this way (preflight, G-PF1): a setup
+that fails, or a command the verifier image lacks, stops the plan there.
 
 **Criteria** name the acceptance tests and commands that check them (`tests` ⊆
 `acceptance_tests`, `commands` ⊆ `acceptance_commands`, G-P12). Give every criterion at least one:

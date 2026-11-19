@@ -154,10 +154,6 @@ class ChangeCore:
             + governance.surface_commands(self)
         return list(dict.fromkeys(cmds))
 
-    def setup_commands(self) -> list[str]:
-        """The oracle's setup steps, run first in every verifier sandbox (installs, builds)."""
-        return list((self.change.oracle or Oracle()).setup_commands)
-
     def baseline_commands(self) -> list[str]:
         """The commands the baseline runs before any build: acceptance and integration."""
         orc = self.change.oracle or Oracle()

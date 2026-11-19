@@ -20,16 +20,6 @@
       "uniqueItems": true,
       "maxItems": 200
     },
-    "setup_commands": {
-      "type": "array",
-      "description": "Run first, in order, in every verifier sandbox (dependency installs, builds the tests need); a failure stops verification",
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 2000
-      },
-      "maxItems": 20
-    },
     "acceptance_commands": {
       "type": "array",
       "items": {

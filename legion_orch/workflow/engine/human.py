@@ -1,7 +1,7 @@
 """Human actions: the H-1/H-E1/H-2/H-3 gates, escalation resolution, change-level governance."""
 from __future__ import annotations
 
-from .. import governance, guards, risk
+from .. import governance, guards, risk, setup
 from ..environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ..model import (
     ACCEPTED,
@@ -220,6 +220,7 @@ class HumanGates:
             del self.c.nodes[b.id]
         await self.c.git.init_integration(ch.id, ch.base_sha)
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
+        ch.setup_pin = await setup.pin_at_base(self.c.git, ch.base_sha)   # the base's again
         ch.surface_pins = {}
         node.status = PENDING
         return ActionResult()
@@ -233,8 +234,22 @@ class HumanGates:
         rec = Approval(gate=H_ENV, approver=approver, pins={self.c.p(ENV_SPEC): version}, note=note)
         rec.attestation = self.c.write_record("control/approvals/environment.json", rec).attestation
         self.c.change.approvals[H_ENV] = rec
+        await self._adopt_mise(EnvironmentSpec.model_validate(self.c.json_doc(ENV_SPEC, version)))
         node.status = ACCEPTED
         return ActionResult()
+
+    async def _adopt_mise(self, spec: EnvironmentSpec) -> None:
+        """§5.3c: the approved spec's mise.toml goes onto the integration branch (a controller
+        commit, before any build) and is pinned as the setup that runs (G-MS1)."""
+        ch = self.c.change
+        if spec.mise is None:
+            return
+        head = await self.c.git.commit_file(ch.id, setup.MISE_TOML, spec.mise.content,
+                                            f"legion {ch.id}: mise.toml approved at H-E1")
+        if head != ch.integration_head:
+            self.c.event("environment", f"committed the approved mise.toml -> {head[:12]}", H_ENV)
+        ch.integration_head = head
+        ch.setup_pin = setup.pin_for(spec.mise.content, H_ENV)
 
     async def _revise_environment(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-E1 revise: the planner reworks the plan's environment with the feedback; the plan

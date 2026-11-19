@@ -248,11 +248,11 @@ _INSTALL = re.compile(
 
 
 def setup_steps(oracle: dict) -> list[str]:
-    """G-P13 (tier >= 2): a command that only installs dependencies goes in ``setup_commands``,
-    which the verifier runs first; in the other lists it would run after the acceptance
-    commands that need it (they run in order: acceptance, then integration)."""
-    return [f"G-P13: `{c}` only installs dependencies: move it to oracle.setup_commands "
-            "(run first in every verifier sandbox)"
+    """G-P13 (tier >= 2): a command that only installs dependencies belongs in the repository's
+    setup (mise.toml's ``setup`` task, §5.3c), which the verifier runs first; in the oracle's
+    lists it would run after the acceptance commands that need it (acceptance, then integration)."""
+    return [f"G-P13: `{c}` only installs dependencies: it belongs in mise.toml's setup task "
+            "(run first after every checkout; propose it in the environment spec)"
             for key in ("acceptance_commands", "integration_commands")
             for c in oracle.get(key) or [] if isinstance(c, str) and _INSTALL.match(c)]
 

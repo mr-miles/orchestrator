@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from ...sandbox import (
+    MISE_SETUP_SH,
     VERIFIER_PREFIX,
     VERIFY_SETUP_SH,
     Runner,
@@ -43,6 +44,7 @@ from ..model import (
     Verdict,
     Verification,
 )
+from ..setup import SETUP_COMMAND
 from ..ship import evaluate
 from .auth import VerifierGrant
 from .common import _slug
@@ -60,6 +62,13 @@ class VerifierSandbox:
     runner: Runner
     timeout_s: int
     workdir: str
+    setup_script: str = ""
+
+    async def setup(self, pin: str, timeout_s: int) -> CommandResult:
+        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
+        rc, out = await self.runner.exec(self.name, ["bash", self.setup_script, pin],
+                                         workdir=self.workdir, timeout=timeout_s)
+        return CommandResult(command=SETUP_COMMAND, exit_code=rc, output=out[-4000:], setup=True)
 
     async def run(self, cmd: str) -> CommandResult:
         rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir=self.workdir,
@@ -79,24 +88,22 @@ class Acceptance:
         """Run the node's deterministic verification in the background (node is VERIFYING)."""
         self.c.spawn(self.verify_node(node_id))
 
-    async def _verify(self, label: str, sha: str, commands: list[str],
-                      setup: list[str] | None = None) -> Verification:
-        """G-V1: run commands at ``sha`` in a fresh verifier sandbox – after the oracle's setup
-        commands, which stop the run if one fails (G-V3). Never raises. A name the gateway
+    async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
+        """G-V1: run commands at ``sha`` in a fresh verifier sandbox – after the repository's
+        setup (§5.3c), which stops the run if it fails (G-V3). Never raises. A name the gateway
         already has (another controller) is replaced and the sandbox created again."""
         result = Verification(sha=sha, sandbox=self.c.host.new_sandbox_name(VERIFIER_PREFIX))
-        if not commands:
+        if not commands and not self.c.change.setup_pin:
             result.infra_error = "no commands to verify"
             return result
         for attempt in range(3):
             try:
                 async with self._verifier_sandbox(result.sandbox, label, sha) as box:
-                    for cmd in setup or []:
-                        r = (await box.run(cmd)).model_copy(update={"setup": True})
+                    pin = self.c.change.setup_pin
+                    if pin:                    # §5.3c, G-V3: setup first; a failure stops here
+                        r = await box.setup(pin.blob, self.c.cfg.limits.setup_timeout_s)
                         result.results.append(r)
-                        if r.exit_code != 0:
-                            break
-                    else:
+                    if not pin or result.results[-1].exit_code == 0:
                         for cmd in commands:
                             result.results.append(await box.run(cmd))
                 result.ok = all(r.exit_code == 0 for r in result.results)
@@ -118,6 +125,7 @@ class Acceptance:
         payload.mkdir(parents=True, exist_ok=True)
         (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.c.git_url)}\n")
         (payload / "verify-setup.sh").write_text(VERIFY_SETUP_SH)
+        (payload / "mise-setup.sh").write_text(MISE_SETUP_SH)
         ref = None
         try:
             env = sandbox_env(self.c.change, VERIFIER)
@@ -136,7 +144,8 @@ class Acceptance:
                                                timeout=600)
             if rc != 0:
                 raise SandboxError(f"verifier setup failed ({rc}): {out[-1500:]}")
-            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s, f"{root}/work")
+            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s,
+                                  f"{root}/work", f"{root}/payload/mise-setup.sh")
         finally:
             if ref:
                 self.c.svc.auth.unregister_verifier(ref)
@@ -154,10 +163,10 @@ class Acceptance:
                     else c.baseline_commands() if node.kind == BASELINE
                     else list((c.change.oracle or Oracle()).acceptance_commands)
                     if node.kind == PREFLIGHT else c.oracle_commands())
-        setup = c.setup_commands()
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
-                f"({len(setup)} setup, {len(commands)} command(s))", node_id)
-        res = await self._verify(node_id, node.candidate_sha, commands, setup)
+                f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
+                node_id)
+        res = await self._verify(node_id, node.candidate_sha, commands)
         async with c.lock:
             if node.status != VERIFYING:
                 return
@@ -170,7 +179,7 @@ class Acceptance:
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
             fails = [r for r in res.results if r.exit_code != 0]
-            unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND]
+            unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND and not r.setup]
             setup_failed = next((r for r in fails if r.setup), None)
             if res.infra_error:
                 c.escalate(node, "verify_infra", res.infra_error, resume=Resume.VERIFYING)
@@ -222,13 +231,13 @@ class Acceptance:
             c.save()
 
     def _setup_failed(self, node: Node, r: CommandResult, att: str) -> None:
-        """G-V3: a setup command failed, so nothing after it ran. At preflight the oracle's
-        author is sent the output (one oracle cycle; fixing it may need the plan, which it then
-        reports BLOCKED); at the baseline a human decides. (In a build or at integration the
+        """G-V3: the repository's setup failed, so nothing after it ran. At preflight the oracle's
+        author is sent the output (one oracle cycle; fixing it may need the plan's environment,
+        which it then reports BLOCKED); at the baseline a human decides. (In a build or at integration the
         tasks may have caused it: it fails like any command there.)"""
         c = self.c
-        what = (f"setup command `{r.command}` exited {r.exit_code} in a fresh verifier sandbox, "
-                "so no acceptance command ran")
+        what = (f"the repository's setup `{r.command}` exited {r.exit_code} in a fresh verifier "
+                "sandbox, so no acceptance command ran")
         oracle = c.nodes.get(ORACLE)
         limit = c.cfg.limits.review_max_cycles + (oracle.extra_cycles if oracle else 0)
         if node.kind == PREFLIGHT and oracle is not None and oracle.cycle < limit:
@@ -236,10 +245,10 @@ class Acceptance:
             oracle.feedback.append(Feedback(
                 cycle=oracle.cycle, source="verification", attestations=[att],
                 text=f"BLOCKER (preflight): {what}. Output: {r.output[-800:]}. The acceptance "
-                     "commands must run in a fresh clone after only the setup commands. Fix your "
-                     "tests or support files; if the fix is in plan/oracle.json (the commands or "
-                     "setup_commands) or the environment, report BLOCKED with it as "
-                     "missing_decision."))
+                     "commands must run in a fresh clone after only the repository's setup "
+                     "(mise.toml's setup task). Fix your tests or support files; if the fix is in "
+                     "the setup (the plan's environment) or plan/oracle.json, report BLOCKED with "
+                     "it as missing_decision."))
             oracle.candidate_sha = None
             oracle.status = REWORK
             node.status = PENDING        # runs again once the oracle is accepted

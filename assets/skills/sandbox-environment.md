@@ -61,6 +61,31 @@ cannot be mapped. Give judges and the verifier the same tools as the implementer
 the same commands (e.g. `uv run pytest` installs the locked dependencies, so it needs what uv
 brings); give judges that only read or lint a smaller or `offline` profile.
 
+### The repository's setup: `mise.toml`
+
+Every sandbox that works on the repository is a fresh clone: nothing is installed or built. The
+repository's `mise.toml` says what it needs: `[tools]` (installed when the images are built) and a
+`[tasks.setup]` task the controller runs after every checkout, in agent and verifier sandboxes
+alike, as `mise run setup` – dependency installs, code generation, a build the tests need; never
+the tests themselves. No `setup` task: nothing runs.
+
+Propose it in the spec as `"mise": {"content": "<the whole mise.toml>"}` – the repository's
+existing file unchanged, an edited one, or a new one – and list the network policies the setup
+task needs in `"setup_network"` (e.g. `["npm-registry"]` for `bun install`). Rules (G-E8): every
+`[tools]` entry is a mise tool some library tool in the profile installs (`bun`, `python`, `uv`,
+`node` …) at a compatible version, in every profile of a role that works on the repository and
+the verifier's; every such profile has the `setup_network` policies – so the verifier's profile is
+not `offline` when setup installs dependencies. After H-E1 the controller commits the approved
+file and checks the setup task runs in the verifier (G-PV3); tasks may not change it afterwards.
+
+```toml
+[tools]
+bun = "1.4"
+
+[tasks.setup]
+run = "bun install --frozen-lockfile"
+```
+
 ### Proposing library entries
 
 **Select from the library first; propose only what is missing.** A library tool already brings

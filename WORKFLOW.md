@@ -410,7 +410,7 @@ Universal guards apply to every task and are listed once.
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
 | G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
 | G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. Unlinked criteria are allowed; the gate screens warn about them (§2.3). |
-| G-P13 | R2+: a command in `acceptance_commands` or `integration_commands` that only installs dependencies (`bun install …`, `npm ci`, `uv sync`, `pip install …`, …) belongs in `setup_commands`: the verifier runs the lists in order – setup, acceptance, integration – so an install placed later runs after the commands that need it. |
+| G-P13 | R2+: a command in `acceptance_commands` or `integration_commands` that only installs dependencies (`bun install …`, `npm ci`, `uv sync`, `pip install …`, …) belongs in `mise.toml`'s `setup` task (§5.3c): the verifier runs the setup, then acceptance, then integration – so an install placed later runs after the commands that need it. |
 
 ### 5.3 critique (part of `plan`)
 
@@ -459,6 +459,7 @@ overwrites a library entry.
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
+| G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that works on the repository, and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
 | H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `plan` is reworked with the feedback attested and critiqued again. H-2 revise and a critique-budget rework drop the approval and the build. |
 
 ### `provision` – build the environment (controller, no agent)
@@ -478,6 +479,7 @@ change record; the build log in `control/logs/provision.log`.
 | ID | Rule |
 | --- | --- |
 | G-PV1 | Every image a mapped profile needs is built or found. Otherwise the node escalates `provision_failed` (retry provisions again). |
+| G-PV3 | With an approved `mise.toml` that has a `setup` task: `mise run setup` succeeds at the integration head in a fresh verifier sandbox from this build. Otherwise `provision_failed` with the output. |
 | G-E5 | (dispatch of a mapped role, and every verifier sandbox) the H-E1 pin still equals the latest `plan/environment.json`. |
 
 From then on every sandbox of a mapped role is created from its profile's image, with its
@@ -493,6 +495,29 @@ new one is accepted. Sandboxes kept across cycles by mapped roles (implementers)
 released, after their agent reflects, so each node's next run starts fresh in the new build and
 continues from its pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps
 its session to H-2 through H-E1 and provisioning.
+
+### 5.3c Repository setup: `mise.toml`
+
+Every sandbox that works on the repository is a fresh clone. The repository's `mise.toml` says what
+a checkout needs: `[tools]`, installed when the environment's images are built, and a
+`[tasks.setup]` task – dependency installs, code generation, a build the tests need – that the
+controller runs after every checkout as `mise run setup`: first in every verifier sandbox (task
+verification, baseline, integration; G-V3), and once after the clone in the sandbox of every role
+that works with a commit (oracle, baseline, implementer, reviewers, integration; a failure is
+logged and the agent may still work). Read-only roles (intake, planner, critic, release) skip it.
+No `setup` task: nothing runs.
+
+**Which version runs (G-MS1).** Only a pinned `mise.toml` (`change.setup_pin`, its git blob): the
+version approved at H-E1, else the base branch's when the change started (written before the
+change). The setup script checks the checkout's file against the pin before `mise trust` and
+`mise run setup`; any other version is not run. `mise.toml` is a protected path while a setup is
+pinned or proposed (G-P7, G-B3, G-INT2); Restart plan returns to the base branch's pin.
+
+**With the environment stage** the planner proposes the file in the spec (`"mise": {"content":
+…}`, with the network its setup needs in `"setup_network"`): unchanged, edited or new. H-E1 shows
+it; on approval the controller commits it to the integration branch (before any build) and pins
+it; provisioning checks its setup runs in the verifier (G-PV3). **Without it** the operator's
+images are assumed to have `mise`, and the base branch's setup task (if any) runs.
 
 ### 5.3b Scaffold (blank repository)
 
@@ -540,8 +565,8 @@ diff touching them fails G-B3 and the `protected_oracle` gate.
 
 ### 5.4a `preflight` (R2+) – the oracle's commands run (controller, no agent)
 
-Once the oracle's tests are merged, the controller runs the oracle's `setup_commands`, then its
-`acceptance_commands`, at the integration head in a **fresh verifier sandbox** (G-V1 semantics:
+Once the oracle's tests are merged, the controller runs the repository's setup (§5.3c), then the
+oracle's `acceptance_commands`, at the integration head in a **fresh verifier sandbox** (G-V1 semantics:
 a new clone, the verifier image and environment profile) – not in the oracle's sandbox, whose
 installed dependencies and build output would hide what a clean run lacks. It confirms the
 commands can be run here, as the baseline and integration will run them. Before any build the
@@ -550,7 +575,7 @@ Results are recorded in `control/verification/preflight.json`; fix rounds run it
 
 | ID | Rule |
 | --- | --- |
-| G-PF1 | Every setup command exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the plan or the environment), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the plan back. |
+| G-PF1 | The repository's setup (`mise run setup`, when pinned) exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the setup – the plan's environment – or the plan), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the plan back. |
 
 ### 5.5 `baseline` (R3) – independent baseline
 
@@ -608,7 +633,8 @@ Results are written by the controller to `tasks/{{task_id}}/verification.json` (
 | --- | --- |
 | G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
 | G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the node escalates `verify_unrunnable` instead of spending a rework cycle (oracle commands at integration likewise). **Retry** re-runs verification at the same candidate, e.g. after the image is fixed. |
-| G-V3 | The oracle's `setup_commands` run first, in order, in every verifier sandbox (task verification, preflight, baseline, integration); results mark them `setup`. The first that fails stops the run: no other command runs. In a task's verification or at integration it fails like any command; at preflight and the baseline – before any build – it is handled as G-PF1 says. |
+| G-V3 | With a pinned setup (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs. In a task's verification or at integration that is a failure like any other (the task may have caused it); at preflight and the baseline – before any build – it is handled as G-PF1 says (the baseline: escalates `setup_failed`). |
+| G-MS1 | The setup runs only from the pinned `mise.toml`: a checkout whose file differs from the pin is not trusted and its setup is not run (the step fails). |
 
 Exit codes are only as trustworthy as the code a command runs: a test process that imports the
 code under test can be made to exit 0. So the protected acceptance tests must be **black-box and

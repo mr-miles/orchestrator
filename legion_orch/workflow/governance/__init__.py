@@ -40,6 +40,7 @@ from .protected import (
     protected_paths,
     protected_unchanged,
     record_protected_approval,
+    setup_paths,
 )
 from .surfaces import pin_surfaces, surface_commands, surface_drift, surfaces
 
@@ -51,7 +52,7 @@ __all__ = [
     "coverage_ok", "gate_set",
     "h2_status", "h2_subjects", "last_h2_approval_at", "pin_surfaces", "protected_paths",
     "protected_unchanged",
-    "record_attestation", "record_override", "record_protected_approval", "stale_approvals",
+    "record_attestation", "record_override", "record_protected_approval", "setup_paths", "stale_approvals",
     "stale_environment",
     "surface_commands", "surface_drift", "surfaces", "waiver_for",
 ]

@@ -76,6 +76,7 @@ class LimitsConfig:
     fix_rounds: int = 2           # fix rounds a change may plan after integration fails (§5.10a)
     max_report_attempts: int = 3
     run_timeout_s: int = 3600
+    setup_timeout_s: int = 900    # mise run setup after a checkout (§5.3c)
     verify_timeout_s: int = 1800
     # git transport: largest accepted request (push) and concurrent git-http-backend processes
     git_max_push_bytes: int = 256 * 1024 * 1024

@@ -20,6 +20,7 @@ from ...sandbox import (
 )
 from ...store import DocStore
 from ...util import stop_process
+from .. import setup
 from ..assets import Assets
 from ..attention import AttentionItem
 from ..environment import Library
@@ -207,6 +208,7 @@ class Controller:
         async with self.svc.lock:
             base = await self.git.resolve_base()
             blank = is_blank_tree(await self.git.tree_paths(base))
+            pin = await setup.pin_at_base(self.git, base)       # §5.3c: the base's setup task
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:
@@ -214,7 +216,7 @@ class Controller:
             await self.git.init_integration(cid, base)
             ce = ChangeEngine(self.svc, self, cid)
             self.changes[cid] = ce
-            ce.start(goal, base, blank_repo=blank)
+            ce.start(goal, base, blank_repo=blank, setup_pin=pin)
             return ce
 
     def get(self, cid: str) -> ChangeEngine:
