@@ -49,6 +49,8 @@ export interface CommandResult {
   command: string
   exit_code: number
   output?: string
+  /** the repository's setup (mise run setup), run first */
+  setup?: boolean
 }
 
 export interface Verification {

@@ -10,6 +10,7 @@ from ..model import (
     MERGING,
     PENDING,
     PLAN,
+    PREFLIGHT,
     PROVISION,
     R_REPORTED,
     READY,
@@ -93,6 +94,10 @@ class Scheduler:
         elif node.kind == SHIP:
             node.status = RUNNING
             c.spawn(self.acceptance.ship())
+        elif node.kind == PREFLIGHT:          # the controller verifies the integration head
+            node.candidate_sha = c.change.integration_head
+            node.status = VERIFYING
+            c.spawn(self.acceptance.verify_node(node.id))
         else:
             node.status = READY
 

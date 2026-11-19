@@ -49,6 +49,7 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
         v += oracle_strength(oracle, requirements)
         v += surfaces(oracle)
         v += criterion_links(oracle)
+        v += setup_steps(oracle)
     return v
 
 
@@ -95,6 +96,7 @@ def fix_round(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
         v += oracle_strength(oracle, requirements)
         v += surfaces(oracle)
         v += criterion_links(oracle)
+        v += setup_steps(oracle)
     return v
 
 
@@ -236,6 +238,23 @@ def criterion_links(oracle: dict) -> list[str]:
         v += [f"G-P12: criterion {c.get('id')} names command {x!r}, which is not in "
               "oracle.acceptance_commands" for x in c.get("commands") or [] if x not in cmds]
     return v
+
+
+# a command that only installs dependencies (or fetches them): the verifier must run it first
+_INSTALL = re.compile(
+    r"^\s*(?:(?:bun|npm|pnpm|yarn)\s+(?:install|i|ci)|uv\s+sync|pip3?\s+install|"
+    r"poetry\s+install|pipenv\s+install|bundle\s+install|composer\s+install|"
+    r"go\s+mod\s+download|cargo\s+fetch|mvn\s+dependency:\S+|dotnet\s+restore)\b[^;&|]*$")
+
+
+def setup_steps(oracle: dict) -> list[str]:
+    """G-P13 (tier >= 2): a command that only installs dependencies belongs in the repository's
+    setup (mise.toml's ``setup`` task, §5.3c), which the verifier runs first; in the oracle's
+    lists it would run after the acceptance commands that need it (acceptance, then integration)."""
+    return [f"G-P13: `{c}` only installs dependencies: it belongs in mise.toml's setup task "
+            "(run first after every checkout; propose it in the environment spec)"
+            for key in ("acceptance_commands", "integration_commands")
+            for c in oracle.get(key) or [] if isinstance(c, str) and _INSTALL.match(c)]
 
 
 def surfaces(oracle: dict) -> list[str]:

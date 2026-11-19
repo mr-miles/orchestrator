@@ -306,5 +306,5 @@ async def test_a_baseline_escalation_can_send_the_plan_back_to_the_planner(f: Fl
 async def test_revise_plan_is_only_for_oracle_and_baseline_escalations(f: Flow):
     await f.to_build()
     f.ce.escalate(f.ce.nodes["build:T1"], "blocked", "stuck", resume=Resume.READY)
-    with pytest.raises(WorkflowError, match="only available for an oracle or baseline"):
+    with pytest.raises(WorkflowError, match="only available for an oracle, preflight or baseline"):
         await f.human("build:T1", "revise_plan", feedback="replan please")
