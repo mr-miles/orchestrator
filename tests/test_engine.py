@@ -1085,3 +1085,11 @@ async def test_without_an_environment_the_tools_are_the_default_images(f: Flow):
     await f.to_build()
     tools = f.run("build:T1", "implementer").template_vars["sandbox_tools"]
     assert "default image" in tools and "do not assume python3, node or rsync" in tools
+
+
+@scenario()
+async def test_the_controllers_mcp_tools_load_up_front(f: Flow):
+    """Not deferred behind a tool search (the agents' recurring first-turn detour)."""
+    import json
+    server = json.loads(f.runner.mcp_configs[0])["mcpServers"]["legion"]
+    assert server["alwaysLoad"] is True and server["url"] == f.ce.mcp_url

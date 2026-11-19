@@ -67,6 +67,7 @@ class FakeRunner(Runner):
         self.stopped: list[str] = []                     # kept sandboxes stopped between runs
         self.restarted: list[str] = []                   # stopped sandboxes started again
         self.run_envs: list[str] = []                    # run.env of every payload, in order
+        self.mcp_configs: list[str] = []                 # mcp.json of every agent payload
         self.fail_stop = False
         self.payloads: dict[str, dict[str, str]] = {}    # sandbox -> payload files at create
         self._reflecting: dict[str, str] = {}             # sandbox -> reflection prompt
@@ -89,6 +90,8 @@ class FakeRunner(Runner):
             raise SandboxError("openshell sandbox create failed (quota)")
         self.created.append(spec.name)
         self.run_envs.append(_run_env(spec.payload_dir))
+        if (Path(spec.payload_dir) / "mcp.json").exists():
+            self.mcp_configs.append((Path(spec.payload_dir) / "mcp.json").read_text())
         self.payloads[spec.name] = {str(f.relative_to(spec.payload_dir)): f.read_text()
                                     for f in Path(spec.payload_dir).rglob("*") if f.is_file()}
         self.specs[spec.name] = spec
@@ -98,6 +101,8 @@ class FakeRunner(Runner):
     async def upload(self, name, payload_dir):
         self.uploads.append(name)
         self.run_envs.append(_run_env(payload_dir))
+        if (Path(payload_dir) / "mcp.json").exists():
+            self.mcp_configs.append((Path(payload_dir) / "mcp.json").read_text())
         if "LEGION_REQUIRE_SESSION" in self.run_envs[-1]:          # a reflection turn
             self._reflecting[name] = (Path(payload_dir) / "prompt.md").read_text()
             self.reflection_skills[name] = sorted(

@@ -277,7 +277,8 @@ class Dispatcher:
         # No credential: the OpenShell gateway injects the bearer for the controller endpoint.
         # With the local runner the bearer is in the process env (gateway emulation) and Claude
         # Code expands ${LEGION_ACCESS_TOKEN} in the MCP config at start-up.
-        server = {"type": "http", "url": self.c.mcp_url}
+        # alwaysLoad: the controller's tools load at start, not deferred behind a tool search
+        server = {"type": "http", "url": self.c.mcp_url, "alwaysLoad": True}
         if self.c.cfg.identity.dev_spire:
             server["headers"] = {"Authorization": "Bearer ${LEGION_ACCESS_TOKEN}"}
         (d / "mcp.json").write_text(json.dumps({"mcpServers": {"legion": server}}, indent=2))
