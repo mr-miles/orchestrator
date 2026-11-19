@@ -182,7 +182,8 @@ all use. Nothing here gates the workflow; it only says what is waiting.
 | --- | --- | --- |
 | `gate` | a human gate is `AWAITING_HUMAN` (H-1, H-E1, H-2, H-3) | yes |
 | `escalation` | a node is `ESCALATED` (its kind and reason) | yes |
-| `change_ended` | the change is `READY`, `NOT_READY` or `ABANDONED` | no (inbox) |
+| `not_ready` | the ship check found the change `NOT_READY` (its unsatisfied gates and why); resolved when a re-run finds it `READY` | yes |
+| `change_ended` | the change is `READY` or `ABANDONED` | no (inbox) |
 | `retrospective` | the retrospective report is ready (each cycle is a new item) | no (inbox) |
 
 **Needs you** lists the blocking items: they stay until the decision is made. The **inbox** holds
@@ -553,7 +554,7 @@ change is built) and which failures were already there. The integration verifier
 
 | ID | Rule |
 | --- | --- |
-| H-2 | Separate decisions, possibly by different approvers ∈ `decision_owners`: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md`, and the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). The node completes when every subject is approved against current versions; at R3 it also requires an `independent-baseline` pass attestation, so the baseline is recorded before any build run. |
+| H-2 | Separate decisions, possibly by different approvers ∈ `decision_owners`: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md`, and the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). The node completes when every subject is approved against current versions; at R3 it also requires an `independent-baseline` pass attestation, so the baseline is recorded before any build run. That attestation is decided with the subjects: approving the `independent-baseline` subject (or approving all) records it, citing `baseline/report.md` and the controller's own baseline verification (G-AT1); it is stale once the baseline runs again (a fix round). |
 | G-B1 | (dispatch of any build run but the scaffold, §5.3b) every H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
 
 The H-2 card shows the traceability matrix and its warnings (§2.3); a stale subject offers the
@@ -633,7 +634,7 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 | G-INT1 | Attested head equals the integration head; `data.verdict ∈ {PASS, FAIL}`; `data.results` covers every acceptance and integration command. The controller also re-runs the oracle commands deterministically at the head (G-V1 semantics). FAIL ⇒ escalate. |
 | G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
 | G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha. |
-| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). |
+| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). The gates only a human attestation satisfies – `security_or_e2e_evaluator` and `rollback_or_forward_fix_evidence` (R3, or added) – are rows on the card: accepting records the chosen kind as a pass (G-AT1) citing the evidence ticked (security reviews, the integration report and the controller's oracle run; `release/rollback.md` and `release/plan.md`) or named. A gate left unattested is reported as a warning: the ship check will be `NOT_READY` until one is recorded. |
 
 ### 5.10a Fix rounds
 
@@ -720,6 +721,11 @@ only while every approval of their time was fresh (G-B1).
 The controller evaluates every gate of the tier (§3) against the store and the mirror, re-resolving
 every attestation it relies on, and writes `control/ship/readiness.json`. Verdict `READY` iff every
 gate is `satisfied` (or validly waived). It publishes nothing.
+
+The verdict is the change's status, and the node shows it: `ACCEPTED` when `READY`, `FAILED` when
+`NOT_READY`. A `NOT_READY` change needs you (§2.2, `not_ready`): the node's card lists the gates not
+satisfied and why, takes the attestations only a human can give (as at H-3), and re-runs the check
+(`recheck`, from either status) once the evidence is recorded.
 
 ### 5.12 Change-level governance (human)
 

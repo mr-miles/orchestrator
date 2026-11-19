@@ -3,8 +3,9 @@
 Two kinds of item, derived from a change's state alone (no store reads, no model call):
 
 * **blocking** – the workflow waits for a decision owner: a human gate that is
-  ``AWAITING_HUMAN`` (H-1, H-E1, H-2, H-3), or an ``ESCALATED`` node. They stay until the decision
-  is made; the notifier repeats them while they wait.
+  ``AWAITING_HUMAN`` (H-1, H-E1, H-2, H-3), an ``ESCALATED`` node, or a change the ship check
+  found ``NOT_READY`` (its unsatisfied gates wait for attestations, approvals or a re-run). They
+  stay until the decision is made; the notifier repeats them while they wait.
 * **inbox** – worth reading, but nothing waits for it: a change that ended, a retrospective
   report that is ready. They never resolve; the UI tracks which ones were read.
 
@@ -22,21 +23,23 @@ from .model import (
     RETRO,
     SHIP,
     ChangeStatus,
+    GateStatus,
 )
 from .view import ChangeView
 
 REASON_MAX = 300           # escalation reasons can quote agent output: keep notifications short
 
-GATE, ESCALATION, CHANGE_ENDED, RETROSPECTIVE = "gate", "escalation", "change_ended", "retrospective"
-KINDS = (GATE, ESCALATION, CHANGE_ENDED, RETROSPECTIVE)
+GATE, ESCALATION, NOT_READY = "gate", "escalation", "not_ready"
+CHANGE_ENDED, RETROSPECTIVE = "change_ended", "retrospective"
+KINDS = (GATE, ESCALATION, NOT_READY, CHANGE_ENDED, RETROSPECTIVE)
 
 
 class AttentionItem(BaseModel):
     change: str
     goal: str
     node: str | None          # the node to open (None: the change as a whole)
-    kind: str                 # gate | escalation | change_ended | retrospective
-    detail: str               # gate id, escalation kind or the change's final status
+    kind: str                 # gate | escalation | not_ready | change_ended | retrospective
+    detail: str               # gate id, escalation kind, unsatisfied gates or final status
     title: str
     reason: str = ""          # escalation reason (truncated)
     since: str = ""           # when it started (ISO); "" when an older store did not record it
@@ -70,8 +73,15 @@ def items(e: ChangeView) -> list[AttentionItem]:
             out.append(AttentionItem(change=ch.id, goal=goal, node=n.id, kind=ESCALATION,
                                      detail=esc.kind, title=f"{n.title}: {esc.kind}",
                                      reason=_clip(esc.reason), since=esc.at, blocking=True))
-    if ch.status != ChangeStatus.ACTIVE:
-        ship = e.nodes.get(SHIP)
+    ship = e.nodes.get(SHIP)
+    if ch.status == ChangeStatus.NOT_READY and ch.ship and ship and not ch.ended:
+        bad = {g: r for g, r in ch.ship.gates.items() if r.status != GateStatus.SATISFIED}
+        out.append(AttentionItem(
+            change=ch.id, goal=goal, node=SHIP, kind=NOT_READY, detail=",".join(sorted(bad)),
+            title=f"Not ready to ship: {len(bad)} gate{'s' * (len(bad) != 1)} not satisfied",
+            reason=_clip("; ".join(f"{g}: {r.detail}" for g, r in sorted(bad.items()))),
+            since=ship.status_since or "", blocking=True))
+    elif ch.status != ChangeStatus.ACTIVE:
         since = (ch.ended.at if ch.ended else None) or (ship.status_since if ship else None) or ""
         verb = {ChangeStatus.READY: "is ready to ship", ChangeStatus.NOT_READY: "is not ready",
                 ChangeStatus.ABANDONED: "was abandoned"}[ch.status]

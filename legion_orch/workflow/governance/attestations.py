@@ -2,8 +2,11 @@
 a security evaluation, with coverage and waiver rules."""
 from __future__ import annotations
 
+from pydantic import BaseModel
+
 from .. import attest, risk
 from ..model import (
+    INTEGRATION,
     AttestationKind,
     AttestationRecord,
     AttestationVerdict,
@@ -64,3 +67,66 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
     rec.attestation = e.write_record(f"control/attestations/{kind}.json", rec).attestation
     e.change.attestations[kind] = rec
     return rec
+
+
+# Ship gates only a human attestation satisfies, asked for on the H-3 card (the baseline's is
+# decided at H-2): gate -> the attestation kinds that satisfy it (any one).
+H3_GATES: dict[str, list[str]] = {
+    "security_or_e2e_evaluator": ["security-evaluation", "e2e-evaluation"],
+    "rollback_or_forward_fix_evidence": ["rollback-evidence", "forward-fix-evidence"],
+}
+
+
+class SuggestedSource(BaseModel):
+    label: str
+    att: str
+
+
+class GateAttestation(BaseModel):
+    """One H-3 row: a gate that needs a human attestation, its status and the evidence to cite."""
+    gate: str
+    kinds: list[str]
+    status: str                        # attested | failed | pending
+    kind: str | None = None            # the current record's
+    verdict: str | None = None
+    attested_by: str | None = None
+    suggested: list[SuggestedSource] = []
+
+
+def _suggested(e: ChangeView, gate: str) -> list[SuggestedSource]:
+    out: list[tuple[str, str | None]] = []
+    if gate == "security_or_e2e_evaluator":
+        for b in e.build_nodes():
+            r = b.review(b.cycle, "security")
+            out.append((f"{b.task.id} security review", r.doc if r else None))
+        iv = e.nodes.get(INTEGRATION)
+        if iv is not None:
+            ver = iv.verification.get("integration")
+            out.append(("integration report", e.latest_att("integration/report.md")))
+            out.append(("controller's oracle run at the head", ver.attestation if ver else None))
+    else:
+        out += [("release/rollback.md", e.latest_att("release/rollback.md")),
+                ("release/plan.md", e.latest_att("release/plan.md"))]
+    return [SuggestedSource(label=label, att=att) for label, att in out if att]
+
+
+def h3_attestations(e: ChangeView) -> list[GateAttestation]:
+    """The change's gates (tier and added gates, not waived) that need a human attestation."""
+    from .overrides import gate_set, waiver_for
+    tasks = {b.task.id for b in e.build_nodes()}
+    rows = []
+    for gate in gate_set(e):
+        kinds = H3_GATES.get(gate)
+        if not kinds or waiver_for(e, gate):
+            continue
+        recs = [e.change.attestations[k] for k in kinds if k in e.change.attestations]
+        failed = next((r for r in recs if r.verdict == AttestationVerdict.FAIL), None)
+        passed = next((r for r in recs if r.verdict in (AttestationVerdict.PASS,
+                                                        AttestationVerdict.NOT_APPLICABLE)
+                       and coverage_ok(r, tasks)), None)
+        cur = failed or passed or (recs[0] if recs else None)
+        rows.append(GateAttestation(
+            gate=gate, kinds=kinds, status="failed" if failed else "attested" if passed
+            else "pending", kind=cur.kind if cur else None, verdict=cur.verdict if cur else None,
+            attested_by=cur.attested_by if cur else None, suggested=_suggested(e, gate)))
+    return rows

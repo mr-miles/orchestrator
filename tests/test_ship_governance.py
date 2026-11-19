@@ -7,6 +7,7 @@ import json
 import pytest
 from engine_harness import REPO, TASKS, Flow, scenario
 
+from legion_orch.workflow import attention, governance
 from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.model import ACCEPTED, ChangeStatus, GateStatus
 from legion_orch.workflow.ship import evaluate
@@ -391,3 +392,47 @@ async def test_the_integration_verifier_is_given_the_baseline(f: Flow):
     refs = handler_for("integration").extra_context(f.ce, f.ce.nodes["integration"])
     ver = f.ce.nodes["baseline"].verification["baseline"].attestation
     assert f.ce.latest_att("baseline/report.md") in refs and ver in refs, refs
+
+
+@scenario()
+async def test_h3_attests_the_gates_only_a_human_can_satisfy_with_the_acceptance(f: Flow):
+    await f.to_build(tier="R2")
+    for gate in ("security_or_e2e_evaluator", "rollback_or_forward_fix_evidence"):
+        await f.change_action("override", kind="add_gate", gate=gate, reason=REASON)
+    await f.implement()
+    await f.review()
+    await f.integration()
+    assert f.status("H-3") == "AWAITING_HUMAN"
+    rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
+    sec, rb = rows["security_or_e2e_evaluator"], rows["rollback_or_forward_fix_evidence"]
+    assert sec.status == rb.status == "pending" and sec.kinds == ["security-evaluation", "e2e-evaluation"]
+    labels = [s.label for s in sec.suggested]
+    assert labels == ["integration report", "controller's oracle run at the head"]
+    assert rb.suggested == []                                   # no release stage at R2
+    with pytest.raises(WorkflowError, match="not needed"):
+        await f.human("H-3", "accept", attestations=[{"kind": "independent-baseline", "sources": []}])
+    with pytest.raises(WorkflowError, match="G-AT1"):
+        await f.human("H-3", "accept", attestations=[{"kind": "e2e-evaluation", "sources": []}])
+    assert f.status("H-3") == "AWAITING_HUMAN"
+    res = await f.human("H-3", "accept", attestations=[
+        {"kind": "e2e-evaluation", "sources": [s.att for s in sec.suggested]}])
+    assert [w.split()[0] for w in res.warnings] == ["rollback_or_forward_fix_evidence"]
+    g = f.ce.change.ship.gates
+    assert g["security_or_e2e_evaluator"].status == SAT and g["security_or_e2e_evaluator"].human_judgement
+    assert g["rollback_or_forward_fix_evidence"].status == UNEVAL
+    rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
+    assert rows["security_or_e2e_evaluator"].status == "attested"
+    assert rows["security_or_e2e_evaluator"].kind == "e2e-evaluation"
+    # NOT_READY: the ship node shows it, and it needs you until a re-run finds the change READY
+    assert f.status("ship") == "FAILED" and f.ce.change.status == ChangeStatus.NOT_READY
+    [item] = [i for i in attention.items(f.ce) if i.blocking]
+    assert item.kind == "not_ready" and item.node == "ship"
+    assert item.detail == "rollback_or_forward_fix_evidence" and "1 gate not" in item.title
+    assert not [i for i in attention.items(f.ce) if i.kind == "change_ended"]
+    await f.change_action("attest", kind="rollback-evidence", verdict="pass",
+                          sources=[f.ce.latest_att("integration/report.md")])
+    await f.human("ship", "recheck")
+    assert f.status("ship") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+    assert [i.kind for i in attention.items(f.ce)] == ["change_ended"]
+    assert any("resolved" in e["message"] and "Not ready" in e["message"]
+               for e in f.ce.timeline_events() if e["kind"] == "attention")

@@ -34,7 +34,6 @@ from ..model import (
     VERIFYING,
     Approval,
     ApprovalState,
-    AttestationVerdict,
     ChangeEnd,
     ChangeStatus,
     Feedback,
@@ -76,7 +75,7 @@ class HumanGates:
                 res = self._resolve_escalation(node, action, approver, payload)
             elif node.kind == HUMAN and node.status == AWAITING_HUMAN:
                 res = await self._human_gate(node, action, approver, payload)
-            elif node.kind == SHIP and action == "recheck" and node.status == ACCEPTED:
+            elif node.kind == SHIP and action == "recheck" and node.status in (ACCEPTED, FAILED):
                 node.status = RUNNING
                 self.c.spawn(self.acceptance.ship())
                 res = ActionResult()
@@ -158,21 +157,34 @@ class HumanGates:
         """H-2: each delta spec, the plan and the oracle are separate decisions (possibly by
         different approvers); the gate completes once every subject is approved and fresh (and,
         at R3, the independent baseline is attested)."""
+        subjects = payload.get("subjects") or "all"
+        everything = subjects == "all" or subjects == ["all"]
+        base = governance.baseline_subject(self.c)
+        attest = base is not None and base.status != ApprovalState.APPROVED and (
+            everything or governance.BASELINE_SUBJECT in subjects)
+        if not everything:
+            subjects = [s for s in subjects if s != governance.BASELINE_SUBJECT]
+        if attest and (base.note or not base.sources):
+            raise WorkflowError(f"independent-baseline: {base.note or 'no baseline evidence'}")
         try:
-            done = await governance.approve_subjects(self.c, payload.get("subjects") or "all", approver)
+            done = await governance.approve_subjects(self.c, subjects, approver) \
+                if everything or subjects else []
+            if attest:
+                # R3: the baseline attestation is decided here with the other subjects, citing
+                # the baseline report and the controller's own run of its commands (G-AT1)
+                await governance.record_attestation(self.c, approver, {
+                    "kind": governance.BASELINE_SUBJECT, "verdict": "pass",
+                    "sources": base.sources})
         except governance.GovernanceError as e:
             raise WorkflowError(str(e)) from None
+        if attest:
+            done.append(governance.BASELINE_SUBJECT)
         pending = [x.subject for x in governance.h2_status(self.c) if x.status != ApprovalState.APPROVED]
+        base = governance.baseline_subject(self.c)
+        if base is not None and base.status != ApprovalState.APPROVED:
+            pending.append(governance.BASELINE_SUBJECT)
         if pending:
             return ActionResult(approved=done, pending=pending)
-        if risk.rank(self.c.change.tier) >= 3:
-            b = self.c.change.attestations.get("independent-baseline")
-            base = self.c.nodes.get(BASELINE)
-            ver = base.verification.get("baseline") if base else None
-            if not b or b.verdict != AttestationVerdict.PASS or (ver and b.at <= ver.at):
-                return ActionResult(approved=done, pending=["independent-baseline"],
-                                    note="R3: attest independent-baseline (pass) before build "
-                                         "starts, then approve again to release the build")
         node.status = ACCEPTED
         return ActionResult(approved=done, pending=[])
 
@@ -237,11 +249,27 @@ class HumanGates:
         if head != ch.integration_head:
             raise WorkflowError("integration head moved; refresh")
         note = (payload.get("feedback") or "").strip() or None
+        # the gates only a human attestation satisfies, attested with the acceptance (one step)
+        rows = {r.gate: r for r in governance.h3_attestations(self.c)}
+        wanted = payload.get("attestations") or []
+        allowed = {k for r in rows.values() if r.status != "attested" for k in r.kinds}
+        bad = [a.get("kind") for a in wanted if not isinstance(a, dict) or a.get("kind") not in allowed]
+        if bad:
+            raise WorkflowError(f"H-3: attestation kind(s) {bad} not needed; choose from "
+                                f"{sorted(allowed)}")
+        try:
+            for a in wanted:
+                await governance.record_attestation(self.c, approver, {
+                    "kind": a["kind"], "verdict": "pass", "sources": a.get("sources") or []})
+        except governance.GovernanceError as e:
+            raise WorkflowError(str(e)) from None
+        missing = [r.gate for r in governance.h3_attestations(self.c) if r.status != "attested"]
         rec = Approval(gate=H_CHANGE, approver=approver, head=head, note=note)
         rec.attestation = self.c.write_record("control/approvals/change.json", rec).attestation
         ch.approvals[H_CHANGE] = rec
         node.status = ACCEPTED
-        return ActionResult()
+        return ActionResult(warnings=[f"{g} has no passing attestation: the ship check will be "
+                                      "NOT_READY until one is recorded" for g in missing])
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
         return self._end_change(node, approver, payload, "reject")

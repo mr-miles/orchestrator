@@ -253,6 +253,192 @@ describe('the operator UI', () => {
     )
   })
 
+  test('at R3 the baseline attestation is one of the H-2 decisions, in a wide dialog', async () => {
+    calls = fakeFetch({
+      '/api/meta': {},
+      '/api/changes': CHANGES,
+      '/api/changes/c1/trace': traceAtH2(),
+      '/api/changes/c1/nodes/H-2/action': { pending: [], approved: ['independent-baseline'] },
+    })
+    localStorage.setItem('approver', 'miles')
+    const state = stateAtH2()
+    state.h2.push({
+      subject: 'independent-baseline',
+      kind: 'attestation',
+      paths: [],
+      status: 'pending',
+      sources: ['file:changes/c1/baseline/report.md@1'],
+      results: [{ command: 'sh tests/acceptance/test_greet.sh', exit_code: 1 }],
+      ok: false,
+    })
+    location.hash = '#c1/overview/H-2'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', state)
+    })
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.getAttribute('data-slot')).toBe('dialog-content') // not the side sheet
+    expect(within(dialog).getByText('independent-baseline attestation')).toBeTruthy()
+    expect(within(dialog).getByText(/0 of\s+1 already pass/)).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Attest pass' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/nodes/H-2/action')?.body).toMatchObject({
+        action: 'approve',
+        payload: { subjects: ['independent-baseline'] },
+      }),
+    )
+  })
+
+  test('H-3 attests the gates only a human can satisfy with the acceptance', async () => {
+    calls = fakeFetch({
+      '/api/meta': {},
+      '/api/changes': CHANGES,
+      '/api/changes/c1/trace': traceAtH2(),
+      '/api/changes/c1/acceptance': { diff: null, readiness: null, error: null },
+      '/api/changes/c1/nodes/H-3/action': { warnings: [] },
+    })
+    localStorage.setItem('approver', 'miles')
+    const s = stateAtH2()
+    const state = {
+      ...s,
+      nodes: [
+        ...s.nodes.filter((n) => n.id !== 'H-2'),
+        {
+          ...s.nodes[0]!,
+          id: 'H-3',
+          kind: 'human' as const,
+          title: 'Accept whole change',
+          status: 'AWAITING_HUMAN' as const,
+        },
+      ],
+      h3: [
+        {
+          gate: 'security_or_e2e_evaluator',
+          kinds: ['security-evaluation', 'e2e-evaluation'],
+          status: 'pending' as const,
+          suggested: [
+            {
+              label: 'T1 security review',
+              att: 'file:changes/c1/tasks/T1/reviews/security-cycle-1.md@1',
+            },
+            { label: 'integration report', att: 'file:changes/c1/integration/report.md@1' },
+          ],
+        },
+        {
+          gate: 'rollback_or_forward_fix_evidence',
+          kinds: ['rollback-evidence', 'forward-fix-evidence'],
+          status: 'attested' as const,
+          kind: 'rollback-evidence',
+          verdict: 'pass',
+          attested_by: 'miles',
+          suggested: [],
+        },
+      ],
+    }
+    location.hash = '#c1/overview/H-3'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', state)
+    })
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('rollback-evidence pass · miles')).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'integration report' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Attest & accept change' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/nodes/H-3/action')?.body).toMatchObject({
+        action: 'accept',
+        payload: {
+          attestations: [
+            {
+              kind: 'security-evaluation',
+              sources: ['file:changes/c1/tasks/T1/reviews/security-cycle-1.md@1'],
+            },
+          ],
+        },
+      }),
+    )
+  })
+
+  test('a not-ready change attests and re-runs the ship check from the ship node', async () => {
+    calls = fakeFetch({
+      '/api/meta': {},
+      '/api/changes': CHANGES,
+      '/api/changes/c1/action': { attestation: 'file:x@1' },
+      '/api/changes/c1/nodes/ship/action': { status: 'RUNNING' },
+    })
+    localStorage.setItem('approver', 'miles')
+    const s = stateAtH1()
+    const state = {
+      ...s,
+      change: s.change && {
+        ...s.change,
+        tier: 'R3',
+        status: 'NOT_READY' as const,
+        ship: {
+          verdict: 'NOT_READY' as const,
+          integration_head: '0123456789abcdef',
+          integration_branch: 'legion/c1/integration',
+          note: '',
+          gates: {
+            explicit_human_approval: { status: 'satisfied' as const, detail: 'H-3 by miles' },
+            rollback_or_forward_fix_evidence: {
+              status: 'unevaluable' as const,
+              detail: 'no rollback-evidence or forward-fix-evidence attestation',
+            },
+          },
+        },
+      },
+      nodes: [
+        ...s.nodes,
+        {
+          ...s.nodes[0]!,
+          id: 'ship',
+          kind: 'ship' as const,
+          title: 'Ship readiness check',
+          status: 'FAILED' as const,
+        },
+      ],
+      h3: [
+        {
+          gate: 'rollback_or_forward_fix_evidence',
+          kinds: ['rollback-evidence', 'forward-fix-evidence'],
+          status: 'pending' as const,
+          suggested: [
+            { label: 'release/rollback.md', att: 'file:changes/c1/release/rollback.md@1' },
+          ],
+        },
+      ],
+    }
+    location.hash = '#c1/overview/ship'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', state)
+    })
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Not ready to ship')).toBeTruthy()
+    expect(within(dialog).getByText(/1 of 2 gates not satisfied/)).toBeTruthy()
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: 'Attest & re-run readiness check' }),
+    )
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === '/api/changes/c1/nodes/ship/action')).toBe(true),
+    )
+    expect(calls.find((c) => c.url === '/api/changes/c1/action')?.body).toMatchObject({
+      action: 'attest',
+      payload: {
+        kind: 'rollback-evidence',
+        verdict: 'pass',
+        sources: ['file:changes/c1/release/rollback.md@1'],
+      },
+    })
+  })
+
   test('the Gates tab shows the matrix', async () => {
     fakeFetch({ '/api/meta': {}, '/api/changes': CHANGES, '/api/changes/c1/trace': traceAtH2() })
     location.hash = '#c1/gates'

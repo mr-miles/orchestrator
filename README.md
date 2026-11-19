@@ -66,7 +66,7 @@ The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS
 built with bun) follows a change over server-sent events: `/api/changes/<id>/events` pushes the
 change's state, the change list and every change's attention items whenever they differ, and
 `/api/runs/<run>/log/events` an agent's log as it grows. The header's bell lists what **needs
-you** (gates and escalations, across all changes) and the **inbox** (ended changes, retrospective
+you** (gates, escalations and changes the ship check found not ready, across all changes) and the **inbox** (ended changes, retrospective
 reports); `notify:` sends the same items to ntfy, a webhook or a command, with reminders while
 they wait (WORKFLOW.md §2.2). `legion-orch attention` and `legion-orch digest --since 8h` show
 them on the command line. The H-2 and H-3 cards and the Gates tab show the **traceability
