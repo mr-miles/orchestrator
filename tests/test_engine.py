@@ -422,7 +422,7 @@ async def test_verifier_infrastructure_failure_escalates_and_retry_reverifies(f:
     await f.implement()
     node = f.ce.nodes["build:T1"]
     assert node.status == ESCALATED and node.escalation.kind == "verify_infra"
-    assert "verifier setup failed" in node.escalation.reason
+    assert "verifier clone.sh failed" in node.escalation.reason
     verifiers = [n for n in f.runner.created if n.startswith("lgv-")]
     assert verifiers and set(verifiers) <= set(f.runner.deleted), "verifier deleted on failure"
     f.runner.setup_rc = 0
@@ -1045,16 +1045,32 @@ async def test_a_rework_may_leave_a_required_document_unchanged(f: Flow):
 
 @scenario()
 async def test_only_roles_that_push_get_a_branch(f: Flow):
-    import shlex
+    """The controller prepares each sandbox in steps: a role that pushes is put on its branch,
+    every other role gets its commit detached (a judge, the candidate)."""
     await f.to_build()
     await f.implement()
-    envs = {e["LEGION_ROLE"]: e for e in
-            (dict(kv.split("=", 1) for kv in shlex.split(t)) for t in f.runner.run_envs)
-            if "LEGION_ROLE" in e}
-    impl, rev = envs["implementer"], envs["reviewer"]
-    assert impl["LEGION_DETACHED"] == "0" and impl["LEGION_BRANCH"] == f"legion/{f.ce.cid}/build-t1"
-    assert rev["LEGION_DETACHED"] == "1" and rev["LEGION_BRANCH"] == ""
-    assert rev["LEGION_BASE_SHA"] == f.ce.nodes["build:T1"].candidate_sha   # the candidate
-    assert envs["intake"]["LEGION_DETACHED"] == "1"
-    assert f.run("build:T1", "reviewer").branch is None
-    assert "(none: a detached checkout" in f.run("build:T1", "reviewer").template_vars["branch"]
+    [impl], [rev] = f.runs("build:T1", "implementer"), f.runs("build:T1", "reviewer")
+    node = f.ce.nodes["build:T1"]
+    assert f.steps(impl) == [["clone.sh"], ["branch.sh", f"legion/{f.ce.cid}/build-t1", node.base_sha]]
+    assert f.steps(rev) == [["clone.sh"], ["checkout.sh", node.candidate_sha]]
+    assert rev.branch is None and "(none: a detached checkout" in rev.template_vars["branch"]
+    [intake] = f.runs("intake")
+    assert f.steps(intake) == [["clone.sh"], ["checkout.sh", f.ce.change.base_sha]]
+    log = (f.ce.run_dir(rev.id) / "agent.log").read_text()
+    assert f"[legion] check out {node.candidate_sha[:12]} (detached): exit 0" in log
+
+
+@scenario()
+async def test_a_retried_run_continues_its_pushed_branch_in_a_fresh_sandbox(f: Flow):
+    """After a retry the sandbox is new: the controller starts the branch at its tip on the hub
+    (what the failed run pushed), not at the base."""
+    await f.to_build()
+    r = f.run("build:T1", "implementer")
+    pushed = f.commit(r, {"src/greet.txt": "half done\n"})
+    await f.exit_agent(r, rc=1)                         # no report: the run fails
+    node = f.ce.nodes["build:T1"]
+    assert node.status == "ESCALATED"
+    await f.human("build:T1", "retry")
+    r2 = f.run("build:T1", "implementer")
+    assert r2.sandbox != r.sandbox
+    assert f.steps(r2) == [["clone.sh"], ["branch.sh", r2.branch, pushed]]

@@ -71,7 +71,14 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   has passed (intake: H-1; planner and oracle: H-2); critics, reviewers and verifiers always get
   their own (`openshell sandbox create --detach --name lg-<first name>
   --provider legion-mcp --provider legion-git[-push] --policy … --upload payload:/sandbox`). The payload contains only
-  `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and `run-agent.sh`.
+  `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and one script per
+  preparation step, which the controller runs in order (each logged to the run's agent log):
+  `clone.sh` (a partial clone: history, contents on demand); `branch.sh <branch> <start>` for a
+  role that pushes (its branch at its tip on the hub if pushed before, else at its base) or
+  `checkout.sh <sha>` – a detached checkout, no branch – for every other role (judges at the
+  commit they judge, read-only roles at their base); `mise-setup.sh` when a setup is pinned
+  (§5.3c; roles that work with a commit); then `run-agent.sh` starts the agent. A reused sandbox
+  skips the clone. Verifier sandboxes run the same `clone.sh` and `checkout.sh`.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
 * **Workload identity (SPIFFE/SPIRE).** Set up once per OpenShell workspace
   (`legion-orch setup-openshell`): one provider profile per controller endpoint – `legion-mcp`,

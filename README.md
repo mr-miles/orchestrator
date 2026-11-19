@@ -105,8 +105,11 @@ SPIFFE JWT-SVID at `/oauth/token` and injects the bearer into requests to the co
 
 Each agent run gets `openshell sandbox create --detach --name lg-<first name> --from <image>
 --provider … --policy <rendered policy> --upload <payload>:/sandbox`. The payload holds only `soul.md`,
-`prompt.md`, `mcp.json`, `run.env` and `run-agent.sh`. The agent clones from and pushes to the controller,
-and writes documents over MCP. Nothing is downloaded from a sandbox. Deterministic verification runs
+`prompt.md`, `mcp.json`, `run.env` and the step scripts. The controller then prepares the sandbox
+one step at a time (`openshell sandbox exec`): `clone.sh` (a partial clone), then `branch.sh` for a
+role that pushes or `checkout.sh` (detached at its commit) for any other, then `mise-setup.sh` when
+a setup is pinned, and finally `run-agent.sh` starts the agent. The agent pushes only its run
+branch to the controller, and writes documents over MCP. Nothing is downloaded from a sandbox. Deterministic verification runs
 in a separate, read-only sandbox through `openshell sandbox exec`. Adjust `policies/*.template.yaml`
 to match your image's binary paths. The agent is the native `claude` CLI baked into the image;
 `sandbox.agent_bin` names it if it is not `claude` on the PATH. The controller builds the rest of the

@@ -128,6 +128,9 @@ export interface Run {
   sandbox?: string | null
   sandbox_deleted?: boolean
   branch?: string | null
+  base_sha?: string | null
+  /** the commit a judge works at (checked out detached) */
+  judged_sha?: string | null
   prompt_pin?: string | null
   assets_sha?: string | null
   attempts: number

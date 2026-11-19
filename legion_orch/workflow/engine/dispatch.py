@@ -11,11 +11,11 @@ from typing import Any
 from ...config import agent_command
 from ...sandbox import (
     AGENT_PREFIX,
-    MISE_SETUP_SH,
-    RUN_AGENT_SH,
+    SandboxError,
     SandboxSpec,
     agentlog,
     is_name_clash,
+    payload_scripts,
 )
 from ...util import now_iso
 from .. import attest, governance
@@ -36,6 +36,7 @@ from ..model import (
     RunStage,
 )
 from ..roles import handler_for
+from ..setup import SETUP_COMMAND
 from ..view import RoleContext
 from .common import PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
@@ -259,24 +260,15 @@ class Dispatcher:
         (d / "mcp.json").write_text(json.dumps({"mcpServers": {"legion": server}}, indent=2))
         env = {
             "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
-            "LEGION_BRANCH": run.branch or "", "LEGION_DETACHED": "0" if run.branch else "1",
-            "LEGION_BASE_SHA": run.judged_sha or run.base_sha,
             "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
-            "LEGION_NEEDS_REPO": "1" if self.c.assets.roles[run.role].repo else "0",
             "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
         }
-        pin = self.c.change.setup_pin
-        # §5.3c: setup after checkout, for roles that work with a commit (they build, test or
-        # judge code); the read-only ones (intake, planner, critic, release) only read the tree
-        if pin and self.c.assets.roles[run.role].git != GitMode.NONE:
-            env["LEGION_SETUP_PIN"] = pin.blob
-            env["LEGION_SETUP_TIMEOUT"] = str(self.c.cfg.limits.setup_timeout_s)
-            (d / "mise-setup.sh").write_text(MISE_SETUP_SH)
         if found := self._resumable_session(run):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
-        (d / "run-agent.sh").write_text(RUN_AGENT_SH)
+        for name, text in payload_scripts().items():
+            (d / name).write_text(text)
         for rel, text in handler_for(run.role).payload_files(self.roles, self.c.nodes[run.node_id],
                                                              run).items():
             f = d / rel
@@ -303,6 +295,47 @@ class Dispatcher:
                 self.c.event("sandbox", message, run.node_id, run.id)
                 self.c.save()
 
+    async def _prepare_steps(self, run: Run, fresh: bool) -> list[tuple[str, list[str], bool]]:
+        """The sandbox's preparation, one script per step: (what, argv, must succeed). A role
+        that pushes works on its branch – from its tip on the hub if earlier runs pushed it,
+        else from its base; every other role gets its commit checked out detached. Roles that
+        work with a commit then run the repository's setup (§5.3c)."""
+        role = self.c.assets.roles[run.role]
+        if not role.repo:
+            return []
+        p = f"{self.c.cfg.sandbox.root}/payload"
+        steps = [("clone the repository", ["bash", f"{p}/clone.sh"], True)] if fresh else []
+        if run.branch:
+            start = await self.c.git.ref_sha(f"refs/heads/{run.branch}") or run.base_sha
+            steps.append((f"check out branch {run.branch} at {start[:12]}",
+                          ["bash", f"{p}/branch.sh", run.branch, start], True))
+        else:
+            sha = run.judged_sha or run.base_sha
+            steps.append((f"check out {sha[:12]} (detached)", ["bash", f"{p}/checkout.sh", sha],
+                          True))
+        pin = self.c.change.setup_pin
+        if pin and role.git != GitMode.NONE:
+            steps.append((SETUP_COMMAND, ["bash", f"{p}/mise-setup.sh", pin.blob], False))
+        return steps
+
+    async def _prepare(self, run: Run, log_file, *, fresh: bool) -> None:
+        """Run the preparation steps in the sandbox, each logged to the run's agent log. A
+        failed checkout fails the launch; a failed setup is logged and the agent still starts
+        (it may work around it, and verification runs the setup again)."""
+        work = f"{self.c.cfg.sandbox.root}/work"
+        for what, argv, required in await self._prepare_steps(run, fresh):
+            timeout = (self.c.cfg.limits.setup_timeout_s if argv[1].endswith("mise-setup.sh")
+                       else 600)
+            rc, out = await self.c.runner.exec(run.sandbox, argv, timeout=timeout,
+                                               workdir=None if "clone.sh" in argv[1] else work)
+            with open(log_file, "a") as log:
+                log.write(f"[legion] {what}: exit {rc}\n{out}")
+                if rc and not required:
+                    log.write(f"[legion] {what} failed (exit {rc}): the working copy may lack "
+                              "its dependencies\n")
+            if rc and required:
+                raise SandboxError(f"{what} failed (exit {rc}): {out[-800:]}")
+
     async def launch(self, run_id: str) -> None:
         """PREPARING (OpenShell creates the sandbox) -> LAUNCHING (payload in place, setup script
         and agent starting) -> RUNNING (set by the agent's first MCP call) -> EXITED."""
@@ -322,6 +355,7 @@ class Dispatcher:
                         node.sandbox_stopped = False
                     await self._stage(run, RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
                     await self.c.runner.upload(run.sandbox, payload)
+                    await self._prepare(run, log_file, fresh=False)
                     proc = await self.c.runner.start_agent(run.sandbox, log_file)
             else:
                 await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
@@ -331,6 +365,7 @@ class Dispatcher:
                                                  agent=True)
                 run.sandbox_ref = await self._create(run, payload, policy, push=h.pushes)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
+                await self._prepare(run, log_file, fresh=True)
                 proc = await self.c.runner.start_agent(run.sandbox, log_file)
         except Exception as e:
             shutil.rmtree(payload, ignore_errors=True)

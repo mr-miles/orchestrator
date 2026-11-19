@@ -98,8 +98,12 @@ function RunCard({ run }: { run: Run }) {
         </CardTitle>
         <CardDescription className="font-mono text-xs">
           sandbox {run.sandbox}
-          {run.sandbox_deleted && ' (deleted)'} · branch {run.branch} · assets{' '}
-          {(run.assets_sha ?? '').slice(7, 19)} · prompt {(run.prompt_pin ?? '').slice(7, 19)}
+          {run.sandbox_deleted && ' (deleted)'} ·{' '}
+          {run.branch
+            ? `branch ${run.branch}`
+            : `detached at ${(run.judged_sha ?? run.base_sha ?? '').slice(0, 12)}`}{' '}
+          · assets {(run.assets_sha ?? '').slice(7, 19)} · prompt{' '}
+          {(run.prompt_pin ?? '').slice(7, 19)}
         </CardDescription>
         <CardAction>
           <Button variant="outline" size="sm" onClick={() => nav.openLog(run.id)}>

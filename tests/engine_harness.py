@@ -75,6 +75,7 @@ class FakeRunner(Runner):
         self.reflection_text = "## Time sinks\nThe tests took long.\n"
         self.reflection_session: str | None = None     # set: the resume does not take
         self.commands: dict[str, tuple[int, str]] = {}   # verification command -> (rc, output)
+        self.execs: list[tuple[str, list[str]]] = []      # (sandbox, argv) of every exec
         self.setup_rc = 0
         self.fail_create: str | None = None              # role whose sandbox creation fails
         self.fail_delete = False
@@ -111,7 +112,8 @@ class FakeRunner(Runner):
         self.restarted.append(name)
 
     async def exec(self, name, argv, *, workdir=None, timeout=600):
-        if argv[1].endswith("verify-setup.sh"):
+        self.execs.append((name, list(argv)))
+        if argv[1].endswith(("clone.sh", "checkout.sh", "branch.sh")):
             return self.setup_rc, "checked out\n"
         return self.commands.get(argv[-1], (0, "ok\n"))
 
@@ -127,7 +129,8 @@ class FakeRunner(Runner):
             proc = FakeProc()
             proc.exit(0)
             return proc
-        log_file.write_text(f"agent started in {name}\nworking...\n")
+        with open(log_file, "a") as log:                # appended, as the real runner does
+            log.write(f"agent started in {name}\nworking...\n")
         self.started.append(name)
         return FakeProc()
 
@@ -285,6 +288,12 @@ class Flow:
                 and (role is None or r.role == role)]
         assert len(live) == 1, f"expected one live run of {node}/{role}; got {live}"
         return live[0]
+
+    def steps(self, run: Run) -> list[list[str]]:
+        """The preparation steps run in the run's sandbox: script name and arguments."""
+        return [[a[1].rsplit("/", 1)[-1], *a[2:]] for sb, a in self.runner.execs
+                if sb == run.sandbox and a[0] == "bash" and a[1].endswith(".sh")
+                and "/payload/" in a[1]]
 
     def runs(self, node: str, role: str | None = None) -> list[Run]:
         return [r for r in self.ce.runs.values() if r.node_id == node
