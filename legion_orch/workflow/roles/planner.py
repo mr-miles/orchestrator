@@ -2,7 +2,7 @@
 stage configured, the sandbox environment spec composed from the library (G-E1..G-E4)."""
 from __future__ import annotations
 
-from .. import guards
+from .. import governance, guards
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..model import H_ENV, H_SPEC, REVIEWING, Node
@@ -52,9 +52,11 @@ class Planner(RoleHandler):
         if r.node.round > 1:          # a fix round appends to the task graph (G-FR1, G-FR2)
             built = {b.task.id: b.task.model_dump(mode="json") for b in e.build_nodes()}
             v = guards.fix_round(tg, orc, e.change.requirements, e.change.tier,
-                                 e.cfg.protected_paths, souls, e.docs.schemas, built)
+                                 e.cfg.protected_paths + governance.setup_paths(e), souls,
+                                 e.docs.schemas, built)
         else:
-            v = guards.plan(tg, orc, e.change.requirements, e.change.tier, e.cfg.protected_paths,
+            v = guards.plan(tg, orc, e.change.requirements, e.change.tier,
+                            e.cfg.protected_paths + governance.setup_paths(e),
                             souls, e.docs.schemas, blank_repo=e.change.blank_repo)
         _, vs = guards.required_docs(r.run.id, [e.p(f"plan/specs/{q}.md") for q in e.change.requirements],
                                      r.parsed, e.docs, r.run.confirmed_docs)
@@ -79,7 +81,8 @@ class Planner(RoleHandler):
             lib = Library.for_config(e.cfg, e.assets.schemas)
         except LibraryError as x:
             return [f"G-E1: the environment library is invalid (an operator must fix it): {x}"]
-        _, v = guards.environment(EnvironmentSpec.model_validate(raw), lib, e.cfg, set(e.assets.roles))
+        _, v = guards.environment(EnvironmentSpec.model_validate(raw), lib, e.cfg, set(e.assets.roles),
+                                  {n for n, r in e.assets.roles.items() if r.repo})
         return v
 
     async def on_done(self, e: RoleContext, r: Report) -> None:

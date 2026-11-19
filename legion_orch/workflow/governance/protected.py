@@ -8,7 +8,9 @@ from ..model import (
     Oracle,
     ProtectedPathApproval,
 )
+from ..setup import MISE_TOML
 from ..view import ChangeView
+from .approvals import ENV_SPEC
 from .common import GovernanceError
 
 
@@ -30,10 +32,24 @@ def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> Pr
     return rec
 
 
+def setup_paths(e: ChangeView) -> list[str]:
+    """§5.3c: ``mise.toml`` is protected while the change has a pinned setup or its environment
+    spec proposes one – a task must not change what runs before every check."""
+    if e.change.setup_pin:
+        return [MISE_TOML]
+    if e.latest(ENV_SPEC):
+        try:
+            if e.json_doc(ENV_SPEC).get("mise"):
+                return [MISE_TOML]
+        except (ValueError, AttributeError):
+            pass
+    return []
+
+
 def protected_paths(e: ChangeView) -> list[str]:
     orc = e.change.oracle or Oracle()
     return list(orc.acceptance_tests) + list(orc.protected_support) \
-        + list(e.cfg.protected_paths)
+        + list(e.cfg.protected_paths) + setup_paths(e)
 
 
 def approved_protected_for(e: ChangeView, task_id: str, before: str) -> list[str]:
@@ -53,6 +69,10 @@ async def protected_unchanged(e: ChangeView, head: str) -> list[str]:
         return []
     approved = all_approved_protected(e)
     orc = e.change.oracle or Oracle()
-    return [f"G-INT2: protected acceptance test {p} changed since oracle commit"
-            for p in orc.acceptance_tests + orc.protected_support
-            if p not in approved and await e.git.blob(head, p) != await e.git.blob(e.change.oracle_sha, p)]
+    v = [f"G-INT2: protected acceptance test {p} changed since oracle commit"
+         for p in orc.acceptance_tests + orc.protected_support
+         if p not in approved and await e.git.blob(head, p) != await e.git.blob(e.change.oracle_sha, p)]
+    pin = e.change.setup_pin
+    if pin and pin.path not in approved and await e.git.blob(head, pin.path) != pin.blob:
+        v.append(f"G-INT2: {pin.path} changed since its setup was pinned ({pin.source})")
+    return v

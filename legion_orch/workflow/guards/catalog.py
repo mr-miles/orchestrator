@@ -53,6 +53,8 @@ GUARDS: dict[str, str] = {
     "G-E4": "only roles that run after provisioning (and the verifier) are mapped",
     "G-E5": "a mapped role is dispatched only while the environment approval is fresh",
     "G-PV1": "provisioning builds every image the spec needs",
+    "G-PV3": "an approved mise.toml's setup task runs in the verifier at provision",
+    "G-E8": "a proposed mise.toml's tools and setup network are provided by the profiles",
     "H-E1": "human approves the sandbox environment (pinned)",
     # build
     "G-B1": "build dispatch requires fresh spec/oracle approval",
@@ -62,6 +64,8 @@ GUARDS: dict[str, str] = {
     "G-PP1": "protected paths changed only after a prior human approval for that task",
     "G-V1": "deterministic verification passes",
     "G-V2": "a command not found in the verifier escalates instead of reworking",
+    "G-V3": "the repository's setup (mise run setup) runs first; a failure stops verification",
+    "G-MS1": "setup runs only from the pinned mise.toml",
     "G-RV1": "review attests candidate sha",
     "G-RV2": "finding format",
     "G-RV3": "verdict consistent with findings",

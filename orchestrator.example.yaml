@@ -30,6 +30,7 @@ limits:
   max_report_attempts: 3
   run_timeout_s: 3600
   verify_timeout_s: 1800
+  setup_timeout_s: 900           # mise.toml's setup task after each checkout (WORKFLOW.md §5.3c)
   git_max_push_bytes: 268435456   # largest accepted push (HTTP body and unpacked pack)
   git_max_concurrency: 8
   max_docs_per_run: 200           # per-run document write quota (G-W4)

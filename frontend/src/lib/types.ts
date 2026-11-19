@@ -293,6 +293,9 @@ export interface EnvironmentSpec {
     profiles: Record<string, EnvironmentProfile>
     roles: Record<string, string>
     proposed?: { tools?: Record<string, unknown>; policies?: Record<string, unknown> }
+    /** the repository's mise.toml as proposed: committed on approval (§5.3c) */
+    mise?: { content: string } | null
+    setup_network?: string[]
   }
   proposals: { tools: string[]; policies: string[] }
   network: Record<string, { policy: string; tools: string[]; hosts: string[] }[]>

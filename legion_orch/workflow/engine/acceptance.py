@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from ...sandbox import (
+    MISE_SETUP_SH,
     VERIFIER_PREFIX,
     VERIFY_SETUP_SH,
     Runner,
@@ -39,6 +40,7 @@ from ..model import (
     Verdict,
     Verification,
 )
+from ..setup import SETUP_COMMAND
 from ..ship import evaluate
 from .auth import VerifierGrant
 from .common import _slug
@@ -56,6 +58,13 @@ class VerifierSandbox:
     runner: Runner
     timeout_s: int
     workdir: str
+    setup_script: str = ""
+
+    async def setup(self, pin: str, timeout_s: int) -> CommandResult:
+        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
+        rc, out = await self.runner.exec(self.name, ["bash", self.setup_script, pin],
+                                         workdir=self.workdir, timeout=timeout_s)
+        return CommandResult(command=SETUP_COMMAND, exit_code=rc, output=out[-4000:], setup=True)
 
     async def run(self, cmd: str) -> CommandResult:
         rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir=self.workdir,
@@ -79,14 +88,19 @@ class Acceptance:
         """G-V1: run commands at ``sha`` in a fresh verifier sandbox. Never raises. A name the
         gateway already has (another controller) is replaced and the sandbox created again."""
         result = Verification(sha=sha, sandbox=self.c.host.new_sandbox_name(VERIFIER_PREFIX))
-        if not commands:
+        if not commands and not self.c.change.setup_pin:
             result.infra_error = "no commands to verify"
             return result
         for attempt in range(3):
             try:
                 async with self._verifier_sandbox(result.sandbox, label, sha) as box:
-                    for cmd in commands:
-                        result.results.append(await box.run(cmd))
+                    pin = self.c.change.setup_pin
+                    if pin:                    # §5.3c, G-V3: setup first; a failure stops here
+                        r = await box.setup(pin.blob, self.c.cfg.limits.setup_timeout_s)
+                        result.results.append(r)
+                    if not pin or result.results[-1].exit_code == 0:
+                        for cmd in commands:
+                            result.results.append(await box.run(cmd))
                 result.ok = all(r.exit_code == 0 for r in result.results)
             except Exception as e:
                 if is_name_clash(e) and not result.results and attempt < 2:
@@ -106,6 +120,7 @@ class Acceptance:
         payload.mkdir(parents=True, exist_ok=True)
         (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.c.git_url)}\n")
         (payload / "verify-setup.sh").write_text(VERIFY_SETUP_SH)
+        (payload / "mise-setup.sh").write_text(MISE_SETUP_SH)
         ref = None
         try:
             env = sandbox_env(self.c.change, VERIFIER)
@@ -124,7 +139,8 @@ class Acceptance:
                                                timeout=600)
             if rc != 0:
                 raise SandboxError(f"verifier setup failed ({rc}): {out[-1500:]}")
-            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s, f"{root}/work")
+            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s,
+                                  f"{root}/work", f"{root}/payload/mise-setup.sh")
         finally:
             if ref:
                 self.c.svc.auth.unregister_verifier(ref)
@@ -154,7 +170,8 @@ class Acceptance:
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
             fails = [r for r in res.results if r.exit_code != 0]
-            unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND]
+            unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND and not r.setup]
+            setup_failed = next((r for r in fails if r.setup), None)
             if res.infra_error:
                 c.escalate(node, "verify_infra", res.infra_error, resume=Resume.VERIFYING)
             elif unrunnable:
@@ -165,6 +182,13 @@ class Acceptance:
                            + ", ".join(f"`{r.command}`" for r in unrunnable),
                            resume=Resume.VERIFYING,
                            log_tail="\n".join(r.output[-800:] for r in unrunnable))
+            elif setup_failed and node.kind == BASELINE:
+                # G-V3: before any build the tests' failures are expected, but not this one –
+                # nothing ran after it; a human fixes the setup or the plan (Revise the plan)
+                c.escalate(node, "setup_failed",
+                           f"G-V3: `{SETUP_COMMAND}` exited {setup_failed.exit_code} in a fresh "
+                           "verifier sandbox, so no oracle command ran", resume=Resume.VERIFYING,
+                           log_tail=setup_failed.output[-800:])
             elif node.kind == BASELINE:
                 # before any build, failures are expected: they are recorded, not reworked
                 # (G-BL2 flags at H-2 what already passes or differs from the agent's results)

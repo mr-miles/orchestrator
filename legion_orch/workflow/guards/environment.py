@@ -1,10 +1,11 @@
-"""Environment spec guards (G-E1..G-E4): the spec resolves against the library, its network
+"""Environment spec guards (G-E1..G-E4, G-E8): the spec resolves against the library, its network
 stays away from the controller, no tool puts a credential in the image environment, resources
 fit the configured caps, and only roles that run after provisioning are mapped."""
 from __future__ import annotations
 
 from ...config import Config
 from ...sandbox import Resources
+from .. import setup
 from ..environment import (
     PRE_PROVISION_ROLES,
     VERIFIER,
@@ -60,9 +61,56 @@ def roles(spec: EnvironmentSpec, known_roles: set[str]) -> list[str]:
             for r in spec.roles if r not in allowed]
 
 
+def _compatible(wanted: str, have: str) -> bool:
+    """mise versions: ``1.4`` and ``1.4.2`` agree (one is a prefix of the other); empty or
+    ``latest`` agrees with anything."""
+    w, h = wanted.strip(), have.strip()
+    if w in ("", "latest") or h in ("", "latest") or w == h:
+        return True
+    return w.startswith(h + ".") or h.startswith(w + ".")
+
+
+def mise_setup(spec: EnvironmentSpec, profiles: dict[str, ResolvedProfile],
+               repo_roles: set[str]) -> list[str]:
+    """G-E8: the proposed mise.toml parses; every profile whose roles work on the repository
+    (and the verifier's) installs its ``[tools]`` at compatible versions – mise never installs at
+    run time – and, when it has a ``setup`` task, has the network the spec says setup needs."""
+    if spec.mise is None:
+        return []
+    try:
+        wanted, runs = setup.tools(spec.mise.content), setup.has_setup(spec.mise.content)
+    except setup.MiseError as e:
+        return [f"G-E8: {e}"]
+    used = sorted({p for r, p in spec.roles.items() if r == VERIFIER or r in repo_roles})
+    v = []
+    for name in used:
+        prof = profiles.get(name)
+        if prof is None:
+            continue
+        have: dict[str, str] = {}
+        for t in prof.tools:
+            have.update(t.mise)
+        for tool, ver in sorted(wanted.items()):
+            if tool not in have:
+                v.append(f"G-E8: mise.toml tool {tool!r} is not installed in profile {name}: add "
+                         "the library tool that provides it (or propose one)")
+            elif not _compatible(ver, have[tool]):
+                v.append(f"G-E8: mise.toml wants {tool} {ver}; profile {name} installs {have[tool]}")
+        if runs:
+            nets = {p.name for p in prof.policies}
+            missing = [n for n in spec.setup_network if n not in nets]
+            if missing:
+                v.append(f"G-E8: profile {name} runs the setup task but lacks its network "
+                         f"{missing} (setup_network): give the profile those policies")
+    return v
+
+
 def environment(spec: EnvironmentSpec, lib: Library, cfg: Config,
-                known_roles: set[str]) -> tuple[dict[str, ResolvedProfile], list[str]]:
-    """All spec guards; returns the resolved profiles and every violation."""
+                known_roles: set[str], repo_roles: set[str] | None = None
+                ) -> tuple[dict[str, ResolvedProfile], list[str]]:
+    """All spec guards; returns the resolved profiles and every violation. ``repo_roles``: the
+    roles that work on the repository (they run its setup)."""
     profiles, problems = resolve(spec, lib)
     return profiles, ([f"G-E1: {p}" for p in problems] + endpoints(profiles, cfg)
-                      + secrets(profiles) + resources(profiles, cfg) + roles(spec, known_roles))
+                      + secrets(profiles) + resources(profiles, cfg) + roles(spec, known_roles)
+                      + mise_setup(spec, profiles, known_roles if repo_roles is None else repo_roles))

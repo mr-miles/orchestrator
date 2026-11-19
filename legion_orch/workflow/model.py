@@ -269,6 +269,7 @@ class CommandResult(Record):
     command: str
     exit_code: int
     output: str = ""
+    setup: bool = False              # the repository's setup (mise run setup), run first
 
 
 class Verification(Record):
@@ -553,6 +554,13 @@ class FixRound(Record):
     attestation: str | None = None    # control/rounds/<n>.json
 
 
+class SetupPin(Record):
+    """The repository setup the controller trusts (§5.3c, G-MS1): ``mise.toml``'s blob."""
+    path: str = "mise.toml"
+    blob: str
+    source: str                       # base (the base branch at change start) | H-E1
+
+
 class Change(Record):
     id: str
     goal: str
@@ -578,6 +586,7 @@ class Change(Record):
     surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
     ship: Readiness | None = None
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
+    setup_pin: SetupPin | None = None                     # None: no setup task, nothing runs
     round: int = 1                                         # 1, or the current fix round
     rounds: list[FixRound] = []                            # fix rounds since the last restart
 

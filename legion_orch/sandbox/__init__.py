@@ -27,13 +27,13 @@ from .runner import (
     SandboxSpec,
     make_runner,
 )
-from .scripts import RUN_AGENT_SH, VERIFY_SETUP_SH
+from .scripts import MISE_SETUP_SH, RUN_AGENT_SH, VERIFY_SETUP_SH
 from .templates import TEMPLATES, VOCABULARY, TemplateError, base_values, render, spec_to_args
 
 __all__ = ["agentlog", "render_policy", "CONTROLLER_PROFILES", "provider_profiles", "setup_commands",
            "setup_workspace",
            "LocalRunner", "OpenShellRunner", "Runner", "SandboxError", "SandboxSpec", "make_runner",
-           "RUN_AGENT_SH", "VERIFY_SETUP_SH", "TEMPLATES", "VOCABULARY", "TemplateError",
+           "MISE_SETUP_SH", "RUN_AGENT_SH", "VERIFY_SETUP_SH", "TEMPLATES", "VOCABULARY", "TemplateError",
            "base_values", "render", "spec_to_args", "MAX_NAME", "check_name", "human_name",
            "is_name_clash", "AGENT_PREFIX", "VERIFIER_PREFIX", "BuildError", "EnvironmentBuilder",
            "ImageRecipe", "NoBuilder", "PodmanBuilder", "Policy", "Tool", "make_builder", "SandboxEnv",
