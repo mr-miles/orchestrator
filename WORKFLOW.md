@@ -473,8 +473,11 @@ overwrites a library entry.
 The approved spec version is resolved against the library again and built: one image per
 (profile, base image) – `FROM sandbox.image` for agents, `FROM sandbox.verifier_image` for the
 verifier – with the profile's tools installed by mise under `/usr/local/share/mise` (read-only in
-every sandbox) and their `env` settings as image `ENV`, via `podman build`, tagged by content (`localhost/legion-env:<hash>`, or pushed to
-`environment.registry`). Identical images are reused, across changes too. Network policies
+every sandbox) and their `env` settings as image `ENV`, via `podman build`, tagged per change and
+recipe (`localhost/legion-env:<change>-<recipe hash>`, or pushed to `environment.registry`) and
+labelled `org.legion.change` / `org.legion.recipe`. Roles of a change with the same recipe share
+an image; another change with the same recipe gets its own tag on the same layers (the build
+cache makes it nearly free), so a change's images are its own to remove when it ends (§5.14). Network policies
 carry no credentials, so nothing is created for them in OpenShell: each is resolved into a
 `network_policies` entry (`env_<name>`, open to the binaries that brought it) recorded with the
 build and added to the policy of every sandbox of the role. CPU and memory become `sandbox create --cpu <vcpus>` and `--memory <n>Mi`; disk,
@@ -781,6 +784,7 @@ Each is a versioned document under `control/`, so superseding keeps the history.
 | `approve_surface` | `control/surfaces/<id>.json` | G-SF1 |
 | `override` | `control/overrides/<n>.json` | G-OV1 |
 | `retrospective` | node `retrospective` (§5.13); optional `focus` in `control/focus/` | only once the change has ended; runs by itself then unless `retrospective.auto: false` |
+| `prune` | `change.pruned_at` | only once the change has ended: removes its integration branch and evidence refs (§5.14) |
 
 | ID | Rule |
 | --- | --- |
@@ -831,6 +835,19 @@ produced so far – also with `retrospective.auto: false`, unless the action pas
 * It proposes; a human applies. Asking again runs a new cycle.
 
 ---
+
+### 5.14 Cleanup
+
+What a change leaves in the hub and on the controller's host, and when it goes:
+
+| What | Goes |
+| --- | --- |
+| a run branch (`legion/<change>/build-<task>`, `…/oracle[-rN]`) | when its node is accepted: the merge made its commit part of the integration history, and the evidence ref keeps every candidate. **Restart plan** removes all of the change's run branches (a restarted task of the same name must not continue the old plan's commits). |
+| leftover run branches and the change's environment images (local `podman` images labelled with the change) | once, when the change has ended (`READY`, `NOT_READY`, `ABANDONED`), nothing of it is running and its retrospective is done (`change.cleaned_at`). A run after that – a retrospective asked for again – uses the default image. Images pushed to `environment.registry` stay: a shared registry is the operator's to clean. |
+| `legion/<change>/integration` (the deliverable: what the ship check judged) and `refs/legion/evidence/<run>` (every reported candidate, so reviews' and reports' `git:` attestations resolve) | when a human **prunes** the ended change (change action `prune`, `legion-orch prune <change>`) after taking the integration branch. The change's records stay; its `git:` attestations no longer resolve, and the ship check can no longer be re-run. |
+
+The controller never publishes: merging the integration branch into the repository's own branches
+is the people's step, after which `prune` tidies the hub.
 
 ## 6. Assets
 

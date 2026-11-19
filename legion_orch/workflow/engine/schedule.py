@@ -25,6 +25,7 @@ from ..model import (
     Run,
 )
 from ..roles import handler_for
+from . import cleanup
 from .acceptance import Acceptance
 from .core import ChangeCore
 from .dispatch import Dispatcher
@@ -56,6 +57,8 @@ class Scheduler:
                 self.graph.add_retrospective()
                 c.event("retrospective", "the change has ended: retrospective queued", RETRO)
                 c.save()
+            if cleanup.due(c):                     # ended, retrospective done (§5.14)
+                c.spawn(cleanup.end_of_change(c))
             # an ended change only runs a retrospective someone asked for
             if not active and not any(n.kind == RETRO for n in c.nodes.values()):
                 return
