@@ -69,7 +69,11 @@ change's state, the change list and every change's attention items whenever they
 you** (gates and escalations, across all changes) and the **inbox** (ended changes, retrospective
 reports); `notify:` sends the same items to ntfy, a webhook or a command, with reminders while
 they wait (WORKFLOW.md §2.2). `legion-orch attention` and `legion-orch digest --since 8h` show
-them on the command line. Build it before packaging (`python -m build` ships whatever is in
+them on the command line. The H-2 and H-3 cards and the Gates tab show the **traceability
+matrix** – each requirement with its delta spec, tasks and acceptance criteria, and their results
+once built – with warnings first, the diff of anything changed since it was approved, and at H-3
+the diff per task and the ship gates evaluated dry (§2.3; `legion-orch trace <change>`). Build it
+before packaging (`python -m build` ships whatever is in
 `static/dist`); without a build, `/` says how to make one.
 
 Sandboxes reach the agent-facing listeners at `server.public_host` (default

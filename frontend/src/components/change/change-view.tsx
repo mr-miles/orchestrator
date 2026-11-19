@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isLive } from '@/lib/status'
+import { docsVersion } from '@/lib/trace'
 import type { ChangeState } from '@/lib/types'
 import { AgentsTab } from './agents-tab'
 import { DocSheet, type DocRef } from './doc-sheet'
@@ -46,6 +47,7 @@ export function ChangeView({
       openNode: setNode,
       openLog: setLog,
       openDoc: (path, version) => setDoc({ path, version }),
+      openDiff: (path, from) => setDoc({ path, diffFrom: from }),
     }),
     [cid, tab, setTab],
   )
@@ -53,8 +55,6 @@ export function ChangeView({
   const awaiting = state.nodes.filter(
     (n) => n.status === 'AWAITING_HUMAN' || n.status === 'ESCALATED',
   )
-  // a cheap fingerprint of the change's documents moving on (the Documents tab refreshes on it)
-  const docsVersion = `${state.runs.length}:${state.nodes.map((n) => `${n.status}${n.cycle}`).join()}`
   return (
     <NavContext value={nav}>
       <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)}>
@@ -84,7 +84,7 @@ export function ChangeView({
           <PlanTab state={state} />
         </TabsContent>
         <TabsContent value="documents">
-          <DocumentsTab version={docsVersion} />
+          <DocumentsTab version={docsVersion(state)} />
         </TabsContent>
         <TabsContent value="workflow">
           <WorkflowTab assetsSha={state.assets_sha} />

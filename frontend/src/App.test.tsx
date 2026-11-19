@@ -13,6 +13,8 @@ import {
   install,
   run,
   stateAtH1,
+  stateAtH2,
+  traceAtH2,
   type Call,
 } from './test/fakes'
 
@@ -204,6 +206,61 @@ describe('the operator UI', () => {
     expect(calls.some((c) => c.url.startsWith('/api/digest?since='))).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     await waitFor(() => expect(screen.queryByText('While you were away')).toBeNull())
+  })
+
+  test('H-2 shows the traceability warnings first and the diff of a stale spec', async () => {
+    calls = fakeFetch({
+      '/api/meta': {},
+      '/api/changes': CHANGES,
+      '/api/changes/c1/trace': traceAtH2(),
+      '/api/doc/diff': {
+        path: 'p',
+        from: 1,
+        to: 2,
+        diff: '@@ -1 +1 @@\n-add it\n+add it, politely\n',
+      },
+      '/api/doc': {
+        path: 'changes/c1/plan/specs/REQ-1.md',
+        version: 2,
+        content: '# REQ-1',
+        author: 'a',
+        role: 'planner',
+        created_at: 't',
+        schema: 'markdown',
+        sha256: 'sha256:0123456789abcdef0123',
+        history: [],
+      },
+    })
+    location.hash = '#c1/overview/H-2'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', stateAtH2())
+    })
+    const sheet = await screen.findByRole('dialog')
+    expect(
+      await within(sheet).findByText('1 requirement · 1 task · 1 criterion · 2 warnings'),
+    ).toBeTruthy()
+    const warnings = within(sheet).getByRole('list', { name: 'Traceability warnings' })
+    expect(within(warnings).getAllByRole('listitem')[0]?.textContent).toContain('changed since')
+    await userEvent.click(
+      within(sheet).getByRole('button', { name: 'changed since v1 was approved' }),
+    )
+    expect(await screen.findByText('+add it, politely')).toBeTruthy()
+    expect(calls.some((c) => c.url.includes('/api/doc/diff?') && c.url.includes('&from=1'))).toBe(
+      true,
+    )
+  })
+
+  test('the Gates tab shows the matrix', async () => {
+    fakeFetch({ '/api/meta': {}, '/api/changes': CHANGES, '/api/changes/c1/trace': traceAtH2() })
+    location.hash = '#c1/gates'
+    renderApp()
+    await push(stateAtH2())
+    expect(await screen.findByText('greet.txt says hello')).toBeTruthy()
+    expect(screen.getByText('no linked test')).toBeTruthy()
+    expect(screen.getByText('T1')).toBeTruthy()
   })
 
   test('with no changes it offers to start one', async () => {

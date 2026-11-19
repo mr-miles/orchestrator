@@ -35,12 +35,20 @@ must read.
  "protected_support": ["tests/acceptance/conftest.py"],
  "acceptance_commands": ["pytest -q tests/acceptance"],
  "integration_commands": ["pytest -q"],
- "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…"}],
+ "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…",
+               "tests": ["tests/acceptance/test_users_api.py"],
+               "commands": ["pytest -q tests/acceptance"]}],
  "surfaces": [{"id": "users-api",
                "description": "HTTP API served by docker compose, checked against the OpenAPI schema",
                "commands": ["docker compose up -d && pytest -q tests/integration/test_api.py"],
                "pins": ["docker-compose.yml", "schema/openapi.yaml"]}]}
 ```
+
+**Criteria** name the acceptance tests and commands that check them (`tests` ⊆
+`acceptance_tests`, `commands` ⊆ `acceptance_commands`, G-P12). Give every criterion at least one:
+an unlinked criterion is flagged to the human approving the plan, and a linked command's result
+at the integration head is shown against its criterion. Cover every accepted requirement with at
+least one criterion.
 
 **Delta specs:** one document per accepted requirement, `plan/specs/<REQ-id>.md`: current
 behaviour, the change, contracts, and the acceptance criteria that prove it. Each is approved

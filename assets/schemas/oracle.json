@@ -60,6 +60,28 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 2000
+          },
+          "tests": {
+            "type": "array",
+            "description": "acceptance_tests paths that check this criterion (G-P12)",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "uniqueItems": true,
+            "maxItems": 20
+          },
+          "commands": {
+            "type": "array",
+            "description": "acceptance_commands that check this criterion (G-P12)",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "uniqueItems": true,
+            "maxItems": 20
           }
         },
         "additionalProperties": false

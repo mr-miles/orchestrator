@@ -38,6 +38,8 @@ class SubjectStatus(BaseModel):
     approver: str | None = None
     at: str | None = None
     warnings: list[str] = []      # for the human to weigh before approving (G-BL2)
+    approved: dict[str, int] = {}         # path -> version approved (stale: what changed since)
+    latest: dict[str, int | None] = {}    # path -> latest version
 
 
 def h2_status(e: ChangeView) -> list[SubjectStatus]:
@@ -50,7 +52,8 @@ def h2_status(e: ChangeView) -> list[SubjectStatus]:
                                  status=ApprovalState.APPROVED if fresh
                                  else ApprovalState.STALE if a else ApprovalState.PENDING,
                                  approver=a.approver if a else None, at=a.at if a else None,
-                                 warnings=baseline_warnings(e) if subj == "oracle" else []))
+                                 warnings=baseline_warnings(e) if subj == "oracle" else [],
+                                 approved=dict(a.pins) if a else {}, latest=pins))
     return out
 
 

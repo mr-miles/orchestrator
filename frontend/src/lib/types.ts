@@ -239,6 +239,10 @@ export interface H2Subject {
   status: 'approved' | 'stale' | 'pending'
   approver?: string | null
   warnings?: string[]
+  /** path -> the version approved (a stale subject: diff against it) */
+  approved?: Record<string, number>
+  /** path -> the latest version */
+  latest?: Record<string, number | null>
 }
 
 export interface Surface {
@@ -394,4 +398,94 @@ export interface ActionResult {
   warnings?: string[]
   pending?: string[]
   approved?: string[]
+}
+
+/** The traceability matrix (WORKFLOW.md §2.3). */
+export interface TaskTrace {
+  id: string
+  title: string
+  requirements: string[]
+  verification: string[]
+  scaffold: boolean
+  node?: string | null
+  status: string
+  cycle: number
+  accepted_sha?: string | null
+  check?: { ok: boolean; sha: string; attestation?: string | null } | null
+  reviews: { role: string; verdict: string }[]
+}
+
+export interface CriterionTrace {
+  id: string
+  text: string
+  tests: string[]
+  commands: string[]
+  result?: 'pass' | 'fail' | null
+}
+
+export interface RequirementTrace {
+  id: string
+  text: string
+  spec?: {
+    path: string
+    status: 'approved' | 'stale' | 'pending'
+    approved?: number | null
+    latest?: number | null
+  } | null
+  tasks: string[]
+  criteria: CriterionTrace[]
+}
+
+export interface TraceWarning {
+  kind: string
+  message: string
+  requirement?: string | null
+  task?: string | null
+  criterion?: string | null
+  path?: string | null
+  version?: number | null
+}
+
+export interface Traceability {
+  built: boolean
+  requirements: RequirementTrace[]
+  tasks: TaskTrace[]
+  warnings: TraceWarning[]
+  results?: {
+    head?: string | null
+    verdict?: string | null
+    run?: string | null
+    ok?: boolean | null
+    commands: { command: string; exit_code: number }[]
+    attestation?: string | null
+  } | null
+  summary: { requirements: number; tasks: number; criteria: number; warnings: number }
+}
+
+export interface FileStat {
+  path: string
+  added?: number | null
+  deleted?: number | null
+}
+
+/** What H-3 accepts: the diff, the protected paths it changes, the ship gates evaluated dry. */
+export interface Acceptance {
+  diff: {
+    base?: string | null
+    head?: string | null
+    files: FileStat[]
+    added: number
+    deleted: number
+    tasks: { id: string; title: string; files: FileStat[]; added: number; deleted: number }[]
+    protected: { path: string; approved_by: string[]; tasks: string[] }[]
+  } | null
+  readiness: Readiness | null
+  error?: string | null
+}
+
+export interface DocDiff {
+  path: string
+  from: number
+  to: number
+  diff: string
 }

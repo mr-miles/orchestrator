@@ -1,5 +1,5 @@
 import { mock } from 'bun:test'
-import type { Attention, ChangeState, ChangeSummary, Node, Run } from '@/lib/types'
+import type { Attention, ChangeState, ChangeSummary, Node, Run, Traceability } from '@/lib/types'
 
 /** An EventSource the test drives: ``emit`` delivers a named event to the latest connection. */
 export class FakeEventSource extends EventTarget {
@@ -177,5 +177,72 @@ export function attentionAtH1(): Attention {
         blocking: false,
       },
     ],
+  }
+}
+
+/** A change at H-2 (R2): the REQ-1 spec changed since it was approved. */
+export function stateAtH2(): ChangeState {
+  const s = stateAtH1()
+  const spec = 'changes/c1/plan/specs/REQ-1.md'
+  return {
+    ...s,
+    change: s.change && { ...s.change, tier: 'R2' },
+    nodes: [
+      ...s.nodes.map((n) => (n.id === 'H-1' ? { ...n, status: 'ACCEPTED' as const } : n)),
+      node({ id: 'H-2', kind: 'human', title: 'Approve spec & oracle', status: 'AWAITING_HUMAN' }),
+      node({ id: 'build:T1', kind: 'build', title: 'greet' }),
+    ],
+    h2: [
+      {
+        subject: 'REQ-1',
+        paths: [spec],
+        status: 'stale',
+        approver: 'miles',
+        approved: { [spec]: 1 },
+        latest: { [spec]: 2 },
+      },
+    ],
+  }
+}
+
+/** The traceability matrix of ``stateAtH2``. */
+export function traceAtH2(): Traceability {
+  const spec = 'changes/c1/plan/specs/REQ-1.md'
+  return {
+    built: false,
+    requirements: [
+      {
+        id: 'REQ-1',
+        text: 'greet.txt says hello',
+        spec: { path: spec, status: 'stale', approved: 1, latest: 2 },
+        tasks: ['T1'],
+        criteria: [{ id: 'AC-1', text: 'says hello', tests: [], commands: [] }],
+      },
+    ],
+    tasks: [
+      {
+        id: 'T1',
+        title: 'greet',
+        requirements: ['REQ-1'],
+        verification: ['ruff check'],
+        scaffold: false,
+        node: 'build:T1',
+        status: 'PENDING',
+        cycle: 1,
+        reviews: [],
+      },
+    ],
+    warnings: [
+      {
+        kind: 'stale',
+        message: 'plan/specs/REQ-1.md changed since miles approved v1 (now v2)',
+        requirement: 'REQ-1',
+        path: spec,
+        version: 1,
+      },
+      { kind: 'unlinked_criterion', message: 'AC-1 names no test or command that checks it' },
+    ],
+    results: null,
+    summary: { requirements: 1, tasks: 1, criteria: 1, warnings: 2 },
   }
 }

@@ -196,6 +196,8 @@ class Criterion(Record):
     id: str
     requirement: str
     text: str
+    tests: list[str] = []         # acceptance_tests that check it (G-P12)
+    commands: list[str] = []      # acceptance_commands that check it (G-P12)
 
 
 class Surface(Record):

@@ -209,6 +209,31 @@ CLI: `legion-orch digest --since 8h`) counts each change's timeline events since
 started, reports accepted and rejected, reworks, merges, escalations, human decisions – without a
 model call, and lists everything that needs you in full.
 
+### 2.3 Gate screens: traceability and what H-3 accepts
+
+The gate cards show how the pieces of the plan fit together, computed from the change's records
+by `legion_orch/workflow/traceability.py` (API `GET /api/changes/<id>/trace`, CLI
+`legion-orch trace <change> [--format md|json]`). Like §2.2 it decides nothing: the guards stay
+the authority.
+
+**The matrix** has one row per accepted requirement (its first line from `requirements.md` as
+accepted at H-1): its delta spec and H-2 status, the tasks of the latest task graph that cite it
+(once built: status, latest verification, the panel's verdicts at the current cycle), and the
+oracle's criteria for it with the tests and commands each names (`criteria[].tests`,
+`criteria[].commands`, checked by G-P12). After integration each linked criterion shows `pass` or
+`fail` from the controller's oracle command results at the integration head.
+
+**Warnings**, listed first: an H-2 subject changed since it was approved (with a diff from the
+approved version: `GET /api/doc/diff?path=&from=&to=`), a requirement no task covers, at R2+ a
+requirement with no acceptance criterion (G-P8 needs only one for the whole oracle), a
+requirement covered only by the scaffold task, a task verified only by lint or type checks, and
+a criterion that names no test or command.
+
+**At H-3** (`GET /api/changes/<id>/acceptance`) the card adds the diff `base..integration head`
+as a whole and per merged task (the task's own commits), the protected paths changed since the
+oracle commit with the G-PP1 approvals behind them, and a dry evaluation of the ship gates at the
+head (§5.11): what would not be satisfied if the change were accepted now.
+
 ---
 
 ## 3. Risk tiers and gates
@@ -383,6 +408,7 @@ Universal guards apply to every task and are listed once.
 | G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
 | G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
+| G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. Unlinked criteria are allowed; the gate screens warn about them (§2.3). |
 
 ### 5.3 critique (part of `plan`)
 
@@ -530,6 +556,9 @@ change is built) and which failures were already there. The integration verifier
 | H-2 | Separate decisions, possibly by different approvers ∈ `decision_owners`: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md`, and the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). The node completes when every subject is approved against current versions; at R3 it also requires an `independent-baseline` pass attestation, so the baseline is recorded before any build run. |
 | G-B1 | (dispatch of any build run but the scaffold, §5.3b) every H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
 
+The H-2 card shows the traceability matrix and its warnings (§2.3); a stale subject offers the
+diff since the version approved.
+
 ### 5.6 `build` – one node per task in `plan/taskgraph.json`
 
 * **Soul:** the task's `soul` (`senior-developer`, `backend-engineer`, `frontend-engineer`)
@@ -604,7 +633,7 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 | G-INT1 | Attested head equals the integration head; `data.verdict ∈ {PASS, FAIL}`; `data.results` covers every acceptance and integration command. The controller also re-runs the oracle commands deterministically at the head (G-V1 semantics). FAIL ⇒ escalate. |
 | G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
 | G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha. |
-| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. |
+| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). |
 
 ### 5.10a Fix rounds
 
