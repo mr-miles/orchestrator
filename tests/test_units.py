@@ -73,7 +73,7 @@ def test_assets_render_and_pin(tmp_path):
     vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
                               "context_refs", "feedback", "candidate_sha", "write_scope",
-                              "required_docs", "workdir")}
+                              "required_docs", "workdir", "sandbox_tools")}
     vars_["task_soul"] = "backend-engineer"
     r = a.render_role("implementer", vars_)
     assert "Backend Engineer" in r.soul and r.pin.startswith("sha256:")

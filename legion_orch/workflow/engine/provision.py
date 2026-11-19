@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from ...sandbox import BuildError, ImageRecipe, SandboxEnv, driver_config, policy_entry
 from .. import guards
+from ..assets import GitMode
 from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
 from ..model import (
     ACCEPTED,
@@ -73,7 +74,7 @@ class Provisioner:
             self._fail(f"the environment library is invalid: {e}")
             return None
         profiles, v = guards.environment(spec, lib, c.cfg, set(c.assets.roles),
-                                         {n for n, r in c.assets.roles.items() if r.repo})
+                                         {n for n, r in c.assets.roles.items() if r.git != GitMode.NONE})
         if v:
             self._fail("the approved spec no longer resolves against the library: " + "; ".join(v))
             return None

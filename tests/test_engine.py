@@ -113,8 +113,12 @@ async def test_integration_is_not_judged_at_a_head_moved_outside_the_workflow(f:
     await f.human("integration", "retry")
     r = f.run("integration")
     assert len(f.runs("integration")) == runs + 1 and r.judged_sha == rec
-    assert f"human decision: test setup is fixed (given at integration head {rec[:12]}, the " \
-           "current head)" in r.template_vars["feedback"]
+    fb = r.template_vars["feedback"]
+    assert 'human decision on "G-V1: 1 oracle command(s) failed at head": test setup is fixed' in fb
+    assert f"(given at integration head {rec[:12]}, the current head)" in fb
+    [d] = [x for x in f.ce.nodes["integration"].feedback if x.source == "decisions"]
+    doc = f.ce.docs.read(d.attestations[0].split(":", 1)[1].rsplit("@", 1)[0]).content
+    assert "## Question (integration_failed)" in doc and "## Answer\n\ntest setup is fixed" in doc
     assert r.template_vars["oracle_sha"] == f.ce.change.oracle_sha != ""
     await f.integration("PASS")
     assert f.status("integration") == ACCEPTED
@@ -1074,3 +1078,18 @@ async def test_a_retried_run_continues_its_pushed_branch_in_a_fresh_sandbox(f: F
     r2 = f.run("build:T1", "implementer")
     assert r2.sandbox != r.sandbox
     assert f.steps(r2) == [["clone.sh"], ["branch.sh", r2.branch, pushed]]
+
+
+@scenario()
+async def test_without_an_environment_the_tools_are_the_default_images(f: Flow):
+    await f.to_build()
+    tools = f.run("build:T1", "implementer").template_vars["sandbox_tools"]
+    assert "default image" in tools and "do not assume python3, node or rsync" in tools
+
+
+@scenario()
+async def test_the_controllers_mcp_tools_load_up_front(f: Flow):
+    """Not deferred behind a tool search (the agents' recurring first-turn detour)."""
+    import json
+    server = json.loads(f.runner.mcp_configs[0])["mcpServers"]["legion"]
+    assert server["alwaysLoad"] is True and server["url"] == f.ce.mcp_url

@@ -10,7 +10,9 @@ Imagine the plan shipped and failed. For each plausible cause, check the plan:
    missing error paths, ordering/parallelism hazards, untestable acceptance criteria).
 2. **Assumptions:** list every assumption the plan makes about existing code, APIs, environment
    or data. Verify each against the repository (cite `git:` attestations). Unverified high-impact
-   assumptions are BLOCKERs.
+   assumptions are BLOCKERs. A contract that relies on how a pinned tool behaves – a config key,
+   a flag – that you could not run is at least a WARNING, unless the scaffold task probes it or
+   the plan uses a form known to work (a documented CLI flag rather than a config key).
 3. **Completeness:** every requirement covered, every task decision-complete (no "choose an
    approach"), verification commands that actually exercise the acceptance criteria – and that can
    exit 0 from the task's `files_modified` alone (type-checker includes of other tasks' or protected

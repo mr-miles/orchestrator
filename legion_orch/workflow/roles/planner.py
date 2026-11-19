@@ -3,6 +3,7 @@ stage configured, the sandbox environment spec composed from the library (G-E1..
 from __future__ import annotations
 
 from .. import governance, guards
+from ..assets import GitMode
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..model import H_ENV, H_SPEC, REVIEWING, Node
@@ -82,7 +83,7 @@ class Planner(RoleHandler):
         except LibraryError as x:
             return [f"G-E1: the environment library is invalid (an operator must fix it): {x}"]
         _, v = guards.environment(EnvironmentSpec.model_validate(raw), lib, e.cfg, set(e.assets.roles),
-                                  {n for n, r in e.assets.roles.items() if r.repo})
+                                  {n for n, r in e.assets.roles.items() if r.git != GitMode.NONE})
         return v
 
     async def on_done(self, e: RoleContext, r: Report) -> None:

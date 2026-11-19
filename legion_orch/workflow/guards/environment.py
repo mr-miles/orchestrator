@@ -72,9 +72,10 @@ def _compatible(wanted: str, have: str) -> bool:
 
 def mise_setup(spec: EnvironmentSpec, profiles: dict[str, ResolvedProfile],
                repo_roles: set[str]) -> list[str]:
-    """G-E8: the proposed mise.toml parses; every profile whose roles work on the repository
-    (and the verifier's) installs its ``[tools]`` at compatible versions – mise never installs at
-    run time – and, when it has a ``setup`` task, has the network the spec says setup needs."""
+    """G-E8: the proposed mise.toml parses; every profile whose roles run the setup (those that
+    work with a commit, §5.3c) and the verifier's installs its ``[tools]`` at compatible
+    versions – mise never installs at run time – and, when it has a ``setup`` task, has the
+    network the spec says setup needs."""
     if spec.mise is None:
         return []
     try:
@@ -109,7 +110,7 @@ def environment(spec: EnvironmentSpec, lib: Library, cfg: Config,
                 known_roles: set[str], repo_roles: set[str] | None = None
                 ) -> tuple[dict[str, ResolvedProfile], list[str]]:
     """All spec guards; returns the resolved profiles and every violation. ``repo_roles``: the
-    roles that work on the repository (they run its setup)."""
+    roles that run the repository's setup (those that work with a commit)."""
     profiles, problems = resolve(spec, lib)
     return profiles, ([f"G-E1: {p}" for p in problems] + endpoints(profiles, cfg)
                       + secrets(profiles) + resources(profiles, cfg) + roles(spec, known_roles)

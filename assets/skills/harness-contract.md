@@ -7,6 +7,9 @@ description: "MANDATORY for every legion run: load it before your first action. 
 You follow `read-before-write -> evidence-before-action -> minimal diff -> verify-before-report`.
 
 - Call `get_assignment()` first. Read every attestation listed under `context` before acting.
+  A `file:<path>@<version>` attestation is a **document in the document store**, not a file in
+  your working copy: read it with `docs_read` (searching the checkout finds nothing). `git:`
+  attestations are commits in the repository.
 - Do not invent architecture, paths, APIs, helpers, tests or verification commands that the
   assignment and its context do not establish. If a high-impact decision is missing, stop and
   report `BLOCKED` with the exact missing decision (see blocked-protocol).

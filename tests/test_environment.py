@@ -110,6 +110,8 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
 
     await f.human("H-2", "approve")
     name = f.run("build:T1", "implementer").sandbox
+    tools = f.run("build:T1", "implementer").template_vars["sandbox_tools"]
+    assert tools.startswith("profile `dev`: python@3.12, uv, ruff. Build, test and verify only")
     sp = f.runner.specs[name]
     assert sp.env == SandboxEnv(image=impl.image, network=impl.network, cpu="2", memory="4096Mi")
     # a credentialless policy is a rule in the sandbox's own policy; controller access is not

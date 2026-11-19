@@ -13,9 +13,10 @@ Context to read before editing: {{context_refs}}
 
 Steps, in this order:
 
-1. Read the context above. Install the project's dependencies before running any of its tools
-   (see language preferences), and use only tools your sandbox has (`command -v` before relying on
-   `python3`, `node` or similar).
+1. Read the context above: `file:` entries are documents, read with `docs_read` (they are not in
+   the working copy). When the repository's `mise.toml` has a setup task it has already run in
+   your working copy; otherwise install the project's dependencies before running any of its
+   tools (see language preferences). Your sandbox's tools: {{sandbox_tools}}.
 2. Implement within `files_modified`. Run the formatter and linter early, not only at the end.
 3. Run every `verification` command; all must exit 0. Report `BLOCKED` with the exact conflict if
    a command cannot pass from inside `files_modified`, or if protected acceptance tests fail for a
