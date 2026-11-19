@@ -1,5 +1,7 @@
 # Agent image = your existing Claude Code image + the tools agents use for their own work
-# (scripted edits, copying files): Python 3 and rsync.
+# (scripted edits, copying files): the Python 3 interpreter (standard library only – no pip or
+# venv: nothing is installed in a sandbox, and project packages come from the environment's
+# profiles) and rsync.
 #
 # Sandboxes cannot install anything at run time (no package registry is reachable), so every
 # tool an agent uses must be in the image. The project's own toolchain (bun, node, uv, …) does
@@ -23,7 +25,7 @@ ARG AGENT_USER=agent
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 python3-venv python3-pip \
+        python3 \
         rsync \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
