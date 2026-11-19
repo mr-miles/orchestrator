@@ -266,8 +266,10 @@ export interface GateAttestation {
   /** rollback_or_forward_fix_evidence: the release planner's recommended kind, and why */
   recommended?: string | null
   rationale?: string
-  /** security_or_e2e_evaluator: may be attested not_applicable with a reason */
+  /** no specific evidence behind it: may be attested not_applicable with a reason */
   waivable?: boolean
+  /** what a not_applicable attestation is recorded against */
+  waiver_sources?: string[]
 }
 
 export interface Surface {

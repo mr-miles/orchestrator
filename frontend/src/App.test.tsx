@@ -280,9 +280,11 @@ describe('the operator UI', () => {
     })
     const dialog = await screen.findByRole('dialog')
     expect(dialog.getAttribute('data-slot')).toBe('dialog-content') // not the side sheet
-    expect(within(dialog).getByText('independent-baseline attestation')).toBeTruthy()
-    expect(within(dialog).getByText(/0 of\s+1 already pass/)).toBeTruthy()
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Attest pass' }))
+    const row = within(dialog).getByRole('region', { name: 'Baseline evidence' })
+    expect(within(row).getByText('needs you')).toBeTruthy()
+    expect(within(row).getByText(/0 of\s+1 already pass/)).toBeTruthy()
+    expect(within(dialog).getByText('Also attests: Baseline evidence')).toBeTruthy()
+    await userEvent.click(within(row).getByRole('button', { name: 'Attest' }))
     await waitFor(() =>
       expect(calls.find((c) => c.url === '/api/changes/c1/nodes/H-2/action')?.body).toMatchObject({
         action: 'approve',
@@ -346,9 +348,19 @@ describe('the operator UI', () => {
       es.emit('state', state)
     })
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('rollback-evidence pass · miles')).toBeTruthy()
-    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'integration report' }))
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Attest & accept change' }))
+    const recovery = within(dialog).getByRole('region', { name: 'Recovery plan' })
+    expect(within(recovery).getByText('attested by miles (roll back)')).toBeTruthy()
+    expect(within(recovery).queryByRole('button', { name: 'Attest' })).toBeNull()
+    const evaluation = within(dialog).getByRole('region', {
+      name: 'Security or end-to-end evaluation',
+    })
+    await userEvent.click(within(evaluation).getByRole('checkbox', { name: 'integration report' }))
+    expect(
+      within(dialog).getByText(
+        'Also attests: Security or end-to-end evaluation (security evaluation)',
+      ),
+    ).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Accept change' }))
     await waitFor(() =>
       expect(calls.find((c) => c.url === '/api/changes/c1/nodes/H-3/action')?.body).toMatchObject({
         action: 'accept',
@@ -427,12 +439,11 @@ describe('the operator UI', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Not ready to ship')).toBeTruthy()
     expect(within(dialog).getByText(/1 of 2 gates not satisfied/)).toBeTruthy()
-    expect(within(dialog).getByText('Fix forward')).toBeTruthy()
-    expect(within(dialog).getByRole('button', { name: 'Re-run readiness check' })).toBeTruthy()
-    await userEvent.click(within(dialog).getByRole('checkbox', { name: /I have read the plan/ }))
-    await userEvent.click(
-      within(dialog).getByRole('button', { name: 'Attest & re-run readiness check' }),
-    )
+    const recovery = within(dialog).getByRole('region', { name: 'Recovery plan' })
+    expect(within(recovery).getByText('Fix forward')).toBeTruthy()
+    expect(within(recovery).getByText(/drops a column/)).toBeTruthy()
+    expect(within(dialog).getByText('Also attests: Recovery plan (fix forward)')).toBeTruthy()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Re-run readiness check' }))
     await waitFor(() =>
       expect(calls.some((c) => c.url === '/api/changes/c1/nodes/ship/action')).toBe(true),
     )
@@ -444,6 +455,59 @@ describe('the operator UI', () => {
         sources: ['file:changes/c1/release/rollback.md@1'],
       },
     })
+  })
+
+  test("a row's Attest button records that attestation at once", async () => {
+    calls = fakeFetch({
+      '/api/meta': {},
+      '/api/changes': CHANGES,
+      '/api/changes/c1/action': { attestation: 'file:x@1' },
+    })
+    localStorage.setItem('approver', 'miles')
+    const s = stateAtH1()
+    const state = {
+      ...s,
+      nodes: [
+        ...s.nodes,
+        {
+          ...s.nodes[0]!,
+          id: 'ship',
+          kind: 'ship' as const,
+          title: 'Ship',
+          status: 'FAILED' as const,
+        },
+      ],
+      h3: [
+        {
+          gate: 'rollback_or_forward_fix_evidence',
+          kinds: ['rollback-evidence', 'forward-fix-evidence'],
+          status: 'pending' as const,
+          suggested: [
+            { label: 'release/rollback.md', att: 'file:changes/c1/release/rollback.md@2' },
+          ],
+          recommended: 'rollback-evidence',
+          rationale: 'no data changes',
+        },
+      ],
+    }
+    location.hash = '#c1/overview/ship'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', state)
+    })
+    const row = within(await screen.findByRole('dialog')).getByRole('region', {
+      name: 'Recovery plan',
+    })
+    await userEvent.click(within(row).getByRole('button', { name: 'Attest' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/action')?.body).toMatchObject({
+        action: 'attest',
+        payload: { kind: 'rollback-evidence', verdict: 'pass' },
+      }),
+    )
+    expect(calls.some((c) => c.url.includes('/nodes/ship/action'))).toBe(false)
   })
 
   test('the Gates tab shows the matrix', async () => {

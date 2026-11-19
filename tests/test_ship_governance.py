@@ -409,6 +409,8 @@ async def test_h3_attests_the_gates_only_a_human_can_satisfy_with_the_acceptance
     labels = [s.label for s in sec.suggested]
     assert labels == ["integration report", "controller's oracle run at the head"]
     assert rb.suggested == []                                   # no release stage at R2
+    report = f.ce.latest_att("integration/report.md")
+    assert rb.waivable and sec.waivable and rb.waiver_sources == sec.waiver_sources == [report]
     with pytest.raises(WorkflowError, match="not needed"):
         await f.human("H-3", "accept", attestations=[{"kind": "independent-baseline", "sources": []}])
     with pytest.raises(WorkflowError, match="G-AT1"):

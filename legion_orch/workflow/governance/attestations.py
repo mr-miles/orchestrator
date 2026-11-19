@@ -95,8 +95,11 @@ class GateAttestation(BaseModel):
     # confirming it attests that kind
     recommended: str | None = None
     rationale: str = ""
-    # security_or_e2e_evaluator: may be attested not_applicable (with a reason) instead of pass
+    # no specific evidence behind it (no recommendation): may be attested not_applicable with a
+    # reason, recorded against ``waiver_sources`` (what was waived: the integration report, else
+    # the integration head)
     waivable: bool = False
+    waiver_sources: list[str] = []
 
 
 def _suggested(e: ChangeView, gate: str) -> list[SuggestedSource]:
@@ -134,11 +137,16 @@ def h3_attestations(e: ChangeView) -> list[GateAttestation]:
         row = GateAttestation(
             gate=gate, kinds=kinds, status="failed" if failed else "attested" if passed
             else "pending", kind=cur.kind if cur else None, verdict=cur.verdict if cur else None,
-            attested_by=cur.attested_by if cur else None, suggested=_suggested(e, gate),
-            waivable=gate == "security_or_e2e_evaluator")
+            attested_by=cur.attested_by if cur else None, suggested=_suggested(e, gate))
         if gate == "rollback_or_forward_fix_evidence" and e.latest("release/rollback.md"):
             from ..guards import recovery_strategy
             strategy, row.rationale = recovery_strategy(e.doc("release/rollback.md").content)
             row.recommended = f"{strategy}-evidence" if strategy else None
+        if not row.recommended:
+            row.waivable = True
+            head = e.change.integration_head
+            row.waiver_sources = [a for a in (
+                e.latest_att("integration/report.md")
+                or (f"git:{e.cfg.repo.name}@{head}" if head else None),) if a]
         rows.append(row)
     return rows

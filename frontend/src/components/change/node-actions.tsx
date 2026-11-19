@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useState } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,9 +10,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { Checkbox } from '@/components/ui/checkbox'
 import { FieldGroup } from '@/components/ui/field'
-import { Label } from '@/components/ui/label'
 import {
   Table,
   TableBody,
@@ -23,12 +21,13 @@ import {
 } from '@/components/ui/table'
 import { useAct } from '@/hooks/use-act'
 import { docPath } from '@/lib/api'
-import { csv, options } from '@/lib/forms'
-import type { ChangeState, GateAttestation, H2Subject, Node } from '@/lib/types'
+import { alsoRecords, GATE_TITLE, pendingAttestations, type AttestDraft } from '@/lib/attest'
+import type { ChangeState, H2Subject, Node } from '@/lib/types'
 import { ConfirmButton } from '../confirm-button'
 import { SelectField, TextField } from '../fields'
-import { AttestationLink, Muted, Pre, Sha, SourceBadge, StatusDot } from '../status'
+import { Muted, Pre, Sha, SourceBadge, StatusDot } from '../status'
 import { EnvironmentSpec } from './environment'
+import { AttestationRow, GateAttestationRow } from './attestation-row'
 import { useNav } from './nav'
 import { AcceptancePreview, TraceSummary } from './traceability'
 
@@ -230,62 +229,25 @@ function AcceptRequirements({ state }: { state: ChangeState }) {
 
 const H2_DOT = { approved: 'ACCEPTED', stale: 'ESCALATED', pending: 'REVIEWING' } as const
 
-/** R3: the independent-baseline attestation as an H-2 row, with the evidence it attests. */
-function BaselineRow({ row, onAttest }: { row: H2Subject; onAttest: () => void }) {
+/** The baseline's evidence: the controller's run of the oracle commands before any build. */
+function BaselineSummary({ row }: { row: H2Subject }) {
+  if (row.note) return <Muted>{row.note}</Muted>
   const results = row.results ?? []
   const passing = results.filter((r) => r.exit_code === 0).length
   return (
-    <TableRow>
-      <TableCell className="font-medium whitespace-normal">
-        Baseline
-        <span className="block text-xs font-normal text-muted-foreground">
-          independent-baseline attestation
-        </span>
-      </TableCell>
-      <TableCell className="space-y-1.5 whitespace-normal">
-        {row.note ? (
-          <Muted>{row.note}</Muted>
-        ) : (
-          <>
-            <p className="text-xs">
-              The oracle commands, run by the controller before any build: {passing} of{' '}
-              {results.length} already pass (each should fail until the change is built).
-            </p>
-            <ul className="font-mono text-xs">
-              {results.map((r) => (
-                <li key={r.command} className={r.exit_code === 0 ? 'text-destructive' : ''}>
-                  {r.exit_code === 0 ? '✓' : '✗'} {r.command} → exit {r.exit_code}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-        <div className="flex flex-wrap gap-x-3">
-          {(row.sources ?? []).map((a) => (
-            <AttestationLink key={a} att={a} />
-          ))}
-        </div>
-      </TableCell>
-      <TableCell>
-        <span className="inline-flex items-center gap-1.5">
-          <StatusDot status={H2_DOT[row.status]} />
-          {row.status === 'approved' ? 'attested' : row.status}
-          {row.approver && ` · ${row.approver}`}
-        </span>
-      </TableCell>
-      <TableCell className="text-right">
-        {row.status !== 'approved' && (
-          <Button
-            size="sm"
-            disabled={Boolean(row.note)}
-            title="Records an independent-baseline pass attestation citing this evidence"
-            onClick={onAttest}
-          >
-            Attest pass
-          </Button>
-        )}
-      </TableCell>
-    </TableRow>
+    <div className="space-y-1">
+      <p>
+        The oracle commands, run by the controller before any build: {passing} of {results.length}{' '}
+        already pass (each should fail until the change is built).
+      </p>
+      <ul className="font-mono text-xs">
+        {results.map((r) => (
+          <li key={r.command} className={r.exit_code === 0 ? 'text-destructive' : ''}>
+            {r.exit_code === 0 ? '✓' : '✗'} {r.command} → exit {r.exit_code}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -295,83 +257,93 @@ function ApproveSpec({ state }: { state: ChangeState }) {
   const act = useAct(nav.cid)
   const [feedback, setFeedback] = useState('')
   const c = state.change
+  const approvals = state.h2.filter((x) => x.kind !== 'attestation')
+  const baseline = state.h2.filter((x) => x.kind === 'attestation')
+  const attestsToo = baseline.some((x) => x.status !== 'approved' && !x.note)
   return (
     <Card>
       <CardHeader>
         <CardTitle>Approve spec &amp; oracle</CardTitle>
         <CardDescription>
           Each delta spec, the plan and the oracle are separate decisions
-          {c?.tier === 'R3' && ', and so is the independent-baseline attestation'}; all must be
-          approved before build. Oracle commit <Sha sha={c?.oracle_sha} />
+          {c?.tier === 'R3' && ', and the baseline evidence is attested'}; all must be done before
+          build. Oracle commit <Sha sha={c?.oracle_sha} />
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <TraceSummary state={state} />
         <Table>
           <TableBody>
-            {state.h2.map((x) =>
-              x.kind === 'attestation' ? (
-                <BaselineRow
-                  key={x.subject}
-                  row={x}
-                  onAttest={() => act.node('H-2', 'approve', { subjects: [x.subject] }, 'Attested')}
-                />
-              ) : (
-                <TableRow key={x.subject}>
-                  <TableCell className="font-medium">{x.subject}</TableCell>
-                  <TableCell className="whitespace-normal">
-                    {x.paths.map((p) => {
-                      const was = x.approved?.[p]
-                      const changed = x.status === 'stale' && was != null && was !== x.latest?.[p]
-                      return (
-                        <div key={p} className="flex flex-wrap items-baseline gap-x-2">
+            {approvals.map((x) => (
+              <TableRow key={x.subject}>
+                <TableCell className="font-medium">{x.subject}</TableCell>
+                <TableCell className="whitespace-normal">
+                  {x.paths.map((p) => {
+                    const was = x.approved?.[p]
+                    const changed = x.status === 'stale' && was != null && was !== x.latest?.[p]
+                    return (
+                      <div key={p} className="flex flex-wrap items-baseline gap-x-2">
+                        <Button
+                          variant="link"
+                          className="h-auto p-0 font-mono text-xs"
+                          onClick={() => nav.openDoc(p)}
+                        >
+                          {p.split('/').slice(2).join('/')}
+                        </Button>
+                        {changed && (
                           <Button
                             variant="link"
-                            className="h-auto p-0 font-mono text-xs"
-                            onClick={() => nav.openDoc(p)}
+                            className="h-auto p-0 text-xs text-destructive"
+                            onClick={() => nav.openDiff(p, was)}
                           >
-                            {p.split('/').slice(2).join('/')}
+                            changed since v{was} was approved
                           </Button>
-                          {changed && (
-                            <Button
-                              variant="link"
-                              className="h-auto p-0 text-xs text-destructive"
-                              onClick={() => nav.openDiff(p, was)}
-                            >
-                              changed since v{was} was approved
-                            </Button>
-                          )}
-                        </div>
-                      )
-                    })}
-                    {x.warnings?.map((w) => (
-                      <p key={w} className="mt-1 text-xs text-destructive">
-                        {w}
-                      </p>
-                    ))}
-                  </TableCell>
-                  <TableCell>
-                    <span className="inline-flex items-center gap-1.5">
-                      <StatusDot status={H2_DOT[x.status]} />
-                      {x.status}
-                      {x.approver && ` · ${x.approver}`}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {x.status !== 'approved' && (
-                      <Button
-                        size="sm"
-                        onClick={() => act.node('H-2', 'approve', { subjects: [x.subject] })}
-                      >
-                        Approve
-                      </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ),
-            )}
+                        )}
+                      </div>
+                    )
+                  })}
+                  {x.warnings?.map((w) => (
+                    <p key={w} className="mt-1 text-xs text-destructive">
+                      {w}
+                    </p>
+                  ))}
+                </TableCell>
+                <TableCell>
+                  <span className="inline-flex items-center gap-1.5">
+                    <StatusDot status={H2_DOT[x.status]} />
+                    {x.status}
+                    {x.approver && ` · ${x.approver}`}
+                  </span>
+                </TableCell>
+                <TableCell className="text-right">
+                  {x.status !== 'approved' && (
+                    <Button
+                      size="sm"
+                      onClick={() => act.node('H-2', 'approve', { subjects: [x.subject] })}
+                    >
+                      Approve
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
+        {baseline.map((x) => (
+          <AttestationRow
+            key={x.subject}
+            gate="independent_baseline"
+            status={x.status === 'approved' ? 'attested' : x.status}
+            by={x.approver}
+            summary={<BaselineSummary row={x} />}
+            sources={(x.sources ?? []).map((att) => ({
+              label: att.includes('baseline/report.md') ? 'baseline report' : "controller's run",
+              att,
+            }))}
+            disabled={Boolean(x.note)}
+            onAttest={() => act.node('H-2', 'approve', { subjects: [x.subject] }, 'Attested')}
+          />
+        ))}
         <TextField
           label="Feedback"
           value={feedback}
@@ -384,6 +356,7 @@ function ApproveSpec({ state }: { state: ChangeState }) {
         <Button onClick={() => act.node('H-2', 'approve', { subjects: 'all' }, 'Approved')}>
           Approve all pending
         </Button>
+        {attestsToo && <Muted>Also attests: {GATE_TITLE.independent_baseline}</Muted>}
         <Button
           variant="outline"
           title={
@@ -454,190 +427,20 @@ function AbandonReason({ value, onChange }: { value: string; onChange: (v: strin
   )
 }
 
-interface AttestDraft {
-  kind: string
-  off: string[]
-  extra: string
-  /** waivable gates: attest that no evaluation applies, with a reason */
-  na: boolean
-  reason: string
-  /** a recommendation: confirmed as read */
-  confirmed: boolean
-}
-
-interface AttestPayload {
-  kind: string
-  verdict: 'pass' | 'not_applicable'
-  sources: string[]
-  waiver_reason?: string
-}
-
-const draftFor = (g: GateAttestation, d?: AttestDraft): AttestDraft =>
-  d ?? { kind: g.kinds[0] ?? '', off: [], extra: '', na: false, reason: '', confirmed: false }
-
-/** What a row attests, once it is complete (else null: the gate is left for later). */
-function attestationOf(g: GateAttestation, d: AttestDraft): AttestPayload | null {
-  const all = g.suggested.map((s) => s.att)
-  if (g.recommended)
-    return d.confirmed ? { kind: g.recommended, verdict: 'pass', sources: all } : null
-  if (g.waivable && d.na)
-    return d.reason.trim() && all.length
-      ? { kind: d.kind, verdict: 'not_applicable', sources: all, waiver_reason: d.reason.trim() }
-      : null
-  const sources = [...all.filter((a) => !d.off.includes(a)), ...csv(d.extra)]
-  return sources.length ? { kind: d.kind, verdict: 'pass', sources } : null
-}
-
-const pending = (gates: GateAttestation[], drafts: Record<string, AttestDraft>) =>
-  gates
-    .filter((g) => g.status !== 'attested')
-    .map((g) => attestationOf(g, draftFor(g, drafts[g.gate])))
-    .filter((a): a is AttestPayload => a !== null)
-
-const STRATEGY: Record<string, string> = {
-  'rollback-evidence': 'Roll back',
-  'forward-fix-evidence': 'Fix forward',
-}
-
-/** H-3 / ship: a gate only a human attestation satisfies. A recommendation (the release
- * planner's recovery strategy) is confirmed as read; otherwise the kind and the evidence to cite,
- * or – where allowed – not applicable, with a reason. */
-function GateAttestationRow({
-  gate,
-  draft,
-  onChange,
-}: {
-  gate: GateAttestation
-  draft: AttestDraft
-  onChange: (d: AttestDraft) => void
-}) {
-  const id = useId()
-  const done = gate.status === 'attested'
-  const links = (
-    <div className="flex flex-wrap gap-x-3">
-      {gate.suggested.map((s) => (
-        <span key={s.att} className="text-sm">
-          {s.label} <AttestationLink att={s.att} />
-        </span>
-      ))}
-    </div>
-  )
-  return (
-    <div className="space-y-2 rounded-md border p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-mono text-xs font-medium">{gate.gate}</span>
-        <span className="inline-flex items-center gap-1.5 text-xs">
-          <StatusDot
-            status={done ? 'ACCEPTED' : gate.status === 'failed' ? 'ESCALATED' : 'REVIEWING'}
-          />
-          {done || gate.status === 'failed'
-            ? `${gate.kind} ${gate.verdict} · ${gate.attested_by}`
-            : 'needs your attestation'}
-        </span>
-      </div>
-      {!done && gate.recommended && (
-        <div className="space-y-2">
-          <p className="text-sm">
-            Recommended recovery: <b>{STRATEGY[gate.recommended] ?? gate.recommended}</b>
-            {gate.rationale && <span className="text-muted-foreground"> – {gate.rationale}</span>}
-          </p>
-          {links}
-          <div className="flex items-center gap-2">
-            <Checkbox
-              id={`${id}-ok`}
-              checked={draft.confirmed}
-              onCheckedChange={(v) => onChange({ ...draft, confirmed: Boolean(v) })}
-            />
-            <Label htmlFor={`${id}-ok`} className="font-normal">
-              I have read the plan and confirm it ({gate.recommended})
-            </Label>
-          </div>
-        </div>
-      )}
-      {!done && !gate.recommended && (
-        <FieldGroup>
-          <SelectField
-            label="Attest"
-            value={draft.kind}
-            onChange={(kind) => onChange({ ...draft, kind })}
-            options={options(gate.kinds)}
-          />
-          {gate.waivable && (
-            <SelectField
-              label="Verdict"
-              value={draft.na ? 'not_applicable' : 'pass'}
-              onChange={(v) => onChange({ ...draft, na: v === 'not_applicable' })}
-              options={[
-                { value: 'pass', label: 'Pass – evaluated' },
-                { value: 'not_applicable', label: 'Not applicable – no evaluation' },
-              ]}
-            />
-          )}
-          {gate.waivable && draft.na ? (
-            <>
-              <TextField
-                label="Reason"
-                value={draft.reason}
-                onChange={(reason) => onChange({ ...draft, reason })}
-                multiline
-                description="Why no evaluation applies (at least 24 characters). Recorded against:"
-              />
-              {links}
-            </>
-          ) : (
-            <>
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">Evidence</p>
-                {gate.suggested.map((s, i) => (
-                  <div key={s.att} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      id={`${id}-${i}`}
-                      checked={!draft.off.includes(s.att)}
-                      onCheckedChange={(v) =>
-                        onChange({
-                          ...draft,
-                          off: v ? draft.off.filter((a) => a !== s.att) : [...draft.off, s.att],
-                        })
-                      }
-                    />
-                    <Label htmlFor={`${id}-${i}`} className="font-normal">
-                      {s.label}
-                    </Label>
-                    <AttestationLink att={s.att} />
-                  </div>
-                ))}
-                {!gate.suggested.length && <Muted>Nothing on record to suggest.</Muted>}
-              </div>
-              <TextField
-                label="Other sources"
-                value={draft.extra}
-                onChange={(extra) => onChange({ ...draft, extra })}
-                placeholder="file:changes/<id>/…@1, git:<repo>@<sha>"
-                description="Comma-separated attestations, e.g. your own evaluation notes."
-              />
-            </>
-          )}
-        </FieldGroup>
-      )}
-    </div>
-  )
-}
-
 function AcceptChange({ state }: { state: ChangeState }) {
   const act = useAct(useNav().cid)
   const [note, setNote] = useState('')
   const [why, setWhy] = useState('')
   const [drafts, setDrafts] = useState<Record<string, AttestDraft>>({})
   const gates = state.h3 ?? []
-  const attestations = pending(gates, drafts)
+  const todo = pendingAttestations(gates, drafts)
   return (
     <Card>
       <CardHeader>
         <CardTitle>Accept the whole change</CardTitle>
         <CardDescription>
           At integration head <Sha sha={state.change?.integration_head} />
-          {gates.length > 0 &&
-            '. Gates only a human can satisfy are attested (pass) with the acceptance.'}
+          {gates.length > 0 && '. Some gates need your attestation.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -647,19 +450,25 @@ function AcceptChange({ state }: { state: ChangeState }) {
           <GateAttestationRow
             key={g.gate}
             gate={g}
-            draft={draftFor(g, drafts[g.gate])}
+            draft={drafts[g.gate]}
             onChange={(d) => setDrafts({ ...drafts, [g.gate]: d })}
+            onAttest={(a) => act.change('attest', { ...a }, 'Attested')}
           />
         ))}
         <TextField label="Note" value={note} onChange={setNote} multiline />
       </CardContent>
-      <CardFooter className="flex gap-2">
+      <CardFooter className="flex flex-wrap items-center gap-2">
         <Button
           onClick={() =>
-            act.node('H-3', 'accept', { feedback: note, attestations }, 'Change accepted')
+            act.node(
+              'H-3',
+              'accept',
+              { feedback: note, attestations: todo.map((t) => t.payload) },
+              'Change accepted',
+            )
           }
         >
-          {attestations.length ? 'Attest & accept change' : 'Accept change'}
+          Accept change
         </Button>
         <ConfirmButton
           title="Reject the change?"
@@ -670,6 +479,7 @@ function AcceptChange({ state }: { state: ChangeState }) {
         >
           Reject
         </ConfirmButton>
+        {todo.length > 0 && <Muted>Also attests: {alsoRecords(todo)}</Muted>}
       </CardFooter>
     </Card>
   )
@@ -683,9 +493,9 @@ function ShipReadiness({ state }: { state: ChangeState }) {
   const res = state.change?.ship
   const bad = Object.entries(res?.gates ?? {}).filter(([, g]) => g.status !== 'satisfied')
   const gates = (state.h3 ?? []).filter((g) => g.status !== 'attested')
-  const attestations = pending(gates, drafts)
+  const todo = pendingAttestations(gates, drafts)
   const rerun = async () => {
-    for (const a of attestations) if (!(await act.change('attest', { ...a }))) return
+    for (const t of todo) if (!(await act.change('attest', { ...t.payload }))) return
     await act.node('ship', 'recheck', {}, 'Re-running the readiness check')
   }
   return (
@@ -719,8 +529,9 @@ function ShipReadiness({ state }: { state: ChangeState }) {
             <GateAttestationRow
               key={g.gate}
               gate={g}
-              draft={draftFor(g, drafts[g.gate])}
+              draft={drafts[g.gate]}
               onChange={(d) => setDrafts({ ...drafts, [g.gate]: d })}
+              onAttest={(a) => act.change('attest', { ...a }, 'Attested')}
             />
           ))}
           {bad.some(([g]) => !gates.some((x) => x.gate === g)) && (
@@ -731,10 +542,11 @@ function ShipReadiness({ state }: { state: ChangeState }) {
           )}
         </CardContent>
       )}
-      <CardFooter>
+      <CardFooter className="flex flex-wrap items-center gap-2">
         <Button variant={bad.length ? 'default' : 'outline'} onClick={rerun}>
-          {attestations.length ? 'Attest & re-run readiness check' : 'Re-run readiness check'}
+          Re-run readiness check
         </Button>
+        {todo.length > 0 && <Muted>Also attests: {alsoRecords(todo)}</Muted>}
       </CardFooter>
     </Card>
   )
