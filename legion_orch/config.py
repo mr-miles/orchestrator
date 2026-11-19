@@ -174,7 +174,7 @@ class IdentityConfig:
 
 # Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates and escalations,
 # and the inbox's ended changes and retrospective reports.
-ATTENTION_KINDS = ("gate", "escalation", "change_ended", "retrospective")
+ATTENTION_KINDS = ("gate", "escalation", "not_ready", "change_ended", "retrospective")
 SINK_KINDS = ("webhook", "ntfy", "command")
 
 
@@ -204,7 +204,7 @@ class NotifyConfig:
     # Base URL of the operator UI, for links to the item (e.g. https://legion.example/).
     ui_url: str | None = None
     # Item kinds to notify: gate and escalation (blocking), change_ended, retrospective (inbox).
-    items: list[str] = field(default_factory=lambda: ["gate", "escalation"])
+    items: list[str] = field(default_factory=lambda: ["gate", "escalation", "not_ready"])
     # Repeat a blocking item while it is still waiting (seconds; 0 = never). Inbox items are
     # sent once.
     remind_after_s: int = 3600

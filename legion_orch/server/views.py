@@ -45,6 +45,13 @@ def environment_spec(ce: ChangeEngine) -> dict | None:
             "network": network, "problems": problems}
 
 
+def h2_rows(ce: ChangeEngine) -> list[dict]:
+    """H-2's decisions: each subject's approval and, at R3, the baseline attestation."""
+    rows = [s.model_dump() | {"kind": "approval"} for s in governance.h2_status(ce)]
+    base = governance.baseline_subject(ce)
+    return rows + ([base.model_dump()] if base else [])
+
+
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
     """Everything the UI shows for one change. Run assignments (the rendered prompt variables)
     are left out; node feedback is counted, not copied."""
@@ -56,7 +63,8 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "assets_sha": ctl.assets.sha, "limits": cfg.limits.__dict__,
             "change": ch.model_dump(mode="json") if ch else None, "nodes": nodes, "runs": runs,
             "gates": governance.gate_set(ce) if ch and ch.tier else [],
-            "h2": [s.model_dump() for s in governance.h2_status(ce)] if ch and ch.requirements else [],
+            "h2": h2_rows(ce) if ch and ch.requirements else [],
+            "h3": [r.model_dump() for r in governance.h3_attestations(ce)] if ch and ch.tier else [],
             "surfaces": [s.model_dump() for s in governance.surfaces(ce)] if ch else [],
             "environment": environment_spec(ce),
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}

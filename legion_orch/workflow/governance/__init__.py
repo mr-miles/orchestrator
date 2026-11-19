@@ -11,9 +11,12 @@ model; every record is a versioned document under changes/<id>/control/.
 Everything here works against :class:`~legion_orch.workflow.view.ChangeView` only.
 """
 from .approvals import (
+    BASELINE_SUBJECT,
+    BaselineSubject,
     SubjectStatus,
     approval_key,
     approve_subjects,
+    baseline_subject,
     baseline_warnings,
     h2_status,
     h2_subjects,
@@ -21,7 +24,14 @@ from .approvals import (
     stale_approvals,
     stale_environment,
 )
-from .attestations import ATTESTATION_KINDS, coverage_ok, record_attestation
+from .attestations import (
+    ATTESTATION_KINDS,
+    H3_GATES,
+    GateAttestation,
+    coverage_ok,
+    h3_attestations,
+    record_attestation,
+)
 from .common import GovernanceError
 from .overrides import gate_set, record_override, waiver_for
 from .protected import (
@@ -34,6 +44,8 @@ from .protected import (
 from .surfaces import pin_surfaces, surface_commands, surface_drift, surfaces
 
 __all__ = [
+    "BASELINE_SUBJECT", "BaselineSubject", "baseline_subject",
+    "H3_GATES", "GateAttestation", "h3_attestations",
     "ATTESTATION_KINDS", "GovernanceError", "SubjectStatus", "all_approved_protected",
     "approval_key", "approve_subjects", "approved_protected_for", "baseline_warnings",
     "coverage_ok", "gate_set",

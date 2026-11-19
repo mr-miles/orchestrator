@@ -7,6 +7,7 @@ import json
 import pytest
 from engine_harness import REPO, TASKS, Flow, scenario
 
+from legion_orch.workflow import attention, governance
 from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.model import ACCEPTED, ChangeStatus, GateStatus
 from legion_orch.workflow.ship import evaluate
@@ -391,3 +392,97 @@ async def test_the_integration_verifier_is_given_the_baseline(f: Flow):
     refs = handler_for("integration").extra_context(f.ce, f.ce.nodes["integration"])
     ver = f.ce.nodes["baseline"].verification["baseline"].attestation
     assert f.ce.latest_att("baseline/report.md") in refs and ver in refs, refs
+
+
+@scenario()
+async def test_h3_attests_the_gates_only_a_human_can_satisfy_with_the_acceptance(f: Flow):
+    await f.to_build(tier="R2")
+    for gate in ("security_or_e2e_evaluator", "rollback_or_forward_fix_evidence"):
+        await f.change_action("override", kind="add_gate", gate=gate, reason=REASON)
+    await f.implement()
+    await f.review()
+    await f.integration()
+    assert f.status("H-3") == "AWAITING_HUMAN"
+    rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
+    sec, rb = rows["security_or_e2e_evaluator"], rows["rollback_or_forward_fix_evidence"]
+    assert sec.status == rb.status == "pending" and sec.kinds == ["security-evaluation", "e2e-evaluation"]
+    labels = [s.label for s in sec.suggested]
+    assert labels == ["integration report", "controller's oracle run at the head"]
+    assert rb.suggested == []                                   # no release stage at R2
+    report = f.ce.latest_att("integration/report.md")
+    assert rb.waivable and sec.waivable and rb.waiver_sources == sec.waiver_sources == [report]
+    with pytest.raises(WorkflowError, match="not needed"):
+        await f.human("H-3", "accept", attestations=[{"kind": "independent-baseline", "sources": []}])
+    with pytest.raises(WorkflowError, match="G-AT1"):
+        await f.human("H-3", "accept", attestations=[{"kind": "e2e-evaluation", "sources": []}])
+    assert f.status("H-3") == "AWAITING_HUMAN"
+    res = await f.human("H-3", "accept", attestations=[
+        {"kind": "e2e-evaluation", "sources": [s.att for s in sec.suggested]}])
+    assert [w.split()[0] for w in res.warnings] == ["rollback_or_forward_fix_evidence"]
+    g = f.ce.change.ship.gates
+    assert g["security_or_e2e_evaluator"].status == SAT and g["security_or_e2e_evaluator"].human_judgement
+    assert g["rollback_or_forward_fix_evidence"].status == UNEVAL
+    rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
+    assert rows["security_or_e2e_evaluator"].status == "attested"
+    assert rows["security_or_e2e_evaluator"].kind == "e2e-evaluation"
+    # NOT_READY: the ship node shows it, and it needs you until a re-run finds the change READY
+    assert f.status("ship") == "FAILED" and f.ce.change.status == ChangeStatus.NOT_READY
+    [item] = [i for i in attention.items(f.ce) if i.blocking]
+    assert item.kind == "not_ready" and item.node == "ship"
+    assert item.detail == "rollback_or_forward_fix_evidence" and "1 gate not" in item.title
+    assert not [i for i in attention.items(f.ce) if i.kind == "change_ended"]
+    await f.change_action("attest", kind="rollback-evidence", verdict="pass",
+                          sources=[f.ce.latest_att("integration/report.md")])
+    await f.human("ship", "recheck")
+    assert f.status("ship") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+    assert [i.kind for i in attention.items(f.ce)] == ["change_ended"]
+    assert any("resolved" in e["message"] and "Not ready" in e["message"]
+               for e in f.ce.timeline_events() if e["kind"] == "attention")
+
+
+def test_recovery_strategy_is_read_from_the_rollback_plan():
+    from legion_orch.workflow.guards import recovery_strategy, release_docs
+    assert recovery_strategy("Strategy: rollback\nRationale: no data changes\n") == \
+        ("rollback", "no data changes")
+    assert recovery_strategy("# Plan\n\n**Strategy:** Forward fix\n**Rationale:** drops a column")[0] \
+        == "forward-fix"
+    assert recovery_strategy("revert to abc") == (None, "")
+    plan = "## Health criteria\nok\n## Rollback criteria\nbad\n"
+    assert release_docs(plan, "Strategy: rollback\nRevert to abc123", "abc123") == []
+    [v] = release_docs(plan, "Revert to abc123", "abc123")
+    assert v.startswith("G-REL1") and "Strategy: rollback" in v
+
+
+@scenario()
+async def test_h3_shows_the_recommended_recovery_and_e2e_can_be_not_applicable(f: Flow):
+    await f.to_build(tier="R2")
+    for gate in ("security_or_e2e_evaluator", "rollback_or_forward_fix_evidence"):
+        await f.change_action("override", kind="add_gate", gate=gate, reason=REASON)
+    await f.implement()
+    await f.review()
+    await f.integration()
+    f.ce.write_record("release/rollback.md", "Strategy: forward-fix\nRationale: drops a column\n"
+                                             f"Revert to {f.ce.change.base_sha}\n")
+    rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
+    rb, sec = rows["rollback_or_forward_fix_evidence"], rows["security_or_e2e_evaluator"]
+    assert (rb.recommended, rb.rationale) == ("forward-fix-evidence", "drops a column")
+    assert sec.waivable and not rb.waivable
+    report = f.ce.latest_att("integration/report.md")
+    with pytest.raises(WorkflowError, match="only be attested pass"):
+        await f.human("H-3", "accept", attestations=[
+            {"kind": "forward-fix-evidence", "verdict": "not_applicable", "sources": [report],
+             "waiver_reason": REASON}])
+    with pytest.raises(WorkflowError, match="waiver_reason"):
+        await f.human("H-3", "accept", attestations=[
+            {"kind": "e2e-evaluation", "verdict": "not_applicable", "sources": [report]}])
+    res = await f.human("H-3", "accept", attestations=[
+        {"kind": "e2e-evaluation", "verdict": "not_applicable", "sources": [report],
+         "waiver_reason": REASON},
+        {"kind": "forward-fix-evidence", "sources": [f.ce.latest_att("release/rollback.md")]}])
+    assert res.warnings == []
+    g = f.ce.change.ship.gates
+    sec = g["security_or_e2e_evaluator"]
+    assert sec.status == SAT and "not_applicable" in sec.detail
+    assert g["rollback_or_forward_fix_evidence"].status == SAT
+    assert "security_or_e2e_evaluator" in f.ce.change.ship.waived_gates
+    assert f.ce.change.status == ChangeStatus.READY

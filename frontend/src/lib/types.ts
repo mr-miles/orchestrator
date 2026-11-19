@@ -243,6 +243,33 @@ export interface H2Subject {
   approved?: Record<string, number>
   /** path -> the latest version */
   latest?: Record<string, number | null>
+  /** ``attestation``: R3's independent-baseline, decided with the subjects */
+  kind?: 'approval' | 'attestation'
+  /** attestation: what approving attests (the baseline report, the controller's run) */
+  sources?: string[]
+  /** attestation: the controller's results of the oracle commands at the head */
+  results?: { command: string; exit_code: number }[]
+  ok?: boolean | null
+  /** attestation: why it cannot be attested yet */
+  note?: string | null
+}
+
+/** H-3: a ship gate only a human attestation satisfies, with the evidence to cite. */
+export interface GateAttestation {
+  gate: string
+  kinds: string[]
+  status: 'attested' | 'failed' | 'pending'
+  kind?: string | null
+  verdict?: string | null
+  attested_by?: string | null
+  suggested: { label: string; att: string }[]
+  /** rollback_or_forward_fix_evidence: the release planner's recommended kind, and why */
+  recommended?: string | null
+  rationale?: string
+  /** no specific evidence behind it: may be attested not_applicable with a reason */
+  waivable?: boolean
+  /** what a not_applicable attestation is recorded against */
+  waiver_sources?: string[]
 }
 
 export interface Surface {
@@ -282,6 +309,7 @@ export interface ChangeState {
   runs: Run[]
   gates: string[]
   h2: H2Subject[]
+  h3?: GateAttestation[]
   surfaces: Surface[]
   environment: EnvironmentSpec | null
   attestation_kinds: string[]
@@ -308,7 +336,7 @@ export interface AttentionItem {
   change: string
   goal: string
   node: string | null
-  kind: 'gate' | 'escalation' | 'change_ended' | 'retrospective'
+  kind: 'gate' | 'escalation' | 'not_ready' | 'change_ended' | 'retrospective'
   detail: string
   title: string
   reason: string

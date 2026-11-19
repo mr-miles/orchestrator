@@ -200,16 +200,13 @@ async def _r3_workflow(tmp_path):
 
         await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
         assert n["baseline"].status == "ACCEPTED"
-        r = await ce.human_action("H-2", "approve", "miles")
-        assert r.pending == ["independent-baseline"]        # R3: baseline attested before build
         with pytest.raises(Exception, match="G-AT1"):
             await ce.change_action("attest", "miles", {"kind": "independent-baseline",
                                                        "verdict": "pass", "sources": []})
-        r = await ce.change_action("attest", "miles", {
-            "kind": "independent-baseline", "verdict": "pass", "sources": ["file:baseline/report.md@1"]})
-        assert r.warnings == []
-        await ce.human_action("H-2", "approve", "miles")
+        r = await ce.human_action("H-2", "approve", "miles")    # R3: attests the baseline too
+        assert r.pending == [] and "independent-baseline" in r.approved
         assert n["H-2"].status == "ACCEPTED"
+        assert ce.change.attestations["independent-baseline"].attested_by == "miles"
 
         await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
         assert all(f"{b.cycle}:architecture" in b.reviews for b in ce.build_nodes())

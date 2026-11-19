@@ -5,11 +5,14 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from .. import risk
 from ..model import (
+    ACCEPTED,
     BASELINE,
     H_ENV,
     Approval,
     ApprovalState,
+    AttestationVerdict,
     Oracle,
 )
 from ..view import ChangeView
@@ -77,6 +80,46 @@ def baseline_warnings(e: ChangeView) -> list[str]:
             out.append(f"G-BL2: the baseline verifier reported `{c}` exit {rc}; "
                        f"the controller got exit {got[c]}")
     return out
+
+
+BASELINE_SUBJECT = "independent-baseline"
+
+
+class BaselineSubject(BaseModel):
+    """R3's ``independent-baseline`` attestation, shown and decided with the H-2 subjects: the
+    baseline's evidence (the agent's report and the controller's own run of the commands)."""
+    subject: str = BASELINE_SUBJECT
+    kind: str = "attestation"
+    status: ApprovalState
+    approver: str | None = None
+    at: str | None = None
+    verdict: str | None = None                 # the current attestation's, if any
+    sources: list[str] = []                    # what approving attests (and links to)
+    results: list[dict] = []                   # the controller's results at the head
+    ok: bool | None = None
+    note: str | None = None                    # why it cannot be attested yet
+
+
+def baseline_subject(e: ChangeView) -> BaselineSubject | None:
+    """At R3 (once there is a baseline node): the attestation's status. ``approved`` while a pass
+    newer than the baseline verification stands; ``stale`` if the baseline ran again since;
+    ``pending`` otherwise."""
+    if not e.change.tier or risk.rank(e.change.tier) < 3 or BASELINE not in e.nodes:
+        return None
+    node = e.nodes[BASELINE]
+    ver = node.verification.get("baseline") if node.status == ACCEPTED else None
+    rec = e.change.attestations.get(BASELINE_SUBJECT)
+    sources = [s for s in (e.latest_att("baseline/report.md"), ver and ver.attestation) if s]
+    if rec and rec.verdict == AttestationVerdict.PASS and (not ver or rec.at > ver.at):
+        status = ApprovalState.APPROVED
+    else:
+        status = ApprovalState.STALE if rec else ApprovalState.PENDING
+    return BaselineSubject(
+        status=status, approver=rec.attested_by if rec else None, at=rec.at if rec else None,
+        verdict=rec.verdict if rec else None, sources=rec.sources if status == "approved" and rec
+        else sources, ok=ver.ok if ver else None,
+        results=[{"command": r.command, "exit_code": r.exit_code} for r in ver.results] if ver
+        else [], note=None if ver else "the baseline has not finished yet")
 
 
 def stale_approvals(e: ChangeView) -> list[str]:

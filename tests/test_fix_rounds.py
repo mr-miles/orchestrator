@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from engine_harness import ORACLE, REPO, TASKS, Flow, scenario
 
+from legion_orch.server import views
 from legion_orch.workflow import governance
 from legion_orch.workflow.engine import Controller, WorkflowError
 from legion_orch.workflow.model import (
@@ -203,11 +204,11 @@ async def test_r3_reruns_the_baseline_and_needs_a_new_attestation(f: Flow):
     assert base.cycle == 2 and base.status == RUNNING
     await _baseline(f)
     assert base.status == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
-    res = await f.human("H-2", "approve")
-    assert res.pending == ["independent-baseline"]           # round 1's attestation is too old
-    await _attest_baseline(f)
-    res = await f.human("H-2", "approve")
+    row = next(s for s in views.h2_rows(f.ce) if s["subject"] == "independent-baseline")
+    assert row["status"] == "stale"                          # round 1's attestation is too old
+    res = await f.human("H-2", "approve")                    # approve all attests it again
     assert res.pending == [] and f.status("H-2") == ACCEPTED
+    assert f.ce.change.attestations["independent-baseline"].at > base.verification["baseline"].at
 
 
 @scenario()
@@ -243,3 +244,31 @@ async def test_a_round_that_changes_the_environment_is_approved_and_provisioned_
     assert f.status("H-E1") == AWAITING_HUMAN and f.status("H-2") == PENDING
     await f.human("H-E1", "approve")
     assert f.status("provision") == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
+
+
+# ====================================================================== R3: baseline at H-2
+@scenario()
+async def test_r3_h2_lists_the_baseline_attestation_and_approves_it_in_one_step(f: Flow):
+    await f.to_h2(tier="R3")
+    await _baseline(f)
+    [row] = [s for s in views.h2_rows(f.ce) if s["kind"] == "attestation"]
+    ver = f.ce.nodes["baseline"].verification["baseline"]
+    assert row["subject"] == "independent-baseline" and row["status"] == "pending"
+    assert row["sources"] == [f.ce.latest_att("baseline/report.md"), ver.attestation]
+    assert [r["command"] for r in row["results"]] == [r.command for r in ver.results]
+    res = await f.human("H-2", "approve", subjects=["plan"])     # the baseline is still to decide
+    assert "independent-baseline" in res.pending and f.status("H-2") == AWAITING_HUMAN
+    res = await f.human("H-2", "approve", subjects=["independent-baseline"])
+    assert res.approved == ["independent-baseline"] and "independent-baseline" not in res.pending
+    rec = f.ce.change.attestations["independent-baseline"]
+    assert rec.verdict == "pass" and rec.sources == row["sources"]
+    res = await f.human("H-2", "approve")
+    assert res.pending == [] and f.status("H-2") == ACCEPTED
+
+
+@scenario()
+async def test_r3_baseline_row_before_the_baseline_finishes(f: Flow):
+    await f.to_h2(tier="R3")
+    [row] = [s for s in views.h2_rows(f.ce) if s["kind"] == "attestation"]
+    assert row["status"] == "pending" and row["note"] == "the baseline has not finished yet"
+    assert row["results"] == [] and f.status("H-2") != AWAITING_HUMAN

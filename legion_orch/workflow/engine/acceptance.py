@@ -21,6 +21,7 @@ from ..model import (
     ACCEPTED,
     BASELINE,
     BUILD,
+    FAILED,
     INTEGRATION,
     MERGING,
     R_REPORTED,
@@ -33,6 +34,7 @@ from ..model import (
     CommandResult,
     Feedback,
     Node,
+    ReadinessVerdict,
     Resume,
     Verdict,
     Verification,
@@ -288,6 +290,7 @@ class Acceptance:
             result.attestation = c.write_record("control/ship/readiness.json", result).attestation
             c.change.ship = result
             c.change.status = ChangeStatus(result.verdict)
-            c.nodes[SHIP].status = ACCEPTED
+            # the node shows the verdict: NOT_READY waits for a human (attest, approve, re-run)
+            c.nodes[SHIP].status = ACCEPTED if result.verdict == ReadinessVerdict.READY else FAILED
             c.event("ship", f"readiness verdict: {result.verdict}", SHIP)
             c.save()

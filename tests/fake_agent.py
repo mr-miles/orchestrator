@@ -212,7 +212,8 @@ def main():
     elif role == "release":
         p = write("release/plan.md",
                   "# Release\n\n## Health criteria\n- ok\n\n## Rollback criteria\n- not ok\n")
-        r = write("release/rollback.md", f"Revert to {a['base_sha']}\n")
+        r = write("release/rollback.md", f"Strategy: rollback\nRationale: no data changes\n\n"
+                                         f"Revert to {a['base_sha']}\n")
         print(call("report", status="DONE", summary="release plan", attestations=[p, r]))
     elif role == "integration":
         head = a["head_sha"]

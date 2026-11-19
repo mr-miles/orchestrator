@@ -10,6 +10,13 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Sheet,
@@ -286,7 +293,9 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
   )
 }
 
-/** A node's details, decisions and runs, over the current tab. */
+/** A node's details, decisions and runs, over the current tab: a sheet, or for a human gate a
+ * wide dialog, so the decision's evidence (subjects, matrix, diff, gates) fits without scrolling
+ * sideways. */
 export function NodeSheet({
   state,
   nodeId,
@@ -297,15 +306,34 @@ export function NodeSheet({
   onClose: () => void
 }) {
   const node = state.nodes.find((n) => n.id === nodeId)
+  const title = node && (
+    <>
+      {node.title} <StatusBadge status={node.status} />
+    </>
+  )
+  if (node?.kind === 'human' || node?.kind === 'ship')
+    return (
+      <Dialog open onOpenChange={(o) => !o && onClose()}>
+        <DialogContent className="flex max-h-[92vh] flex-col gap-0 p-0 sm:max-w-[min(80rem,calc(100%-4rem))]">
+          <DialogHeader className="border-b p-4">
+            <DialogTitle className="flex flex-wrap items-center gap-2 pr-8">{title}</DialogTitle>
+            <DialogDescription>
+              {node.kind} · {node.id}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <NodeBody node={node} state={state} />
+          </div>
+        </DialogContent>
+      </Dialog>
+    )
   return (
     <Sheet open={Boolean(node)} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full gap-0 sm:max-w-2xl">
         {node && (
           <>
             <SheetHeader className="border-b">
-              <SheetTitle className="flex flex-wrap items-center gap-2 pr-8">
-                {node.title} <StatusBadge status={node.status} />
-              </SheetTitle>
+              <SheetTitle className="flex flex-wrap items-center gap-2 pr-8">{title}</SheetTitle>
               <SheetDescription>
                 {node.kind} · {node.id}
               </SheetDescription>
