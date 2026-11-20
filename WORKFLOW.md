@@ -362,6 +362,14 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
 `ACTIVE -> FAILED` on crash, timeout or `max_report_attempts` rejected reports.
 On `ACCEPTED` the run's sandbox is deleted.
 
+**A run ends when its agent's turn does.** The `report` tool checks a report as it is filed, so a
+rejected one can be fixed, and records an accepted one (`REPORTED`, with the instruction to end
+the turn) – but the workflow does not move until the agent ends its turn and its process exits:
+then the role's handler judges the report and the run's phase takes the result (a BLOCKED report
+escalates). A turn that ends without an accepted report fails the run. An agent still in its turn
+300 s after its report was accepted is stopped; a run whose turn ended while the controller was
+down is concluded after the restart, its report checked again.
+
 A live run's **stage** records how far its sandbox got: `PREPARING` (OpenShell is creating the
 sandbox) -> `LAUNCHING` (the payload is in place; the setup script clones the working copy and
 starts the agent) -> `RUNNING` (the agent's first MCP call: it is up and reaches the

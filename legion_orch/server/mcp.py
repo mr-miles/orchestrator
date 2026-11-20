@@ -152,7 +152,8 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     @server.tool(description="Submit the result of this run. status is DONE or BLOCKED. "
                              "attestations: list of file:/git: references. data: role-specific "
                              "structured result matching your report_schema. BLOCKED needs "
-                             "blocked_reason and missing_decision. Returns accepted or violations. "
+                             "blocked_reason and missing_decision. Returns accepted (then end "
+                             "your turn: that hands your work back) or violations. "
                              "dry_run=true runs every check without submitting or using up an "
                              "attempt: it returns would_accept and the violations.")
     async def report(ctx: Context, status: str, summary: str, attestations: list[str],

@@ -409,6 +409,8 @@ class Run(Record):
     progress: list[Progress] = []
     created_at: str = Field(default_factory=now_iso)
     ended_at: str | None = None
+    # the agent's turn ended after its accepted report, and the report went to its phase
+    concluded: bool = False
     exit_code: int | None = None
     sandbox_deleted: bool = False
 

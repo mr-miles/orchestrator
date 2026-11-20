@@ -106,24 +106,24 @@ The participants, left to right:
 
 | Participant | Layer (§1) | Code | Responsible for |
 | --- | --- | --- | --- |
-| **Agent** | outside the controller | its sandbox, over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work and reporting it; its report is checked by the shared guards and judged by its role handler, which returns what it means to its phase. |
 | **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, and what a send-back resets – between steps. |
 | **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened, carrying out the effects it returns on the change's nodes, and persisting the core as its inputs. |
 | **Change state** | Engine | `engine/core.py` (`ChangeCore`), `engine/state.py` | The change, its nodes and runs; `save()` persists them, after letting the workflow see what changed. |
 | **Scheduler** | Services | `engine/schedule.py` | The tick: starting the work that current phases may start now, within the parallel-run limit; failing timed-out runs; releasing sandboxes. |
 | **StepRunner** | Steps | `engine/steps.py` | Moving one node through its step type's phases: entering the first, checking the step's waits, passing results to the phase, advancing, accepting after the last. |
 | **Phases** | Orchestrator layer of a step | `engine/phases.py` (with `Dispatcher`, `Acceptance`, `Provisioner`, and `Sandboxes` below them) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging – each ending in ok, rework or escalate. |
+| **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work, then filing one report (checked at once, so it can fix a rejected one) and ending its turn – which hands control back to its phase. |
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Agent
     participant Core as Workflow core
     participant RT as FlowRuntime
     participant St as Change state
     participant Sch as Scheduler
     participant SR as StepRunner
     participant Ph as Phases
+    actor Agent
 
     Note over Core,RT: H-2 was approved: the runtime gave the core act(H-2, approve)
     Core-->>RT: effects: StartStep(build:T1, attempt)
@@ -132,16 +132,18 @@ sequenceDiagram
     Ph->>St: build:T1 READY (core: running)
     Sch->>SR: tick: dispatch(build:T1), within capacity
     SR->>Ph: the step's waits hold (no overlapping task) → AgentRun.dispatch
-    Note over Ph: a run is prepared and launched in its sandbox (Dispatcher → Sandboxes)
+    Ph->>Agent: run launched in its sandbox (Dispatcher → Sandboxes)
     Ph->>St: build:T1 RUNNING
-    Agent->>Ph: report over MCP, checked by the guards, the implementer's handler returns Ok
-    Ph->>Ph: AgentRun.reported(Ok) → advance → Verify.enter
+    Agent->>Ph: report over MCP: checked by the guards, recorded – reply: end your turn
+    Agent-->>Ph: turn ends (its process exits): control returns
+    Ph->>Ph: the implementer's handler judges the report: Ok → AgentRun.reported → Verify.enter
     Ph->>St: VERIFYING
     Note over Ph: the commands run in a fresh verifier sandbox
     Ph->>Ph: Verify.conclude: Ok → Panel.enter
     Ph->>St: REVIEWING
-    Sch->>SR: tick: dispatch → Panel.dispatch (one judge run each, fresh sandboxes)
-    Agent->>Ph: each judge's report → Panel.reported → Panel.decide
+    Sch->>SR: tick: dispatch → Panel.dispatch
+    Ph->>Agent: one judge run each, in fresh sandboxes
+    Agent-->>Ph: each judge reports, ends its turn → Panel.reported → Panel.decide
     Ph->>Ph: Ok → Merge.enter → Merge.run (G-A1, G-H1, G-A2)
     Ph->>St: build:T1 ACCEPTED (its runs accepted, its sandbox retired)
     St->>RT: save() → sync()
@@ -159,6 +161,13 @@ its step starts in the core:
 | `running` | `READY` (its first work not started yet) · `RUNNING` (its agent works) · `VERIFYING` · `REVIEWING` · `MERGING` · `REWORK` (its own loop) |
 | `escalated` | `ESCALATED` |
 | `done` | `ACCEPTED` |
+
+An agent run is a call and a return: the report is the agent's result, checked as it is filed
+(so the agent can fix a rejected one), but nothing moves until the agent **ends its turn** – its
+process exits, and the run's phase takes what its role handler makes of the report. A turn that
+ends without an accepted report fails the run (escalated); a BLOCKED report escalates; an agent
+that keeps going after its report was accepted is stopped after a grace period. The agents are
+told so (`harness-contract`).
 
 A rework (`Verify` fails, the panel finds a blocker) stays inside the step: the engine runs the
 agent again in the same branch and sandbox, and the core only sees the step still running. An

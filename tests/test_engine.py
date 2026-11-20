@@ -248,9 +248,11 @@ async def test_transition_failure_rolls_back_and_escalates(f: Flow, monkeypatch=
         out = await f.intake()
     finally:
         intake_role.Intake.on_done = original
-    assert not out.accepted and "controller error" in out.violations[0]
+    # the report is accepted; what it means is applied when the agent's turn ends
+    assert out.accepted and "End your turn" in out.instruction
     assert f.ce.change.goal == "Say hello"     # ... is rolled back
     assert f.status("intake") == ESCALATED and f.ce.runs["r0001"].status == R_FAILED
+    assert "controller error" in f.ce.nodes["intake"].escalation.reason
 
 
 @scenario(report_check_timeout_s=0.05)
@@ -1121,3 +1123,52 @@ async def test_the_controllers_mcp_tools_load_up_front(f: Flow):
     import json
     server = json.loads(f.runner.mcp_configs[0])["mcpServers"]["legion"]
     assert server["alwaysLoad"] is True and server["url"] == f.ce.mcp_url
+
+
+# ====================================================================== the turn ends the run
+@scenario()
+async def test_an_accepted_report_is_taken_when_the_agents_turn_ends(f: Flow):
+    run = f.run("intake")
+    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
+            await f.write(run, "intake/risk.json", signals())]
+    out = await f.report(run, atts, exit_agent=False)
+    assert out.accepted and "End your turn" in out.instruction
+    assert run.status == "REPORTED" and not run.concluded
+    assert f.status("intake") == RUNNING and f.status("H-1") == PENDING     # nothing moved yet
+    await f.exit_agent(run)                                  # the turn ends: control returns
+    assert run.concluded and f.status("intake") == ACCEPTED
+    assert f.status("H-1") == AWAITING_HUMAN
+
+
+@scenario()
+async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
+    from legion_orch.workflow.engine.runs import RunLifecycle
+    run = f.run("intake")
+    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
+            await f.write(run, "intake/risk.json", signals())]
+    await f.report(run, atts, exit_agent=False)
+    grace, RunLifecycle.END_TURN_GRACE_S = RunLifecycle.END_TURN_GRACE_S, 0
+    try:
+        await f.settle()
+    finally:
+        RunLifecycle.END_TURN_GRACE_S = grace
+    assert run.concluded and f.status("intake") == ACCEPTED
+    assert "did not end its turn" in f.ce.timeline()
+
+
+@scenario()
+async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restart(f: Flow):
+    run = f.run("intake")
+    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
+            await f.write(run, "intake/risk.json", signals())]
+    await f.report(run, atts, exit_agent=False)
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    ce2 = ctl2.changes[f.ce.cid]
+    async with ctl2.svc.lock:
+        ce2.recover()
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        if ce2.runs[run.id].concluded:
+            break
+    assert ce2.runs[run.id].concluded and ce2.nodes["intake"].status == ACCEPTED
