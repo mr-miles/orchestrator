@@ -10,7 +10,6 @@ from ...util import now_iso
 from .. import attest, guards, report_data
 from ..assets import GitMode
 from ..model import (
-    BUILD,
     LIVE_RUN,
     R_ACTIVE,
     R_REPORTED,
@@ -19,7 +18,6 @@ from ..model import (
     Node,
     Progress,
     ReportStatus,
-    Resume,
     Run,
     RunReport,
     RunStage,
@@ -30,6 +28,7 @@ from ..view import RoleContext
 from .common import WorkflowError, log
 from .core import ChangeCore
 from .runs import RunLifecycle
+from .steps import step_for
 
 
 @dataclass
@@ -219,7 +218,7 @@ class Reports:
                              node.id, run.id)
                 if r.status == ReportStatus.BLOCKED:
                     self.c.escalate(node, "blocked", r.blocked_reason or "",
-                                    resume=Resume.REWORK if node.kind == BUILD else Resume.READY,
+                                    resume=step_for(node).rework_resume,
                                     run=run.id, missing_decision=r.missing_decision)
                 else:   # role-specific transition (see workflow/roles/)
                     await handler_for(run.role).on_done(self.roles, report)

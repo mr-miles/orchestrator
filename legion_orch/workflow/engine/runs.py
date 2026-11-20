@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 from ...sandbox import agentlog
 from ...util import now_iso
 from ..model import (
-    BUILD,
     LIVE_RUN,
     R_ACCEPTED,
     R_FAILED,
@@ -24,6 +23,7 @@ from ..model import (
 from ..roles import handler_for
 from .common import _parse_ts
 from .core import ChangeCore
+from .steps import step_for
 
 if TYPE_CHECKING:
     from .sandboxes import Sandboxes
@@ -142,7 +142,7 @@ class RunLifecycle:
         tail = self.log_tail(run.id, 40)
         who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
         resume = (Resume.REVIEWING if handler_for(run.role).panel
-                  else Resume.REWORK if node.kind == BUILD else Resume.READY)
+                  else step_for(node).rework_resume)
         self.c.escalate(node, "run_failed", f"{who} ({label}): {reason}", resume=resume,
                         run=run.id, log_tail=tail, source=source)
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":

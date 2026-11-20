@@ -22,9 +22,7 @@ from ..model import (
     INTAKE,
     LIVE_RUN,
     MERGING,
-    PROVISION,
     RUNNING,
-    SHIP,
     VERIFYING,
     Change,
     FailureSource,
@@ -45,6 +43,7 @@ from .runs import RunLifecycle
 from .sandboxes import Sandboxes
 from .schedule import Scheduler
 from .services import EngineHost, Services
+from .steps import step_for
 
 
 class ChangeEngine(ChangeCore):
@@ -103,10 +102,8 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.verify_node(node.id))
             elif node.status == MERGING:
                 self.spawn(self._acceptance.merge_node(node.id))
-            elif node.kind == SHIP and node.status == RUNNING:
-                self.spawn(self._acceptance.ship())
-            elif node.kind == PROVISION and node.status == RUNNING:
-                self.spawn(self._provisioner.provision())
+            elif node.status == RUNNING and (work := step_for(node).controller_work(self._scheduler)):
+                self.spawn(work)                    # provisioning, the ship check
         self._gates.resume_retries()
         self.save()
 
