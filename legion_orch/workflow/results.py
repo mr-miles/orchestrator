@@ -72,6 +72,7 @@ class ReportOutcome(Record):
     next: NodeStatus | None = None
     dry_run: bool | None = None
     would_accept: bool | None = None
+    instruction: str | None = None          # what the agent does next (accepted: end the turn)
 
     @classmethod
     def reject(cls, *violations: str, attempts_left: int | None = None) -> ReportOutcome:

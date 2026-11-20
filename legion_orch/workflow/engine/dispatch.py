@@ -5,7 +5,7 @@ import json
 import shlex
 import shutil
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...config import agent_command
 from ...sandbox import (
@@ -40,6 +40,9 @@ from .runs import RunLifecycle
 from .sandboxes import Sandboxes
 from .steps import sandbox_plan
 
+if TYPE_CHECKING:
+    from .reports import Reports
+
 
 @dataclass
 class Assignment:
@@ -73,6 +76,7 @@ class Dispatcher:
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes,
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
+        self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
 
     def _approval_fresh(self) -> list[str]:
         """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
@@ -366,6 +370,9 @@ class Dispatcher:
                 self.c.event("agent", f"agent process exited ({rc})", run.node_id, run_id)
             run.stage = RunStage.EXITED
             self.lifecycle.archive_log(run)
+            # the agent's turn ended: control returns to the engine, and an accepted report
+            # goes to its phase
+            await self.reports.conclude(run)
             self.c.save()
         if sandbox_plan(run.role).keeps_session:
             await self.sandboxes.pause(run)
