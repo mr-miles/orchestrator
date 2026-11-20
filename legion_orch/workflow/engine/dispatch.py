@@ -93,8 +93,8 @@ class Dispatcher:
         if appr1 and h.sees_requirements:
             refs += [f"file:{p}@{v}" for p, v in appr1.pins.items()
                      if h.sees_risk or p != self.c.p("intake/risk.json")]
-        if h.sees_draft_plan or not self.c.change.approvals.get("oracle"):
-            if self.c.nodes.get(PLAN) and self.c.nodes[PLAN].status == ACCEPTED:
+        if h.sees_draft_plan or not self.c.change.approvals.get(governance.approval_key("plan")):
+            if (plan := self.c.current(PLAN)) and plan.status == ACCEPTED:
                 refs += [a for a in (self.c.latest_att(p) for p in self._plan_docs()) if a]
         else:
             own = ({self.c.p(f"plan/specs/{r}.md") for r in node.task.requirements}
@@ -147,7 +147,7 @@ class Dispatcher:
             judged_sha = ch.integration_head
         run_id = self.c.host.next_run_id()
         # a fix round's oracle starts from the integration head, not from round 1's oracle branch
-        again = f"-r{ch.round}" if node.kind == ORACLE and ch.round > 1 else ""
+        again = f"-r{node.round}" if node.kind == ORACLE and node.round > 1 else ""
         # only roles that push get a branch; the others check their commit out detached
         branch = f"legion/{ch.id}/{_slug(node.id)}{again}" if plan.pushes else None
         asg = self._assignment(node, role, branch, judged_sha)

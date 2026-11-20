@@ -26,7 +26,9 @@ class WorkflowError(Exception):
 
 
 def _slug(node_id: str) -> str:
-    return node_id.replace(":", "-").lower()
+    """A node id as a path or branch component (``build:T1`` -> ``build-t1``, ``oracle@2`` ->
+    ``oracle-2``: ``@`` would end a ``file:<path>@<version>`` attestation)."""
+    return node_id.replace(":", "-").replace("@", "-").lower()
 
 
 def _parse_ts(ts: str) -> datetime:

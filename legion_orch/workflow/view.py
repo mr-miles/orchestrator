@@ -49,6 +49,9 @@ class ChangeView(Protocol):
 
     def scaffold_node(self) -> Node | None: ...
 
+    def current(self, base: str) -> Node | None:
+        """The current fix round's node ``base`` (or the latest round's that has one)."""
+
 
 class RoleContext(ChangeView, Protocol):
     """What a role handler (workflow/roles/) may use: the change view plus the engine operations
@@ -72,11 +75,8 @@ class RoleContext(ChangeView, Protocol):
     def step_done(self, node: Node) -> None:
         """The node's current phase passed: its step goes on to the next (or accepts it)."""
 
-    def materialize_builds(self, taskgraph: dict) -> None:
-        """Create the build nodes from an accepted task graph."""
-
-    def start_round(self, n: int) -> list[str]:
-        """Fix round ``n`` passed its critique: rerun what it changed and add its tasks."""
+    def define_tasks(self, plan: Node) -> list[str]:
+        """The plan (or a fix round's) passed its critique: its task graph's build tasks."""
 
     def panel_complete(self, node: Node) -> None:
         """Decide the review panel outcome once every member has reported."""
@@ -89,5 +89,3 @@ class RoleContext(ChangeView, Protocol):
     def timeline(self) -> str:
         """The change's controller events so far (JSON lines)."""
 
-    def reset_environment(self) -> None:
-        """The plan is reworked: the environment's approval and build are dropped."""

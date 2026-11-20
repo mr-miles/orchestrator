@@ -396,7 +396,7 @@ describe('the operator UI', () => {
       change: s.change && {
         ...s.change,
         tier: 'R3',
-        status: 'NOT_READY' as const,
+        approvals: { 'H-3': { approver: 'miles' } },
         ship: {
           verdict: 'NOT_READY' as const,
           integration_head: '0123456789abcdef',
@@ -415,10 +415,10 @@ describe('the operator UI', () => {
         ...s.nodes,
         {
           ...s.nodes[0]!,
-          id: 'ship',
-          kind: 'ship' as const,
-          title: 'Ship readiness check',
-          status: 'FAILED' as const,
+          id: 'H-3',
+          kind: 'human' as const,
+          title: 'Accept the change',
+          status: 'AWAITING_HUMAN' as const,
         },
       ],
       h3: [
@@ -434,7 +434,7 @@ describe('the operator UI', () => {
         },
       ],
     }
-    location.hash = '#c1/overview/ship'
+    location.hash = '#c1/overview/H-3'
     renderApp()
     const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
     await act(async () => {
@@ -448,9 +448,9 @@ describe('the operator UI', () => {
     expect(within(recovery).getByText('Fix forward')).toBeTruthy()
     expect(within(recovery).getByText(/drops a column/)).toBeTruthy()
     expect(within(dialog).getByText('Also attests: Recovery plan (fix forward)')).toBeTruthy()
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Re-run readiness check' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Re-check the ship gates' }))
     await waitFor(() =>
-      expect(calls.some((c) => c.url === '/api/changes/c1/nodes/ship/action')).toBe(true),
+      expect(calls.some((c) => c.url === '/api/changes/c1/nodes/H-3/action')).toBe(true),
     )
     expect(calls.find((c) => c.url === '/api/changes/c1/action')?.body).toMatchObject({
       action: 'attest',
@@ -476,10 +476,10 @@ describe('the operator UI', () => {
         ...s.nodes,
         {
           ...s.nodes[0]!,
-          id: 'ship',
-          kind: 'ship' as const,
-          title: 'Ship',
-          status: 'FAILED' as const,
+          id: 'H-3',
+          kind: 'human' as const,
+          title: 'Accept the change',
+          status: 'AWAITING_HUMAN' as const,
         },
       ],
       h3: [
@@ -495,7 +495,7 @@ describe('the operator UI', () => {
         },
       ],
     }
-    location.hash = '#c1/overview/ship'
+    location.hash = '#c1/overview/H-3'
     renderApp()
     const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
     await act(async () => {
@@ -512,7 +512,7 @@ describe('the operator UI', () => {
         payload: { kind: 'rollback-evidence', verdict: 'pass' },
       }),
     )
-    expect(calls.some((c) => c.url.includes('/nodes/ship/action'))).toBe(false)
+    expect(calls.some((c) => c.url.includes('/nodes/H-3/action'))).toBe(false)
   })
 
   test('the Gates tab shows the matrix', async () => {

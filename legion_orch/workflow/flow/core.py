@@ -129,7 +129,9 @@ class FlowState:
     which node; every status change is a transition of the node's machine. Every method that
     changes state returns the effects."""
 
-    def __init__(self, workflow: Workflow):
+    def __init__(self, workflow: Workflow, attempts: dict[str, int] | None = None):
+        """``attempts``: steps' attempts so far (a workflow rebuilt for a new structure
+        continues them, so an attempt number is never reused)."""
         self.workflow = workflow
         self.nodes: dict[str, Stage | Step | Parallel | Gate] = {}
         self.parent: dict[str, Stage | Parallel | None] = {}
@@ -141,7 +143,7 @@ class FlowState:
         self.log: list[tuple[str, str, str, str]] = []
         # attempts of steps that were removed (a round dropped by a send-back): a step made again
         # with the same id continues from them, so an attempt number is never reused
-        self._past_attempts: dict[str, int] = {}
+        self._past_attempts: dict[str, int] = dict(attempts or {})
         self._effects: list[Effect] = []
         for s in workflow.stages:
             self._register(s, None)

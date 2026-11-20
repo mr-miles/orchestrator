@@ -3,8 +3,9 @@
 Two kinds of item, derived from a change's state alone (no store reads, no model call):
 
 * **blocking** – the workflow waits for a decision owner: a human gate that is
-  ``AWAITING_HUMAN`` (H-1, H-E1, H-2, H-3), an ``ESCALATED`` node, or a change the ship check
-  found ``NOT_READY`` (its unsatisfied gates wait for attestations, approvals or a re-run). They
+  ``AWAITING_HUMAN`` (H-1, H-E1, H-2, H-3), an ``ESCALATED`` node, or H-3 accepted (or, at
+  R0/R1, automatic) but not ready: its preconditions, the ship gates, are not all satisfied
+  (they wait for attestations, waivers or a re-check). They
   stay until the decision is made; the notifier repeats them while they wait.
 * **inbox** – worth reading, but nothing waits for it: a change that ended, a retrospective
   report that is ready. They never resolve; the UI tracks which ones were read.
@@ -16,12 +17,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from . import risk
 from .model import (
     AWAITING_HUMAN,
     ESCALATED,
+    H_CHANGE,
     HUMAN,
     RETRO,
-    SHIP,
     ChangeStatus,
     GateStatus,
 )
@@ -64,7 +66,15 @@ def items(e: ChangeView) -> list[AttentionItem]:
     goal = _clip(ch.goal, 120)
     out: list[AttentionItem] = []
     for n in e.nodes.values():
-        if n.kind == HUMAN and n.status == AWAITING_HUMAN:
+        if n.kind == HUMAN and n.status == AWAITING_HUMAN and n.id == H_CHANGE and ch.ship \
+                and (H_CHANGE in ch.approvals or not ch.tier or risk.rank(ch.tier) < 2):
+            bad = {g: r for g, r in ch.ship.gates.items() if r.status != GateStatus.SATISFIED}
+            out.append(AttentionItem(
+                change=ch.id, goal=goal, node=n.id, kind=NOT_READY, detail=",".join(sorted(bad)),
+                title=f"Not ready to ship: {len(bad)} gate{'s' * (len(bad) != 1)} not satisfied",
+                reason=_clip("; ".join(f"{g}: {r.detail}" for g, r in sorted(bad.items()))),
+                since=n.status_since or "", blocking=True))
+        elif n.kind == HUMAN and n.status == AWAITING_HUMAN:
             out.append(AttentionItem(change=ch.id, goal=goal, node=n.id, kind=GATE, detail=n.id,
                                      title=f"{n.id}: {n.title}", since=n.status_since or "",
                                      blocking=True))
@@ -73,19 +83,12 @@ def items(e: ChangeView) -> list[AttentionItem]:
             out.append(AttentionItem(change=ch.id, goal=goal, node=n.id, kind=ESCALATION,
                                      detail=esc.kind, title=f"{n.title}: {esc.kind}",
                                      reason=_clip(esc.reason), since=esc.at, blocking=True))
-    ship = e.nodes.get(SHIP)
-    if ch.status == ChangeStatus.NOT_READY and ch.ship and ship and not ch.ended:
-        bad = {g: r for g, r in ch.ship.gates.items() if r.status != GateStatus.SATISFIED}
-        out.append(AttentionItem(
-            change=ch.id, goal=goal, node=SHIP, kind=NOT_READY, detail=",".join(sorted(bad)),
-            title=f"Not ready to ship: {len(bad)} gate{'s' * (len(bad) != 1)} not satisfied",
-            reason=_clip("; ".join(f"{g}: {r.detail}" for g, r in sorted(bad.items()))),
-            since=ship.status_since or "", blocking=True))
-    elif ch.status != ChangeStatus.ACTIVE:
-        since = (ch.ended.at if ch.ended else None) or (ship.status_since if ship else None) or ""
+    if ch.status != ChangeStatus.ACTIVE:
+        h3 = e.nodes.get(H_CHANGE)
+        since = (ch.ended.at if ch.ended else None) or (h3.status_since if h3 else None) or ""
         verb = {ChangeStatus.READY: "is ready to ship", ChangeStatus.NOT_READY: "is not ready",
                 ChangeStatus.ABANDONED: "was abandoned"}[ch.status]
-        out.append(AttentionItem(change=ch.id, goal=goal, node=SHIP if ship and not ch.ended else None,
+        out.append(AttentionItem(change=ch.id, goal=goal, node=H_CHANGE if h3 and not ch.ended else None,
                                  kind=CHANGE_ENDED, detail=str(ch.status),
                                  title=f"Change {verb}",
                                  reason=_clip(ch.ended.reason or "") if ch.ended else "",

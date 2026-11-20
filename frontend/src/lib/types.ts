@@ -226,6 +226,8 @@ export interface Change {
   oracle_sha?: string | null
   risk?: Risk | null
   ship?: Readiness | null
+  /** gate (or subject) -> its approval record */
+  approvals?: Record<string, { approver: string; at?: string }>
   attestations?: Record<string, AttestationRecord>
   overrides?: Override[]
   protected_approvals?: ProtectedApproval[]
@@ -257,6 +259,8 @@ export interface H2Subject {
   ok?: boolean | null
   /** attestation: why it cannot be attested yet */
   note?: string | null
+  /** the gate that decides it: H-E1 approves the plan, H-2 the oracle */
+  gate?: 'H-E1' | 'H-2'
 }
 
 /** H-3: a ship gate only a human attestation satisfies, with the evidence to cite. */
@@ -318,6 +322,9 @@ export interface ChangeState {
   gates: string[]
   h2: H2Subject[]
   h3?: GateAttestation[]
+  /** from the workflow core: what a human may do on each node now; waiting gates' unmet
+   * preconditions */
+  workflow?: { actions: Record<string, string[]>; unmet: Record<string, string[]> }
   surfaces: Surface[]
   environment: EnvironmentSpec | null
   attestation_kinds: string[]

@@ -2,24 +2,18 @@
 from __future__ import annotations
 
 from ..model import (
-    ACCEPTED,
-    FAILED,
     ORACLE,
     PENDING,
     REWORK,
-    SHIP,
     VERIFYING,
-    ChangeStatus,
     CommandResult,
     Feedback,
     Node,
-    ReadinessVerdict,
 )
 from . import cleanup
 from .core import ChangeCore
 from .phases import (
     Escalate,
-    Evaluate,
     Merge,
     Ok,
     Panel,
@@ -29,13 +23,13 @@ from .phases import (
 )
 from .runs import RunLifecycle
 from .steps import StepRunner, step_for
+from .workflow_tree import in_round
 
 
 class Acceptance:
     """How a candidate becomes accepted work: deterministic verification (G-V1), the review
-    panel's decision, rework within the cycle budget, the merge (G-A1, G-A2) – and, for the
-    change as a whole, the ship readiness check. The work is done by phases (:mod:`.phases`);
-    this says what their results mean for each kind of node."""
+    panel's decision, rework within the cycle budget, the merge (G-A1, G-A2). The work is done
+    by phases (:mod:`.phases`); this says what their results mean for each kind of node."""
 
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
         self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
@@ -71,7 +65,7 @@ class Acceptance:
         the baseline a human decides; in a build or at integration the tasks may have caused
         it: it fails like any command there.)"""
         c = self.c
-        oracle = c.nodes.get(ORACLE)
+        oracle = c.nodes.get(in_round(ORACLE, node.round)) or c.current(ORACLE)
         limit = c.cfg.limits.review_max_cycles + (oracle.extra_cycles if oracle else 0)
         if oracle is not None and oracle.cycle < limit:
             what = setup_failed_text(r)
@@ -86,7 +80,7 @@ class Acceptance:
             oracle.candidate_sha = None
             oracle.status = REWORK
             node.status = PENDING        # runs again once the oracle is accepted
-            c.event("rework", f"preflight: {what}: oracle rework cycle {oracle.cycle}", ORACLE)
+            c.event("rework", f"preflight: {what}: oracle rework cycle {oracle.cycle}", oracle.id)
             return
         self.ctx.apply(node, escalation)
 
@@ -126,17 +120,4 @@ class Acceptance:
             await cleanup.delete_run_branch(c, run.branch if run else None, node_id)
             c.event("accepted", f"merged {sha[:12]} -> integration {result.value[:12]}", node_id)
             self.runner.advance(node, merge)  # accepted; its sandbox goes (principle 8)
-            c.save()
-
-    async def ship(self) -> None:
-        """The ship readiness check (workflow/ship.py); its verdict is the change's status."""
-        result = (await Evaluate().run(self.ctx)).value
-        c = self.c
-        async with c.lock:
-            result.attestation = c.write_record("control/ship/readiness.json", result).attestation
-            c.change.ship = result
-            c.change.status = ChangeStatus(result.verdict)
-            # the node shows the verdict: NOT_READY waits for a human (attest, approve, re-run)
-            c.nodes[SHIP].status = ACCEPTED if result.verdict == ReadinessVerdict.READY else FAILED
-            c.event("ship", f"readiness verdict: {result.verdict}", SHIP)
             c.save()

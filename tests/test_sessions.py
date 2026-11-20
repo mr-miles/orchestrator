@@ -28,7 +28,7 @@ def resume_of(env: str) -> str | None:
 
 
 @scenario()
-async def test_planner_keeps_sandbox_and_session_through_critique_until_h2(f: Flow):
+async def test_planner_keeps_sandbox_and_session_through_critique_until_h_e1(f: Flow):
     await f.intake()
     await f.human("H-1", "accept")
     first = f.run("plan")
@@ -51,8 +51,8 @@ async def test_planner_keeps_sandbox_and_session_through_critique_until_h2(f: Fl
     give_session(f, second)
     await f.plan()
     await f.critique("PASS")
-    assert sb not in f.runner.deleted                        # H-2 can still send the plan back
-    await f.human("H-2", "approve")
+    assert sb not in f.runner.deleted                      # H-E1 can still send the plan back
+    await f.human("H-E1", "approve")
     assert sb in f.runner.deleted and f.ce.nodes["plan"].sandbox is None
 
 

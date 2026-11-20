@@ -136,7 +136,7 @@ class Phase:
     def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
         return []
 
-    def resume(self, rt: StepRunner) -> Coroutine[Any, Any, None] | None:
+    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
         """The controller's work to start again after a restart, while the node is RUNNING."""
         return None
 
@@ -271,7 +271,7 @@ class AgentRun(Phase):
 
     def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
         s, c, step = rt.scheduler, rt.c, rt.step(node)
-        if node.status not in (READY, REWORK) or not s.graph.deps_accepted(node) \
+        if node.status not in (READY, REWORK) \
                 or not all(w.holds(s, node) for w in step.dispatch_when) \
                 or s.waits_for_environment(self.role):
             return []
@@ -514,11 +514,11 @@ class BuildImages(Phase):
         if node.status == READY:
             node.status = RUNNING
             rt.c.event("provision", "provisioning the approved environment", node.id)
-            rt.c.spawn(rt.provisioner.provision())
+            rt.c.spawn(rt.provisioner.provision(node.id))
         return []
 
-    def resume(self, rt: StepRunner) -> Coroutine[Any, Any, None] | None:
-        return rt.provisioner.provision()
+    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
+        return rt.provisioner.provision(node.id)
 
     async def run(self, ctx: PhaseContext) -> PhaseResult:
         images: dict[str, str | None] = {}
@@ -537,15 +537,8 @@ class BuildImages(Phase):
 @dataclass(frozen=True, eq=False)
 class Evaluate(Phase):
     """Deterministic checks, no sandbox: the ship gates (workflow/ship.py). Always Ok with the
-    readiness: a NOT_READY verdict is a finding for the gate that reads it, not a failure."""
-    statuses: ClassVar = frozenset({RUNNING})
-
-    def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
-        node.status = RUNNING
-        rt.c.spawn(rt.acceptance.ship())
-
-    def resume(self, rt: StepRunner) -> Coroutine[Any, Any, None] | None:
-        return rt.acceptance.ship()
+    readiness: a NOT_READY verdict is a finding for the gate that reads it (H-3's
+    preconditions, :mod:`.runtime`), not a failure."""
 
     async def run(self, ctx: PhaseContext) -> Ok:
         result: Readiness = await evaluate(ctx.c)

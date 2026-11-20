@@ -22,6 +22,7 @@ from ..model import (
     H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
+    HUMAN,
     INTAKE,
     INTEGRATION,
     ORACLE,
@@ -29,9 +30,26 @@ from ..model import (
     PREFLIGHT,
     PROVISION,
     RELEASE,
+    NodeKind,
 )
 
 TASKS, SCAFFOLD = "tasks", "scaffold"          # the parallel groups of build steps
+
+# the engine node each step or gate of the tree is (build steps come with their task)
+NODES: dict[str, tuple[NodeKind, str]] = {
+    INTAKE: (NodeKind.INTAKE, "Intake: requirements & risk"),
+    H_REQUIREMENTS: (HUMAN, "Accept requirements & tier"),
+    PLAN: (NodeKind.PLAN, "Plan: spec, oracle, task graph; critique"),
+    H_ENV: (HUMAN, "Approve the plan"),
+    PROVISION: (NodeKind.PROVISION, "Provision: environment images"),
+    ORACLE: (NodeKind.ORACLE, "Oracle: protected acceptance tests"),
+    PREFLIGHT: (NodeKind.PREFLIGHT, "Preflight: the oracle's commands run"),
+    BASELINE: (NodeKind.BASELINE, "Independent baseline"),
+    H_SPEC: (HUMAN, "Approve the oracle"),
+    INTEGRATION: (NodeKind.INTEGRATION, "Integration verification"),
+    RELEASE: (NodeKind.RELEASE, "Release & rollback plan"),
+    H_CHANGE: (HUMAN, "Accept the change"),
+}
 PLAN_GATE = "plan-approved"
 
 
@@ -88,10 +106,15 @@ def round_template(rank: int, environment: bool):
     return template
 
 
+def requirements_workflow() -> Workflow:
+    """Before H-1: only the requirements are known (the tier decides the rest)."""
+    return Workflow([Stage(stage_id("requirements"), [Step(INTAKE)], Gate(H_REQUIREMENTS))])
+
+
 def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflow:
     """The change's tree. ``rank``: the tier's (risk.rank); stages without content are left out,
     and gates without a human decision at the tier are automatic."""
-    requirements = Stage(stage_id("requirements"), [Step(INTAKE)], Gate(H_REQUIREMENTS))
+    requirements = requirements_workflow().stages[0]
     plan_children: list[Stage | Step | Parallel] = [_design(1)]
     if oracle := _oracle(rank, environment, blank_repo, 1):
         plan_children.append(oracle)

@@ -608,7 +608,7 @@ def test_role_dispatch_policy():
                                                           "retrospective"}
     assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {"critic"}
     assert {r: p.keep for r, p in plans.items() if p.keeps} == {
-        "intake": UntilGate("H-1"), "planner": UntilGate("H-2"), "oracle": UntilGate("H-2"),
+        "intake": UntilGate("H-1"), "planner": UntilGate("H-E1"), "oracle": UntilGate("H-2"),
         "implementer": UntilAccepted()}
     assert roles_where("panel") == panel | {"critic"}         # the critic judges the plan node
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel

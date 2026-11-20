@@ -18,7 +18,7 @@ import { StatusDot } from '../status'
 import { useNav } from './nav'
 import { TaskGraph } from './task-graph'
 
-const LATE_STAGES = ['integration', 'release', 'H-3', 'ship', 'retrospective']
+const LATE_STAGES = ['integration', 'release', 'H-3', 'retrospective']
 
 /** The stages in order, the build tasks as one step, each opening its node. */
 function Pipeline({ nodes }: { nodes: Node[] }) {

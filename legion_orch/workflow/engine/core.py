@@ -31,6 +31,7 @@ from ..model import (
 from .common import log
 from .services import EngineHost, Services
 from .state import StateStore
+from .workflow_tree import base_id
 
 
 def _waited(since: str) -> str:
@@ -75,6 +76,13 @@ class ChangeCore:
     def add_node(self, node: Node) -> None:
         self.nodes[node.id] = node
 
+    def current(self, base: str) -> Node | None:
+        """The node ``base`` (``oracle``, ``H-2`` …) of the current fix round, or of the latest
+        round that has one (a round re-makes only some of the plan's steps)."""
+        found = [n for nid, n in self.nodes.items() if base_id(nid) == base]
+        return max(found, key=lambda n: (n.round <= self.change.round, n.round), default=None) \
+            if self.change else None
+
     def build_nodes(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.kind == BUILD]
 
@@ -94,12 +102,17 @@ class ChangeCore:
     def save(self) -> None:
         """Persist the state (the caller holds the lock) and wake the scheduler and UI. Every
         state change passes through here, so this is where status changes are stamped and
-        attention items are raised and resolved (§2.2)."""
+        attention items are raised and resolved (§2.2) – and where the workflow (the stage
+        rules) sees what changed (:meth:`sync`)."""
+        self.sync()
         self._stamp_statuses()
         self._update_attention()
         self.st.save()
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.host.changed()
+
+    def sync(self) -> None:
+        """Hook: let the workflow see the nodes' changes before they are saved."""
 
     # ------------------------------------------------------------------ attention (§2.2)
     @property

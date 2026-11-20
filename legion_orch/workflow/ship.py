@@ -148,7 +148,7 @@ class GateEvaluator:
             if not ver or not ver.ok or ver.sha != b.accepted_sha \
                     or not await self.resolves(ver.attestation):
                 return _g(UNSAT, f"{b.id}: no passing verification at accepted sha")
-        iv = self.e.nodes.get(INTEGRATION)
+        iv = self.e.current(INTEGRATION)
         if iv is not None:
             ver = iv.verification.get("integration")
             if not ver or not ver.ok or ver.sha != self.head:
@@ -227,7 +227,7 @@ class GateEvaluator:
         g = await self.protected()
         if g.status != SAT:
             return g
-        iv = self.e.nodes.get(INTEGRATION)
+        iv = self.e.current(INTEGRATION)
         ver = iv.verification.get("integration") if iv else None
         cmds = (self.ch.oracle or Oracle()).acceptance_commands
         if not ver or ver.sha != self.head:
@@ -239,7 +239,7 @@ class GateEvaluator:
 
     @checks("integration_or_real_interface_checks")
     async def integration(self) -> GateResult:
-        iv = self.e.nodes.get(INTEGRATION)
+        iv = self.e.current(INTEGRATION)
         if not iv:
             return _g(UNEVAL, "no integration node")
         r = iv.reviews.get("integration")
@@ -275,7 +275,7 @@ class GateEvaluator:
         g = await self.attested(["independent-baseline"], need_before_build=True)
         if g:
             return g
-        n = self.e.nodes.get(BASELINE)
+        n = self.e.current(BASELINE)
         return _g(UNEVAL, "no independent-baseline attestation" +
                   (" (baseline report exists; a human must attest it)" if n and n.status == ACCEPTED else ""))
 
@@ -299,7 +299,7 @@ class GateEvaluator:
         w = self.ch.attestations.get("release-observation")
         if w and w.verdict == AttestationVerdict.NOT_APPLICABLE:
             return await self.attested(["release-observation"])
-        n = self.e.nodes.get(RELEASE)
+        n = self.e.current(RELEASE)
         if not n or n.status != ACCEPTED:
             return _g(UNEVAL, "no release plan")
         if not await self.resolves(self.e.latest_att("release/plan.md")):

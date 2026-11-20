@@ -9,6 +9,7 @@ from enum import StrEnum
 
 from ..model import ACCEPTED, Node
 from .core import ChangeCore
+from .workflow_tree import in_round
 
 
 class Checkout(StrEnum):
@@ -62,8 +63,8 @@ class SandboxPlan:
 
     def held(self, c: ChangeCore, node: Node) -> bool:
         """Whether the node still keeps its sandbox for rework."""
-        if isinstance(self.keep, UntilGate):
-            gate = c.nodes.get(self.keep.gate)
+        if isinstance(self.keep, UntilGate):          # the gate of the node's own round
+            gate = c.nodes.get(in_round(self.keep.gate, node.round))
             return gate is not None and gate.status != ACCEPTED
         if isinstance(self.keep, UntilAccepted):
             return node.status != ACCEPTED

@@ -47,7 +47,7 @@ async def test_restart_plan_removes_the_changes_run_branches(f: Flow):
     await f.to_h2(tier="R2")
     stray = f"refs/heads/legion/{f.ce.cid}/build-t1"     # e.g. pushed by an earlier plan's T1
     await f.ctl.git.git("update-ref", stray, f.ce.change.base_sha)
-    await f.human("H-2", "revise", feedback="start over with smaller tasks")
+    await f.human("H-2", "restart", feedback="start over with smaller tasks")
     assert stray not in await heads(f)
     assert f"refs/heads/legion/{f.ce.cid}/integration" in await heads(f)
 
@@ -71,7 +71,10 @@ async def test_an_ended_change_is_cleaned_up_once(f: Flow):
 
 @scenario()
 async def test_cleanup_waits_for_the_retrospective(f: Flow):
-    await f.to_h2()                                        # nothing running
+    await f.intake()                                       # nothing running
+    await f.human("H-1", "accept")
+    await f.plan()
+    await f.critique()
     async with f.ce.lock:
         f.ce.change.status = ChangeStatus.ABANDONED
         f.ce.add_node(Node(id="retrospective", kind="retrospective", title="r", status="RUNNING"))
@@ -97,4 +100,4 @@ async def test_prune_removes_the_integration_branch_and_evidence(f: Flow):
     with pytest.raises(WorkflowError, match="already pruned"):
         await f.change_action("prune")
     with pytest.raises(WorkflowError, match="not available"):
-        await f.human("ship", "recheck")                   # nothing left to evaluate at
+        await f.human("H-3", "recheck")                    # nothing left to evaluate at

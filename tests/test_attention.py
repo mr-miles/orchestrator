@@ -101,7 +101,7 @@ async def test_a_shipped_change_and_its_retrospective_go_to_the_inbox(f: Flow):
     assert f.ce.change.status == ChangeStatus.READY
     [ended] = f.ce.attention_items
     assert (ended.kind, ended.detail, ended.node, ended.blocking) == \
-        ("change_ended", "READY", "ship", False)
+        ("change_ended", "READY", "H-3", False)
     await f.change_action("retrospective")
     run_ = f.run("retrospective")
     doc = await f.write(run_, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")

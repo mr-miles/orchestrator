@@ -39,12 +39,13 @@ async def test_r1_change_runs_to_ready(f: Flow):
     assert f.ce.change.risk.tier == "R1" and f.status("H-1") == AWAITING_HUMAN
     res = await f.human("H-1", "accept")
     assert (res.tier, res.panel) == ("R1", ["reviewer"])
-    assert set(f.ce.nodes) == {"intake", "H-1", "plan", "H-2", "ship"}   # no R2 stages
+    # no oracle stage at R1; H-3 is automatic, held only by its preconditions (the ship gates)
+    assert list(f.ce.nodes) == ["intake", "H-1", "plan", "H-E1", "H-3"]
     await f.plan()
     await f.critique("PASS")
-    assert f.status("build:T1") == PENDING and f.ce.nodes["ship"].depends_on == ["build:T1"]
-    res = await f.human("H-2", "approve")
-    assert res.pending == [] and f.status("H-2") == ACCEPTED
+    assert f.status("build:T1") == PENDING and list(f.ce.nodes)[-2:] == ["build:T1", "H-3"]
+    res = await f.human("H-E1", "approve")
+    assert res.pending == [] and f.status("H-E1") == ACCEPTED
     impl = f.run("build:T1", "implementer")
     await f.implement()
     assert f.status("build:T1") == REVIEWING
@@ -287,7 +288,7 @@ async def test_h1_decision_rules(f: Flow):
     with pytest.raises(WorkflowError, match="lowering the tier needs a reason"):
         await f.human("H-1", "accept", tier="R0", reason="no")
     with pytest.raises(WorkflowError, match="not valid for H-1"):
-        await f.human("H-1", "approve")
+        await f.human("H-1", "restart")
     with pytest.raises(WorkflowError, match="unknown node"):
         await f.human("H-9", "accept")
     with pytest.raises(WorkflowError, match="not available for intake in ACCEPTED"):
@@ -363,36 +364,55 @@ async def test_critique_must_attest_the_latest_plan(f: Flow):
 
 
 # ====================================================================== H-2
+async def _planned(f: Flow, tier: str | None = None) -> None:
+    await f.intake()
+    await f.human("H-1", "accept", **({"tier": tier} if tier else {}))
+    await f.plan()
+    await f.critique()
+
+
 @scenario()
-async def test_h2_subjects_are_separate_decisions(f: Flow):
-    await f.to_h2()
-    res = await f.human("H-2", "approve", subjects=["plan"])
-    assert res.approved == ["plan"] and set(res.pending) == {"REQ-1", "oracle"}
-    assert f.status("H-2") == AWAITING_HUMAN
-    res = await f.human("H-2", "approve", approver="ana", subjects=["REQ-1", "oracle"])
-    assert res.pending == [] and f.status("H-2") == ACCEPTED
+async def test_plan_subjects_are_separate_decisions(f: Flow):
+    """H-E1 approves the plan: its spec and task graph, and each delta spec, separately."""
+    await _planned(f)
+    res = await f.human("H-E1", "approve", subjects=["plan"])
+    assert res.approved == ["plan"] and res.pending == ["REQ-1"]
+    assert f.status("H-E1") == AWAITING_HUMAN
+    res = await f.human("H-E1", "approve", approver="ana", subjects=["REQ-1"])
+    assert res.pending == [] and f.status("H-E1") == ACCEPTED
     with pytest.raises(WorkflowError):
-        await f.ce.human_action("H-2", "approve", "miles", {"subjects": ["nonsense"]})
+        await f.ce.human_action("H-E1", "approve", "miles", {"subjects": ["oracle"]})
 
 
 @scenario()
-async def test_h2_revise_restarts_everything_derived_from_the_plan(f: Flow):
-    await f.to_h2()
-    await f.human("H-2", "revise", feedback="split the task")
+async def test_h2_approves_the_oracle_only(f: Flow):
+    await f.to_h2(tier="R2")
+    assert f.status("H-2") == AWAITING_HUMAN
+    with pytest.raises(WorkflowError, match="unknown approval subject"):
+        await f.ce.human_action("H-2", "approve", "miles", {"subjects": ["plan"]})
+    res = await f.human("H-2", "approve", subjects=["oracle"])
+    assert res.pending == [] and f.status("H-2") == ACCEPTED
+
+
+@scenario()
+async def test_revising_the_plan_restarts_everything_derived_from_it(f: Flow):
+    await _planned(f)
+    await f.human("H-E1", "revise", feedback="split the task")
     assert f.status("plan") == RUNNING and f.ce.nodes["plan"].cycle == 2
-    assert f.status("H-2") == PENDING and not f.ce.build_nodes()
+    assert f.ce.nodes["plan"].feedback[-1].text == "split the task"
+    assert f.status("H-E1") == PENDING and f.status("build:T1") == PENDING
     assert f.ce.change.integration_head == f.ce.change.base_sha
     await f.plan()
     await f.critique()
-    await f.human("H-2", "approve")
+    await f.human("H-E1", "approve")
     assert f.status("build:T1") == RUNNING
 
 
 @scenario()
 async def test_stale_approval_blocks_the_build(f: Flow):
     """G-B1: an approved plan document changed after approval -> the implementer is not dispatched."""
-    await f.to_h2()
-    await f.ce.human_action("H-2", "approve", "miles", {})     # approved, not yet dispatched
+    await _planned(f)
+    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, not yet dispatched
     f.ce.write_record("plan/spec.md", "# Spec changed after approval\n")
     await f.settle()
     node = f.ce.nodes["build:T1"]
@@ -457,7 +477,7 @@ async def test_task_without_verification_commands_never_passes(f: Flow):
     await f.human("H-1", "accept", tier="R0", reason="a trivial change with nothing at stake here")
     await f.plan()
     await f.critique()
-    await f.human("H-2", "approve")
+    await f.human("H-E1", "approve")
     # R0 has no panel: a passing verification merges straight away
     await f.implement()
     assert f.status("build:T1") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
@@ -510,7 +530,7 @@ async def test_build_task_context_is_scoped_to_the_task(f: Flow):
     await f.critique("REWORK")                          # the plan is rewritten: spec.md is now v2
     await f.plan(tasks=tasks)
     await f.critique("PASS")
-    await f.human("H-2", "approve")
+    await f.human("H-E1", "approve")
     p = f.ce.p
     ctx = f.run("build:T1", "implementer").context_refs
     assert f"file:{p('plan/spec.md')}@2" in ctx and f"file:{p('plan/spec.md')}@1" not in ctx
@@ -518,7 +538,8 @@ async def test_build_task_context_is_scoped_to_the_task(f: Flow):
     # the planner's explicit pick of another requirement's spec stays, as cited
     assert f"file:{p('plan/specs/REQ-2.md')}@1" in ctx and f"file:{p('plan/specs/REQ-2.md')}@2" not in ctx
     assert not any("intake/risk.json" in a for a in ctx)
-    assert any("intake/requirements.md" in a for a in ctx) and any("plan/oracle.json" in a for a in ctx)
+    assert any("intake/requirements.md" in a for a in ctx)
+    assert not any("plan/oracle.json" in a for a in ctx)      # R1: no oracle stage, none approved
     ctx2 = f.run("build:T2", "implementer").context_refs
     assert not any("plan/specs/REQ-1.md" in a for a in ctx2) and any("plan/specs/REQ-2.md" in a for a in ctx2)
     await f.implement("T1")
@@ -990,14 +1011,20 @@ async def test_change_actions_validate_their_input(f: Flow):
 
 
 @scenario()
-async def test_ship_recheck_reevaluates(f: Flow):
-    await f.to_build()
+async def test_h3_recheck_reevaluates_its_preconditions(f: Flow):
+    """H-3's preconditions are the ship gates: evaluated when it opens, again on recheck, and
+    once more when it is accepted."""
+    await f.to_build(tier="R2")
     await f.implement()
     await f.review()
-    first = f.ce.change.ship.attestation
-    await f.human("ship", "recheck")
-    assert f.status("ship") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+    await f.integration("PASS")
+    assert f.status("H-3") == AWAITING_HUMAN and f.ce.change.status == ChangeStatus.ACTIVE
+    first = f.ce.change.ship.attestation                   # evaluated as the gate opened
+    await f.human("H-3", "recheck")
+    assert f.status("H-3") == AWAITING_HUMAN
     assert f.ce.change.ship.attestation == first       # the same verdict: no new record version
+    await f.human("H-3", "accept")
+    assert f.status("H-3") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
 
 
 def test_signals_helper_derives_r1():
@@ -1019,9 +1046,10 @@ async def test_a_change_on_a_blank_repository(f: Flow):
     await f.human("H-1", "accept")
     await f.plan(tasks=[scaffold, dict(TASKS[0], depends_on=["T0"])])
     await f.critique()
+    await f.human("H-E1", "approve")      # the scaffold is built first, in the oracle stage
     await f.implement("T0")
     await f.review("T0")
-    await f.human("H-2", "approve")
+    assert f.status("build:T1") == RUNNING  # R1: no oracle to approve, so on to the tasks
     await f.implement(files={"src/greet.txt": "hello\n"})
     await f.review()
     assert f.ce.change.status == ChangeStatus.READY

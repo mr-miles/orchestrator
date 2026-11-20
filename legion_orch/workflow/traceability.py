@@ -161,7 +161,7 @@ def _task(t: dict, node: Node | None) -> TaskTrace:
 
 
 def _results(e: ChangeView) -> Results | None:
-    node = e.nodes.get(INTEGRATION)
+    node = e.current(INTEGRATION)
     if node is None:
         return None
     rev, ver = node.reviews.get("integration"), node.verification.get("integration")

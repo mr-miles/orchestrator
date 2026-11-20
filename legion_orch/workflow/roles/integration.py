@@ -17,7 +17,7 @@ class Integration(RoleHandler):
         """Each task's evidence, (R3) the baseline – what failed before any build – and every
         fix round's record with the failure it set out to fix."""
         refs = [a for a in (evidence_of(e, b) for b in e.build_nodes()) if a]
-        base = e.nodes.get(BASELINE)
+        base = e.current(BASELINE)
         ver = base.verification.get("baseline") if base else None
         rounds = [a for rnd in e.change.rounds for a in (rnd.attestation, *rnd.failure) if a]
         return refs + [a for a in (e.latest_att("baseline/report.md"),

@@ -23,6 +23,7 @@ from ..model import (
     ACCEPTED,
     BASELINE,
     BUILD,
+    H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
@@ -34,7 +35,6 @@ from ..model import (
     PROVISION,
     RELEASE,
     RETRO,
-    SHIP,
     Node,
     NodeKind,
     Resume,
@@ -50,7 +50,6 @@ from .phases import (
     BaselineWarnings,
     BuildImages,
     EscalateFailures,
-    Evaluate,
     Judges,
     Merge,
     OracleCommands,
@@ -63,6 +62,7 @@ from .phases import (
     Verify,
 )
 from .sandbox_plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
+from .workflow_tree import in_round
 
 if TYPE_CHECKING:
     from .acceptance import Acceptance
@@ -93,11 +93,60 @@ class ReflectionsDone(Wait):
         return not s.lifecycle.sandboxes.reflector.pending
 
 
+class OracleAccepted(Wait):
+    """Its round's oracle is accepted (again, after a preflight sent it back to its author)."""
+
+    def holds(self, s: Scheduler, node: Node) -> bool:
+        oracle = s.c.nodes.get(in_round(ORACLE, node.round))
+        return oracle is None or oracle.status == ACCEPTED
+
+
 class EnvironmentQuiescent(Wait):
     """No run or verification uses the current build (it is about to be replaced)."""
 
     def holds(self, s: Scheduler, node: Node) -> bool:
         return s.environment_quiescent()
+
+
+# ---------------------------------------------------------------------------- resets
+class Reset:
+    """What a send-back undoes when it resets a step (the node starting over is generic:
+    :meth:`.FlowRuntime._reset_node`). Once per send-back, whichever of its steps it is on."""
+
+    def applies(self, c: ChangeCore, node: Node) -> bool:
+        return True
+
+    async def __call__(self, c: ChangeCore, lifecycle: RunLifecycle, node: Node) -> None:
+        raise NotImplementedError
+
+
+class RestartPlan(Reset):
+    """The original plan starts over (not a fix round's): everything built on it goes – the
+    integration branch back to the base, the oracle, the rounds, the run branches and surface
+    pins – and the setup is the base's again."""
+
+    def applies(self, c: ChangeCore, node: Node) -> bool:
+        return node.round == 1
+
+    async def __call__(self, c: ChangeCore, lifecycle: RunLifecycle, node: Node) -> None:
+        from .. import setup
+        from . import cleanup
+        ch = c.change
+        await c.git.init_integration(ch.id, ch.base_sha)
+        ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
+        ch.round, ch.rounds = 1, []
+        ch.setup_pin = None if ch.blank_repo else await setup.pin_at_base(c.git, ch.base_sha)
+        # a restarted task of the same name must not continue the old plan's commits
+        await cleanup.delete_run_branches(c, "plan restarted")
+        ch.surface_pins = {}
+
+
+class DropEnvironment(Reset):
+    """The environment is provisioned again from a newly approved spec."""
+
+    async def __call__(self, c: ChangeCore, lifecycle: RunLifecycle, node: Node) -> None:
+        c.change.approvals.pop(H_ENV, None)
+        c.change.environment = None
 
 
 # ---------------------------------------------------------------------------- step types
@@ -109,6 +158,7 @@ class StepType:
     dispatch_when: tuple[Wait, ...] = ()         # before each run is dispatched
     runs_after_end: bool = False                 # dispatched once the change has ended
     rework_resume: Resume = Resume.READY         # where a failed or blocked run resumes
+    on_reset: tuple[Reset, ...] = ()             # what a send-back resetting it undoes
 
     @property
     def role(self) -> str | None:
@@ -145,12 +195,15 @@ BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
 
 STEP_TYPES: dict[NodeKind, StepType] = {
     INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
-    PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_SPEC)),
-                Panel(Judges(("critic",)), decides=False)),         # the critic decides (G-C2)
-    PROVISION: StepType((BuildImages(),), promote_when=(EnvironmentQuiescent(),)),
+    PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
+                Panel(Judges(("critic",)), decides=False),          # the critic decides (G-C2)
+                on_reset=(RestartPlan(),)),
+    PROVISION: StepType((BuildImages(),), promote_when=(EnvironmentQuiescent(),),
+                        on_reset=(DropEnvironment(),)),
     ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC))),   # merges itself
     PREFLIGHT: StepType((Verify(AcceptanceCommands(), expect_failures=True, at_head=True,
-                                on_setup_failed=OracleReworks(), notes=AlreadyPassing()),)),
+                                on_setup_failed=OracleReworks(), notes=AlreadyPassing()),),
+                        promote_when=(OracleAccepted(),)),
     BASELINE: agent("baseline", HEAD,
                     Verify(BaselineCommands(), expect_failures=True, notes=BaselineWarnings())),
     BUILD: agent("implementer", SandboxPlan(Checkout.BRANCH, UntilAccepted()),
@@ -162,7 +215,6 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     RELEASE: agent("release", HEAD),
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
     HUMAN: StepType((Approval(),)),
-    SHIP: StepType((Evaluate(),)),
 }
 
 
@@ -220,4 +272,4 @@ class StepRunner:
     def resume(self, node: Node) -> Coroutine[Any, Any, None] | None:
         """After a restart: the controller work of a RUNNING node to start again."""
         phase = self.step(node).current(node)
-        return phase.resume(self) if phase else None
+        return phase.resume(self, node) if phase else None

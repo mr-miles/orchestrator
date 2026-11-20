@@ -10,6 +10,7 @@ from legion_orch.workflow.engine.steps import (
     STEP_TYPES,
     EnvironmentQuiescent,
     NoOverlap,
+    OracleAccepted,
     ReflectionsDone,
     sandbox_plan,
     step_for,
@@ -33,7 +34,6 @@ from legion_orch.workflow.model import (
     REWORK,
     ROLE_FOR_KIND,
     RUNNING,
-    SHIP,
     VERIFYING,
     CommandResult,
     Node,
@@ -66,7 +66,6 @@ def test_every_kind_is_a_list_of_phases():
         NodeKind.RELEASE: ["AgentRun"],
         NodeKind.RETROSPECTIVE: ["AgentRun"],
         HUMAN: ["Approval"],
-        SHIP: ["Evaluate"],
     }
 
 
@@ -90,8 +89,8 @@ def test_verifications_differ_only_in_their_policies():
 
 
 def test_waits_and_resume_points():
-    assert {k for k, s in STEP_TYPES.items() if s.promote_when} == {PROVISION}
-    assert isinstance(STEP_TYPES[PROVISION].promote_when[0], EnvironmentQuiescent)
+    assert {k: type(s.promote_when[0]) for k, s in STEP_TYPES.items() if s.promote_when} == {
+        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
     assert {k: type(s.dispatch_when[0]) for k, s in STEP_TYPES.items() if s.dispatch_when} == {
         BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone}
     assert [k for k, s in STEP_TYPES.items() if s.runs_after_end] == [NodeKind.RETROSPECTIVE]
@@ -194,21 +193,20 @@ async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
 async def test_promotion_enters_the_first_phase(f: Flow):
     rt = f.ce._runner
     capture_spawns(f)
-    gate, pre, ship, task = (Node(id=f"x-{k}", kind=k, title="x")
-                             for k in (HUMAN, PREFLIGHT, SHIP, BUILD))
-    for n in (gate, pre, ship, task):
+    gate, pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (HUMAN, PREFLIGHT, BUILD))
+    for n in (gate, pre, task):
         rt.promote(n)
     assert gate.status == AWAITING_HUMAN
     assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
-    assert ship.status == RUNNING and task.status == READY
+    assert task.status == READY
 
 
 @scenario()
 async def test_after_a_restart_only_controller_work_resumes(f: Flow):
     rt = f.ce._runner
-    ship, agent = Node(id="s", kind=SHIP, title="s", status=RUNNING), node(f, BUILD)
-    work = rt.resume(ship)
-    assert work is not None and work.__qualname__ == "Acceptance.ship"
+    prov, agent = Node(id="p", kind=PROVISION, title="p", status=RUNNING), node(f, BUILD)
+    work = rt.resume(prov)
+    assert work is not None and work.__qualname__ == "Provisioner.provision"
     work.close()
     assert rt.resume(agent) is None
 

@@ -134,15 +134,19 @@ async def _drive(ce):
     await ce.human_action("H-1", "accept", "miles")
     assert ce.change.panel == ["reviewer"]
 
-    await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
+    await _wait(ce, lambda: n["H-E1"].status == "AWAITING_HUMAN", "H-E1")
     assert n["plan"].cycle == 2                     # critique forced one rework
     assert {"build:T1", "build:T2", "build:T3"} <= set(n)
-    assert ce.change.oracle_sha
     with pytest.raises(WorkflowError, match="not a decision owner"):
-        await ce.human_action("H-2", "approve", "mallory")
-    r = await ce.human_action("H-2", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
-    assert sorted(r.pending) == ["REQ-2", "oracle"] and n["H-2"].status == "AWAITING_HUMAN"
-    r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["REQ-2", "oracle"]})
+        await ce.human_action("H-E1", "approve", "mallory")
+    r = await ce.human_action("H-E1", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
+    assert r.pending == ["REQ-2"] and n["H-E1"].status == "AWAITING_HUMAN"
+    r = await ce.human_action("H-E1", "approve", "ana", {"subjects": ["REQ-2"]})
+    assert r.pending == [] and n["H-E1"].status == "ACCEPTED"
+
+    await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
+    assert ce.change.oracle_sha
+    r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["oracle"]})
     assert r.pending == [] and n["H-2"].status == "ACCEPTED"
     assert ce.change.surface_pins["files"].pins["README.md"]
 
@@ -153,7 +157,7 @@ async def _drive(ce):
     assert any(any(v.startswith("G-B3") for v in vs) for r in t3_runs for vs in r.violations)
     await ce.human_action("H-3", "accept", "miles")
 
-    await _wait(ce, lambda: ce.change.ship is not None, "ship")
+    await _wait(ce, lambda: ce.change.status == "READY", "H-3's preconditions")
     ship = ce.change.ship
     assert ship.verdict == "READY", ship.gates
     assert set(ship.gates) == {
@@ -198,6 +202,8 @@ async def _r3_workflow(tmp_path):
         await ce.human_action("H-1", "accept", "miles")
         assert ce.change.tier == "R3" and ce.change.panel == ["reviewer", "security", "architecture"]
 
+        await _wait(ce, lambda: n["H-E1"].status == "AWAITING_HUMAN", "H-E1")
+        await ce.human_action("H-E1", "approve", "miles")
         await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
         assert n["baseline"].status == "ACCEPTED"
         with pytest.raises(Exception, match="G-AT1"):
@@ -210,10 +216,11 @@ async def _r3_workflow(tmp_path):
 
         await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
         assert all(f"{b.cycle}:architecture" in b.reviews for b in ce.build_nodes())
+        opened = ce.change.ship                     # evaluated as H-3 opened
         await ce.human_action("H-3", "accept", "miles")
-        await _wait(ce, lambda: ce.change.ship is not None, "ship")
+        await _wait(ce, lambda: ce.change.ship is not opened, "H-3's preconditions")
         gates = ce.change.ship.gates
-        assert ce.change.ship.verdict == "NOT_READY"
+        assert ce.change.ship.verdict == "NOT_READY" and n["H-3"].status == "AWAITING_HUMAN"
         assert gates["security_or_e2e_evaluator"].status == "unevaluable"
         assert gates["rollback_or_forward_fix_evidence"].status == "unevaluable"
         assert gates["independent_baseline"].status == "satisfied"
@@ -236,14 +243,15 @@ async def _r3_workflow(tmp_path):
             "kind": "add_gate", "gate": "evidence_bundle_or_log",
             "reason": "keep the per-task evidence logs for audit"})
         first = ce.change.ship
-        await ce.human_action("ship", "recheck", "miles")
-        await _wait(ce, lambda: ce.change.ship is not first, "ship recheck")
+        await ce.human_action("H-3", "recheck", "miles")
+        await _wait(ce, lambda: ce.change.ship is not first, "H-3 recheck")
         ship = ce.change.ship
         unsatisfied = {k: g for k, g in ship.gates.items() if g.status != "satisfied"}
         assert ship.verdict == "READY", unsatisfied
         assert ship.gates["evidence_bundle_or_log"].added
         assert {"independent_baseline", "security_or_e2e_evaluator",
                 "rollback_or_forward_fix_evidence"} <= set(ship.human_judgement_gates)
+        await _wait(ce, lambda: ce.change.status == "READY", "the change accepted")
     finally:
         for srv in servers:
             srv.should_exit = True

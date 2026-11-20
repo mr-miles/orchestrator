@@ -76,7 +76,9 @@ async def to_plan(f: Flow) -> None:
 @scenario()
 async def test_without_environment_config_the_graph_is_unchanged(f: Flow):
     await f.to_build()
-    assert not {"environment", "H-E1", "provision"} & set(f.ce.nodes)
+    assert not {"environment", "provision"} & set(f.ce.nodes)     # H-E1 approves the plan only
+    assert [s.subject for s in __import__("legion_orch.workflow.governance", fromlist=["x"])
+            .subject_status(f.ce)] == ["plan", "REQ-1"]
     assert all(sp.env is None for sp in f.runner.specs.values())
 
 
@@ -108,7 +110,6 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     assert '"python" = "3.12"' in recipe.files["mise.toml"]
     assert {e["host"] for e in impl.network["env_pypi"]["endpoints"]} >= {"pypi.org"}
 
-    await f.human("H-2", "approve")
     name = f.run("build:T1", "implementer").sandbox
     tools = f.run("build:T1", "implementer").template_vars["sandbox_tools"]
     assert tools.startswith("profile `dev`: python@3.12, uv, ruff. Build, test and verify only")
@@ -325,10 +326,10 @@ async def test_critique_budget_answer_reworks_the_plan(f: Flow):
 
 
 @scenario(**ENV)
-async def test_h2_revise_resets_environment_approval_and_build(f: Flow):
-    await f.to_h2()
+async def test_sending_the_design_back_resets_environment_approval_and_build(f: Flow):
+    await f.to_h2(tier="R2")
     assert f.ce.change.environment
-    await f.human("H-2", "revise", feedback="split T1 in two")
+    await f.human("H-2", "send_back", stage="design", feedback="split T1 in two")
     assert f.ce.change.environment is None and "H-E1" not in f.ce.change.approvals
     assert f.status("H-E1") == "PENDING" and f.status("provision") == "PENDING"
     assert f.status("plan") == "RUNNING"
@@ -374,8 +375,10 @@ async def test_library_changed_after_approval_escalates_provisioning(f: Flow):
 @scenario(**ENV)
 async def test_stale_environment_approval_blocks_dispatch(f: Flow):
     """G-E5: a spec changed after approval is never used to create an agent sandbox."""
-    await f.to_h2()
-    await f.ce.human_action("H-2", "approve", "miles", {})
+    await to_plan(f)
+    await f.plan()
+    await f.critique("PASS")
+    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, not yet dispatched
     f.ce.write_record("plan/environment.json", json.dumps(spec(summary="edited after approval")))
     await f.settle()
     node = f.ce.nodes["build:T1"]
