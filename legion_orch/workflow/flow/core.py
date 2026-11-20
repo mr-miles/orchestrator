@@ -1,19 +1,19 @@
 """The workflow core (plan: stages-and-steps.md §1): pure and deterministic. It holds the stage
-tree and every node's state, takes **events** (a step completed or escalated, preconditions
-evaluated) and **actions** (generic: approve, send back, answer, retry, override, rerun,
-evaluate, reject, abandon), and returns **effects** for a runtime to carry out (start a step, stop one,
-evaluate a gate, record a decision, end the change). It does no I/O.
+tree and every step's state, takes **events** (a step completed or escalated) and **actions**
+(generic: answer, retry, override, rerun, send back, reject, abandon), and returns **effects**
+for a runtime to carry out (start a step, stop one, resume or retry one, record a decision, end
+the change). It does no I/O, and knows only steps: a stage's gate is a step like any other – a
+human approving it answers its escalation.
 
 Rules:
 
 * A stage runs its children in order; a :class:`Parallel` group starts its steps as their
-  dependencies allow. When every child is done the stage's gate waits – for its subjects'
-  approvals (or approves itself, if automatic) and for its preconditions – and completes when both
-  hold.
+  dependencies allow. When every child is done the stage's gate step (if it has one) starts, and
+  the stage completes with it.
 * Sending a stage back applies its rework policy: :class:`StartOver` resets everything in it,
   :class:`AppendRound` keeps the work done and inserts a round. Either way everything after the
   stage, in execution order, is reset too (it was built on it), and the stage's ancestors are
-  running again (their gates reset).
+  running again (their gate steps reset).
 * The actions a node offers are derived from the structure (:meth:`FlowState.actions`): any stage
   the node's work was built on – the stages enclosing it and those before them – may be sent back,
   so a "replan" is just a send-back of the stage that holds the plan.
@@ -26,14 +26,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .states import (
-    GateState,
-    GateStatus,
     StageState,
     StageStatus,
     StepState,
     StepStatus,
 )
-from .structure import AppendRound, Gate, Parallel, Stage, Step, Workflow, walk
+from .structure import AppendRound, Parallel, Stage, Step, Workflow, walk
 
 CHANGE = "change"                    # the action target for abandon
 REMOVED = "removed"                  # a node dropped with its round (in the transition log)
@@ -61,13 +59,7 @@ class Reworking:
     step: str
 
 
-@dataclass(frozen=True)
-class Preconditions:
-    gate: str
-    unmet: tuple[str, ...] = ()
-
-
-Event = Completed | Escalated | Reworking | Preconditions
+Event = Completed | Escalated | Reworking
 
 
 # ---------------------------------------------------------------------------- effects
@@ -97,11 +89,6 @@ class StopStep:
 
 
 @dataclass(frozen=True)
-class Evaluate:
-    gate: str
-
-
-@dataclass(frozen=True)
 class Record:
     kind: str                         # approval | override | send_back | decision
     node: str
@@ -114,7 +101,7 @@ class EndChange:
     status: str                       # completed | abandoned | rejected
 
 
-Effect = StartStep | ResumeStep | RetryStep | StopStep | Evaluate | Record | EndChange
+Effect = StartStep | ResumeStep | RetryStep | StopStep | Record | EndChange
 
 
 class ActionError(ValueError):
@@ -124,7 +111,7 @@ class ActionError(ValueError):
 @dataclass(frozen=True)
 class Waiting:
     node: str
-    reason: str                       # approval | preconditions | <escalation kind>
+    reason: str                       # its escalation's kind
     detail: str = ""
 
 
@@ -138,10 +125,9 @@ class FlowState:
         """``attempts``: steps' attempts so far (a workflow rebuilt for a new structure
         continues them, so an attempt number is never reused)."""
         self.workflow = workflow
-        self.nodes: dict[str, Stage | Step | Parallel | Gate] = {}
+        self.nodes: dict[str, Stage | Step | Parallel] = {}
         self.parent: dict[str, Stage | Parallel | None] = {}
-        self.stage_of_gate: dict[str, Stage] = {}
-        self.state: dict[str, StepState | GateState | StageState] = {}
+        self.state: dict[str, StepState | StageState] = {}
         self.rounds: dict[str, list[str]] = {}     # stage -> the ids of the rounds it inserted
         self.ended: str | None = None
         # (node, transition, from, to); a node removed with a dropped round logs ``removed``
@@ -157,11 +143,6 @@ class FlowState:
     def step(self, nid: str) -> StepState:
         s = self.state[nid]
         assert isinstance(s, StepState), nid
-        return s
-
-    def gate(self, nid: str) -> GateState:
-        s = self.state[nid]
-        assert isinstance(s, GateState), nid
         return s
 
     def status(self, nid: str) -> str:
@@ -181,14 +162,11 @@ class FlowState:
             raise ValueError(f"duplicate node id {node.id!r}")
         self.nodes[node.id], self.parent[node.id] = node, parent
         if isinstance(node, Stage):
-            if node.gate.id in self.nodes:
-                raise ValueError(f"duplicate node id {node.gate.id!r}")
-            self.nodes[node.gate.id], self.parent[node.gate.id] = node.gate, node
-            self.stage_of_gate[node.gate.id] = node
             self._machine(node.id, StageState)
-            self._machine(node.gate.id, GateState)
             for c in node.children:
                 self._register(c, node)
+            if node.gate is not None:
+                self._register(node.gate, node)
         elif isinstance(node, Parallel):
             self._machine(node.id, StageState)
             ids = {s.id for s in node.steps}
@@ -207,11 +185,8 @@ class FlowState:
         self.state[nid] = m
 
     def ancestors(self, node_id: str) -> list[Stage]:
-        """The stages ``node_id`` is in, nearest first (a gate is in its own stage)."""
+        """The stages ``node_id`` is in, nearest first (a gate step is in its own stage)."""
         out, p = [], self.parent.get(node_id)
-        if isinstance(self.nodes.get(node_id), Gate):
-            out.append(self.stage_of_gate[node_id])
-            p = self.parent.get(self.stage_of_gate[node_id].id)
         while p is not None:
             if isinstance(p, Stage):
                 out.append(p)
@@ -243,9 +218,6 @@ class FlowState:
         elif isinstance(event, Reworking):
             if self.status(event.step) == StepStatus.RUNNING:
                 self.step(event.step).rework()
-        elif isinstance(event, Preconditions):
-            if self.status(event.gate) == GateStatus.WAITING:
-                self.gate(event.gate).assessed(event.unmet)
         self._advance()
         return self._take()
 
@@ -254,9 +226,8 @@ class FlowState:
         return not isinstance(st, StepState) or st.status != StepStatus.RUNNING or (
             event.attempt is not None and event.attempt != st.attempt)
 
-    def act(self, target: str, action: str, by: str = "human", text: str = "",
-            subjects: list[str] | None = None) -> list[Effect]:
-        """A human's action on ``target`` (a gate, a step or :data:`CHANGE`)."""
+    def act(self, target: str, action: str, by: str = "human", text: str = "") -> list[Effect]:
+        """A human's action on ``target`` (an escalated step or :data:`CHANGE`)."""
         if action not in self.actions(target):
             raise ActionError(f"{action!r} is not available on {target} "
                               f"(available: {self.actions(target)})")
@@ -267,10 +238,6 @@ class FlowState:
             self._end("abandoned")
         elif action.startswith("send_back:"):
             self._send_back(action.split(":", 1)[1], text, by)
-        elif action == "approve":
-            self._approve(target, subjects, by)
-        elif action == "evaluate":
-            self.gate(target).evaluating()
         elif action == "reject":
             self._effects.append(Record("reject", target, by, text))
             self._end("rejected")
@@ -347,19 +314,12 @@ class FlowState:
         if target == CHANGE:
             return ["abandon"]
         node, st = self.nodes.get(target), self.state.get(target)
-        out: list[str] = []
-        if isinstance(node, Gate) and st.status == GateStatus.WAITING:
-            if not node.automatic and self._missing(node):
-                out.append("approve")
-            if node.preconditions:
-                out.append("evaluate")
-            if node.rejectable:
-                out.append("reject")
-        elif isinstance(node, Step) and st.status == StepStatus.ESCALATED:
-            out += ["answer", "retry"] + (["override"] if node.overridable else [])
-            out += [f"rerun:{nid}" for nid in self.rerunnable(target)]
-        else:
+        if not (isinstance(node, Step) and st.status == StepStatus.ESCALATED):
             return []
+        out = ["answer", "retry"] + (["override"] if node.overridable else [])
+        out += [f"rerun:{nid}" for nid in self.rerunnable(target)]
+        if node.rejectable:
+            out.append("reject")
         out += [f"send_back:{s}" for s in self.built_on(target)]
         return out + ["abandon"]
 
@@ -392,11 +352,6 @@ class FlowState:
             if isinstance(st, StepState) and st.status == StepStatus.ESCALATED:
                 kind, q = st.escalation
                 out.append(Waiting(nid, kind, q))
-            elif isinstance(st, GateState) and st.status == GateStatus.WAITING:
-                if st.unmet:
-                    out.append(Waiting(nid, "preconditions", ", ".join(st.unmet)))
-                elif not self.nodes[nid].automatic and self._missing(self.nodes[nid]):
-                    out.append(Waiting(nid, "approval"))
         return out
 
     # ------------------------------------------------------------------ running
@@ -435,51 +390,15 @@ class FlowState:
         for child in node.children:                          # a stage
             if not self._run(child):
                 return False
-        if self._gate(node.gate):
-            st.complete()
-            return True
-        return False
+        if node.gate is not None and not self._run(node.gate):   # then its gate step
+            return False
+        st.complete()
+        return True
 
     def _start(self, step: str) -> None:
         st = self.step(step)
         feedback = st.start()
         self._effects.append(StartStep(step, st.attempt, feedback))
-
-    def _subjects(self, gate: Gate) -> list[str]:
-        return gate.subjects or [gate.id]
-
-    def _missing(self, gate: Gate) -> set[str]:
-        return set(self._subjects(gate)) - set(self.gate(gate.id).approvals)
-
-    def _gate(self, gate: Gate) -> bool:
-        """The gate's turn: True when it is done (approved and preconditions met)."""
-        g = self.gate(gate.id)
-        if g.status == GateStatus.PENDING:
-            g.open()
-        if gate.automatic and not g.approvals:
-            for s in self._subjects(gate):
-                g.approve(s, "controller")
-        if gate.preconditions and g.unmet is None:
-            self._effects.append(Evaluate(gate.id))
-            g.assessed(("(being evaluated)",))
-            return False
-        if not self._missing(gate) and not (gate.preconditions and g.unmet):
-            g.complete()
-            if gate.automatic:
-                self._effects.append(Record("approval", gate.id, "controller", "automatic"))
-            return True
-        return False
-
-    def _approve(self, gate_id: str, subjects: list[str] | None, by: str) -> None:
-        gate, g = self.nodes[gate_id], self.gate(gate_id)
-        wanted = subjects or sorted(self._missing(gate), key=self._subjects(gate).index)
-        if unknown := set(wanted) - set(self._subjects(gate)):
-            raise ActionError(f"unknown subject(s) {sorted(unknown)} of {gate_id}")
-        for s in wanted:
-            g.approve(s, by)
-            self._effects.append(Record("approval", gate_id, by, s))
-        if gate.preconditions:
-            g.evaluating()                  # evaluated again at the approval
 
     # ------------------------------------------------------------------ rework
     def _send_back(self, stage_id: str, feedback: str, by: str) -> None:
@@ -502,7 +421,8 @@ class FlowState:
             st = self.state[a.id]
             if st.status != StageStatus.PENDING:
                 st.reopen()
-            self.gate(a.gate.id).reset()
+            if a.gate is not None:
+                self._reset_one(a.gate.id)
         if target and feedback:
             self.step(target).feedback.append(feedback)
 
@@ -525,7 +445,8 @@ class FlowState:
         rounds.append(rnd.id)
         for child in stage.children[at + 1:]:
             self._reset(child)
-        self.gate(stage.gate.id).reset()
+        if stage.gate is not None:
+            self._reset_one(stage.gate.id)
         st = self.state[stage.id]
         if st.status != StageStatus.PENDING:
             st.reopen()
@@ -559,7 +480,7 @@ class FlowState:
                 self._effects.append(StopStep(nid))
         if st is not None:
             self.log.append((nid, REMOVED, st.status, REMOVED))
-        for d in (self.nodes, self.parent, self.state, self.stage_of_gate):
+        for d in (self.nodes, self.parent, self.state):
             d.pop(nid, None)
 
     def _end(self, status: str) -> None:
@@ -576,7 +497,7 @@ class FlowState:
     def violations(self) -> list[str]:
         """The state invariants (plan §1); empty when they hold."""
         v = []
-        done = (StepStatus.DONE, StageStatus.DONE, GateStatus.DONE)
+        done = (StepStatus.DONE, StageStatus.DONE)
 
         def finished(k: str) -> bool:      # done, or done before and running again in place
             node = self.nodes[k]
@@ -586,13 +507,13 @@ class FlowState:
             node, st = self.nodes[nid], self.state[nid]
             if isinstance(node, Stage):
                 kids = [c.id for c in node.children]
-                gate = self.status(node.gate.id)
+                gate = node.gate.id if node.gate is not None else None
                 if st.status == StageStatus.DONE and (
-                        gate != GateStatus.DONE or any(not finished(k) for k in kids)):
+                        (gate and not finished(gate)) or any(not finished(k) for k in kids)):
                     v.append(f"{nid} done before its children and gate")
-                if gate in (GateStatus.WAITING, GateStatus.DONE) and \
+                if gate and self.status(gate) != StepStatus.PENDING and \
                         any(not finished(k) for k in kids):
-                    v.append(f"{node.gate.id} reached before {nid}'s children were done")
+                    v.append(f"{gate} started before {nid}'s children were done")
                 active = [k for k in kids if not finished(k) and self.status(k) != "pending"]
                 if len(active) > 1:
                     v.append(f"{nid} runs several children at once: {active}")
@@ -601,14 +522,11 @@ class FlowState:
                             any(self.status(x) != "pending" for x in kids[i + 1:]):
                         v.append(f"{nid}: a child after unfinished {k} has started")
                         break
-            if isinstance(node, Gate):
-                if st.status == GateStatus.DONE and self._missing(node):
-                    v.append(f"{nid} done without every subject approved")
-                if st.status == GateStatus.WAITING:
-                    for later in self._after(self.stage_of_gate[nid].id):
-                        if self.status(later) in (StepStatus.RUNNING, StepStatus.ESCALATED) \
-                                and isinstance(self.nodes[later], Step):
-                            v.append(f"{later} runs while {nid} waits")
+                if gate and self.status(gate) in (StepStatus.RUNNING, StepStatus.ESCALATED):
+                    for later in self._after(nid):
+                        if isinstance(self.nodes[later], Step) and self.status(later) in (
+                                StepStatus.RUNNING, StepStatus.ESCALATED):
+                            v.append(f"{later} runs while {gate} has not passed")
             if isinstance(st, StepState) and st.status == StepStatus.ESCALATED and \
                     st.escalation is None:
                 v.append(f"{nid} escalated without a reason")

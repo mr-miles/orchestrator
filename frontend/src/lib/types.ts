@@ -318,7 +318,8 @@ export interface Stage {
   depth: number
   /** how many stage levels it contains (0: none) */
   level: number
-  gate: string
+  /** the gate step that ends it (none: it is done when its stages are) */
+  gate: string | null
   nodes: string[]
   status: string
 }

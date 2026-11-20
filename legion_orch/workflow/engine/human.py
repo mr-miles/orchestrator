@@ -110,8 +110,9 @@ class HumanGates:
         return await getattr(self, handler)(node, approver, payload)
 
     # (gate, action) -> method(node, approver, payload): what approving each gate decides (its
-    # subjects, the tier, the attestations), and H-3's reject and recheck. Sending work back is
-    # the workflow's generic send_back.
+    # subjects, the tier, the attestations) – recorded here, then the answer to its step's
+    # escalation – and H-3's reject and recheck (a retry). Sending work back is the workflow's
+    # generic send_back.
     GATE_ACTIONS = {
         (H_REQUIREMENTS, "accept"): "_accept_requirements",
         (H_REQUIREMENTS, "approve"): "_accept_requirements",
@@ -175,7 +176,7 @@ class HumanGates:
         rec.attestation = self.c.write_record("control/approvals/requirements.json", rec).attestation
         ch.approvals[H_REQUIREMENTS] = rec
         self.flow.build_tree()
-        await self.flow.act(node.id, "approve", approver)
+        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
         return ActionResult(tier=tier, panel=ch.panel)
 
     async def _approve_subjects(self, node: Node, approver: str, payload: dict,
@@ -217,7 +218,7 @@ class HumanGates:
             pending.append(governance.BASELINE_SUBJECT)
         if pending:
             return ActionResult(approved=done, pending=pending)
-        await self.flow.act(node.id, "approve", approver)
+        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
         return ActionResult(approved=done, pending=[])
 
     async def _approve_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
@@ -291,7 +292,7 @@ class HumanGates:
         rec = Approval(gate=H_CHANGE, approver=approver, head=head, note=note)
         rec.attestation = self.c.write_record("control/approvals/change.json", rec).attestation
         ch.approvals[H_CHANGE] = rec
-        await self.flow.act(node.id, "approve", approver)
+        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
         return ActionResult(warnings=[f"{g} has no passing attestation: H-3 waits for it"
                                       for g in missing])
 
@@ -299,7 +300,7 @@ class HumanGates:
         """Evaluate H-3's preconditions (the ship gates) again, after attesting or waiving."""
         if self.c.change.pruned_at:
             raise WorkflowError("the change was pruned")
-        await self.flow.act(node.id, "evaluate", approver)
+        await self.flow.decide(node, "retry", approver)     # its gate step checks again
         return ActionResult()
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:

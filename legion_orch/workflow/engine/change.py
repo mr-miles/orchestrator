@@ -84,7 +84,8 @@ class ChangeEngine(ChangeCore):
     def recover(self) -> None:
         """After a restart the agent processes are gone, so live runs fail (and their steps
         escalate); every other step's phase takes its work up again (waiting, verifying,
-        merging, provisioning, concluding a turn that ended with the controller)."""
+        merging, provisioning, a gate's checks, concluding a turn that ended with the
+        controller)."""
         failed = {}
         for run in self.runs.values():
             if run.status in LIVE_RUN:
@@ -93,8 +94,6 @@ class ChangeEngine(ChangeCore):
                 failed.setdefault(run.node_id, run)
         for node in list(self.nodes.values()):
             self._runner.recover(node, failed.get(node.id))
-        for gate in self._flow.evaluating():
-            self.spawn(self._flow.evaluate(gate))   # a gate's preconditions
         self._runner.resume_retries()
         self.save()
 

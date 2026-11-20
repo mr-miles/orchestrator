@@ -412,14 +412,20 @@ async def test_revising_the_plan_restarts_everything_derived_from_it(f: Flow):
 
 @scenario()
 async def test_stale_approval_blocks_the_build(f: Flow):
-    """G-B1: an approved plan document changed after approval -> the implementer is not dispatched."""
+    """G-B1: an approved plan document changed after approval. Before its gate passed, the
+    gate asks again; after, the implementer is not dispatched."""
     await _planned(f)
-    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, not yet dispatched
+    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, its gate not passed
     f.ce.write_record("plan/spec.md", "# Spec changed after approval\n")
     await f.settle()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "approval", node.escalation
+    gate = f.ce.nodes["H-E1"]
+    assert gate.status == AWAITING_HUMAN and "still to approve: plan" in gate.escalation.reason
     assert not f.runs("build:T1")
+    await f.human("H-E1", "approve")                             # approved again: it passes
+    assert f.status("build:T1") == RUNNING
+    f.ce.write_record("plan/spec.md", "# Spec changed again\n")     # after the gate passed
+    refused = f.ce._agents.preconditions(f.ce.nodes["build:T1"], "implementer")
+    assert refused is not None and refused.kind == "approval" and "plan" in refused.question
 
 
 # ====================================================================== build: verification

@@ -1,8 +1,8 @@
-"""The three node state machines (plan: stages-and-steps.md §1): a step, a gate, and a stage (or
-a parallel group). Each status is an enumeration; each change of status is a named transition
-that declares the statuses it may start from. The decorator enforces that – an impossible
-transition raises instead of leaving a wrong status – and records it in the class's
-``transitions`` table, which tests and diagrams read (it is never written by hand).
+"""The two node state machines (plan: stages-and-steps.md §1): a step (a stage's gate is one
+too), and a stage (or a parallel group). Each status is an enumeration; each change of status is
+a named transition that declares the statuses it may start from. The decorator enforces that –
+an impossible transition raises instead of leaving a wrong status – and records it in the
+class's ``transitions`` table, which tests and diagrams read (it is never written by hand).
 
 The machines know nothing about each other: when to start, complete or reset what is the stage
 rules' business (:mod:`.core`)."""
@@ -17,12 +17,6 @@ class StepStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     ESCALATED = "escalated"
-    DONE = "done"
-
-
-class GateStatus(StrEnum):
-    PENDING = "pending"
-    WAITING = "waiting"
     DONE = "done"
 
 
@@ -134,43 +128,6 @@ class StepState(Machine):
     @transition(*S, to=S.PENDING)
     def reset(self) -> None:
         self.escalation, self.in_place = None, False
-
-
-class GateState(Machine):
-    """pending → waiting → done; while waiting it collects approvals and preconditions results;
-    any → pending (its stage starts again)."""
-    initial = GateStatus.PENDING
-    S = GateStatus
-
-    def __init__(self):
-        super().__init__()
-        self.approvals: dict[str, str] = {}               # subject -> approver
-        self.unmet: tuple[str, ...] | None = None          # None: not evaluated (yet, or again)
-
-    @transition(S.PENDING, to=S.WAITING)
-    def open(self) -> None:
-        pass
-
-    @transition(S.WAITING, to=S.WAITING)
-    def approve(self, subject: str, by: str) -> None:
-        self.approvals[subject] = by
-
-    @transition(S.WAITING, to=S.WAITING)
-    def evaluating(self) -> None:
-        """Its preconditions are being evaluated (again)."""
-        self.unmet = None
-
-    @transition(S.WAITING, to=S.WAITING)
-    def assessed(self, unmet: tuple[str, ...]) -> None:
-        self.unmet = tuple(unmet)
-
-    @transition(S.WAITING, to=S.DONE)
-    def complete(self) -> None:
-        pass
-
-    @transition(*S, to=S.PENDING)
-    def reset(self) -> None:
-        self.approvals, self.unmet = {}, None
 
 
 class StageState(Machine):

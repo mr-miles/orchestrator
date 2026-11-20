@@ -25,7 +25,6 @@ from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe
 from .. import governance
 from ..environment import VERIFIER
 from ..model import (
-    AWAITING_HUMAN,
     LIVE_RUN,
     MERGING,
     ORACLE,
@@ -94,6 +93,11 @@ class Phase:
 
     def recover(self, rt: StepRunner, node: Node) -> None:
         """After a restart: take the work up again."""
+        self.start(rt, node)
+
+    def resume(self, rt: StepRunner, node: Node, answered: bool) -> None:
+        """Its step's escalation was resolved – ``answered`` by a human, or retried – and it
+        goes on in this phase."""
         self.start(rt, node)
 
     def conclude(self, rt: StepRunner, node: Node, result: PhaseResult | None) -> None:
@@ -708,24 +712,128 @@ class BuildImages(Phase):
         return Ok(images)
 
 
-# ---------------------------------------------------------------------------- checks, humans
-@dataclass(frozen=True, eq=False)
-class Evaluate(Phase):
-    """Deterministic checks, no sandbox: the ship gates (workflow/ship.py). Always Ok with the
-    readiness: a NOT_READY verdict is a finding for the gate that reads it (H-3's
-    preconditions, :mod:`.runtime`), not a failure."""
+# ---------------------------------------------------------------------------- gates
+class Subjects:
+    """What approving a gate means beyond the answer itself: subjects approved separately (and
+    still fresh); the gate passes once none is pending."""
 
-    async def run(self, ctx: PhaseContext) -> Ok:
-        result: Readiness = await evaluate(ctx.c)
-        return Ok(result)
+    def pending(self, c: ChangeCore) -> list[str]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SubjectsApproved(Subjects):
+    """H-E1's (the plan's subjects) or H-2's (the oracle's, and at R3 the independent baseline's
+    attestation)."""
+    which: str                                   # "plan" | "oracle"
+    baseline_from: int = 99                      # the tier rank from which the baseline counts
+
+    def pending(self, c: ChangeCore) -> list[str]:
+        from .. import risk
+        from ..model import ApprovalState
+        subjects = (governance.plan_subjects(c) if self.which == "plan"
+                    else governance.oracle_subjects(c))
+        status = {x.subject: x.status for x in governance.subject_status(c)}
+        out = [s for s in subjects if status.get(s) != ApprovalState.APPROVED]
+        if c.change.tier and risk.rank(c.change.tier) >= self.baseline_from:
+            base = governance.baseline_subject(c)
+            if base is not None and base.status != ApprovalState.APPROVED:
+                out.append(governance.BASELINE_SUBJECT)
+        return out
+
+
+class GateChecks:
+    """What a gate checks before it passes (its preconditions): evaluated without the lock,
+    then read under it – the unmet ones by name."""
+
+    async def evaluate(self, c: ChangeCore) -> object:
+        return None
+
+    def unmet(self, c: ChangeCore, node: Node, evaluated: object) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+class ShipGates(GateChecks):
+    """H-3's: the tier's ship gates (§6), recorded as the change's readiness. Those only its own
+    approval satisfies are not checked before it is approved."""
+    BY_APPROVAL = frozenset({"explicit_human_approval", "whole_change_acceptance_evidence"})
+
+    async def evaluate(self, c: ChangeCore) -> Readiness:
+        return await evaluate(c)
+
+    def unmet(self, c: ChangeCore, node: Node, evaluated: object) -> tuple[str, ...]:
+        from ..model import H_CHANGE
+        result: Readiness = evaluated                # type: ignore[assignment]
+        result.attestation = c.write_record("control/ship/readiness.json", result).attestation
+        c.change.ship = result
+        approved = H_CHANGE in c.change.approvals
+        unmet = tuple(g for g, r in result.gates.items() if r.status != "satisfied"
+                      and (approved or g not in self.BY_APPROVAL))
+        c.event("ship", f"readiness: {result.verdict}"
+                + (f" ({len(unmet)} gate(s) unmet)" if unmet else ""), node.id)
+        return unmet
+
+
+@dataclass(frozen=True)
+class AutomaticBelow:
+    """Nobody approves the gate below this tier rank: it passes once its checks hold."""
+    rank: int
+
+    def __call__(self, c: ChangeCore) -> bool:
+        from .. import risk
+        return not c.change.tier or risk.rank(c.change.tier) < self.rank
 
 
 @dataclass(frozen=True, eq=False)
 class Approval(Phase):
-    """A human decides (a gate node, see :mod:`.human`)."""
-    statuses: ClassVar = frozenset({AWAITING_HUMAN})
+    """A gate: the stage's end, a human's decision. Its work checks what the gate needs
+    (``checks``, e.g. the ship gates) and then – unless it passes by itself (``automatic``) –
+    waits for a human: an *expected* escalation (``AWAITING_HUMAN``), which approving answers.
+    Answered, it checks again: its subjects all approved (``subjects``) and its checks met, it
+    passes; unmet checks escalate again (a re-check is a retry). A new attempt (the stage sent
+    back) asks again."""
+    subjects: Subjects | None = None
+    checks: GateChecks | None = None
+    automatic: AutomaticBelow | None = None
+    statuses: ClassVar = frozenset({READY, RUNNING})
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
-        rt.runtime.gates.gate(node, AWAITING_HUMAN)     # a human's decision: no work
-        rt.c.event("human", "awaiting human decision", node.id)
+        rt.phase(node, READY)
+        rt.run(node, lambda work: self._work(rt, node, work, answered=False))
 
+    def start(self, rt: StepRunner, node: Node) -> None:
+        rt.run(node, lambda work: self._work(rt, node, work, answered=False))
+
+    def resume(self, rt: StepRunner, node: Node, answered: bool) -> None:
+        rt.run(node, lambda work: self._work(rt, node, work, answered=answered))
+
+    async def _work(self, rt: StepRunner, node: Node, work: StepDispatcher,
+                    answered: bool) -> None:
+        c = rt.c
+        async with c.lock:
+            if rt.stale(node, work, self):
+                return
+            rt.phase(node, RUNNING)               # checking
+            c.save()
+        evaluated = await self.checks.evaluate(c) if self.checks else None
+        async with c.lock:
+            if rt.stale(node, work, self):
+                return
+            unmet = self.checks.unmet(c, node, evaluated) if self.checks else ()
+            node.approved = node.approved or answered      # it stays approved in this attempt
+            approved = node.approved or bool(self.automatic and self.automatic(c))
+            pending = self.subjects.pending(c) if self.subjects and approved else []
+            if not approved:
+                ask = f"{node.title}" + (f" (not met yet: {', '.join(unmet)})" if unmet else "")
+                result: PhaseResult = Escalate("awaiting_approval", ask, Resume.READY,
+                                               expected=True)
+            elif pending:
+                result = Escalate("awaiting_approval", "still to approve: " + ", ".join(pending),
+                                  Resume.READY, expected=True)
+            elif unmet:
+                result = Escalate("preconditions_unmet", ", ".join(unmet), Resume.READY,
+                                  expected=True)
+            else:
+                result = Ok()
+            self.conclude(rt, node, result)
+            c.save()

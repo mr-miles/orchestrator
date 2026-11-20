@@ -4,12 +4,14 @@ every event – so any structure and any sequence of actions can be tested in is
 
 A step's script is a list of outcomes, consumed one per start, resume or retry:
 ``ok`` and ``unchanged`` complete it, ``rework`` goes round its own loop once and continues,
-``escalate:<kind>`` escalates it. A step with no script (or an exhausted one) completes ``ok``.
-A gate's preconditions script is a list of unmet tuples, one per evaluation (default: all met).
+``escalate:<kind>`` escalates it. A step with no script (or an exhausted one) completes ``ok``
+– except a gate step that ``needs_approval``: until a human approves it (:meth:`approve`, an
+answer) it escalates ``awaiting_approval``, as the engine's approval phase does.
 """
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable
 
 from .core import (
     REMOVED,
@@ -17,9 +19,7 @@ from .core import (
     Effect,
     EndChange,
     Escalated,
-    Evaluate,
     FlowState,
-    Preconditions,
     ResumeStep,
     RetryStep,
     Reworking,
@@ -34,15 +34,17 @@ class InvariantError(AssertionError):
 
 
 class ScriptedRuntime:
-    def __init__(self, workflow: Workflow, steps: dict[str, list[str]] | None = None,
-                 preconditions: dict[str, list[tuple[str, ...]]] | None = None, *,
-                 hold: set[str] | frozenset[str] = frozenset()):
+    def __init__(self, workflow: Workflow, steps: dict[str, list[str]] | None = None, *,
+                 hold: set[str] | frozenset[str] = frozenset(),
+                 needs_approval: Callable[[str], bool] = lambda nid: False):
         """``hold``: steps that stay running when started (until :meth:`finish` or a script
-        entry is fed), to test what happens while work is in flight."""
+        entry is fed), to test what happens while work is in flight. ``needs_approval``: the
+        gate steps a human approves."""
         self.flow = FlowState(workflow)
         self.scripts = {k: deque(v) for k, v in (steps or {}).items()}
-        self.pre = {k: deque(v) for k, v in (preconditions or {}).items()}
         self.hold = set(hold)
+        self.needs_approval = needs_approval
+        self.approved: set[str] = set()
         self.log: list[Effect] = []
         self.started: list[tuple[str, int]] = []
         self.ended: str | None = None
@@ -59,6 +61,11 @@ class ScriptedRuntime:
     def act(self, target: str, action: str, **kw) -> ScriptedRuntime:
         self._run(self.flow.act(target, action, **kw))
         return self
+
+    def approve(self, gate: str, by: str = "human") -> ScriptedRuntime:
+        """A human approves the gate step: they answer its escalation."""
+        self.approved.add(gate)
+        return self.act(gate, "answer", by=by, text="approved")
 
     def finish(self, step: str, outcome: str = "ok", attempt: int | None = None
                ) -> ScriptedRuntime:
@@ -106,14 +113,12 @@ class ScriptedRuntime:
             events = []
             if isinstance(e, StartStep):
                 self.started.append((e.step, e.attempt))
+                self.approved.discard(e.step)          # a new attempt is approved anew
                 if e.step not in self.hold:
                     events = self._next(e.step)
             elif isinstance(e, ResumeStep | RetryStep):
                 if e.step not in self.hold:
                     events = self._next(e.step)
-            elif isinstance(e, Evaluate):
-                script = self.pre.get(e.gate)
-                events = [Preconditions(e.gate, script.popleft() if script else ())]
             elif isinstance(e, EndChange):
                 self.ended = e.status
             for ev in events:
@@ -125,7 +130,9 @@ class ScriptedRuntime:
         script = self.scripts.get(step)
         out = []
         while True:
-            entry = script.popleft() if script else "ok"
+            default = "escalate:awaiting_approval" if self.needs_approval(step) \
+                and step not in self.approved else "ok"
+            entry = script.popleft() if script else default
             if entry != "rework":
                 return out + self._outcome(step, entry, events_only=True)
             out.append(Reworking(step))
@@ -150,7 +157,7 @@ class ScriptedRuntime:
             if e.attempt <= last:
                 raise InvariantError(f"{e.step} started with attempt {e.attempt} after {last}")
             self._attempts[e.step] = e.attempt
-        node = getattr(e, "step", None) or getattr(e, "gate", None) or getattr(e, "node", None)
+        node = getattr(e, "step", None) or getattr(e, "node", None)
         if node is not None and node not in self.flow.nodes and not isinstance(e, StopStep):
             raise InvariantError(f"{e} refers to an unknown node")
 

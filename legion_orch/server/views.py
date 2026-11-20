@@ -58,13 +58,13 @@ def h2_rows(ce: ChangeEngine) -> list[dict]:
 
 
 def workflow_state(ce: ChangeEngine) -> dict:
-    """The stage rules' view: what a human may do on each node now, and each waiting gate's
-    unmet preconditions (from the workflow core)."""
+    """The stage rules' view: what a human may do on each node now (from the workflow core),
+    and each waiting gate's unmet checks (its escalation's)."""
     wf = ce.workflow
     actions = {nid: wf.actions(nid) for nid in ce.nodes if wf.actions(nid)}
-    return {"actions": actions, "unmet": {nid: list(wf.unmet(nid)) for nid in ce.nodes
-                                          if wf.unmet(nid)},
-            "stages": wf.stages()}
+    unmet = {n.id: n.escalation.reason.split(", ") for n in ce.nodes.values()
+             if n.escalation and n.escalation.kind == "preconditions_unmet"}
+    return {"actions": actions, "unmet": unmet, "stages": wf.stages()}
 
 
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:

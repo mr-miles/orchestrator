@@ -378,12 +378,13 @@ async def test_stale_environment_approval_blocks_dispatch(f: Flow):
     await to_plan(f)
     await f.plan()
     await f.critique("PASS")
-    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, not yet dispatched
+    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, its gate not passed
     f.ce.write_record("plan/environment.json", json.dumps(spec(summary="edited after approval")))
     await f.settle()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == "ESCALATED" and "G-E5" in node.escalation.reason
-    assert not f.runs("build:T1")
+    gate = f.ce.nodes["H-E1"]                                # its gate asks again
+    assert gate.status == "AWAITING_HUMAN" and "environment" in gate.escalation.reason
+    assert not f.runs("build:T1") and f.status("provision") == "PENDING"
+    # (after provisioning, a stale spec stops a dispatch: ..._blocks_the_verifier, G-E5)
 
 
 @scenario(**ENV)
@@ -402,10 +403,15 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
     await to_plan(f)
     await f.plan()
     await f.critique("PASS")
+    f.builder.hold = asyncio.Event()
     await f.ce.human_action("H-E1", "approve", "miles", {})
-    async with f.ctl.svc.lock:                          # as if the controller died mid-build
-        f.ce.nodes["provision"].status = RUNNING
-        f.ce.save()
+    for _ in range(100):                                # provisioning starts, then its build waits
+        await asyncio.sleep(0.02)
+        if f.ce.nodes["provision"].status == RUNNING:
+            break
+    assert f.ce.nodes["provision"].status == RUNNING
+    await f.ctl.stop()                                  # the controller dies mid-build
+    f.builder.hold.set()
     ctl2 = Controller(f.cfg, runner=f.runner, builder=f.builder)
     ctl2.load()
     ce2 = ctl2.changes[f.ce.cid]

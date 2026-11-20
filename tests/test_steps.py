@@ -223,12 +223,12 @@ async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
 async def test_entering_a_step_sets_its_first_phase_and_starts_its_work(f: Flow):
     rt = f.ce._runner
     started = capture_work(f)
-    gate, pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (HUMAN, PREFLIGHT, BUILD))
+    gate = Node(id="H-1", kind=HUMAN, title="x")
+    pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (PREFLIGHT, BUILD))
     for n in (gate, pre, task):
         rt.enter(n)
-    assert gate.status == AWAITING_HUMAN                   # a human's decision: no work
-    assert pre.status == task.status == READY              # each waits its turn, as work
-    assert started == ["Verify", "Produce"]
+    assert gate.status == pre.status == task.status == READY   # each starts its work
+    assert started == ["Approval", "Verify", "Produce"]        # a gate's: its checks, then ask
 
 
 @scenario()
@@ -373,3 +373,57 @@ async def test_a_step_waits_while_the_dispatcher_has_no_room(f: Flow):
     await f.settle()
     assert n.status == READY and f.ctl.svc.dispatcher.waiting == 1
     assert f.ctl.svc.dispatcher.in_use == 1
+
+
+# ---------------------------------------------------------------------------- gates
+async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
+    """Enter the gate step (``answered`` None), or resume it – answered by a human, or retried."""
+    rt = f.ce._runner
+    phase = step_for(n).phases[0]
+    if answered is None:
+        rt.phase(n, READY)
+    work = rt.dispatcher(n)
+    await phase._work(rt, n, work, answered=bool(answered))
+
+
+@scenario()
+async def test_a_gate_step_asks_a_human_and_passes_once_answered(f: Flow):
+    f.ce._runner.runtime.completed = lambda node: None        # the core is not involved here
+    f.ce._runner.runtime.escalated = lambda node: None
+    f.ce._runner.runtime.resumed = lambda node: None
+    n = node(f, HUMAN, id="H-1", status=PENDING, title="Accept requirements & tier")
+    await run_gate(f, n)
+    assert n.status == AWAITING_HUMAN and n.escalation.kind == "awaiting_approval"
+    f.ce._runner.states.resume(n, READY)
+    await run_gate(f, n, answered=False)                      # a re-check is no approval
+    assert n.status == AWAITING_HUMAN and not n.approved
+    f.ce._runner.states.resume(n, READY)
+    await run_gate(f, n, answered=True)
+    assert n.status == ACCEPTED and n.approved
+
+
+@scenario()
+async def test_an_approved_gate_with_unmet_checks_stays_approved_when_rechecked(f: Flow):
+    from legion_orch.workflow.engine.phases import ShipGates
+    rt = f.ce._runner
+    rt.runtime.completed = rt.runtime.escalated = rt.runtime.resumed = lambda node: None
+    n = node(f, HUMAN, id="H-3", status=PENDING, title="Accept the change")
+    f.ce.change.tier = "R2"
+    unmet = [("protected_oracle",), ("protected_oracle",), ()]
+    real_evaluate, real_unmet = ShipGates.evaluate, ShipGates.unmet
+
+    async def evaluate(self, c):
+        return None
+    ShipGates.evaluate = evaluate
+    ShipGates.unmet = lambda self, c, node, evaluated: unmet.pop(0)
+    try:
+        await run_gate(f, n)
+        assert n.status == AWAITING_HUMAN and "not met yet: protected_oracle" in n.escalation.reason
+        rt.states.resume(n, READY)
+        await run_gate(f, n, answered=True)                   # approved, still unmet
+        assert n.escalation.kind == "preconditions_unmet" and n.approved
+        rt.states.resume(n, READY)
+        await run_gate(f, n, answered=False)                  # re-checked: met now
+        assert n.status == ACCEPTED
+    finally:
+        ShipGates.evaluate, ShipGates.unmet = real_evaluate, real_unmet

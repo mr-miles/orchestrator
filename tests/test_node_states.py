@@ -63,12 +63,23 @@ def test_an_escalation_holds_the_step_until_it_is_resumed_in_a_phase():
 @pytest.mark.parametrize("start, illegal", [
     (PENDING, ESCALATED),                      # a step not started cannot escalate
     (ACCEPTED, RUNNING),                       # a done step is not run again past the core
-    (AWAITING_HUMAN, READY),                   # a gate is not a step
+    (PENDING, AWAITING_HUMAN),                 # nor wait for a decision
 ])
 def test_illegal_transitions_raise(start, illegal):
     s, node = NodeStates(), n(start)
     with pytest.raises(IllegalNodeTransition):
         s._move(node, illegal)
+
+
+def test_a_due_decision_waits_like_an_escalation_and_is_resumed_the_same_way():
+    """A gate step's approval: escalated in the core, AWAITING_HUMAN on its node."""
+    s, node = NodeStates(), n(RUNNING)
+    s.escalate(node, "awaiting_approval", "approve the plan", Resume.READY, expected=True)
+    assert node.status == AWAITING_HUMAN and node.escalation.kind == "awaiting_approval"
+    with pytest.raises(IllegalNodeTransition):
+        s.phase(node, RUNNING)
+    s.resume(node, READY)
+    assert node.status == READY and node.escalation is None
 
 
 def test_a_reset_returns_any_node_to_pending():

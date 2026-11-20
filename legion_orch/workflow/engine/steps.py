@@ -25,6 +25,7 @@ from ..model import (
     BASELINE,
     BUILD,
     ESCALATED,
+    H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
@@ -54,11 +55,12 @@ from ..model import (
 from ..results import Escalate, Redo, Rework
 from .core import ChangeCore
 from .dispatch import StepDispatcher, Withdrawn
-from .node_states import NodeStates
+from .node_states import WAITING, NodeStates
 from .phases import (
     AcceptanceCommands,
     AlreadyPassing,
     Approval,
+    AutomaticBelow,
     BaselineCommands,
     BaselineWarnings,
     BuildImages,
@@ -73,11 +75,14 @@ from .phases import (
     PhaseResult,
     Produce,
     RoleWork,
+    ShipGates,
+    SubjectsApproved,
     TaskCommands,
     TierPanel,
     Verify,
 )
 from .sandbox_plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
+from .workflow_tree import base_id
 
 if TYPE_CHECKING:
     from .provision import Provisioner
@@ -264,11 +269,21 @@ STEP_TYPES: dict[NodeKind, StepType] = {
                            "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
     RELEASE: agent("release", HEAD),
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
-    HUMAN: StepType((Approval(),)),
+    HUMAN: StepType((Approval(),)),                # a gate (its policies: GATE_TYPES)
+}
+
+#: each gate's step: what approves it, what it checks, when it passes by itself
+GATE_TYPES: dict[str, StepType] = {
+    H_REQUIREMENTS: StepType((Approval(),)),                        # H-1: the tier with it
+    H_ENV: StepType((Approval(subjects=SubjectsApproved("plan")),)),
+    H_SPEC: StepType((Approval(subjects=SubjectsApproved("oracle", baseline_from=3)),)),
+    H_CHANGE: StepType((Approval(checks=ShipGates(), automatic=AutomaticBelow(2)),)),
 }
 
 
 def step_for(node: Node) -> StepType:
+    if node.kind == HUMAN:
+        return GATE_TYPES[base_id(node.id)]
     return STEP_TYPES[node.kind]
 
 
@@ -310,6 +325,7 @@ class StepRunner:
         it was sent back with. An agent that ran continues in its kept session (REWORK); a
         round's step that has nothing to redo stands (not one run again in place, ``rerun``: its
         work is wanted again); anything else enters its first phase."""
+        node.approved = False                    # a gate is asked again
         if node.runs or node.status != PENDING:
             node.cycle += 1
             node.candidate_sha = node.accepted_sha = None
@@ -344,19 +360,21 @@ class StepRunner:
                 r.status = R_SUPERSEDED
         self.lifecycle.retire_runs(node)
         node.candidate_sha = node.accepted_sha = None
+        node.approved = False
         self.release(node)
         self.states.reset(node)
 
-    def resume(self, node: Node, to: NodeStatus) -> None:
-        """The node's escalation is resolved: its step goes on in the phase ``to``, which takes
-        up its work again (a verification, a merge)."""
+    def resume(self, node: Node, to: NodeStatus, answered: bool = False) -> None:
+        """The node's escalation is resolved – ``answered`` by a human, or retried: its step
+        goes on in the phase ``to``, which takes up its work again (a verification, a merge, a
+        gate's check)."""
         self.states.resume(node, to)
         self.runtime.resumed(node)
         phase = self.step(node).current(node)
         if phase is not None:
-            phase.start(self, node)
+            phase.resume(self, node, answered)
 
-    def resume_escalation(self, node: Node) -> None:
+    def resume_escalation(self, node: Node, answered: bool = False) -> None:
         """A human answered (the decision is on the node): the step goes on where its
         escalation said – one more cycle where a budget ran out, the phase it stopped in, or a
         new run in a new sandbox."""
@@ -364,7 +382,7 @@ class StepRunner:
         if point == Resume.CRITIQUE_BUDGET:            # one more critique cycle: rework the plan
             node.extra_cycles += 1
             node.cycle += 1
-            self.resume(node, REWORK)
+            self.resume(node, REWORK, answered)
         elif point == Resume.REWORK_CYCLE:             # one more review cycle
             node.extra_cycles += 1
             cur = self.c.runs.get(node.current_run) if node.current_run else None
@@ -372,12 +390,12 @@ class StepRunner:
                 cur.status = R_SUPERSEDED
             node.cycle += 1
             node.candidate_sha = None
-            self.resume(node, REWORK)
+            self.resume(node, REWORK, answered)
         elif point in (Resume.VERIFYING, Resume.REVIEWING, Resume.MERGING, Resume.REWORK):
-            self.resume(node, NodeStatus(point.value))
+            self.resume(node, NodeStatus(point.value), answered)
         else:                                          # a new run, in a new sandbox
             self.lifecycle.retire_runs(node)
-            self.resume(node, READY)
+            self.resume(node, READY, answered)
 
     def retry(self, node: Node) -> None:
         """Retry: the failed run's sandbox goes first (a failed delete is reported and the
@@ -404,7 +422,7 @@ class StepRunner:
         async with self.c.lock:
             node = self.c.nodes.get(node_id)
             esc = node.escalation if node else None
-            if node is None or node.status != ESCALATED or esc is None or not esc.retrying:
+            if node is None or node.status not in WAITING or esc is None or not esc.retrying:
                 return                  # abandoned or otherwise resolved meanwhile
             if not ok:
                 self.c.event("sandbox", f"could not remove {sandbox}; retrying in a new sandbox",
@@ -419,7 +437,7 @@ class StepRunner:
         """After a restart: finish retries that were removing their old sandbox."""
         for node in self.c.nodes.values():
             esc = node.escalation
-            if node.status == ESCALATED and esc and esc.retrying:
+            if node.status in WAITING and esc and esc.retrying:
                 run = self.c.runs.get(esc.run) if esc.run else None
                 self.c.spawn(self._retry_after_removing(node.id, run.sandbox if run else ""))
 
@@ -546,7 +564,7 @@ class StepRunner:
             node.feedback += result.feedback
             self.escalate(node, result.kind, result.question, result.resume, run=result.run,
                           missing_decision=result.missing_decision, log_tail=result.log_tail,
-                          source=result.source)
+                          source=result.source, expected=result.expected)
         elif isinstance(result, Redo):
             self.runtime.redo(result.step, result.feedback)
 
@@ -581,10 +599,16 @@ class StepRunner:
 
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
                  run: str | None = None, missing_decision: str | None = None,
-                 log_tail: str | None = None, source: FailureSource | None = None) -> None:
-        """A human decides; ``resume`` says where the step continues once they have."""
+                 log_tail: str | None = None, source: FailureSource | None = None,
+                 expected: bool = False) -> None:
+        """A human decides; ``resume`` says where the step continues once they have.
+        ``expected``: a decision that is due (a gate's approval), not a failure."""
         self.release(node)
         self.states.escalate(node, kind, reason, resume, run=run,
-                             missing_decision=missing_decision, log_tail=log_tail, source=source)
-        self.c.event("escalation", f"{kind}: {reason}", node.id, run)
+                             missing_decision=missing_decision, log_tail=log_tail, source=source,
+                             expected=expected)
+        if expected:
+            self.c.event("human", f"awaiting a human decision: {reason}", node.id)
+        else:
+            self.c.event("escalation", f"{kind}: {reason}", node.id, run)
         self.runtime.escalated(node)

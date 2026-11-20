@@ -6,9 +6,7 @@ from .core import (
     Completed,
     EndChange,
     Escalated,
-    Evaluate,
     FlowState,
-    Preconditions,
     Record,
     ResumeStep,
     RetryStep,
@@ -17,9 +15,9 @@ from .core import (
     StopStep,
     Waiting,
 )
-from .structure import AppendRound, Gate, Parallel, Stage, StartOver, Step, Workflow, walk
+from .structure import AppendRound, Parallel, Stage, StartOver, Step, Workflow, walk
 
 __all__ = ["CHANGE", "ActionError", "AppendRound", "Completed", "EndChange", "Escalated",
-           "Evaluate", "FlowState", "Gate", "Parallel", "Preconditions", "Record", "ResumeStep",
+           "FlowState", "Parallel", "Record", "ResumeStep",
            "RetryStep", "Reworking", "Stage", "StartOver", "StartStep", "Step", "StopStep",
            "Waiting", "Workflow", "walk"]

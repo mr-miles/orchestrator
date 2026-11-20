@@ -85,7 +85,7 @@ flowchart TB
 
 | Layer | Decides | Knows nothing about |
 | --- | --- | --- |
-| **Workflow core** (`flow/`) | Between steps: what starts when, gates (approval + preconditions), send-backs and their rework policies, fix rounds, the end | Agents, sandboxes, git, the store, node kinds |
+| **Workflow core** (`flow/`) | Between steps: what starts when (a stage's gate is its last step), send-backs and their rework policies, fix rounds, the end | Agents, sandboxes, git, the store, node kinds, what a gate checks or who approves it |
 | **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persistence by replay | What a step does inside |
 | **Steps** (`steps.py`) | What each kind of node is made of | How a phase does its work |
 | **Phases** | Their own work and its result: ok, rework or escalate | Which kind of node they serve (policies are passed in) |
@@ -119,8 +119,8 @@ The participants, left to right:
 
 | Participant | Layer (§1) | Code | Responsible for (and owns) |
 | --- | --- | --- | --- |
-| **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, what a send-back or a redo resets. Owns the steps' and gates' states. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order, the gate nodes (which follow their gates) and the retrospective's node. |
+| **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, what a send-back or a redo resets, what a human may do at an escalated step. Knows only steps – a gate is the step that ends its stage. Owns the steps' and stages' states. |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
 | **StepRunner** | Steps | `engine/steps.py`, `engine/node_states.py` | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
 | **Phases** | Orchestrator layer of a step | `engine/phases.py` (their services: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
 | **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
@@ -199,16 +199,16 @@ The core's step and the engine's node are two levels of one state: the core's is
 step underway?), the node's says where inside it the work is. A node leaves `PENDING` exactly when
 its step starts in the core. The node's states are a declared machine (`engine/node_states.py`):
 an illegal move raises, only resuming leaves an escalation, and nothing but the step runner
-(step nodes) and the runtime (gate nodes) writes a status.
+writes a status.
 
 | Core step | Engine node |
 | --- | --- |
 | `pending` | `PENDING` |
 | `running` | `READY` (its first work not started yet) · `RUNNING` (its agent works) · `VERIFYING` · `REVIEWING` · `MERGING` · `REWORK` (its own loop) |
-| `escalated` | `ESCALATED` |
+| `escalated` | `ESCALATED` (something went wrong) · `AWAITING_HUMAN` (a decision is due: a gate) |
 | `done` | `ACCEPTED` |
 
-**A change's state**, then: the core's record (the tree and its steps' and gates' states,
+**A change's state**, then: the core's record (the tree and its steps' and stages' states,
 `workflow.json`), and below it what the engine owns (`ChangeCore`, persisted by `StateStore`) –
 the change record, each node's detail (its state inside its step, cycle, commits, verification,
 reviews, feedback, escalation, sandbox) and the runs. Which nodes exist, their order and their
@@ -378,7 +378,7 @@ The table (`engine/steps.py`) – each kind is a list of phases:
 | integration | head | Produce → Verify(oracle commands, a failure escalates) |
 | release | head | Produce |
 | retrospective | head | Produce (after the change ends, after the last reflections) |
-| human gate | – | Approval |
+| gate (H-1, H-E1, H-2, H-3) | – | Approval: its checks (H-3: the ship gates), then a human's approval (H-E1, H-2: each subject); below R2, H-3 passes once its checks hold |
 
 Judges (reviewers, the critic) are not node kinds: they are the judges of a `Panel`, and get the
 `JUDGE` sandbox plan – fresh, at the commit they judge (G-D4).
@@ -401,17 +401,23 @@ flowchart LR
             provision --> scaffold["[scaffold]"] --> oracle --> preflight --> baseline --> H2{{"◆ H-2 approve the oracle"}}
         end
         HE1 --> provision
-        H2 --> PG{{"◆ plan-approved (automatic)"}}
     end
     subgraph DEL["Delivery"]
-        tasks["tasks (DAG)"] --> integration --> release --> H3{{"◆ H-3 · preconditions: ship gates"}}
+        tasks["tasks (DAG)"] --> integration --> release --> H3{{"◆ H-3 · checks: ship gates"}}
     end
     H1 --> plan
-    PG --> tasks
+    H2 --> tasks
 ```
 
-**Send back** is offered on a waiting gate or an escalated step for every stage its work was
-built on. Requirements, Plan, Design and Oracle **start over**; Delivery **appends a round** – a
+A **gate** (◆) is the step that ends its stage – the core knows nothing more of it. Its work
+(the `Approval` phase) checks what the gate needs and then waits for a human: an expected
+escalation (`awaiting_approval`, shown `AWAITING_HUMAN`). Approving it is the *answer* to that
+escalation (recorded by `HumanGates`), after which it checks again and passes; unmet checks
+escalate again (`preconditions_unmet`) and a re-check is a *retry*. Stages without a human
+decision at the tier have no gate: Plan's own, a round's, the oracle's below R2.
+
+**Send back** is offered on an escalated step – a waiting gate included – for every stage its
+work was built on. Requirements, Plan, Design and Oracle **start over**; Delivery **appends a round** – a
 Round stage (its own Design, Oracle and tasks, ids `@n`) inserted before integration.
 
 **Run again in place** (`rerun:<step>`) is offered on an escalated step for each earlier, done
@@ -419,7 +425,7 @@ step declared `rerunnable` – provisioning only: the approved spec built again.
 new attempt (done → running) while what was built on it stands – nothing is reset, no stage
 reopens – and the escalated step is retried; steps that need the environment wait for it.
 
-Every node is one of three small state machines; each status change is a named transition that
+Every node is one of two small state machines; each status change is a named transition that
 declares its source statuses (`flow/states.py`):
 
 ```mermaid
@@ -438,13 +444,6 @@ stateDiagram-v2
         escalated --> pending : reset
         done --> running : rerun (in place)
     }
-    state "Gate" as G {
-        [*] --> g_pending
-        g_pending --> waiting : open
-        waiting --> waiting : approve / evaluating / assessed
-        waiting --> g_done : complete
-        g_done --> g_pending : reset
-    }
 ```
 
 ## 5. Encapsulation rules
@@ -456,7 +455,7 @@ stateDiagram-v2
 | Engine collaborators | Each gets only the parts it uses; imports form a DAG; nothing imports the `ChangeEngine` facade | `test_units.py::test_engine_collaborators_are_acyclic` |
 | Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
 | The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner to the runtime, the runtime to the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
-| Node states | A declared machine nested in the core's step states; only the step runner (steps) and the runtime (gates) change a status | `tests/test_node_states.py` (including a scan for any other write) |
+| Node states | A declared machine nested in the core's step states; only the step runner changes a status | `tests/test_node_states.py` (including a scan for any other write) |
 | Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
 | Per-kind knowledge | Only `STEP_TYPES` (and gate approvals in `HumanGates`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
 | Dispatcher | Runs opaque work (`execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |

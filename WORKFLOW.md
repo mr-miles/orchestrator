@@ -288,37 +288,39 @@ listed in the readiness result.
 
 ### 4.1 Stages, gates and steps
 
-A change's workflow is a tree of **stages**, each ending in a **gate**; the steps inside a stage
-run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
+A change's workflow is a tree of **stages**, most ending in a **gate** – the stage's last step;
+the steps inside a stage run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
 environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/workflow_tree.py`):
 
 ```
 Requirements   intake ─────────────────────────────────────────────── ◆ H-1 accept requirements & tier
-Plan                                                                 ◆ plan-approved (automatic)
+Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ─────────────────────────────── ◆ H-E1 approve the plan
   Oracle       {provision} <scaffold> [oracle preflight] [baseline] ─── ◆ H-2 approve the oracle
 Delivery       tasks (DAG of build:<id>) ─ [integration] ─ [release] ── ◆ H-3 accept the change
 ```
 
 * **Per tier.** Stages without content are left out: R0/R1 have no oracle, preflight, baseline,
-  integration or release (an Oracle stage there holds only provision or the scaffold, and its gate
-  is automatic). `[…]` R2+, the baseline and release R3.
-* **Gates** are a human approval (or automatic) plus **preconditions** the controller evaluates:
-  H-2's at R3 is the `independent-baseline` attestation; H-3's are the tier's ship gates (§3,
-  §5.11) – at R0/R1 H-3 is automatic, so the change is accepted as soon as they hold. A gate node
-  is `AWAITING_HUMAN` while its gate waits.
+  integration or release (an Oracle stage there holds only provision or the scaffold, and has no
+  gate). `[…]` R2+, the baseline and release R3.
+* **Gates** are steps: the step's work checks the gate's **preconditions** (H-3's are the tier's
+  ship gates, §3, §5.11) and then waits for a human's approval (H-E1's and H-2's subject by subject,
+  §5.5a; at R3, H-2's subjects include the `independent-baseline` attestation). At R0/R1 nobody
+  approves H-3: it passes as soon as its ship gates hold. A gate node is `AWAITING_HUMAN` while
+  it waits for a decision – an expected escalation in the core.
 * `{…}` exists only with an `environment:` section (§5.3a); `<…>` only in a blank repository
   (§5.3b). The build tasks are added once the critic passes the plan.
 
 **Who decides what.** The stage rules run in a pure **workflow core** (`legion_orch/workflow/flow/`,
-no I/O): which step starts when, gates, send-backs, fix rounds and the end. Within a step the
-engine decides: its phases (§5.6–5.9), rework cycles, escalations and their answers. The engine's
-nodes report to the core on every save – accepted completes the step, escalated escalates it,
-resolved resumes it – and the core's effects start, stop and evaluate (`engine/runtime.py`).
+no I/O): which step starts when, send-backs, fix rounds and the end – a gate is a step to it.
+Within a step the engine decides: its phases (§5.6–5.9), rework cycles, escalations and their
+answers, what a gate checks. The step runner reports to the core – done, escalated, resumed – and
+the core's effects start, stop, resume and retry steps (`engine/runtime.py`).
 
-**Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a), **send
-back**, **reject** (H-3) and, with preconditions, **recheck**. On an escalated step: **answer**,
-**retry**, **override** (build tasks) and **send back**. **Send back** (`send_back`, with a stage
+**Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a) – the
+answer to its step's escalation, **send back**, **reject** (H-3) and **recheck** (a retry: its
+checks again). On an escalated step: **answer**, **retry**, **override** (build tasks), **run again
+in place** (provisioning, §5.3a) and **send back**. **Send back** (`send_back`, with a stage
 and feedback) is offered for every stage the node's work was built on – the stages enclosing it
 and, at each level, the stages before them – nearest first; the UI's names map onto it:
 

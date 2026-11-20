@@ -9,7 +9,6 @@ from legion_orch.sandbox import ImageRecipe, Tool
 from legion_orch.workflow.engine.phases import (
     BuildImages,
     Escalate,
-    Evaluate,
     Merge,
     Ok,
     Panel,
@@ -270,22 +269,20 @@ async def test_a_failed_build_escalates_with_the_log(f: Flow):
     assert f"## image {r.tag}" in result.log_tail
 
 
-# ---------------------------------------------------------------------------- Evaluate, Produce
+# ---------------------------------------------------------------------------- gates, Produce
 @scenario()
-async def test_evaluate_is_ok_with_the_readiness_whatever_the_verdict(f: Flow):
-    import legion_orch.workflow.engine.phases as phases
-    real = phases.evaluate
-    for verdict in ("READY", "NOT_READY"):
-        async def fake(c, verdict=verdict):
-            assert c is f.ce
-            return Readiness(verdict=verdict, tier="R1", integration_head=SHA,
-                             integration_branch="legion/x", gates={})
-        phases.evaluate = fake
-        try:
-            result = await Evaluate().run(ctx(f))
-        finally:
-            phases.evaluate = real
-        assert isinstance(result, Ok) and result.value.verdict == verdict
+async def test_the_ship_gates_are_recorded_and_only_their_approval_gates_wait_for_it(f: Flow):
+    from legion_orch.workflow.engine.phases import ShipGates
+    from legion_orch.workflow.model import GateResult
+    gates = {g: GateResult(status="unsatisfied", detail="x")
+             for g in ("explicit_human_approval", "protected_oracle")}
+    res = Readiness(verdict="NOT_READY", tier="R2", integration_head=SHA,
+                    integration_branch="legion/x", gates=gates)
+    node = task(f, id="H-3", kind="human")
+    assert ShipGates().unmet(f.ce, node, res) == ("protected_oracle",)   # not yet approved
+    assert f.ce.change.ship is res and res.attestation
+    f.ce.change.approvals["H-3"] = f.ce.change.approvals.get("H-1")
+    assert ShipGates().unmet(f.ce, node, res) == ("explicit_human_approval", "protected_oracle")
 
 
 @scenario()

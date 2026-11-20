@@ -329,6 +329,7 @@ class Node(Record):
     escalation: Escalation | None = None
     extra_cycles: int = 0                 # granted by a human on escalation
     override: Override | None = None
+    approved: bool = False                # a gate step: a human approved it in this attempt
     # fix rounds (§5.10a): a build task's round; for the plan node, the round being planned and
     # the cycle it started at (the round's critique budget and feedback count from there)
     round: int = 1

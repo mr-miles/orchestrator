@@ -6,13 +6,13 @@ machine is coarse (``pending → running → done``, ``escalated``); the node's 
 
     core pending    PENDING
     core running    READY · RUNNING · VERIFYING · REVIEWING · MERGING · REWORK
-    core escalated  ESCALATED
+    core escalated  ESCALATED (something went wrong) · AWAITING_HUMAN (a decision is due: a gate)
     core done       ACCEPTED
 
 Every status change goes through a :class:`NodeStates`, as a declared transition (an illegal
-one raises). It belongs to the layer that owns the node: the step runner for step nodes (which
-tells the workflow runtime when a node crosses one of its step's states – done, escalated,
-resumed), the runtime for gate nodes (which follow their gates). Nothing else writes a status.
+one raises). It belongs to the step runner, which tells the workflow runtime when a node crosses
+one of its step's states – done, escalated, resumed. A gate is a step like any other. Nothing
+else writes a status.
 """
 from __future__ import annotations
 
@@ -38,13 +38,16 @@ from ..model import (
 #: the node statuses inside the core's ``running``: one per phase's work
 IN_STEP = frozenset({READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK})
 
+#: the node statuses inside the core's ``escalated``: a human decides
+WAITING = frozenset({ESCALATED, AWAITING_HUMAN})
+
 #: the declared transitions (status -> the statuses it may become)
 TRANSITIONS: dict[NodeStatus, frozenset[NodeStatus]] = {
-    PENDING: IN_STEP | {ACCEPTED, AWAITING_HUMAN},          # entered; a round's unchanged step
-    **{s: IN_STEP | {ACCEPTED, ESCALATED, PENDING} for s in IN_STEP},
+    PENDING: IN_STEP | {ACCEPTED},                          # entered; a round's unchanged step
+    **{s: IN_STEP | {ACCEPTED, ESCALATED, AWAITING_HUMAN, PENDING} for s in IN_STEP},
     ESCALATED: IN_STEP | {PENDING, FAILED},                 # resumed, sent back, abandoned at
+    AWAITING_HUMAN: IN_STEP | {PENDING, FAILED},            # approved (it checks again), reset, rejected
     ACCEPTED: frozenset({PENDING, READY}),                  # reset; the retrospective again
-    AWAITING_HUMAN: frozenset({ACCEPTED, PENDING, FAILED}),  # a gate: passed, reset, rejected
     FAILED: frozenset({PENDING, READY}),
 }
 
@@ -67,8 +70,8 @@ class NodeStates:
         step is entered)."""
         if to not in IN_STEP:
             raise IllegalNodeTransition(f"{node.id}: {to} is not a phase's status")
-        if node.status == ESCALATED:             # only resolving the escalation leaves it
-            raise IllegalNodeTransition(f"{node.id}: escalated – resume it instead")
+        if node.status in WAITING:               # only resolving the escalation leaves it
+            raise IllegalNodeTransition(f"{node.id}: {node.status} – resume it instead")
         self._move(node, to)
 
     # ------------------------------------------------------------------ the boundaries
@@ -78,16 +81,19 @@ class NodeStates:
 
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
                  run: str | None = None, missing_decision: str | None = None,
-                 log_tail: str | None = None, source: FailureSource | None = None) -> None:
-        """A human decides; ``resume`` says where the step continues once they have."""
-        self._move(node, ESCALATED)
+                 log_tail: str | None = None, source: FailureSource | None = None,
+                 expected: bool = False) -> None:
+        """A human decides; ``resume`` says where the step continues once they have.
+        ``expected``: a decision that is due, not a failure (a gate's approval):
+        ``AWAITING_HUMAN`` instead of ``ESCALATED``."""
+        self._move(node, AWAITING_HUMAN if expected else ESCALATED)
         node.escalation = Escalation(kind=kind, reason=reason, resume=resume, run=run,
                                      missing_decision=missing_decision, log_tail=log_tail,
                                      source=source)
 
     def resume(self, node: Node, to: NodeStatus) -> None:
         """The escalation is resolved: the step goes on, in the phase ``to``."""
-        if node.status != ESCALATED or to not in IN_STEP:
+        if node.status not in WAITING or to not in IN_STEP:
             raise IllegalNodeTransition(f"{node.id}: cannot resume {node.status} into {to}")
         node.escalation = None
         self._move(node, to)
@@ -97,10 +103,6 @@ class NodeStates:
         """The core sent the step back (or stopped it): pending again."""
         node.escalation = None
         self._move(node, PENDING)
-
-    def gate(self, node: Node, to: NodeStatus) -> None:
-        """A gate node follows its gate: pending, waiting for a human, done."""
-        self._move(node, to)
 
     def end(self, node: Node) -> None:
         """The change ended (abandoned or rejected) at this node."""

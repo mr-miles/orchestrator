@@ -143,12 +143,14 @@ async def _drive(ce):
     r = await ce.human_action("H-E1", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
     assert r.pending == ["REQ-2"] and n["H-E1"].status == "AWAITING_HUMAN"
     r = await ce.human_action("H-E1", "approve", "ana", {"subjects": ["REQ-2"]})
-    assert r.pending == [] and n["H-E1"].status == "ACCEPTED"
+    assert r.pending == []
+    await _wait(ce, lambda: n["H-E1"].status == "ACCEPTED", "H-E1")   # its gate step passes
 
     await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
     assert ce.change.oracle_sha
     r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["oracle"]})
-    assert r.pending == [] and n["H-2"].status == "ACCEPTED"
+    assert r.pending == []
+    await _wait(ce, lambda: n["H-2"].status == "ACCEPTED", "H-2")
     assert ce.change.surface_pins["files"].pins["README.md"]
 
     await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
@@ -212,7 +214,7 @@ async def _r3_workflow(tmp_path):
                                                        "verdict": "pass", "sources": []})
         r = await ce.human_action("H-2", "approve", "miles")    # R3: attests the baseline too
         assert r.pending == [] and "independent-baseline" in r.approved
-        assert n["H-2"].status == "ACCEPTED"
+        await _wait(ce, lambda: n["H-2"].status == "ACCEPTED", "H-2")
         assert ce.change.attestations["independent-baseline"].attested_by == "miles"
 
         await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)

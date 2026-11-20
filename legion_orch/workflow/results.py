@@ -42,6 +42,7 @@ class Escalate:
     run: str | None = None
     missing_decision: str | None = None
     source: Any = None                       # a failed run's FailureSource
+    expected: bool = False                   # a decision that is due (a gate), not a failure
 
 
 @dataclass(frozen=True)

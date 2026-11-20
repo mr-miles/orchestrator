@@ -155,12 +155,15 @@ class FakeBuilder(EnvironmentBuilder):
         self.recipes: dict[str, object] = {}       # tag -> ImageRecipe
         self.fail: str | None = None
         self.removed: list[str] = []               # changes whose images were removed
+        self.hold: asyncio.Event | None = None     # set: builds wait until it is set
 
     async def remove_change_images(self, change):
         self.removed.append(change)
         return f"removed the images of {change}"
 
     async def ensure_image(self, recipe):
+        if self.hold is not None:
+            await self.hold.wait()
         if self.fail:
             msg, self.fail = self.fail, None
             raise BuildError(msg)
