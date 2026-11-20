@@ -591,6 +591,8 @@ class Change(Record):
     setup_pin: SetupPin | None = None                     # None: no setup task, nothing runs
     cleaned_at: str | None = None    # ended, retrospective done: run branches and images removed
     pruned_at: str | None = None     # a human removed the integration branch and evidence refs
+    # reprovisioning (a change-level operation): requested, then running once nothing uses the build
+    reprovision: str | None = None
     round: int = 1                                         # 1, or the current fix round
     rounds: list[FixRound] = []                            # fix rounds since the last restart
 

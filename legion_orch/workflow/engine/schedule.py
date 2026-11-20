@@ -58,6 +58,9 @@ class Scheduler:
             if not active and not any(step_for(n).runs_after_end for n in c.nodes.values()):
                 return
             self.lifecycle.check_timeouts()
+            if active and c.change.reprovision == "requested" and self.environment_quiescent():
+                c.change.reprovision = "running"     # a change-level operation, not a step
+                c.spawn(self.provisioner.rebuild())
             # G-H1: the branch head, if a head-judging run may be dispatched this tick
             self.branch_head = (await c.git.integration_head(c.change.id)
                                 if active and any(self.judges_head(n) for n in c.nodes.values())
@@ -88,7 +91,8 @@ class Scheduler:
         (``reprovision``), so no sandbox starts from the old build or the default image."""
         c = self.c
         prov, env = c.current(PROVISION), c.change.environment
-        return bool(prov and env and prov.status != ACCEPTED and role in env.roles)
+        return bool(prov and env and role in env.roles
+                    and (prov.status != ACCEPTED or c.change.reprovision))
 
     @staticmethod
     def judges_head(node: Node) -> bool:

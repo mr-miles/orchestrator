@@ -43,7 +43,15 @@ class Escalate:
     missing_decision: str | None = None
 
 
-PhaseResult = Ok | Rework | Escalate
+@dataclass(frozen=True)
+class Redo:
+    """An earlier step of the same stage must do its work again (preflight finds the oracle's
+    setup failing): it starts again with this feedback, and everything after it with it."""
+    step: str
+    feedback: Feedback
+
+
+PhaseResult = Ok | Rework | Escalate | Redo
 
 
 class ActionResult(Record):

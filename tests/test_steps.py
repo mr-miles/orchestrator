@@ -10,7 +10,6 @@ from legion_orch.workflow.engine.steps import (
     STEP_TYPES,
     EnvironmentQuiescent,
     NoOverlap,
-    OracleAccepted,
     ReflectionsDone,
     sandbox_plan,
     step_for,
@@ -91,7 +90,7 @@ def test_verifications_differ_only_in_their_policies():
 def test_waits_and_resume_points():
     assert {k: type(s.dispatch_when[0]) for k, s in STEP_TYPES.items() if s.dispatch_when} == {
         BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone,
-        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
+        PROVISION: EnvironmentQuiescent}
     assert [k for k, s in STEP_TYPES.items() if s.runs_after_end] == [NodeKind.RETROSPECTIVE]
     assert {k for k, s in STEP_TYPES.items() if s.rework_resume == Resume.REWORK} == {BUILD}
     assert {k for k, s in STEP_TYPES.items() if s.judges_head} == {BASELINE, INTEGRATION,
@@ -234,23 +233,19 @@ async def test_entering_a_step_sets_its_first_phase_and_dispatch_starts_its_work
 @scenario()
 async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
     rt = f.ce._runner
-    capture_spawns(f)
-    oracle = node(f, ORACLE, id="oracle", status=REWORK)        # sent back by its preflight
-    pre = node(f, PREFLIGHT, status=READY)
-    assert rt.dispatch(pre, 4) == [] and pre.status == READY    # OracleAccepted does not hold
-    oracle.status = ACCEPTED
-    rt.dispatch(pre, 4)
-    assert pre.status == VERIFYING
+    retro = node(f, NodeKind.RETROSPECTIVE, id="retrospective", status=READY)
+    f.ce._sandboxes.reflector.pending.add("sb")              # an agent still reflects
+    assert rt.dispatch(retro, 4) == [] and retro.status == READY
 
 
 @scenario()
 async def test_after_a_restart_only_controller_work_resumes(f: Flow):
     rt = f.ce._runner
     prov, agent = Node(id="p", kind=PROVISION, title="p", status=RUNNING), node(f, BUILD)
-    work = rt.resume(prov)
-    assert work is not None and work.__qualname__ == "Provisioner.provision"
+    work = rt.resume_work(prov)
+    assert work is not None and work.__qualname__ == "BuildImages._provision"   # its result comes back
     work.close()
-    assert rt.resume(agent) is None
+    assert rt.resume_work(agent) is None
 
 
 @scenario()
@@ -268,7 +263,7 @@ def ver(*rcs: int, setup: int | None = None) -> Verification:
 
 
 def conclude(f: Flow, n: Node, res: Verification) -> None:
-    step_for(n).phase(Verify).conclude(f.ce._runner, n, res, "att")
+    step_for(n).phase(Verify).verified(f.ce._runner, n, res, "att")
 
 
 @scenario()
@@ -298,16 +293,20 @@ async def test_a_baseline_and_a_preflight_pass_with_expected_failures_and_note_p
 
 
 @scenario()
-async def test_a_preflight_setup_failure_goes_back_to_the_oracle(f: Flow):
+async def test_a_preflight_setup_failure_redoes_its_rounds_oracle(f: Flow):
+    """The policy's result: the round's oracle again, with the output, within its budget; a
+    human decides after. (The core's redo itself: test_workflow_tree, test_preflight.)"""
+    from legion_orch.workflow.engine.phases import Escalate, OracleReworks
+    from legion_orch.workflow.results import Redo
     oracle = node(f, ORACLE, id=ORACLE, status=ACCEPTED)
     n = node(f, PREFLIGHT, status=VERIFYING)
-    conclude(f, n, ver(setup=1))
-    assert (oracle.status, oracle.cycle, n.status) == (REWORK, 2, READY)   # waits for it
-    assert "BLOCKER (preflight)" in oracle.feedback[-1].text
-    # without a cycle left, a human decides
-    n.status, oracle.cycle = VERIFYING, f.cfg.limits.review_max_cycles
-    conclude(f, n, ver(setup=1))
-    assert n.status == ESCALATED and n.escalation.kind == "setup_failed"
+    setup = CommandResult(command="mise run setup", exit_code=1, output="boom", setup=True)
+    esc = Escalate("setup_failed", "G-V3", Resume.VERIFYING)
+    result = OracleReworks()(f.ce, n, setup, "att", esc)
+    assert isinstance(result, Redo) and result.step == ORACLE
+    assert "BLOCKER (preflight)" in result.feedback.text and result.feedback.attestations == ["att"]
+    oracle.cycle = f.cfg.limits.review_max_cycles               # no cycle left
+    assert OracleReworks()(f.ce, n, setup, "att", esc) is esc
 
 
 @scenario()

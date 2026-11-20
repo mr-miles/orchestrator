@@ -8,7 +8,7 @@ import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -19,9 +19,7 @@ from ..attention import AttentionItem
 from ..model import (
     ACCEPTED,
     BUILD,
-    ESCALATED,
     Change,
-    Escalation,
     FailureSource,
     Node,
     Oracle,
@@ -32,6 +30,9 @@ from .common import log
 from .services import EngineHost, Services
 from .state import StateStore
 from .workflow_tree import base_id
+
+if TYPE_CHECKING:
+    from .steps import StepRunner
 
 
 def _waited(since: str) -> str:
@@ -55,6 +56,7 @@ class ChangeCore:
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
+        self.steps: StepRunner = None  # type: ignore[assignment]   # the step layer, set by the engine
         self._timeline: list[str] = []                 # events not yet written to the store
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
@@ -104,15 +106,15 @@ class ChangeCore:
         state change passes through here, so this is where status changes are stamped and
         attention items are raised and resolved (§2.2) – and where the workflow (the stage
         rules) sees what changed (:meth:`sync`)."""
-        self.sync()
+        self.before_save()
         self._stamp_statuses()
         self._update_attention()
         self.st.save()
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.host.changed()
 
-    def sync(self) -> None:
-        """Hook: let the workflow see the nodes' changes before they are saved."""
+    def before_save(self) -> None:
+        """Hook: the workflow's own record, saved with the change."""
 
     # ------------------------------------------------------------------ attention (§2.2)
     @property
@@ -150,12 +152,10 @@ class ChangeCore:
     def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
                  run: str | None = None, missing_decision: str | None = None,
                  log_tail: str | None = None, source: FailureSource | None = None) -> None:
-        """Stop the node for a human; ``resume`` says where it continues once resolved."""
-        node.status = ESCALATED
-        node.escalation = Escalation(kind=kind, reason=reason, resume=resume, run=run,
-                                     missing_decision=missing_decision, log_tail=log_tail,
-                                     source=source)
-        self.event("escalation", f"{kind}: {reason}", node.id, run)
+        """Stop the node for a human; ``resume`` says where it continues once resolved. (The
+        step runner owns the node's state: this passes the escalation to it.)"""
+        self.steps.escalate(node, kind, reason, resume, run=run,
+                            missing_decision=missing_decision, log_tail=log_tail, source=source)
 
     def head_moved(self, branch_head: str) -> str | None:
         """G-H1: the integration branch is written only by the controller. If it is not at the

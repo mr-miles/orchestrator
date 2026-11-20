@@ -24,7 +24,6 @@ from ..model import (
     LIVE_RUN,
     PLAN,
     REWORK,
-    RUNNING,
     FailureSource,
     Node,
     Resume,
@@ -252,7 +251,6 @@ class Dispatcher:
         node.runs.append(run.id)
         if not h.panel:                 # panel members run alongside; the node stays REVIEWING
             node.current_run = run.id
-            node.status = RUNNING
         if plan.keeps and node.sandbox is None:
             node.sandbox = run.sandbox
         # approved_spec_and_oracle compares with these (the scaffold precedes H-2, §5.3b)

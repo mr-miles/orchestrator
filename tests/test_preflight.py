@@ -74,7 +74,7 @@ async def test_a_failing_setup_sends_the_tests_back_to_the_oracle(f: Flow):
     assert oracle.status == "RUNNING" and oracle.cycle == 2          # reworked in its session
     [fb] = [x for x in oracle.feedback if "preflight" in x.text]
     assert SETUP in fb.text and "lockfile is frozen" in fb.text and fb.attestations
-    assert pre.status == "READY"                       # waits for the oracle, accepted again
+    assert pre.status == "PENDING"                     # redone after the oracle, by the core
     assert results(f, "preflight", "preflight") == [(SETUP, 1, True)]   # nothing ran after it
     del f.runner.commands[PIN]
     await f.oracle(files={ORACLE["acceptance_tests"][0]: "grep -q hello src/greet.txt # v2\n"})

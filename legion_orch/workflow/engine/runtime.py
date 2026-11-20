@@ -42,21 +42,17 @@ from ..model import (
     ACCEPTED,
     AWAITING_HUMAN,
     BUILD,
-    ESCALATED,
     FAILED,
     H_CHANGE,
-    H_ENV,
     HUMAN,
     PENDING,
-    R_REPORTED,
-    R_SUPERSEDED,
     RETRO,
-    REWORK,
     ChangeStatus,
     Feedback,
     Node,
 )
 from .core import ChangeCore
+from .node_states import NodeStates
 from .workflow_tree import (
     NODES,
     SCAFFOLD,
@@ -87,8 +83,8 @@ class FlowRuntime:
         self.flow = FlowState(requirements_workflow())
         self.tree: dict[str, Any] | None = None       # rank, environment, blank_repo (after H-1)
         self.inputs: list[list[Any]] = []             # every input to the core, in order
-        self._syncing = False
-        self._feedback: dict[str, tuple[str, list[str]]] = {}   # send-back text -> doc
+        self.gates = NodeStates()            # the gate nodes are the runtime's: they follow gates
+        self._feedback: dict[str, tuple[str, list[str]]] = {}   # text -> (source, docs)
 
     # ------------------------------------------------------------------ persistence
     def to_json(self) -> dict[str, Any]:
@@ -128,6 +124,8 @@ class FlowRuntime:
             if op == "act":
                 return self.flow.act(inp[1], inp[2], by=inp[3], text=inp[4],
                                      subjects=inp[5])
+            if op == "redo":
+                return self.flow.redo(inp[1], inp[2])
             if op == "define":
                 return self.flow.define(inp[1], [Step(s["id"], overridable=s["overridable"],
                                                       depends_on=s["depends_on"])
@@ -141,8 +139,11 @@ class FlowRuntime:
         raise ValueError(f"unknown workflow input {op!r}")
 
     def _input(self, *inp: Any) -> list:
-        """A new input: applied, and recorded for the replay."""
+        """A new input: applied, and recorded for the replay; the gates it moved show on their
+        nodes."""
+        mark = len(self.flow.log)
         effects = self._apply(list(inp))
+        self._follow_gates(self.flow.log[mark:])
         self.inputs.append(list(inp))
         return effects
 
@@ -293,7 +294,7 @@ class FlowRuntime:
         """A generic action (approve, send_back:<stage>, evaluate, reject, abandon, …)
         through the core: what it resets is undone in the engine, what it starts is started."""
         if action.startswith("send_back:") and text:
-            self._feedback[text] = (by, [feedback_doc] if feedback_doc else [])
+            self._feedback[text] = ("feedback", [feedback_doc] if feedback_doc else [])
         mark = len(self.flow.log)
         effects = self._input("act", target, action, by, text, subjects)
         if self.flow.ended:                 # abandoned or rejected: nothing starts over
@@ -308,33 +309,26 @@ class FlowRuntime:
         self._carry_out(effects)
 
     async def _undo(self, reset: list[str]) -> None:
-        """Steps (and gates) the core sent back to pending: their nodes start over, and what
-        their step type says a reset undoes is undone (once per policy, in order)."""
+        """Steps (and gates) the core sent back to pending: their nodes start over (the step
+        runner's), and what their step type says a reset undoes is undone (once per policy)."""
+        for policy, node in self._reset(reset):
+            await policy(self.c, self.lifecycle, node)
+
+    def _reset(self, reset: list[str]) -> list:
+        """Reset the steps' nodes; returns the step types' reset policies still to run."""
         from .steps import step_for
         done: set[type] = set()
+        todo = []
         for nid in reset:
             node = self.c.nodes.get(nid)
-            if node is None:
-                continue
-            if node.kind == HUMAN:
-                node.status = PENDING
-                continue
-            self._reset_node(node)
+            if node is None or node.kind == HUMAN:
+                continue                         # a gate node follows its gate
+            self.runner.reset(node)
             for policy in step_for(node).on_reset:
                 if type(policy) not in done and policy.applies(self.c, node):
                     done.add(type(policy))
-                    await policy(self.c, self.lifecycle, node)
-
-    def _reset_node(self, node: Node) -> None:
-        for r in [self.c.runs[r] for r in node.runs if r in self.c.runs]:
-            proc = self.c.procs.get(r.id)
-            if proc and proc.returncode is None:
-                proc.kill()
-            if r.status == R_REPORTED:
-                r.status = R_SUPERSEDED
-        self.lifecycle.retire_runs(node)
-        node.status, node.escalation = PENDING, None
-        node.candidate_sha = node.accepted_sha = None
+                    todo.append((policy, node))
+        return todo
 
     # ------------------------------------------------------------------ effects
     def _carry_out(self, effects: list) -> None:
@@ -344,7 +338,7 @@ class FlowRuntime:
             elif isinstance(e, StopStep):
                 node = self.c.nodes.get(e.step)
                 if node is not None and node.status != PENDING:
-                    self._reset_node(node)
+                    self.runner.reset(node)
             elif isinstance(e, Evaluate):
                 if base_id(e.gate) == H_CHANGE:      # the ship gates read git: in the background
                     self.c.spawn(self.evaluate(e.gate))
@@ -358,45 +352,53 @@ class FlowRuntime:
                 self._end(e.status)
 
     def _start_step(self, e: StartStep) -> None:
+        """The core started a step: the step runner starts its node, with the feedback it was
+        sent back with."""
         node = self.c.nodes.get(e.step)
         if node is None:
             return
-        again = bool(node.runs) or node.status != PENDING
-        if again:                               # started over (sent back): a new cycle
-            node.cycle += 1
-            node.candidate_sha = node.accepted_sha = None
-            node.escalation = None
+        feedback = []
         for text in e.feedback:
-            _, atts = self._feedback.pop(text, ("human", []))
-            node.feedback.append(Feedback(cycle=node.cycle, source="feedback", text=text,
-                                          attestations=atts))
-        if node.runs and self.runner.step(node).role:
-            node.status = REWORK        # its agent continues, in its kept session
-            return
-        node.status = PENDING
-        if node.kind == "oracle" and node.round > 1:
-            self._reuse_oracle(node)
-        elif node.kind == "provision" and node.round > 1:
-            self._reuse_environment(node)
-        if node.status == PENDING:
-            self.runner.enter(node)     # its first phase; the scheduler starts its work
+            source, atts = self._feedback.pop(text, ("feedback", []))
+            feedback.append(Feedback(cycle=node.cycle, source=source, text=text,
+                                     attestations=atts))
+        self.runner.start(node, feedback)
 
-    def _reuse_oracle(self, node: Node) -> None:
-        """A fix round's oracle runs only if the round changed ``plan/oracle.json``."""
-        c = self.c
-        orc = c.change.approvals.get("oracle")
-        if orc and orc.pins.get(c.p("plan/oracle.json")) == c.latest("plan/oracle.json"):
-            node.status, node.accepted_sha = ACCEPTED, c.change.oracle_sha
-            c.event("oracle", "plan/oracle.json is unchanged: the oracle stands", node.id)
+    # ------------------------------------------------------------------ from the step runner
+    def completed(self, node: Node) -> None:
+        """A step's node is done (its last phase passed, or a round's step stands)."""
+        if self.status(node.id) == StepStatus.RUNNING:
+            self._carry_out(self._input("completed", node.id))
 
-    def _reuse_environment(self, node: Node) -> None:
-        """A fix round provisions again only if the round changed the environment spec."""
-        c = self.c
-        env = c.change.approvals.get(H_ENV)
-        if c.change.environment and env and env.pins.get(c.p("plan/environment.json")) == \
-                c.latest("plan/environment.json"):
-            node.status = ACCEPTED
-            c.event("provision", "the environment spec is unchanged: the build stands", node.id)
+    def escalated(self, node: Node) -> None:
+        if self.status(node.id) == StepStatus.RUNNING:
+            esc = node.escalation
+            self._carry_out(self._input("escalated", node.id, esc.kind if esc else "escalated",
+                                        esc.reason if esc else ""))
+
+    def resumed(self, node: Node) -> None:
+        """The node's escalation was resolved within its step: the core's step goes on."""
+        if self.status(node.id) == StepStatus.ESCALATED:
+            self._input("act", node.id, "retry", "human", "", None)
+
+    def redo(self, step: str, feedback: Feedback) -> None:
+        """A later step found ``step`` wanting: it and everything after it in its stage start
+        again, it with the feedback (through the core)."""
+        self._feedback[feedback.text] = (feedback.source, list(feedback.attestations))
+        mark = len(self.flow.log)
+        effects = self._input("redo", step, feedback.text)
+        reset = list(dict.fromkeys(nid for nid, transition, was, _ in self.flow.log[mark:]
+                                   if transition == "reset" and was != "pending"))
+        for policy, node in self._reset(reset):
+            self.c.spawn(policy(self.c, self.lifecycle, node))
+        self._carry_out(effects)
+
+    def end_at(self, node: Node) -> None:
+        """The change ended at this node (abandoned at its escalation, rejected at H-3)."""
+        if node.kind == HUMAN:
+            self.gates.end(node)
+        else:
+            self.runner.end(node)
 
     async def evaluate(self, gate: str) -> None:
         """A gate's preconditions, evaluated now: H-3's are the ship gates (§6); H-2's (R3)
@@ -439,55 +441,28 @@ class FlowRuntime:
         elif c.change.status == ChangeStatus.ACTIVE:
             c.change.status = ChangeStatus.ABANDONED
 
-    # ------------------------------------------------------------------ sync
-    def sync(self) -> None:
-        """Under the lock, before a save: tell the core what the engine's nodes did, carry out
-        what follows, until nothing changes; then show every gate on its node."""
-        if self._syncing or self.c.change is None:
-            return
-        self._syncing = True
-        try:
-            for _ in range(100):
-                if not self._sync_once():
-                    break
-            self._show_gates()
-            self.save()
-        finally:
-            self._syncing = False
+    # ------------------------------------------------------------------ gates and persistence
+    _GATE = {GateStatus.PENDING: PENDING, GateStatus.WAITING: AWAITING_HUMAN,
+             GateStatus.DONE: ACCEPTED}
 
-    def _sync_once(self) -> bool:
-        changed = False
-        for nid, st in list(self.flow.state.items()):
+    def _follow_gates(self, log: list) -> None:
+        """Each gate node takes its gate's new status (from the core's transition log)."""
+        for nid, _, _, to in log:
             node = self.c.nodes.get(nid)
-            if node is None or node.kind == HUMAN or not isinstance(self.flow.nodes.get(nid), Step):
+            if node is None or node.kind != HUMAN or to not in self._GATE:
                 continue
-            if st.status == StepStatus.RUNNING and node.status == ACCEPTED:
-                self._carry_out(self._input("completed", nid))
-                changed = True
-            elif st.status == StepStatus.RUNNING and node.status == ESCALATED:
-                esc = node.escalation
-                self._carry_out(self._input("escalated", nid, esc.kind if esc else "escalated",
-                                            esc.reason if esc else ""))
-                changed = True
-            elif st.status == StepStatus.ESCALATED and node.status not in (ESCALATED, FAILED):
-                # resolved in the engine (answer, retry, override): the step goes on there
-                self._input("act", nid, "retry", "human", "", None)
-                changed = True
-        return changed
-
-    def _show_gates(self) -> None:
-        for nid, st in self.flow.state.items():
-            node = self.c.nodes.get(nid)
-            if node is None or node.kind != HUMAN:
-                continue
-            want = {GateStatus.PENDING: PENDING, GateStatus.WAITING: AWAITING_HUMAN,
-                    GateStatus.DONE: ACCEPTED}[st.status]
-            if self.flow.ended and st.status != GateStatus.DONE:
-                want = FAILED if node.status == FAILED else PENDING
-            if node.status != want and not (node.status == FAILED and self.flow.ended):
-                node.status = want
+            if node.status == FAILED:
+                continue                         # the change ended at it
+            want = self._GATE[to]
+            if node.status != want:
+                self.gates.gate(node, want)
                 if want == AWAITING_HUMAN:
                     self.c.event("human", "awaiting human decision", nid)
+
+    def persist(self) -> None:
+        """Before a save: the core's record."""
+        if self.c.change is not None:
+            self.save()
 
     def evaluating(self) -> list[str]:
         """Gates whose preconditions were being evaluated (again after a restart)."""

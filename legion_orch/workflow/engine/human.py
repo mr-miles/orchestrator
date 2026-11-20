@@ -330,7 +330,7 @@ class HumanGates:
         rec.attestation = c.write_record("control/ended.json", rec).attestation
         c.change.ended = rec
         c.change.status = ChangeStatus.ABANDONED
-        node.status = FAILED
+        self.flow.end_at(node)
         verb = "abandoned the change" if action == "abandon" else "rejected the change"
         c.event("abandoned", f"{approver} {verb} at {node.id}: {reason or '(no reason given)'}",
                 node.id)
@@ -456,17 +456,17 @@ class HumanGates:
             raise WorkflowError("override requires passing deterministic verification at the "
                                 "candidate (deterministic_verification is not waivable)")
         node.override = Override(approver=approver, reason=payload["reason"], sha=node.candidate_sha)
-        node.escalation = None
-        node.status = MERGING
+        self.flow.runner.resume(node, MERGING)
         self.c.spawn(self.acceptance.merge_node(node.id))
         return ActionResult()
 
     def _resume(self, node: Node, resume: Resume) -> None:
         """Continue the workflow where the resolved escalation said it should."""
+        resume_in = self.flow.runner.resume
         if resume == Resume.CRITIQUE_BUDGET:          # one more critique cycle: rework the plan
             node.extra_cycles += 1
             node.cycle += 1
-            node.status = REWORK
+            resume_in(node, REWORK)
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
             node.extra_cycles += 1
             cur = self.c.runs.get(node.current_run) if node.current_run else None
@@ -474,20 +474,20 @@ class HumanGates:
                 cur.status = R_SUPERSEDED
             node.cycle += 1
             node.candidate_sha = None
-            node.status = REWORK
+            resume_in(node, REWORK)
         elif resume == Resume.VERIFYING:
-            node.status = VERIFYING
+            resume_in(node, VERIFYING)
             self.c.spawn(self.acceptance.verify_node(node.id))
         elif resume == Resume.REVIEWING:              # re-dispatch the missing panel member(s)
-            node.status = REVIEWING
+            resume_in(node, REVIEWING)
         elif resume == Resume.MERGING:                # merge the accepted candidate again
-            node.status = MERGING
+            resume_in(node, MERGING)
             self.c.spawn(self.acceptance.merge_node(node.id))
         elif resume == Resume.REWORK:
-            node.status = REWORK
+            resume_in(node, REWORK)
         else:                                         # a new run, in a new sandbox
             self.lifecycle.retire_runs(node)
-            node.status = READY
+            resume_in(node, READY)
 
     def _promote(self, approver: str, payload: dict) -> str:
         """Copy a proposal of the H-E1-approved spec version into the library."""
@@ -545,7 +545,9 @@ class HumanGates:
         reason = payload.get("reason")
         if not risk.valid_reason(reason):
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
-        self.flow.runner.enter(prov)       # its wait: no run or verification uses the build
+        if c.change.reprovision:
+            raise WorkflowError(f"reprovisioning is {c.change.reprovision} already")
+        c.change.reprovision = "requested"       # the scheduler starts it once the build is idle
         c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
         return ("provisioning again from the approved spec and the current library once running "
                 "agents of mapped roles finish; their new runs wait until then")

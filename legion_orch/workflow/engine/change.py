@@ -72,6 +72,8 @@ class ChangeEngine(ChangeCore):
         self._acceptance.runner = self._scheduler.runner = self._reports.runner = self._runner
         self._dispatcher.reports = self._reports
         self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
+        self._runner.runtime = self._flow
+        self.steps = self._graph.runner = self._runner
         self._gates.flow = self._flow
 
     # ------------------------------------------------------------------ controller
@@ -109,7 +111,7 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.verify_node(node.id))
             elif node.status == MERGING:
                 self.spawn(self._acceptance.merge_node(node.id))
-            elif node.status == RUNNING and (work := self._runner.resume(node)):
+            elif node.status == RUNNING and (work := self._runner.resume_work(node)):
                 self.spawn(work)                    # provisioning
         for gate in self._flow.evaluating():
             self.spawn(self._flow.evaluate(gate))   # a gate's preconditions
@@ -162,8 +164,8 @@ class ChangeEngine(ChangeCore):
         return self._flow.define_tasks(plan)
 
     # ------------------------------------------------------------------ the workflow
-    def sync(self) -> None:
-        self._flow.sync()
+    def before_save(self) -> None:
+        self._flow.persist()
 
     @property
     def workflow(self) -> FlowRuntime:
