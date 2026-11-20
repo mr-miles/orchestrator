@@ -103,7 +103,7 @@ def test_tasks_run_as_their_dependencies_allow():
 def test_a_steps_own_rework_loop_stays_inside_it():
     rt = ScriptedRuntime(legion(), steps={"T1": ["rework", "rework", "ok"]}).start()
     to_h3(rt)
-    assert rt.attempt("T1") == 1 and rt.flow.cycles["T1"] == 2 and rt.status("T1") == "done"
+    assert rt.attempt("T1") == 1 and rt.flow.step("T1").cycles == 2 and rt.status("T1") == "done"
 
 
 # ====================================================================== escalations
@@ -154,7 +154,7 @@ def test_sending_design_back_replans_and_resets_what_was_built_on_it():
                                  "send_back:requirements", "abandon"]
     rt.act("H-2", "send_back:plan", text="smaller tasks")
     assert rt.attempt("planner") == 2 and rt.starts_of("planner")[-1].feedback == ("smaller tasks",)
-    assert rt.status("oracle") == "pending" and rt.flow.gates["H-E1"].approvals == {}
+    assert rt.status("oracle") == "pending" and rt.flow.gate("H-E1").approvals == {}
     assert rt.waiting() == [Waiting("H-E1", "approval")]
 
 
@@ -165,7 +165,7 @@ def test_sending_the_oracle_back_reruns_the_tests_not_the_plan():
     assert rt.attempt("planner") == 1                                # the plan stands
     assert rt.attempt("oracle") == 2
     assert rt.starts_of("oracle")[-1].feedback == ("the tests import src/",)   # feedback_to
-    assert rt.flow.gates["H-E1"].approvals                           # its approvals stand
+    assert rt.flow.gate("H-E1").approvals                           # its approvals stand
     assert rt.waiting() == [Waiting("H-2", "approval")]
 
 
@@ -177,9 +177,9 @@ def test_any_stage_the_work_was_built_on_can_be_sent_back():
     with pytest.raises(ActionError):
         rt.act("H-1", "send_back:requirements")                     # H-1 is approved: no actions
     rt.act("planner", "send_back:design", text="cover REQ-2")
-    assert rt.attempt("planner") == 2 and rt.flow.gates["H-1"].approvals   # H-1 stands
+    assert rt.attempt("planner") == 2 and rt.flow.gate("H-1").approvals   # H-1 stands
     rt.act("H-E1", "send_back:requirements", text="REQ-2 is wrong")
-    assert rt.attempt("intake") == 2 and rt.flow.gates["H-1"].approvals == {}
+    assert rt.attempt("intake") == 2 and rt.flow.gate("H-1").approvals == {}
     assert rt.status("planner") == "pending" and rt.waiting() == [Waiting("H-1", "approval")]
 
 
@@ -208,10 +208,38 @@ def test_restarting_the_plan_from_a_round_removes_every_round():
                                          "send_back:delivery", "send_back:plan",
                                          "send_back:requirements", "abandon"]
     rt.act("preflight-2", "send_back:plan", text="start over")
-    assert "round-2" not in rt.flow.nodes and "planner-2" not in rt.flow.status
+    assert "round-2" not in rt.flow.nodes and "planner-2" not in rt.flow.state
     assert [c.id for c in rt.flow.nodes["delivery"].children] == ["tasks", "integration", "release"]
     assert rt.attempt("planner") == 2 and rt.status("T1") == "pending"
     assert rt.waiting() == [Waiting("H-E1", "approval")]
+
+
+def test_a_round_made_again_after_a_restart_continues_its_attempts():
+    """Sending the plan back drops round 2; the next integration failure makes round 2 again
+    with the same ids – its steps' attempts continue, so no attempt number is ever reused."""
+    rt = ScriptedRuntime(legion(), steps={
+        "integration": ["escalate:integration_failed", "escalate:integration_failed"],
+        "preflight-2": ["escalate:verify_unrunnable"]})
+    to_h3(rt.start())
+    rt.act("integration", "send_back:delivery", text="fix it")
+    rt.act("H-E1-2", "approve")
+    assert rt.attempt("oracle-2") == 1
+    rt.act("preflight-2", "send_back:plan", text="start over")
+    assert "oracle-2" not in rt.flow.state
+    rt.act("H-E1", "approve").act("H-2", "approve")       # the plan again (H-1 stands)
+    rt.act("integration", "send_back:delivery", text="still broken")
+    rt.act("H-E1-2", "approve")
+    assert rt.attempt("planner-2") == 2 and rt.attempt("oracle-2") == 2
+    assert [s.attempt for s in rt.starts_of("oracle-2")] == [1, 2]
+
+
+def test_every_status_change_is_a_declared_transition():
+    rt = ScriptedRuntime(legion(), steps={"T1": ["rework", "escalate:blocked", "ok"]}).start()
+    to_h3(rt).act("T1", "answer", text="go on").act("H-3", "approve")
+    names = {(n, t) for n, t, _, _ in rt.flow.log}
+    assert {("T1", "start"), ("T1", "rework"), ("T1", "escalate"), ("T1", "resume"),
+            ("T1", "complete"), ("H-3", "open"), ("H-3", "complete"),
+            ("plan-approved", "complete")} <= names
 
 
 def test_a_send_back_stops_running_work_and_ignores_its_late_result():

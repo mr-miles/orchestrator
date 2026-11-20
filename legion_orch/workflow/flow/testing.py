@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import deque
 
 from .core import (
+    REMOVED,
     Completed,
     Effect,
     EndChange,
@@ -46,6 +47,9 @@ class ScriptedRuntime:
         self.started: list[tuple[str, int]] = []
         self.ended: str | None = None
         self._attempts: dict[str, int] = {}
+        self._checked = 0                                   # transitions checked so far
+        self._last: dict[str, str] = {}                     # node -> status after its last one
+        self._machines: dict[str, object] = {}
 
     # ------------------------------------------------------------------ driving
     def start(self) -> ScriptedRuntime:
@@ -70,10 +74,10 @@ class ScriptedRuntime:
 
     # ------------------------------------------------------------------ queries
     def status(self, nid: str) -> str:
-        return self.flow.status[nid]
+        return self.flow.status(nid)
 
     def attempt(self, nid: str) -> int:
-        return self.flow.attempt.get(nid, 0)
+        return self.flow.attempt(nid)
 
     def waiting(self):
         return self.flow.waiting()
@@ -145,3 +149,25 @@ class ScriptedRuntime:
     def _check_state(self) -> None:
         if v := self.flow.violations():
             raise InvariantError("; ".join(v))
+        self._check_transitions()
+
+    def _check_transitions(self) -> None:
+        """Every status change came through a declared transition, and each node's transitions
+        chain: each starts where the previous one ended (from its initial status)."""
+        for node, name, before, after in self.flow.log[self._checked:]:
+            last = self._last.get(node)
+            if name == REMOVED:                     # its machine is gone; a new one may follow
+                if last is not None and before != last:
+                    raise InvariantError(f"{node} removed at {before}, but it was {last}")
+                self._last.pop(node, None)
+                self._machines.pop(node, None)
+                continue
+            machine = type(self._machines.setdefault(node, self.flow.state.get(node)))
+            sources, to = machine.transitions[name]
+            if before not in sources or after != to:
+                raise InvariantError(f"{node}.{name}: {before} -> {after} is not declared")
+            last = last or machine.initial
+            if before != last:
+                raise InvariantError(f"{node}.{name} from {before}, but it was {last}")
+            self._last[node] = after
+        self._checked = len(self.flow.log)
