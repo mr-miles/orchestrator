@@ -413,6 +413,8 @@ class Run(Record):
     concluded: bool = False
     exit_code: int | None = None
     sandbox_deleted: bool = False
+    # its sandbox was stopped (its step's reservation released: escalated, done, sent back)
+    sandbox_stopped: bool = False
 
 
 # ---------------------------------------------------------------------------- change records

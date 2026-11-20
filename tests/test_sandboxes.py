@@ -299,3 +299,23 @@ async def test_a_refused_delete_is_reported_and_not_recorded(f: Flow):
     assert await sb(f).delete("sb-t9") is False
     assert not run.sandbox_deleted
     assert any("delete of sb-t9 failed" in e for e in events(f))
+
+
+# ---------------------------------------------------------------------------- suspending
+@scenario()
+async def test_an_escalated_steps_sandbox_is_stopped_once_nothing_live_uses_it(f: Flow):
+    from legion_orch.workflow.model import R_ACTIVE, RUNNING, Resume
+    node = build_node(f, sandbox=None, status=RUNNING)
+    run = make_run(f, "integration", sandbox="sb-x", status=R_ACTIVE)
+    node.runs.append(run.id)
+    f.ce._runner.escalate(node, "x", "why", Resume.READY)     # its reservation goes back
+    f.ce.save()
+    await f.settle()
+    assert f.runner.stopped == []                            # its run is still live
+    run.status = R_REPORTED
+    f.ce.save()
+    await f.settle()
+    assert f.runner.stopped == ["sb-x"] and run.sandbox_stopped
+    assert sb(f).stopped("sb-x")
+    await sb(f).wake("sb-x")                                 # its next session wakes it
+    assert not run.sandbox_stopped

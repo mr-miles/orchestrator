@@ -435,6 +435,8 @@ class StepRunner:
         """After a restart: a run of the node that was live failed with the controller (its
         step escalates); otherwise its current phase takes its work up again."""
         phase = self.step(node).current(node)
+        if node.status == ESCALATED:             # its sandboxes stay stopped meanwhile
+            self.lifecycle.sandboxes.suspend_when_idle(self._sandboxes(node))
         if phase is None:
             return
         if failed is not None:
@@ -447,6 +449,7 @@ class StepRunner:
         starts; once the change has ended, the steps that do not run after it give their
         reservations back."""
         self.lifecycle.release_sandboxes()
+        self.lifecycle.sandboxes.suspend_due()
         if active:
             self.provisioner.start_requested_rebuild()
         else:
@@ -465,11 +468,17 @@ class StepRunner:
         return work
 
     def release(self, node: Node) -> None:
-        """The step is over (done, sent back, escalated, ended): its reservation goes back, and
-        its work still waiting is withdrawn."""
+        """The step is over (done, sent back, escalated, ended): its reservation goes back, its
+        work still waiting is withdrawn, and its sandboxes are stopped once nothing live uses
+        them (deleted ones aside: a judge's, a verifier's, an accepted run's)."""
         work = self._steps.pop(node.id, None)
         if work is not None:
             work.reservation.release()
+        self.lifecycle.sandboxes.suspend_when_idle(self._sandboxes(node))
+
+    def _sandboxes(self, node: Node) -> set[str]:
+        return {r.sandbox for r in (self.c.runs.get(rid) for rid in node.runs)
+                if r is not None and r.sandbox and not r.sandbox_deleted}
 
     def run(self, node: Node, work: Callable[[StepDispatcher], Awaitable[None]]) -> None:
         """Start a phase's work as a task, with the step's dispatcher."""

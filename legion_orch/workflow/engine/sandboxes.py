@@ -140,6 +140,7 @@ class Sandboxes:
         self.c = core
         self.reflector = Reflector(core, self)
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
+        self.to_suspend: set[str] = set()    # to stop once nothing live uses them
         self._locks: dict[str, asyncio.Lock] = {}
 
     def lock(self, name: str) -> asyncio.Lock:
@@ -184,6 +185,58 @@ class Sandboxes:
     async def wake(self, name: str) -> None:
         """Start a stopped (kept) sandbox again."""
         await self.c.runner.start(name)
+        for r in self.c.runs.values():
+            if r.sandbox == name:
+                r.sandbox_stopped = False
+
+    def stopped(self, name: str) -> bool:
+        return any(r.sandbox == name and r.sandbox_stopped for r in self.c.runs.values()) \
+            or any(n.sandbox == name and n.sandbox_stopped for n in self.c.nodes.values())
+
+    # ------------------------------------------------------------------ suspending
+    def suspend_when_idle(self, names: set[str]) -> None:
+        """A step's reservation was released: its sandboxes are stopped once nothing live uses
+        them (:meth:`suspend_due`, on each save). A kept one is woken by its next session; any
+        other stays stopped until it is retired (started again for its reflection)."""
+        self.to_suspend |= names
+
+    def suspend_due(self) -> None:
+        """Under the lock, on a save: stop the sandboxes waiting to be suspended that nothing
+        live uses any more (gone ones are dropped)."""
+        for name in sorted(self.to_suspend):
+            runs = [r for r in self.c.runs.values() if r.sandbox == name]
+            if not runs or name in self.retiring or all(r.sandbox_deleted for r in runs) \
+                    or self.stopped(name):
+                self.to_suspend.discard(name)
+            elif not any(r.status in LIVE_RUN for r in runs):
+                self.to_suspend.discard(name)
+                self.c.spawn(self.suspend(name))
+
+    async def suspend(self, name: str) -> None:
+        """Stop a sandbox no live run uses (best effort: one that cannot stop stays running)."""
+        async with self.lock(name):
+            async with self.c.lock:
+                runs = [r for r in self.c.runs.values() if r.sandbox == name]
+                if not runs or name in self.retiring or self.stopped(name) \
+                        or any(r.sandbox_deleted or r.status in LIVE_RUN for r in runs):
+                    return
+            try:
+                await self.c.runner.stop(name)
+            except Exception as e:
+                async with self.c.lock:
+                    self.c.event("sandbox", f"could not stop {name}; it stays running: {e}",
+                                 runs[-1].node_id, runs[-1].id)
+                    self.c.save()
+                return
+            async with self.c.lock:
+                for r in runs:
+                    r.sandbox_stopped = True
+                for n in self.c.nodes.values():
+                    if n.sandbox == name:
+                        n.sandbox_stopped = True
+                self.c.event("sandbox", f"stopped {name}: its step has no work until it is "
+                             "resumed", runs[-1].node_id, runs[-1].id)
+                self.c.save()
 
     async def upload(self, name: str, payload: Path) -> None:
         await self.c.runner.upload(name, payload)
@@ -269,7 +322,8 @@ class Sandboxes:
         """Delete a sandbox in the background (its work is done), after its agent has reflected
         on the session (see :mod:`.reflect`; ``stopped``: the sandbox has to be started first)."""
         self.retiring.add(name)
-        self.c.spawn(self._retire(name, stopped))
+        self.to_suspend.discard(name)
+        self.c.spawn(self._retire(name, stopped or self.stopped(name)))
 
     async def _retire(self, name: str, stopped: bool) -> None:
         self.reflector.pending.add(name)
