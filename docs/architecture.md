@@ -91,69 +91,100 @@ flowchart TB
 | **Sandbox layer** | Creating, preparing, pausing, holding and retiring sandboxes; verifiers | Why a sandbox is needed |
 | **Infrastructure** | Running, storing, versioning | The workflow |
 
-## 2. Who decides what: a build task, end to end
+## 2. Who decides what: control cascades through the layers
 
-Between steps the core decides; within a step the engine does. The core is a pure object: it
-never calls anything. **FlowRuntime calls it** – with an event (`on(Completed(...))`) or a human's
-action (`act(...)`) – and the core **returns its effects** (`StartStep`, `StopStep`, `Evaluate`,
-`EndChange`), which the runtime carries out. The way back is the **change's state**: a phase sets
-its node's status, the change is saved, and every save first runs `FlowRuntime.sync`, which
-compares the nodes with the core's steps and tells the core what changed (accepted →
-`Completed`, escalated → `Escalated`, resolved → resumed). Every state change, wherever it is
-made, passes through that one save.
+Control passes only between neighbouring layers, left to right in the diagrams below – workflow
+core · runtime · step runner · phases · (services and sandboxes) · agent – and each layer keeps
+its own responsibility and state. **Down:** the core's effects go to the runtime, which starts,
+stops, resets and resumes steps through the step runner, which enters and resumes phases, which
+start their work. **Up:** a phase's result (from an agent's report, a verification, a merge, a
+failed run) goes to the step runner, which applies it to its node and – when the node crosses
+its step's states (done, escalated, resumed, an earlier step redone) – tells the runtime, which
+tells the core. The scheduler is the clock: it only asks the step runner what may start now.
 
 The participants, left to right:
 
-| Participant | Layer (§1) | Code | Responsible for |
+| Participant | Layer (§1) | Code | Responsible for (and owns) |
 | --- | --- | --- | --- |
-| **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, and what a send-back resets – between steps. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened, carrying out the effects it returns on the change's nodes, and persisting the core as its inputs. |
-| **Change state** | Engine | `engine/core.py` (`ChangeCore`), `engine/state.py` | The change, its nodes and runs; `save()` persists them, after letting the workflow see what changed. |
-| **Scheduler** | Services | `engine/schedule.py` | The tick: starting the work that current phases may start now, within the parallel-run limit; failing timed-out runs; releasing sandboxes. |
-| **StepRunner** | Steps | `engine/steps.py` | Moving one node through its step type's phases: entering the first, checking the step's waits, passing results to the phase, advancing, accepting after the last. |
-| **Phases** | Orchestrator layer of a step | `engine/phases.py` (with `Dispatcher`, `Acceptance`, `Provisioner`, and `Sandboxes` below them) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging – each ending in ok, rework or escalate. |
-| **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work, then filing one report (checked at once, so it can fix a rejected one) and ending its turn – which hands control back to its phase. |
+| **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, what a send-back or a redo resets. Owns the steps' and gates' states. |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns. Owns the core's record (`workflow.json`) and the gate nodes, which follow their gates. |
+| **Scheduler** | the clock | `engine/schedule.py` | Each tick: asking the step runner what may start now, within the parallel-run limit; timeouts; releasing sandboxes; starting a requested reprovisioning. Owns no state of the workflow. |
+| **StepRunner** | Steps | `engine/steps.py`, `engine/node_states.py` | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries. Owns the step nodes' states, as a declared machine nested in the core's (§2.1). |
+| **Phases** | Orchestrator layer of a step | `engine/phases.py` (their services: `Dispatcher`, `Acceptance`, `Provisioner`, `RunLifecycle`, and `Sandboxes` below them) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging, provisioning – each ending in a result (ok, rework, escalate, redo) handed to the step runner. |
+| **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
+
+A build task, end to end:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Core as Workflow core
     participant RT as FlowRuntime
-    participant St as Change state
     participant Sch as Scheduler
     participant SR as StepRunner
     participant Ph as Phases
     actor Agent
 
-    Note over Core,RT: H-2 was approved: the runtime gave the core act(H-2, approve)
-    Core-->>RT: effects: StartStep(build:T1, attempt)
-    RT->>SR: enter(build:T1)
+    RT->>Core: act(H-2, approve)
+    Core-->>RT: effects: StartStep(build:T1)
+    RT->>SR: start(build:T1)
     SR->>Ph: AgentRun.enter
-    Ph->>St: build:T1 READY (core: running)
+    Ph->>SR: phase(READY)
     Sch->>SR: tick: dispatch(build:T1), within capacity
-    SR->>Ph: the step's waits hold (no overlapping task) → AgentRun.dispatch
+    SR->>Ph: its waits hold → AgentRun.dispatch
     Ph->>Agent: run launched in its sandbox (Dispatcher → Sandboxes)
-    Ph->>St: build:T1 RUNNING
-    Agent->>Ph: report over MCP: checked by the guards, recorded – reply: end your turn
-    Agent-->>Ph: turn ends (its process exits): control returns
-    Ph->>Ph: the implementer's handler judges the report: Ok → AgentRun.reported → Verify.enter
-    Ph->>St: VERIFYING
-    Note over Ph: the commands run in a fresh verifier sandbox
-    Ph->>Ph: Verify.conclude: Ok → Panel.enter
-    Ph->>St: REVIEWING
-    Sch->>SR: tick: dispatch → Panel.dispatch
+    Ph->>SR: phase(RUNNING)
+    Agent->>Ph: report over MCP: checked, recorded – reply: end your turn
+    Agent-->>Ph: turn ends: the implementer's handler judges the report
+    Ph->>SR: result Ok
+    SR->>Ph: advance → Verify.enter (VERIFYING), in a fresh verifier sandbox
+    Ph->>SR: result Ok
+    SR->>Ph: advance → Panel.enter (REVIEWING)
+    Sch->>SR: tick: dispatch(build:T1)
+    SR->>Ph: Panel.dispatch
     Ph->>Agent: one judge run each, in fresh sandboxes
-    Agent-->>Ph: each judge reports, ends its turn → Panel.reported → Panel.decide
-    Ph->>Ph: Ok → Merge.enter → Merge.run (G-A1, G-H1, G-A2)
-    Ph->>St: build:T1 ACCEPTED (its runs accepted, its sandbox retired)
-    St->>RT: save() → sync()
+    Agent-->>Ph: each judge's turn ends → Panel.decide
+    Ph->>SR: result Ok
+    SR->>Ph: advance → Merge.enter (MERGING): G-A1, G-H1, G-A2
+    Ph->>SR: result Ok: the last phase passed
+    SR->>RT: completed(build:T1) – its node ACCEPTED, its runs accepted
     RT->>Core: on(Completed(build:T1))
     Core-->>RT: effects: StartStep(next) … or Evaluate(H-3)
 ```
 
+An escalation goes up the same way, and the human's decision comes down through every layer:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Human
+    participant HG as HumanGates
+    participant Core as Workflow core
+    participant RT as FlowRuntime
+    participant SR as StepRunner
+    participant Ph as Phases
+    actor Agent
+
+    Agent-->>Ph: turn ends without an accepted report
+    Ph->>SR: result Escalate(run_failed) (RunLifecycle → its phase)
+    SR->>RT: escalated(build:T1) – its node ESCALATED
+    RT->>Core: on(Escalated(build:T1))
+    Human->>HG: answer: "use the v2 API"
+    HG->>HG: records the decision (question and answer)
+    HG->>RT: decide(build:T1, answer)
+    RT->>Core: act(build:T1, answer)
+    Core-->>RT: effects: ResumeStep(build:T1)
+    RT->>SR: resume_escalation(build:T1)
+    SR->>Ph: the phase its escalation named takes up its work (REWORK: a new run)
+```
+
+### 2.1 Two levels of one state
+
 The core's step and the engine's node are two levels of one state: the core's is coarse (is the
 step underway?), the node's says where inside it the work is. A node leaves `PENDING` exactly when
-its step starts in the core:
+its step starts in the core. The node's states are a declared machine (`engine/node_states.py`):
+an illegal move raises, only resuming leaves an escalation, and nothing but the step runner
+(step nodes) and the runtime (gate nodes) writes a status.
 
 | Core step | Engine node |
 | --- | --- |
@@ -162,6 +193,12 @@ its step starts in the core:
 | `escalated` | `ESCALATED` |
 | `done` | `ACCEPTED` |
 
+**A change's state**, then: the core's record (the tree and its steps' and gates' states,
+`workflow.json`), and below it what the engine owns (`ChangeCore`, persisted by `StateStore`) –
+the change record, each node's detail (its state inside its step, cycle, commits, verification,
+reviews, feedback, escalation, sandbox) and the runs. Which nodes exist, their order and their
+dependencies are not stored: they come from the tree.
+
 An agent run is a call and a return: the report is the agent's result, checked as it is filed
 (so the agent can fix a rejected one), but nothing moves until the agent **ends its turn** – its
 process exits, and the run's phase takes what its role handler makes of the report. A turn that
@@ -169,11 +206,11 @@ ends without an accepted report fails the run (escalated); a BLOCKED report esca
 that keeps going after its report was accepted is stopped after a grace period. The agents are
 told so (`harness-contract`).
 
-A rework (`Verify` fails, the panel finds a blocker) stays inside the step: the engine runs the
-agent again in the same branch and sandbox, and the core only sees the step still running. An
-escalation is the only within-step event the core is told about, because a human may answer it
-by sending a stage back. The node statuses inside `running` are set by the phases; unlike the
-core's, they are not yet a declared state machine.
+A rework (`Verify` fails, the panel finds a blocker) stays inside the step: the step runner sends
+the node round its own loop and the core only sees the step still running. An escalation is
+reported to the core, because a human may answer it by sending a stage back. A step found wanting
+by a later one in its stage (preflight's failed setup, for the oracle) is **redone through the
+core**: the step and what follows it start again.
 
 ## 3. A step is a composition
 
@@ -197,17 +234,22 @@ classDiagram
         after(phase) Phase
     }
     class StepRunner {
-        enter(node)
+        start(node, feedback)
+        reset(node)
+        resume(node, phase)
         dispatch(node)
+        phase(node, status)
         reported(node, run, result)
         advance(node, phase)
-        resume(node)
+        apply(node, result)
     }
     class Phase {
         statuses
         enter(runner, node, after)
         dispatch(runner, node)
         reported(runner, node, run, result)
+        failed(runner, node, run, result)
+        conclude(runner, node, result)
         resume(runner, node)
     }
     class AgentRun {
@@ -242,7 +284,7 @@ classDiagram
         held(node)
     }
     class PhaseResult {
-        <<Ok, Rework or Escalate>>
+        <<Ok, Rework, Escalate or Redo>>
     }
     class Wait {
         holds(scheduler, node)
@@ -353,6 +395,8 @@ stateDiagram-v2
 | FlowRuntime ↔ core | The core's state is its inputs; replaying them rebuilds it exactly | `tests/test_runtime.py` |
 | Engine collaborators | Each gets only the parts it uses; imports form a DAG; nothing imports the `ChangeEngine` facade | `test_units.py::test_engine_collaborators_are_acyclic` |
 | Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
+| The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner to the runtime, the runtime to the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
+| Node states | A declared machine nested in the core's step states; only the step runner (steps) and the runtime (gates) change a status | `tests/test_node_states.py` (including a scan for any other write) |
 | Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
 | Per-kind knowledge | Only `STEP_TYPES` (and gate approvals in `HumanGates`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
 | Sandboxes | One owner (`Sandboxes`): locks, creation, preparation, pause, hold, retirement | `tests/test_sandboxes.py` |
