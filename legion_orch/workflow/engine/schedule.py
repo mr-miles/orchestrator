@@ -136,7 +136,7 @@ class Scheduler:
         if node.status in (READY, REWORK) and node.kind in ROLE_FOR_KIND:
             if not self.graph.deps_accepted(node):
                 return []
-            if node.kind == RETRO and self.lifecycle.reflector.pending:
+            if node.kind == RETRO and self.lifecycle.sandboxes.reflector.pending:
                 return []                  # its material includes the last reflections
             if node.kind == BUILD and self.graph.overlaps_running(node):
                 return []
