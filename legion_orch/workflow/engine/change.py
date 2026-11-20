@@ -73,7 +73,7 @@ class ChangeEngine(ChangeCore):
         self._dispatcher.reports = self._reports
         self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
         self._runner.runtime = self._flow
-        self.steps = self._graph.runner = self._runner
+        self._graph.runner = self._lifecycle.runner = self._runner
         self._gates.flow = self._flow
 
     # ------------------------------------------------------------------ controller

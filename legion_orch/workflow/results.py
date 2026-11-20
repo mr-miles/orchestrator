@@ -41,6 +41,7 @@ class Escalate:
     feedback: list[Feedback] = field(default_factory=list)
     run: str | None = None
     missing_decision: str | None = None
+    source: Any = None                       # a failed run's FailureSource
 
 
 @dataclass(frozen=True)

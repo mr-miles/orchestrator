@@ -93,6 +93,11 @@ class Phase:
         ok passes the phase, rework or escalate is applied, None waits for more."""
         self.conclude(rt, node, result)
 
+    def failed(self, rt: StepRunner, node: Node, run: Run, result: Escalate) -> None:
+        """A run of this phase failed (crashed, timed out, ended without a report): a human
+        decides."""
+        self.conclude(rt, node, result)
+
     def conclude(self, rt: StepRunner, node: Node, result: PhaseResult | None) -> None:
         """The phase's result goes to the step runner: ok passes the phase, anything else is
         applied (rework, escalate, an earlier step redone); None waits for more."""
@@ -241,8 +246,8 @@ class AgentRun(Phase):
     role: str
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
 
-    def start(self, ctx: PhaseContext, node: Node, judged_sha: str | None = None) -> Run | None:
-        """Prepare the run (launched outside the lock), or None if a guard stopped it."""
+    def start(self, ctx: PhaseContext, node: Node, judged_sha: str | None = None) -> Run | Escalate:
+        """Prepare the run (launched outside the lock), or why a guard stopped it."""
         assert ctx.dispatcher is not None
         return ctx.dispatcher.prepare(node, self.role, judged_sha=judged_sha)
 
@@ -251,10 +256,11 @@ class AgentRun(Phase):
         if node.status not in (READY, REWORK) or s.waits_for_environment(self.role):
             return []
         if step.judges_head and s.branch_head and (moved := c.head_moved(s.branch_head)):
-            c.escalate(node, "head_moved", moved, resume=Resume.READY)
+            rt.apply(node, Escalate("head_moved", moved, Resume.READY))
             return []
         run = self.start(rt.ctx, node)
-        if run is None:
+        if isinstance(run, Escalate):
+            rt.apply(node, run)
             return []
         rt.phase(node, RUNNING)                  # its agent works
         return [run]
@@ -296,8 +302,10 @@ class Panel(Phase):
             if f"{node.cycle}:{role}" not in node.reviews and not busy \
                     and not rt.scheduler.waits_for_environment(role):
                 run = AgentRun(role).start(rt.ctx, node, judged_sha=node.candidate_sha)
-                if run:
-                    runs.append(run)
+                if isinstance(run, Escalate):
+                    rt.apply(node, run)
+                    break
+                runs.append(run)
         return runs
 
     def reported(self, rt: StepRunner, node: Node, run: Run, result: PhaseResult | None) -> None:

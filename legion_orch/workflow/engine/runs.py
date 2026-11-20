@@ -20,6 +20,7 @@ from ..model import (
     Run,
     RunFailure,
 )
+from ..results import Escalate
 from ..roles import handler_for
 from .common import _parse_ts
 from .core import ChangeCore
@@ -27,6 +28,7 @@ from .steps import step_for
 
 if TYPE_CHECKING:
     from .sandboxes import Sandboxes
+    from .steps import StepRunner
 
 
 def log_part(run_id: str, n: int) -> str:
@@ -65,6 +67,7 @@ class RunLifecycle:
 
     def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
         self.c, self.sandboxes = core, sandboxes
+        self.runner: StepRunner = None  # type: ignore[assignment]   # the step layer, set later
         self._ended: set[str] = set()        # released because the change ended (tried once)
 
     def live_runs(self) -> list[Run]:
@@ -154,8 +157,9 @@ class RunLifecycle:
         who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
         resume = (Resume.REVIEWING if handler_for(run.role).panel
                   else step_for(node).rework_resume)
-        self.c.escalate(node, "run_failed", f"{who} ({label}): {reason}", resume=resume,
-                        run=run.id, log_tail=tail, source=source)
+        self.runner.run_failed(node, run, Escalate(
+            "run_failed", f"{who} ({label}): {reason}", resume, log_tail=tail, run=run.id,
+            source=source))
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             # a failed run's sandbox is not kept for rework either: the retry starts afresh
             if node.sandbox == run.sandbox:

@@ -20,10 +20,8 @@ from ..model import (
     ACCEPTED,
     BUILD,
     Change,
-    FailureSource,
     Node,
     Oracle,
-    Resume,
     Run,
 )
 from .common import log
@@ -32,7 +30,7 @@ from .state import StateStore
 from .workflow_tree import base_id
 
 if TYPE_CHECKING:
-    from .steps import StepRunner
+    pass
 
 
 def _waited(since: str) -> str:
@@ -56,7 +54,6 @@ class ChangeCore:
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
-        self.steps: StepRunner = None  # type: ignore[assignment]   # the step layer, set by the engine
         self._timeline: list[str] = []                 # events not yet written to the store
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
@@ -148,14 +145,6 @@ class ChangeCore:
                        item.node)
             self.host.attention(item, raised=False)
         self._attention = cur
-
-    def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
-                 run: str | None = None, missing_decision: str | None = None,
-                 log_tail: str | None = None, source: FailureSource | None = None) -> None:
-        """Stop the node for a human; ``resume`` says where it continues once resolved. (The
-        step runner owns the node's state: this passes the escalation to it.)"""
-        self.steps.escalate(node, kind, reason, resume, run=run,
-                            missing_decision=missing_decision, log_tail=log_tail, source=source)
 
     def head_moved(self, branch_head: str) -> str | None:
         """G-H1: the integration branch is written only by the controller. If it is not at the

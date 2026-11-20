@@ -30,6 +30,7 @@ from ..model import (
     Run,
     RunStage,
 )
+from ..results import Escalate
 from ..roles import handler_for
 from ..view import RoleContext
 from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
@@ -127,20 +128,18 @@ class Dispatcher:
                          + (f" (evidence: {atts})" if atts else ""))
         return "\n".join(lines)
 
-    def prepare(self, node: Node, role: str, judged_sha: str | None = None) -> Run | None:
-        """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or escalate the
-        node and return None."""
+    def prepare(self, node: Node, role: str, judged_sha: str | None = None) -> Run | Escalate:
+        """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or return why it
+        cannot run (the phase that asked passes it to its step)."""
         ch, h = self.c.change, handler_for(role)
         # the blank repository's scaffold is built before H-2, on the critique's PASS (§5.3b)
         if h.needs_fresh_approval and not (node.task and node.task.scaffold):
             stale = self._approval_fresh()
             if stale:
-                self.c.escalate(node, "approval", "; ".join(stale), resume=Resume.REWORK)
-                return None
+                return Escalate("approval", "; ".join(stale), Resume.REWORK)
         if sandbox_env(ch, role) and (stale_env := governance.stale_environment(self.c)):
-            self.c.escalate(node, "approval", stale_env,
-                            resume=Resume.REWORK if node.status == REWORK else Resume.READY)
-            return None
+            return Escalate("approval", stale_env,
+                            Resume.REWORK if node.status == REWORK else Resume.READY)
         plan = sandbox_plan(role)
         if plan.base_at_head(bool(node.base_sha)):
             node.base_sha = ch.integration_head
@@ -154,9 +153,8 @@ class Dispatcher:
         try:
             rendered = self.c.assets.render_role(role, asg.variables)
         except AssetError as e:
-            self.c.escalate(node, "assets", str(e),
-                            resume=Resume.REWORK if node.status == REWORK else Resume.READY)
-            return None
+            return Escalate("assets", str(e),
+                            Resume.REWORK if node.status == REWORK else Resume.READY)
         run = Run(id=run_id, node_id=node.id, role=role, cycle=node.cycle,
                   soul=node.task.soul if node.task and role == "implementer"
                   else self.c.assets.roles[role].soul,

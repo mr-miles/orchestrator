@@ -129,7 +129,7 @@ async def test_the_round_must_append_tasks_and_the_round_budget_is_kept(f: Flow)
 async def test_plan_fix_needs_an_integration_failure(f: Flow):
     await f.to_build(tier="R2")
     node = f.ce.nodes["build:T1"]
-    f.ce.escalate(node, "blocked", "needs a decision", resume=Resume.REWORK)
+    f.ce._runner.escalate(node, "blocked", "needs a decision", resume=Resume.REWORK)
     with pytest.raises(WorkflowError, match="only available when integration failed"):
         await f.human("build:T1", "plan_fix")
 
@@ -326,7 +326,7 @@ async def test_revise_plan_needs_work_built_on_the_design(f: Flow):
     """A build task's work is built on the Plan stage as a whole, not on its Design: sending the
     Design back is not offered there (sending the Plan back is)."""
     await f.to_build()
-    f.ce.escalate(f.ce.nodes["build:T1"], "blocked", "stuck", resume=Resume.READY)
+    f.ce._runner.escalate(f.ce.nodes["build:T1"], "blocked", "stuck", resume=Resume.READY)
     await f.settle()
     with pytest.raises(WorkflowError, match="was not built on a design stage"):
         await f.human("build:T1", "revise_plan", feedback="replan please")

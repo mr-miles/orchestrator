@@ -378,6 +378,14 @@ class StepRunner:
         assert phase is not None, f"{node.id} is not in a phase ({node.status})"
         phase.reported(self, node, run, result)
 
+    def run_failed(self, node: Node, run: Run, result: Escalate) -> None:
+        """A run ended in failure (its service reports it): the phase the node is in decides
+        (a human, always: no automatic retries). A node no longer in a phase just keeps the
+        record."""
+        phase = self.step(node).current(node)
+        if phase is not None:
+            phase.failed(self, node, run, result)
+
     def apply(self, node: Node, result: PhaseResult) -> None:
         """A phase's result that does not pass it: rework within the budget, an escalation, or
         an earlier step redone."""
@@ -388,7 +396,8 @@ class StepRunner:
         elif isinstance(result, Escalate):
             node.feedback += result.feedback
             self.escalate(node, result.kind, result.question, result.resume, run=result.run,
-                          missing_decision=result.missing_decision, log_tail=result.log_tail)
+                          missing_decision=result.missing_decision, log_tail=result.log_tail,
+                          source=result.source)
         elif isinstance(result, Redo):
             self.runtime.redo(result.step, result.feedback)
 
