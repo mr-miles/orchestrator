@@ -328,9 +328,9 @@ async def test_the_retrospective_waits_for_the_last_reflections(f: Flow):
 
 @scenario(max_parallel=1)
 async def test_a_step_waits_while_the_dispatcher_has_no_room(f: Flow):
-    """The parallel-run limit is the dispatcher's: the step layer asks, and waits when told
-    there is no room (it knows no limit)."""
+    """The sandbox limit is the dispatcher's (its queue): the step layer asks, and waits when
+    told there is no room (it knows no limit)."""
     assert f.run("intake")                                   # the one run allowed is live
     n = node(f, NodeKind.RELEASE, status=READY)
     assert f.ce._runner.dispatch(n) == [] and n.status == READY
-    assert not f.ce._sandboxes.has_room()
+    assert f.ctl.svc.queue.in_use == 1

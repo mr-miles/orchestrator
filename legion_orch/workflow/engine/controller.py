@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import secrets
 import shutil
 import sqlite3
@@ -27,13 +26,13 @@ from ..attention import AttentionItem
 from ..environment import Library
 from ..model import (
     LIVE_RUN,
-    R_REPORTED,
     Run,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
 from .auth import WorkloadAuth
 from .change import ChangeEngine
 from .common import WorkflowError, log
+from .sandbox_queue import SandboxQueue
 from .services import Services
 
 
@@ -48,9 +47,6 @@ class Controller:
     def __init__(self, cfg: Config, runner: Runner | None = None,
                  builder: EnvironmentBuilder | None = None):
         self.cfg = cfg
-        self._verifiers = 0                       # verifier sandboxes in use, every change
-        self._verifiers_waiting = 0               # … and waiting for room (they go first)
-        self._room = asyncio.Event()              # set when a sandbox may have been freed
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
         assets = Assets(cfg.assets_dir)
@@ -65,7 +61,7 @@ class Controller:
             git=GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path, cfg.repo.base_branch,
                           max_push_bytes=cfg.limits.git_max_push_bytes),
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
-            builder=builder or make_builder(cfg))
+            builder=builder or make_builder(cfg), queue=SandboxQueue(cfg.limits.max_parallel))
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI streams)
@@ -99,7 +95,6 @@ class Controller:
     def changed(self) -> None:
         self._bump()
         self._wake.set()
-        self._room.set()
 
     def touch(self) -> None:
         self._bump()
@@ -241,32 +236,6 @@ class Controller:
 
     def live_count(self) -> int:
         return sum(1 for _, r in self.all_runs() if r.status in LIVE_RUN)
-
-    def sandboxes_in_use(self) -> int:
-        """Agent sandboxes in use – a live run, or one that reported and whose agent has not
-        ended its turn yet – and verifier sandboxes in use, across every change."""
-        agents = sum(1 for _, r in self.all_runs()
-                     if r.status in LIVE_RUN or (r.status == R_REPORTED and not r.concluded))
-        return agents + self._verifiers
-
-    def verifiers_waiting(self) -> int:
-        return self._verifiers_waiting
-
-    def verifier_waits(self, waiting: bool) -> None:
-        self._verifiers_waiting += 1 if waiting else -1
-
-    def verifier_started(self) -> None:
-        self._verifiers += 1
-
-    def verifier_ended(self) -> None:
-        self._verifiers -= 1
-        self._room.set()
-
-    async def room_changed(self, timeout: float = 1.0) -> None:
-        """Wait until a sandbox may have been freed (or ``timeout``)."""
-        self._room.clear()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(self._room.wait(), timeout)
 
     def used_sandbox_names(self) -> set[str]:
         """Every sandbox name in the store's history (runs and verifications) or reserved for a

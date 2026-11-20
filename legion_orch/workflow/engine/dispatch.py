@@ -1,6 +1,7 @@
 """Dispatch: prepare runs, render prompts, payloads and policies, launch sandboxes."""
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 import shutil
@@ -37,6 +38,7 @@ from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
 from .provision import sandbox_env
 from .runs import RunLifecycle
+from .sandbox_queue import AGENT, VERIFIER, Slot, take
 from .sandboxes import Sandboxes
 from .steps import sandbox_plan
 
@@ -77,6 +79,8 @@ class Dispatcher:
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
+        self.queue = core.svc.queue                  # shared by every change's dispatcher
+        self._slots: dict[str, Slot] = {}            # run -> its sandbox's place
 
     def _approval_fresh(self) -> list[str]:
         """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
@@ -132,8 +136,31 @@ class Dispatcher:
                 judged_sha: str | None = None) -> Run | Escalate | None:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or return why it
         cannot run (the phase that asked passes it to its step); None: no room now."""
-        if not self.sandboxes.has_room():            # the limit is the sandbox layer's
+        slot = self.queue.try_take(AGENT)
+        if slot is None:                             # no room now
             return None
+        prepared = self._prepare(node, role, judged_sha)
+        if isinstance(prepared, Run):
+            self._slots[prepared.id] = slot          # held until its agent's turn ends
+        else:
+            slot.release()
+        return prepared
+
+    def request_verifier(self) -> asyncio.Future[Slot]:
+        """A verifier's place in the queue, taken now (verifications go first)."""
+        return self.queue.request(VERIFIER)
+
+    async def verifier_slot(self, request: asyncio.Future[Slot] | None = None) -> Slot:
+        """Await a verifier's slot (its place taken now, or earlier with ``request``)."""
+        return await take(request or self.queue.request(VERIFIER))
+
+    def _release(self, run_id: str) -> None:
+        slot = self._slots.pop(run_id, None)
+        if slot is not None:
+            slot.release()
+
+    def _prepare(self, node: Node, role: str,
+                 judged_sha: str | None = None) -> Run | Escalate:
         ch, h = self.c.change, handler_for(role)
         # the blank repository's scaffold is built before H-2, on the critique's PASS (§5.3b)
         if h.needs_fresh_approval and not (node.task and node.task.scaffold):
@@ -349,6 +376,7 @@ class Dispatcher:
             async with self.c.lock:
                 if run.status in LIVE_RUN:
                     self.lifecycle.fail_run(run, f"sandbox launch failed: {e}", FailureSource.SYSTEM)
+                self._release(run_id)
                 self.c.save()
             return
         shutil.rmtree(payload, ignore_errors=True)
@@ -372,6 +400,7 @@ class Dispatcher:
             # the agent's turn ended: control returns to the engine, and an accepted report
             # goes to its phase
             await self.reports.conclude(run)
+            self._release(run_id)                    # its sandbox's place in the limit
             self.c.save()
         if sandbox_plan(run.role).keeps_session:
             await self.sandboxes.pause(run)

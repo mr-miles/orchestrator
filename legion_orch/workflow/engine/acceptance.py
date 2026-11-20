@@ -25,7 +25,7 @@ class Acceptance:
         self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
         self.runner: StepRunner = None  # type: ignore[assignment]   # set once the runner exists
 
-    async def verify_node(self, node_id: str, *, reserved: bool = False) -> None:
+    async def verify_node(self, node_id: str, *, slot=None) -> None:
         """Verify the node's candidate with its step's Verify phase, which then says what the
         result means (the next phase, rework, or escalate)."""
         c, node = self.c, self.c.nodes[node_id]
@@ -36,7 +36,7 @@ class Acceptance:
                 f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
                 node_id)
         res = await phase.verification(self.ctx, node_id, node.candidate_sha, commands,
-                                       reserved=reserved)
+                                       slot=slot)
         async with c.lock:
             if node.status != VERIFYING:
                 return

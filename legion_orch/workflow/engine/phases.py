@@ -16,6 +16,7 @@ the next.
 """
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -392,8 +393,8 @@ class Verify(Phase):
 
     def _start(self, rt: StepRunner, node: Node) -> None:
         rt.phase(node, VERIFYING)
-        rt.ctx.sandboxes.reserve()               # its verifier goes before new agent runs
-        rt.c.spawn(rt.acceptance.verify_node(node.id, reserved=True))
+        request = rt.ctx.dispatcher.request_verifier()   # its place, ahead of new agent runs
+        rt.c.spawn(rt.acceptance.verify_node(node.id, slot=request))
 
     def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
         """Verify again (resumed, or after a restart)."""
@@ -401,7 +402,7 @@ class Verify(Phase):
 
     async def verification(self, ctx: PhaseContext, label: str, sha: str,
                            commands: tuple[str, ...] | None = None, *,
-                           reserved: bool = False) -> Verification:
+                           slot: asyncio.Future | None = None) -> Verification:
         """Run it. Never raises. A name the gateway already has (another controller) is
         replaced and the sandbox created again."""
         c = ctx.c
@@ -409,13 +410,21 @@ class Verify(Phase):
         result = Verification(sha=sha, sandbox=c.host.new_sandbox_name(VERIFIER_PREFIX))
         if not commands and not c.change.setup_pin:
             result.infra_error = "no commands to verify"
-            if reserved:
-                ctx.sandboxes.unreserve()
+            if slot is not None:
+                slot.cancel()
             return result
+        place = await ctx.dispatcher.verifier_slot(slot)     # within limits.max_parallel
+        try:
+            return await self._run(ctx, result, label, sha, commands)
+        finally:
+            place.release()
+
+    async def _run(self, ctx: PhaseContext, result: Verification, label: str, sha: str,
+                   commands: tuple[str, ...]) -> Verification:
+        c = ctx.c
         for attempt in range(3):
             try:
-                async with ctx.sandboxes.verifier(result.sandbox, label, sha,
-                                                  reserved=reserved and attempt == 0) as box:
+                async with ctx.sandboxes.verifier(result.sandbox, label, sha) as box:
                     pin = c.change.setup_pin
                     if pin:                    # §5.3c, G-V3: setup first; a failure stops here
                         r = await box.setup(pin.blob, c.cfg.limits.setup_timeout_s)
