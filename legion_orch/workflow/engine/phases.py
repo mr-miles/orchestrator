@@ -17,10 +17,11 @@ the next.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
-from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, is_name_clash
+from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe
 from .. import governance
 from ..model import (
     AWAITING_HUMAN,
@@ -49,6 +50,7 @@ from ..results import Escalate, Ok, PhaseResult, Redo, Rework
 from ..ship import evaluate
 from .common import _slug
 from .core import ChangeCore
+from .work import COMMAND, PREPARE, SETUP, Outcome
 from .workflow_tree import in_round
 
 if TYPE_CHECKING:
@@ -233,13 +235,59 @@ class BaselineWarnings(Notes):
 
 
 # ---------------------------------------------------------------------------- agent work
-@dataclass(frozen=True, eq=False)
-class AgentRun(Phase):
-    """The role's agent for the node (guards G-D1..G-D4, G-B1, G-H1), as work dispatched once
-    the step's waits hold. Its result – the role handler's, after the agent's turn ended with
-    an accepted report, or the failure's escalation – is the phase's."""
+@dataclass(frozen=True)
+class RoleWork:
+    """An agent of ``role`` as a phase's work: whether the step may start it (G-B1, the
+    environment), its :class:`.Work` (made by the change's agent runs: the run record, the
+    working copy's preparation, the agent's turn), and what it did – the role handler's
+    result after an accepted report, or the failure's escalation."""
     role: str
+
+    async def dispatch(self, rt: StepRunner, node: Node, work: StepDispatcher, phase: Phase, *,
+                       wanted: Callable[[], bool], ended: Callable[[Ended], None],
+                       judged_sha: str | None = None,
+                       started: Callable[[Run], None] | None = None) -> bool:
+        """Dispatch the agent's work and give ``ended`` (under the lock, while ``phase`` is
+        still the step's) what it did. False: when its slot came the step no longer
+        ``wanted`` it (its waits stopped holding), so it waits again."""
+        from .agent_runs import Ended
+        c, agents = rt.c, rt.ctx.agents
+        async with c.lock:
+            if rt.stale(node, work, phase):
+                return True
+            if refused := agents.preconditions(node, self.role):
+                ended(Ended(None, refused))
+                c.save()
+                return True
+        job, prepared = agents.work(
+            node, self.role, judged_sha,
+            wanted=lambda: not rt.stale(node, work, phase) and wanted(),
+            started=started or (lambda run: None))
+        outcome = await work.run(job)
+        async with c.lock:
+            if prepared.run is not None:
+                agents.finish(prepared.run, outcome)       # however the work ended
+            if outcome.skipped and prepared.refused is None:
+                c.save()
+                return False
+            if not rt.stale(node, work, phase):
+                result = prepared.refused or await agents.conclude(prepared.run)
+                ended(Ended(prepared.run, result))
+            c.save()
+        return True
+
+
+@dataclass(frozen=True, eq=False)
+class Produce(Phase):
+    """The step's producer: its work (an agent of a role: ``RoleWork``) dispatched once the
+    step's waits hold (and G-H1 for work at the head). Its result – the role handler's, or a
+    failure's or refusal's escalation – is the phase's."""
+    source: RoleWork
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
+
+    @property
+    def role(self) -> str:
+        return self.source.role
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
         if node.status != REWORK:                # a rework continues in REWORK
@@ -265,7 +313,6 @@ class AgentRun(Phase):
             and not rt.provisioner.waits_for_environment(self.role)
 
     async def _work(self, rt: StepRunner, node: Node, work: StepDispatcher) -> None:
-        from .agent_runs import AgentWork
         c = rt.c
         while await rt.wait_until(node, work, lambda: self.ready(rt, node)):
             if rt.step(node).judges_head:        # G-H1: the head is where the controller left it
@@ -277,17 +324,11 @@ class AgentRun(Phase):
                         rt.apply(node, Escalate("head_moved", moved, Resume.READY))
                         c.save()
                         return
-            ended = await work.run(AgentWork(
-                rt.ctx.agents, node, self.role,
-                still=lambda: not rt.stale(node, work, self) and self.ready(rt, node),
-                started=lambda run: rt.phase(node, RUNNING)))       # its agent works
-            if ended is not None:
-                async with c.lock:
-                    if not rt.stale(node, work, self):
-                        self.ended(rt, node, ended)
-                        c.save()
+            if await self.source.dispatch(
+                    rt, node, work, self, wanted=lambda: self.ready(rt, node),
+                    started=lambda run: rt.phase(node, RUNNING),        # its agent works
+                    ended=lambda e: self.ended(rt, node, e)):
                 return
-            # its waits no longer held when its slot came: it waits again
 
     def ended(self, rt: StepRunner, node: Node, ended: Ended) -> None:
         """The agent's turn ended: its result is the phase's."""
@@ -296,15 +337,14 @@ class AgentRun(Phase):
         self.conclude(rt, node, ended.result)
 
 
-async def conclude_later(rt: StepRunner, phase: AgentRun | Panel, node: Node, run: Run,
+async def conclude_later(rt: StepRunner, phase: Produce | Panel, node: Node, run: Run,
                          work: StepDispatcher) -> None:
     """After a restart: what an agent's accepted report means, to its phase."""
     from .agent_runs import Ended
     async with rt.c.lock:
         if rt.stale(node, work, phase) or run.concluded or run.status != R_REPORTED:
             return
-        result = await rt.ctx.agents.reports.conclude(run)
-        phase.ended(rt, node, Ended(run, result))
+        phase.ended(rt, node, Ended(run, await rt.ctx.agents.conclude(run)))
         rt.c.save()
 
 
@@ -357,22 +397,15 @@ class Panel(Phase):
             and f"{cycle}:{role}" not in node.reviews
 
     async def _judge(self, rt: StepRunner, node: Node, role: str, work: StepDispatcher) -> None:
-        from .agent_runs import AgentWork
-        c, cycle = rt.c, node.cycle
-        while await rt.wait_until(node, work, lambda: self.wanted(rt, node, role, cycle) and
-                                  not rt.provisioner.waits_for_environment(role)):
-            ended = await work.run(AgentWork(
-                rt.ctx.agents, node, role, judged_sha=node.candidate_sha,
-                still=lambda: not rt.stale(node, work, self) and node.cycle == cycle
-                and self.wanted(rt, node, role, cycle)
-                and not rt.provisioner.waits_for_environment(role)))
-            if ended is not None:
-                async with c.lock:
-                    if not rt.stale(node, work, self) and node.cycle == cycle:
-                        self.ended(rt, node, ended)
-                        c.save()
-                return
-            if not self.wanted(rt, node, role, cycle):
+        cycle = node.cycle
+
+        def wanted() -> bool:
+            return self.wanted(rt, node, role, cycle) \
+                and not rt.provisioner.waits_for_environment(role)
+        while await rt.wait_until(node, work, wanted):
+            if await RoleWork(role).dispatch(
+                    rt, node, work, self, wanted=wanted, judged_sha=node.candidate_sha,
+                    ended=lambda e: self.ended(rt, node, e) if node.cycle == cycle else None):
                 return
 
     def ended(self, rt: StepRunner, node: Node, ended: Ended) -> None:
@@ -490,34 +523,11 @@ class Verify(Phase):
         already has (another controller) is replaced and the sandbox created again."""
         c = ctx.c
         commands = self.commands_for(None, None) if commands is None else commands
-        result = Verification(sha=sha, sandbox=c.host.new_sandbox_name(VERIFIER_PREFIX))
+        name = c.host.new_sandbox_name(VERIFIER_PREFIX)
         if not commands and not c.change.setup_pin:
-            result.infra_error = "no commands to verify"
-            return result
-        return await (dispatch or ctx.dispatcher).run(
-            VerifierWork(self, ctx, result, label, sha, commands))
-
-    async def _run(self, ctx: PhaseContext, result: Verification, label: str, sha: str,
-                   commands: tuple[str, ...]) -> Verification:
-        c = ctx.c
-        for attempt in range(3):
-            try:
-                async with ctx.sandboxes.verifier(result.sandbox, label, sha) as box:
-                    pin = c.change.setup_pin
-                    if pin:                    # §5.3c, G-V3: setup first; a failure stops here
-                        r = await box.setup(pin.blob, c.cfg.limits.setup_timeout_s)
-                        result.results.append(r)
-                    if not pin or result.results[-1].exit_code == 0:
-                        for cmd in commands:
-                            result.results.append(await box.run(cmd))
-                result.ok = all(r.exit_code == 0 for r in result.results)
-            except Exception as e:
-                if is_name_clash(e) and not result.results and attempt < 2:
-                    result.sandbox = c.host.new_sandbox_name(VERIFIER_PREFIX)
-                    continue
-                result.infra_error = str(e)
-            return result
-        return result
+            return Verification(sha=sha, sandbox=name, infra_error="no commands to verify")
+        work = ctx.sandboxes.verifier_work(name, label, sha, commands)
+        return verification_of(sha, await (dispatch or ctx.dispatcher).run(work))
 
     def judge(self, res: Verification, cycle: int, att: str | None) -> PhaseResult:
         """What the recorded verification (``att``) means. A setup failure is escalated as
@@ -559,18 +569,20 @@ class Verify(Phase):
         self.conclude(rt, node, result)
 
 
-@dataclass
-class VerifierWork:
-    """A verification as work for the dispatcher: the commands in a fresh verifier sandbox."""
-    phase: Verify
-    ctx: PhaseContext
-    result: Verification
-    label: str
-    sha: str
-    commands: tuple[str, ...]
-
-    async def run(self) -> Verification:
-        return await self.phase._run(self.ctx, self.result, self.label, self.sha, self.commands)
+def verification_of(sha: str, outcome: Outcome) -> Verification:
+    """The verification record of a verifier's work: the setup's and the commands' results; a
+    sandbox that could not be made ready (created, cloned, checked out) is an infrastructure
+    error."""
+    res = Verification(sha=sha, sandbox=outcome.sandbox,
+                       results=outcome.results(SETUP, COMMAND))
+    stop = outcome.stopped
+    if outcome.error:
+        res.infra_error = outcome.error
+    elif stop is not None and stop.command.kind == PREPARE:
+        res.infra_error = (f"verifier {stop.command.label} failed ({stop.result.exit_code}): "
+                           f"{stop.result.output[-1500:]}")
+    res.ok = res.infra_error is None and all(r.exit_code == 0 for r in res.results)
+    return res
 
 
 def setup_failure(res: Verification) -> CommandResult | None:

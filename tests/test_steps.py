@@ -54,16 +54,16 @@ def shape(kind: NodeKind) -> list[str]:
 def test_every_kind_is_a_list_of_phases():
     assert set(STEP_TYPES) == set(NodeKind)
     assert {k: shape(k) for k in STEP_TYPES} == {
-        NodeKind.INTAKE: ["AgentRun"],
-        PLAN: ["AgentRun", "Panel"],
+        NodeKind.INTAKE: ["Produce"],
+        PLAN: ["Produce", "Panel"],
         PROVISION: ["BuildImages"],
-        ORACLE: ["AgentRun"],
+        ORACLE: ["Produce"],
         PREFLIGHT: ["Verify"],
-        BASELINE: ["AgentRun", "Verify"],
-        BUILD: ["AgentRun", "Verify", "Panel", "Merge"],
-        INTEGRATION: ["AgentRun", "Verify"],
-        NodeKind.RELEASE: ["AgentRun"],
-        NodeKind.RETROSPECTIVE: ["AgentRun"],
+        BASELINE: ["Produce", "Verify"],
+        BUILD: ["Produce", "Verify", "Panel", "Merge"],
+        INTEGRATION: ["Produce", "Verify"],
+        NodeKind.RELEASE: ["Produce"],
+        NodeKind.RETROSPECTIVE: ["Produce"],
         HUMAN: ["Approval"],
     }
 
@@ -133,7 +133,7 @@ def test_the_current_phase_follows_the_node_status():
              for s in (PENDING, READY, REWORK, RUNNING, VERIFYING, REVIEWING, MERGING, ACCEPTED,
                        ESCALATED)}
     assert {s: type(p).__name__ if p else None for s, p in phase.items()} == {
-        PENDING: None, READY: "AgentRun", REWORK: "AgentRun", RUNNING: "AgentRun",
+        PENDING: None, READY: "Produce", REWORK: "Produce", RUNNING: "Produce",
         VERIFYING: "Verify", REVIEWING: "Panel", MERGING: "Merge", ACCEPTED: None,
         ESCALATED: None}
 
@@ -228,7 +228,7 @@ async def test_entering_a_step_sets_its_first_phase_and_starts_its_work(f: Flow)
         rt.enter(n)
     assert gate.status == AWAITING_HUMAN                   # a human's decision: no work
     assert pre.status == task.status == READY              # each waits its turn, as work
-    assert started == ["Verify", "AgentRun"]
+    assert started == ["Verify", "Produce"]
 
 
 @scenario()
@@ -277,7 +277,7 @@ async def test_after_a_restart_a_step_takes_its_work_up_again(f: Flow):
     assert started == ["BuildImages"]                        # its provisioning again
     agent = node(f, BUILD, status=READY)
     rt.recover(agent)
-    assert started[-1] == "AgentRun"                         # it waits for its turn again
+    assert started[-1] == "Produce"                         # it waits for its turn again
 
 
 @scenario()

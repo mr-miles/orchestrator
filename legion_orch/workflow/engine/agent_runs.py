@@ -1,12 +1,13 @@
-"""Agent runs: prepare a run (guards, prompt, payload, policy), launch its sandbox, await the
-agent's turn. A run is work the :class:`.Dispatcher` runs (:class:`AgentWork`); its result is
-the role handler's, or the failure's."""
+"""Agent runs: the factory of an agent's :class:`.Work` – the run record (guards G-D2, G-D4),
+its prompt and payload, its sandbox session and commands (the working copy's preparation, then
+the agent's turn, :class:`AgentTurn`) – and what the run means once the work is done: the role
+handler's result after an accepted report, or the failure's escalation. Whether the step may
+start an agent at all (G-B1, the environment) is the phase's question (:meth:`preconditions`)."""
 from __future__ import annotations
 
 import asyncio
 import json
 import shlex
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from ..model import (
     PLAN,
     R_REPORTED,
     REWORK,
+    CommandResult,
     FailureSource,
     Node,
     Resume,
@@ -42,8 +44,9 @@ from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
 from .provision import sandbox_env
 from .runs import RunLifecycle
-from .sandboxes import Sandboxes
+from .sandboxes import AgentSession, Sandboxes
 from .steps import sandbox_plan
+from .work import AGENT, Command, Outcome, Session, Work
 
 if TYPE_CHECKING:
     from .reports import Reports
@@ -76,52 +79,135 @@ def assets_record(sha: str) -> str:
 
 
 @dataclass
-class AgentWork:
-    """One run of a role's agent for a node, as work for the dispatcher (which runs it in a
-    slot): prepared under the lock (the guards may stop it), its sandbox launched, the agent's
-    turn awaited. ``still``: whether its step still wants it, checked before it is prepared;
-    ``started``: called under the lock once the run is prepared."""
-    runs: AgentRuns
-    node: Node
-    role: str
-    judged_sha: str | None = None
-    still: Callable[[], bool] = lambda: True
-    started: Callable[[Run], None] | None = None
-
-    async def run(self) -> Ended | None:
-        """The run and what it means (an escalation without a run: a guard stopped it); None:
-        the step no longer wants it, so nothing ran."""
-        c = self.runs.c
-        async with c.lock:
-            if not self.still():
-                return None
-            prepared = self.runs.prepare(self.node, self.role, self.judged_sha)
-            if isinstance(prepared, Escalate):
-                return Ended(None, prepared)
-            if self.started:
-                self.started(prepared)
-            c.save()
-        return Ended(prepared, await self.runs.launch(prepared))
+class Prepared:
+    """What an agent's work prepared in its slot: its run, or the guard that refused it."""
+    run: Run | None = None
+    refused: Escalate | None = None
 
 
 @dataclass
 class Ended:
     """How an agent run ended: its run (None: it never started) and the phase's material – the
     role handler's result after an accepted report (None: nothing to decide yet), or the
-    escalation of a failure."""
+    escalation of a failure or a refusal."""
     run: Run | None
     result: PhaseResult | None
 
 
+@dataclass
+class AgentTurn(Command):
+    """The agent's turn: start the agent and await its process (its timers stop it: the run
+    timeout while it is live, the end-of-turn grace after its accepted report). When it exits
+    the run's record is completed (exit code, a live run failed with why, the log archived)."""
+    runs: AgentRuns | None = None
+    of: Run | None = None                   # the run whose agent this is
+
+    async def run(self, session: Session) -> CommandResult:
+        runs, run = self.runs, self.of
+        c = runs.c
+        proc = await runs.sandboxes.start_agent(run.sandbox, c.run_dir(run.id) / "agent.log")
+        async with c.lock:
+            c.procs[run.id] = proc
+            c.event("sandbox", f"agent process started in sandbox {run.sandbox}",
+                    run.node_id, run.id)
+            c.save()
+        rc = await runs._turn(run, proc)
+        async with c.lock:
+            c.procs.pop(run.id, None)
+            run.exit_code = rc
+            if run.status in LIVE_RUN:
+                reason, source = runs._exit_reason(run, rc)
+                runs.lifecycle.fail_run(run, reason, source, exit_code=rc)
+            else:
+                c.event("agent", f"agent process exited ({rc})", run.node_id, run.id)
+            run.stage = RunStage.EXITED
+            runs.lifecycle.archive_log(run)
+            c.save()
+        return self.result(rc, "")
+
+
 class AgentRuns:
-    """Turns a node into a run of a role's agent (guards G-D1..G-D4, G-B1) and runs it: the
-    sandbox, the agent's turn, its timers, and what its report means."""
+    """Makes an agent's work for a node and role, and reads what it did."""
 
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes,
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
 
+    # ------------------------------------------------------------------ for the phase
+    def preconditions(self, node: Node, role: str) -> Escalate | None:
+        """Whether the step may start this agent now (guard G-B1: every H-2 subject approved
+        and fresh; the approved environment not stale). The scaffold of a blank repository is
+        built before H-2, on the critique's PASS (§5.3b)."""
+        h, ch = handler_for(role), self.c.change
+        resume = Resume.REWORK if node.status == REWORK else Resume.READY
+        if h.needs_fresh_approval and not (node.task and node.task.scaffold):
+            if stale := self._approval_fresh():
+                return Escalate("approval", "; ".join(stale), Resume.REWORK)
+        if sandbox_env(ch, role) and (stale_env := governance.stale_environment(self.c)):
+            return Escalate("approval", stale_env, resume)
+        return None
+
+    def work(self, node: Node, role: str, judged_sha: str | None, *,
+             wanted: Callable[[], bool], started: Callable[[Run], None]) -> tuple[Work, Prepared]:
+        """The agent's work. It is prepared in its slot, under the lock: unless the step no
+        longer ``wanted`` it, the run record is made (or a guard refuses it) and ``started`` is
+        told; then its sandbox session and commands."""
+        prepared = Prepared()
+
+        async def prepare(work: Work) -> bool:
+            async with self.c.lock:
+                if not wanted():
+                    return False
+                run = self.prepare(node, role, judged_sha)
+                if isinstance(run, Escalate):
+                    prepared.refused = run
+                    return False
+                prepared.run = run
+                started(run)
+                self.c.save()
+            fresh = not (sandbox_plan(role).keeps and any(
+                r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values()))
+            work.session = AgentSession(self.sandboxes, run, fresh,
+                                        lambda stage, msg: self._stage(run, stage, msg))
+            work.commands = [*await self.sandboxes.checkout(run, fresh),
+                             AgentTurn("the agent's turn", AGENT, True, runs=self, of=run)]
+            work.log = lambda cmd, r: self._log(run, cmd, r)
+            return True
+        return Work(prepare=prepare), prepared
+
+    def finish(self, run: Run, outcome: Outcome) -> None:
+        """Under the lock, however the work ended (also when its step no longer wants the
+        result): a run whose sandbox could not be made ready fails."""
+        if run.status not in LIVE_RUN:
+            return
+        if outcome.error:
+            why = outcome.error
+        elif (stop := outcome.stopped) and stop.command.kind != AGENT:
+            why = f"{stop.command.label} failed (exit {stop.result.exit_code}): " \
+                  f"{stop.result.output[-800:]}"
+        else:
+            return
+        self.lifecycle.fail_run(run, f"sandbox launch failed: {why}", FailureSource.SYSTEM)
+
+    async def conclude(self, run: Run) -> PhaseResult | None:
+        """Under the lock: what the run means – its report's, through its role handler (None:
+        nothing to decide yet), or its failure's escalation."""
+        if run.status == R_REPORTED:
+            return await self.reports.conclude(run)
+        return self.lifecycle.escalation(run) if run.failure else None
+
+    def _log(self, run: Run, cmd: Command, r: CommandResult) -> None:
+        """The preparation's steps go to the run's agent log."""
+        if cmd.kind == AGENT:
+            return
+        with open(self.c.run_dir(run.id) / "agent.log", "a") as log:
+            log.write(f"[legion] {cmd.label}: exit {r.exit_code}\n{r.output}")
+            if r.exit_code and not cmd.required:
+                log.write(f"[legion] {cmd.label} failed (exit {r.exit_code}): the working copy "
+                          "may lack its dependencies\n")
+
+    # ------------------------------------------------------------------ the run record
     def _approval_fresh(self) -> list[str]:
         """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
         return governance.stale_approvals(self.c)
@@ -173,17 +259,9 @@ class AgentRuns:
         return "\n".join(lines)
 
     def prepare(self, node: Node, role: str, judged_sha: str | None = None) -> Run | Escalate:
-        """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or return why it
-        cannot run."""
-        ch, h = self.c.change, handler_for(role)
-        # the blank repository's scaffold is built before H-2, on the critique's PASS (§5.3b)
-        if h.needs_fresh_approval and not (node.task and node.task.scaffold):
-            stale = self._approval_fresh()
-            if stale:
-                return Escalate("approval", "; ".join(stale), Resume.REWORK)
-        if sandbox_env(ch, role) and (stale_env := governance.stale_environment(self.c)):
-            return Escalate("approval", stale_env,
-                            Resume.REWORK if node.status == REWORK else Resume.READY)
+        """Create a run record under the lock (guards G-D1, G-D2, G-D4), or return why it cannot
+        run (its prompt does not render)."""
+        ch = self.c.change
         plan = sandbox_plan(role)
         if plan.base_at_head(bool(node.base_sha)):
             node.base_sha = ch.integration_head
@@ -353,71 +431,6 @@ class AgentRuns:
                 run.stage = stage
                 self.c.event("sandbox", message, run.node_id, run.id)
                 self.c.save()
-
-    async def launch(self, run: Run) -> PhaseResult | None:
-        """PREPARING (OpenShell creates the sandbox) -> LAUNCHING (payload in place, setup script
-        and agent starting) -> RUNNING (set by the agent's first MCP call) -> EXITED. Returns
-        once the agent's turn has ended: what its report means, or the failure's escalation."""
-        run_id = run.id
-        payload = self.c.run_dir(run_id) / "payload"
-        try:
-            plan = sandbox_plan(run.role)
-            reuse = plan.keeps and any(
-                r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values())
-            log_file = self.c.run_dir(run_id) / "agent.log"
-            if reuse:
-                async with self.sandboxes.lock(run.sandbox):
-                    node = self.c.nodes.get(run.node_id)
-                    if node and node.sandbox == run.sandbox and node.sandbox_stopped:
-                        await self._stage(run, RunStage.PREPARING, f"starting sandbox {run.sandbox}")
-                        await self.sandboxes.wake(run.sandbox)
-                        node.sandbox_stopped = False
-                    await self._stage(run, RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
-                    await self.sandboxes.upload(run.sandbox, payload)
-                    await self.sandboxes.prepare(run, log_file, fresh=False)
-                    proc = await self.sandboxes.start_agent(run.sandbox, log_file)
-            else:
-                await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
-                env = sandbox_env(self.c.change, run.role)
-                policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
-                                                 network=env.network if env else None,
-                                                 agent=True)
-                run.sandbox_ref = await self.sandboxes.create(run, payload, policy, push=plan.pushes)
-                await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
-                await self.sandboxes.prepare(run, log_file, fresh=True)
-                proc = await self.sandboxes.start_agent(run.sandbox, log_file)
-        except Exception as e:
-            shutil.rmtree(payload, ignore_errors=True)
-            async with self.c.lock:
-                if run.status in LIVE_RUN:
-                    self.lifecycle.fail_run(run, f"sandbox launch failed: {e}", FailureSource.SYSTEM)
-                self.c.save()
-                return self.lifecycle.escalation(run) if run.failure else None
-        shutil.rmtree(payload, ignore_errors=True)
-        (self.c.run_dir(run_id) / "policy.yaml").unlink(missing_ok=True)
-        async with self.c.lock:
-            self.c.procs[run_id] = proc
-            self.c.event("sandbox", f"agent process started in sandbox {run.sandbox}",
-                         run.node_id, run_id)
-            self.c.save()
-        rc = await self._turn(run, proc)
-        async with self.c.lock:
-            self.c.procs.pop(run_id, None)
-            run.exit_code = rc
-            if run.status in LIVE_RUN:
-                reason, source = self._exit_reason(run, rc)
-                self.lifecycle.fail_run(run, reason, source, exit_code=rc)
-            else:
-                self.c.event("agent", f"agent process exited ({rc})", run.node_id, run_id)
-            run.stage = RunStage.EXITED
-            self.lifecycle.archive_log(run)
-            # the agent's turn ended: control returns to the engine, with what its report means
-            result = await self.reports.conclude(run)
-            self.c.save()
-        if sandbox_plan(run.role).keeps_session:
-            await self.sandboxes.pause(run)
-        return self.lifecycle.escalation(run) if run.status not in (R_REPORTED,) \
-            and run.failure else result
 
     async def _turn(self, run: Run, proc) -> int:
         """Await the agent's process; its timers stop it (the run timeout while it is live, the

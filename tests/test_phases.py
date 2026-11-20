@@ -270,7 +270,7 @@ async def test_a_failed_build_escalates_with_the_log(f: Flow):
     assert f"## image {r.tag}" in result.log_tail
 
 
-# ---------------------------------------------------------------------------- Evaluate, AgentRun
+# ---------------------------------------------------------------------------- Evaluate, Produce
 @scenario()
 async def test_evaluate_is_ok_with_the_readiness_whatever_the_verdict(f: Flow):
     import legion_orch.workflow.engine.phases as phases
@@ -290,19 +290,45 @@ async def test_evaluate_is_ok_with_the_readiness_whatever_the_verdict(f: Flow):
 
 @scenario()
 async def test_an_agent_run_is_work_its_step_may_still_withdraw(f: Flow):
-    from legion_orch.workflow.engine.agent_runs import AgentWork
     node = task(f, status="READY")
     before = len(f.ce.runs)
-    assert await AgentWork(ctx(f).agents, node, "reviewer", still=lambda: False).run() is None
-    assert len(f.ce.runs) == before                          # nothing was prepared
+    work, prepared = ctx(f).agents.work(node, "reviewer", CAND, wanted=lambda: False,
+                                        started=lambda run: None)
+    outcome = await work.execute()
+    assert outcome.skipped and prepared.run is None and len(f.ce.runs) == before
 
 
 @scenario()
 async def test_a_guard_that_stops_an_agent_run_is_its_result(f: Flow):
-    from legion_orch.workflow.engine.agent_runs import AgentWork
+    from legion_orch.workflow.assets import AssetError
     node = task(f, id="R9", kind="release", status="READY")
-    f.ce.assets.render_role = lambda role, variables: (_ for _ in ()).throw(
-        __import__("legion_orch.workflow.assets", fromlist=["AssetError"]).AssetError("bad"))
-    ended = await AgentWork(ctx(f).agents, node, "release").run()
-    assert ended.run is None and isinstance(ended.result, Escalate)
-    assert ended.result.kind == "assets"
+
+    def bad(role, variables):
+        raise AssetError("bad")
+    f.ce.assets.render_role = bad
+    work, prepared = ctx(f).agents.work(node, "release", None, wanted=lambda: True,
+                                        started=lambda run: None)
+    assert (await work.execute()).skipped
+    assert prepared.run is None and prepared.refused.kind == "assets"
+
+
+@scenario()
+async def test_an_agents_work_is_its_checkout_then_its_turn(f: Flow):
+    node = task(f, id="R9", kind="release", status="READY")
+    started = []
+    work, prepared = ctx(f).agents.work(node, "release", None, wanted=lambda: True,
+                                        started=started.append)
+    import asyncio
+    running = asyncio.ensure_future(work.execute())
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if prepared.run and prepared.run.id in f.ctl.svc.procs:
+            break
+    run = prepared.run
+    assert started == [run]
+    assert [c.kind for c in work.commands] == ["prepare", "prepare", "agent"]
+    f.ctl.svc.procs[run.id].exit(0)
+    outcome = await running
+    assert [s.result.exit_code for s in outcome.steps] == [0, 0, 0]
+    assert run.status == "FAILED"                 # it ended without a report: a failure
+    assert (await ctx(f).agents.conclude(run)).kind == "run_failed"

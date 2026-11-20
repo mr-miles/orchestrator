@@ -1,20 +1,19 @@
 """Sandboxes: the one owner of a change's sandboxes (plan: stages-and-steps.md §2, the sandbox
-layer). Creating, preparing, pausing and waking an agent's sandbox; verifier sandboxes; which
-sandboxes a node holds for rework; and retiring a sandbox – a reflection turn, then deletion.
-When to do which is the run policy's business (:mod:`.runs`, :mod:`.dispatch`)."""
+layer). The sessions work executes in (:mod:`.work`) – an agent's sandbox, created or woken and
+paused after; a verifier's, created and deleted – and the commands that prepare a working copy;
+which sandboxes a node holds for rework; and retiring a sandbox – a reflection turn, then
+deletion. When to do which is the run policy's business (:mod:`.runs`, :mod:`.agent_runs`)."""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import shlex
 import shutil
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from ...sandbox import (
     AGENT_PREFIX,
-    Runner,
+    VERIFIER_PREFIX,
     SandboxError,
     SandboxSpec,
     is_name_clash,
@@ -23,34 +22,117 @@ from ...sandbox import (
 from .. import governance
 from ..assets import GitMode
 from ..environment import VERIFIER
-from ..model import LIVE_RUN, CommandResult, Node, Run
+from ..model import LIVE_RUN, Node, Run, RunStage
 from ..setup import SETUP_COMMAND
 from .auth import VerifierGrant
 from .core import ChangeCore
 from .provision import sandbox_env
 from .reflect import Reflector
-from .steps import step_for
+from .steps import sandbox_plan, step_for
+from .work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
 
 
-@dataclass
-class VerifierSandbox:
-    """A live verifier sandbox with the candidate checked out in <sandbox root>/work."""
-    name: str
-    runner: Runner
-    timeout_s: int
-    workdir: str
-    setup_script: str = ""
+class AgentSession:
+    """An agent run's sandbox: created for the run, or the node's kept one woken and given the
+    new payload. On close the payload goes, and a sandbox kept for its session is paused."""
 
-    async def setup(self, pin: str, timeout_s: int) -> CommandResult:
-        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
-        rc, out = await self.runner.exec(self.name, ["bash", self.setup_script, pin],
-                                         workdir=self.workdir, timeout=timeout_s)
-        return CommandResult(command=SETUP_COMMAND, exit_code=rc, output=out[-4000:], setup=True)
+    def __init__(self, sandboxes: Sandboxes, run: Run, fresh: bool,
+                 stage: Callable[[RunStage, str], Awaitable[None]]):
+        self.sb, self.run, self.fresh, self.stage = sandboxes, run, fresh, stage
+        root = sandboxes.c.cfg.sandbox.root
+        self.workdir, self.payload = f"{root}/work", f"{root}/payload"
+        self._dir = sandboxes.c.run_dir(run.id)
 
-    async def run(self, cmd: str) -> CommandResult:
-        rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir=self.workdir,
-                                         timeout=self.timeout_s)
-        return CommandResult(command=cmd, exit_code=rc, output=out[-4000:])
+    @property
+    def name(self) -> str:
+        return self.run.sandbox
+
+    async def open(self) -> None:
+        c, run, payload = self.sb.c, self.run, self._dir / "payload"
+        if not self.fresh:
+            async with self.sb.lock(run.sandbox):
+                node = c.nodes.get(run.node_id)
+                if node and node.sandbox == run.sandbox and node.sandbox_stopped:
+                    await self.stage(RunStage.PREPARING, f"starting sandbox {run.sandbox}")
+                    await self.sb.wake(run.sandbox)
+                    node.sandbox_stopped = False
+                await self.stage(RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
+                await self.sb.upload(run.sandbox, payload)
+            return
+        await self.stage(RunStage.PREPARING, f"creating sandbox {run.sandbox}")
+        env = sandbox_env(c.change, run.role)
+        policy = c.svc.write_policy(self._dir / "policy.yaml", agent=True,
+                                    network=env.network if env else None)
+        run.sandbox_ref = await self.sb.create(run, payload, policy,
+                                               push=sandbox_plan(run.role).pushes)
+        await self.stage(RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
+
+    async def exec(self, argv: list[str], *, timeout: int, workdir: str | None) -> tuple[int, str]:
+        return await self.sb.c.runner.exec(self.run.sandbox, argv, timeout=timeout,
+                                           workdir=workdir)
+
+    async def close(self) -> None:
+        shutil.rmtree(self._dir / "payload", ignore_errors=True)
+        (self._dir / "policy.yaml").unlink(missing_ok=True)
+        if sandbox_plan(self.run.role).keeps_session:
+            await self.sb.pause(self.run)
+
+
+class VerifierSession:
+    """A non-agent sandbox with a read-only git grant, from a fresh payload. A name the gateway
+    already has (another controller) is replaced and the sandbox created again. On close the
+    grant is revoked and the sandbox and its payload are deleted, however the work ended."""
+
+    def __init__(self, sandboxes: Sandboxes, name: str, label: str):
+        self.sb, self.name, self.label = sandboxes, name, label
+        root = sandboxes.c.cfg.sandbox.root
+        self.workdir, self.payload = f"{root}/work", f"{root}/payload"
+        self._ref: str | None = None
+
+    @property
+    def _base(self) -> Path:
+        return self.sb.c.svc.tmp / "verify" / self.name
+
+    async def open(self) -> None:
+        c = self.sb.c
+        for attempt in range(3):
+            payload = self._base / "payload"
+            payload.mkdir(parents=True, exist_ok=True)
+            (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(c.git_url)}\n")
+            for script, text in payload_scripts().items():
+                (payload / script).write_text(text)
+            env = sandbox_env(c.change, VERIFIER)
+            policy = c.svc.write_policy(self._base / "policy.yaml", agent=False,
+                                        network=env.network if env else None)
+            if stale := governance.stale_environment(c):
+                raise SandboxError(stale)
+            try:
+                self._ref = await c.runner.create(SandboxSpec(
+                    name=self.name, payload_dir=payload, policy_file=policy, agent=False,
+                    change=c.cid, task=self.label, role="verifier", run=self.name, env=env))
+            except Exception as e:
+                if not is_name_clash(e) or attempt == 2:
+                    raise
+                shutil.rmtree(self._base, ignore_errors=True)
+                self.name = c.host.new_sandbox_name(VERIFIER_PREFIX)
+                continue
+            c.svc.auth.register_verifier(self._ref, VerifierGrant(
+                id=f"verifier:{self.name}", change=c.cid, task=self.label))
+            return
+
+    async def exec(self, argv: list[str], *, timeout: int, workdir: str | None) -> tuple[int, str]:
+        return await self.sb.c.runner.exec(self.name, argv, timeout=timeout, workdir=workdir)
+
+    async def close(self) -> None:
+        c = self.sb.c
+        if self._ref:
+            c.svc.auth.unregister_verifier(self._ref)
+        shutil.rmtree(self._base, ignore_errors=True)
+        if self._ref:
+            try:
+                await c.runner.delete(self.name)
+            except Exception as e:
+                c.event("sandbox", f"verifier delete failed: {e}")
 
 
 class Sandboxes:
@@ -109,46 +191,47 @@ class Sandboxes:
     async def start_agent(self, name: str, log_file: Path):
         return await self.c.runner.start_agent(name, log_file)
 
-    async def prepare_steps(self, run: Run, fresh: bool) -> list[tuple[str, list[str], bool]]:
-        """The sandbox's preparation, one script per step: (what, argv, must succeed). A role
-        that pushes works on its branch – from its tip on the hub if earlier runs pushed it,
-        else from its base; every other role gets its commit checked out detached. Roles that
-        work with a commit then run the repository's setup (§5.3c)."""
+    async def checkout(self, run: Run, fresh: bool) -> list[Command]:
+        """The commands preparing an agent's working copy. A role that pushes works on its
+        branch – from its tip on the hub if earlier runs pushed it, else from its base; every
+        other role gets its commit checked out detached. Roles that work with a commit then run
+        the repository's setup (§5.3c), which may fail: the agent still starts (it may work
+        around it, and verification runs the setup again)."""
         role = self.c.assets.roles[run.role]
         if not role.repo:
             return []
-        p = f"{self.c.cfg.sandbox.root}/payload"
-        steps = [("clone the repository", ["bash", f"{p}/clone.sh"], True)] if fresh else []
+        cmds: list[Command] = [Script("clone the repository", PREPARE, True, "clone.sh",
+                                      in_work=False)] if fresh else []
         if run.branch:
             start = await self.c.git.ref_sha(f"refs/heads/{run.branch}") or run.base_sha
-            steps.append((f"check out branch {run.branch} at {start[:12]}",
-                          ["bash", f"{p}/branch.sh", run.branch, start], True))
+            cmds.append(Script(f"check out branch {run.branch} at {start[:12]}", PREPARE, True,
+                               "branch.sh", (run.branch, start)))
         else:
             sha = run.judged_sha or run.base_sha
-            steps.append((f"check out {sha[:12]} (detached)", ["bash", f"{p}/checkout.sh", sha],
-                          True))
+            cmds.append(Script(f"check out {sha[:12]} (detached)", PREPARE, True, "checkout.sh",
+                               (sha,)))
         pin = self.c.change.setup_pin
         if pin and role.git != GitMode.NONE and not self.c.setup_waits_for_scaffold():
-            steps.append((SETUP_COMMAND, ["bash", f"{p}/mise-setup.sh", pin.blob], False))
-        return steps
+            cmds.append(self.setup(pin.blob, required=False))
+        return cmds
 
-    async def prepare(self, run: Run, log_file: Path, *, fresh: bool) -> None:
-        """Run the preparation steps in the sandbox, each logged to the run's agent log. A
-        failed checkout fails the launch; a failed setup is logged and the agent still starts
-        (it may work around it, and verification runs the setup again)."""
-        work = f"{self.c.cfg.sandbox.root}/work"
-        for what, argv, required in await self.prepare_steps(run, fresh):
-            timeout = (self.c.cfg.limits.setup_timeout_s if argv[1].endswith("mise-setup.sh")
-                       else 600)
-            rc, out = await self.c.runner.exec(run.sandbox, argv, timeout=timeout,
-                                               workdir=None if "clone.sh" in argv[1] else work)
-            with open(log_file, "a") as log:
-                log.write(f"[legion] {what}: exit {rc}\n{out}")
-                if rc and not required:
-                    log.write(f"[legion] {what} failed (exit {rc}): the working copy may lack "
-                              "its dependencies\n")
-            if rc and required:
-                raise SandboxError(f"{what} failed (exit {rc}): {out[-800:]}")
+    def setup(self, pin: str, *, required: bool) -> Script:
+        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
+        return Script(SETUP_COMMAND, SETUP, required, "mise-setup.sh", (pin,),
+                      timeout=self.c.cfg.limits.setup_timeout_s)
+
+    def verifier_work(self, name: str, label: str, sha: str, commands: tuple[str, ...]) -> Work:
+        """A verification: a fresh verifier sandbox checked out at ``sha`` (the same steps as an
+        agent's detached checkout), the repository's setup (§5.3c, G-V3: a failure stops here),
+        then each command – all of them, whatever their exit codes."""
+        timeout = self.c.cfg.limits.verify_timeout_s
+        pin = self.c.change.setup_pin
+        cmds: list[Command] = [Script("clone.sh", PREPARE, True, "clone.sh", in_work=False),
+                               Script("checkout.sh", PREPARE, True, "checkout.sh", (sha,))]
+        if pin:
+            cmds.append(self.setup(pin.blob, required=True))
+        cmds += [Shell(cmd, COMMAND, False, timeout=timeout) for cmd in commands]
+        return Work(VerifierSession(self, name, label), cmds)
 
     def _should_pause(self, run: Run) -> bool:
         node = self.c.nodes.get(run.node_id)
@@ -180,51 +263,6 @@ class Sandboxes:
                     self.c.event("sandbox", f"stopped {run.sandbox} until {node.id} is reworked",
                                  run.node_id, run.id)
                 self.c.save()
-
-    # ------------------------------------------------------------------ verifier sandboxes
-    @contextlib.asynccontextmanager
-    async def verifier(self, name: str, label: str, sha: str) -> AsyncIterator[VerifierSandbox]:
-        """A non-agent sandbox with a read-only git grant, checked out at ``sha`` (its slot
-        within the limit is the dispatcher's). On exit the grant is revoked and the sandbox and
-        its payload are deleted, however the block ends."""
-        base = self.c.svc.tmp / "verify" / name
-        payload = base / "payload"
-        payload.mkdir(parents=True, exist_ok=True)
-        (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.c.git_url)}\n")
-        for script, text in payload_scripts().items():
-            (payload / script).write_text(text)
-        ref = None
-        try:
-            env = sandbox_env(self.c.change, VERIFIER)
-            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False,
-                                             network=env.network if env else None)
-            if stale := governance.stale_environment(self.c):
-                raise SandboxError(stale)
-            ref = await self.c.runner.create(SandboxSpec(
-                name=name, payload_dir=payload, policy_file=policy, agent=False,
-                change=self.c.cid, task=label, role="verifier", run=name,
-                env=env))
-            self.c.svc.auth.register_verifier(
-                ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
-            root = self.c.cfg.sandbox.root
-            # the same steps as an agent's detached checkout: clone, then the commit
-            for step in (["clone.sh"], ["checkout.sh", sha]):
-                rc, out = await self.c.runner.exec(
-                    name, ["bash", f"{root}/payload/{step[0]}", *step[1:]], timeout=600,
-                    workdir=None if step[0] == "clone.sh" else f"{root}/work")
-                if rc != 0:
-                    raise SandboxError(f"verifier {step[0]} failed ({rc}): {out[-1500:]}")
-            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s,
-                                  f"{root}/work", f"{root}/payload/mise-setup.sh")
-        finally:
-            if ref:
-                self.c.svc.auth.unregister_verifier(ref)
-            shutil.rmtree(base, ignore_errors=True)
-            if ref:
-                try:
-                    await self.c.runner.delete(name)
-                except Exception as e:
-                    self.c.event("sandbox", f"verifier delete failed: {e}")
 
     # ------------------------------------------------------------------ retiring
     def delete_later(self, name: str, stopped: bool = False) -> None:

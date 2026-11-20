@@ -1,7 +1,7 @@
 """Step types (plan: stages-and-steps.md §2): what each kind of node is made of, declared as a
 composition of small objects instead of per-kind code:
 
-* **agent work** – the role of its first :class:`.AgentRun` (the handler in workflow/roles/ is
+* **agent work** – the role of its producer, :class:`.Produce` (the handler in workflow/roles/ is
   the agent layer: prompt, guards, how its report is judged);
 * **a sandbox plan** (:mod:`.sandbox_plan`) – where that agent works and how long it is kept;
 * **phases** (:mod:`.phases`) – the orchestrator's work, in order, each configured by policies
@@ -57,7 +57,6 @@ from .dispatch import StepDispatcher, Withdrawn
 from .node_states import NodeStates
 from .phases import (
     AcceptanceCommands,
-    AgentRun,
     AlreadyPassing,
     Approval,
     BaselineCommands,
@@ -72,6 +71,8 @@ from .phases import (
     Phase,
     PhaseContext,
     PhaseResult,
+    Produce,
+    RoleWork,
     TaskCommands,
     TierPanel,
     Verify,
@@ -211,7 +212,7 @@ class StepType:
     @property
     def role(self) -> str | None:
         first = self.phases[0]
-        return first.role if isinstance(first, AgentRun) else None
+        return first.role if isinstance(first, Produce) else None
 
     @property
     def judges_head(self) -> bool:
@@ -236,7 +237,7 @@ class StepType:
 
 def agent(role: str, sandbox: SandboxPlan, *after: Phase, **kw) -> StepType:
     """A step whose agent works first, then the controller's ``after`` phases."""
-    return StepType((AgentRun(role), *after), sandbox=sandbox, **kw)
+    return StepType((Produce(RoleWork(role)), *after), sandbox=sandbox, **kw)
 
 
 BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)

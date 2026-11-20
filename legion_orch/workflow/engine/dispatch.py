@@ -2,8 +2,9 @@
 
 ``limits.max_parallel`` bounds the work running at once across every change – an agent's run, a
 verifier sandbox. The dispatcher is given work it does not look into: anything with an
-``async run()``. It runs each piece when a slot is free and returns its result; it knows nothing
-of agents, verifications, nodes or steps.
+``async execute()``. It runs each piece when a slot is free and returns its result; it knows nothing
+of agents, verifications, nodes or steps (a :class:`.work.Work` is a sandbox session and its
+commands; the dispatcher only calls its ``execute``).
 
 **Reservations.** A step holds one, so the work of its phases – its agent's run, then its
 verification, then its judges – follows on in the same slot instead of queueing behind other
@@ -22,10 +23,10 @@ from typing import Protocol, TypeVar
 T = TypeVar("T")
 
 
-class Work(Protocol[T]):
+class Executable(Protocol[T]):
     """What the dispatcher runs (it calls nothing else on it)."""
 
-    async def run(self) -> T: ...
+    async def execute(self) -> T: ...
 
 
 class Withdrawn(Exception):
@@ -61,7 +62,7 @@ class Dispatcher:
         """A reservation; it takes no slot until its first work runs."""
         return Reservation(self)
 
-    async def run(self, work: Work[T], reservation: Reservation | None = None) -> T:
+    async def run(self, work: Executable[T], reservation: Reservation | None = None) -> T:
         """Run ``work`` once there is a slot for it, and return its result. Raises
         :class:`Withdrawn` if its reservation is released while it waits."""
         if reservation is not None and reservation.released:
@@ -79,7 +80,7 @@ class Dispatcher:
                 self._prune()
             raise
         try:
-            return await work.run()
+            return await work.execute()
         finally:
             self._done(reservation, reserved)
 
@@ -143,8 +144,8 @@ class StepDispatcher:
         """The step is over (done, sent back, escalated): its work's results count no more."""
         return self.reservation.released
 
-    async def run(self, work: Work[T]) -> T:
+    async def run(self, work: Executable[T]) -> T:
         return await self._dispatcher.run(work, self.reservation)
 
 
-__all__ = ["Dispatcher", "Reservation", "StepDispatcher", "Withdrawn", "Work"]
+__all__ = ["Dispatcher", "Executable", "Reservation", "StepDispatcher", "Withdrawn"]
