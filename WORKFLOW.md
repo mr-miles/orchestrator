@@ -332,6 +332,11 @@ and, at each level, the stages before them – nearest first; the UI's names map
 | an oracle, preflight or baseline escalation: **Revise the plan** (`revise_plan`) | Design |
 | an `integration_failed` escalation: **Plan a fix** (`plan_fix`) | Delivery: a fix round (§5.10a) |
 
+The state API returns, from the core, the actions each node offers now and the stages with
+their nodes; the UI renders them as they come – a **Send back: <stage>** for each stage offered
+(Requirements and Plan behind a confirmation, Delivery as **Plan a fix round**), override only
+where the step allows it – and draws each stage as a box around its nodes on the task graph.
+
 What sending a stage back does is the stage's **rework policy**. Requirements, Plan, Design and
 Oracle **start over**: everything in them, and every later stage built on them, goes back to
 pending and runs again, and the stage's first step gets the feedback. Delivery **appends a

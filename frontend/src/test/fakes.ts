@@ -146,6 +146,21 @@ export function stateAtH1(): ChangeState {
     surfaces: [],
     environment: null,
     attestation_kinds: ['e2e-evaluation'],
+    workflow: {
+      actions: { 'H-1': ['approve', 'send_back:stage:requirements', 'abandon'] },
+      unmet: {},
+      stages: [
+        {
+          id: 'stage:requirements',
+          title: 'Requirements',
+          depth: 0,
+          level: 0,
+          gate: 'H-1',
+          nodes: ['intake', 'H-1'],
+          status: 'running',
+        },
+      ],
+    },
   }
 }
 
