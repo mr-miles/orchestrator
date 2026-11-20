@@ -146,7 +146,7 @@ class Provisioner:
                         stopped = stopped or n.sandbox_stopped
                         n.sandbox, n.sandbox_stopped = None, False
                 c.event("provision", f"released sandbox {sb}: not from this build", PROVISION)
-                self.lifecycle.delete_sandbox_later(sb, stopped)
+                self.lifecycle.sandboxes.delete_later(sb, stopped)
             pin = c.change.setup_pin
             check = self.acceptance is not None and pin is not None and pin.source == H_ENV
             if check and c.setup_waits_for_scaffold():

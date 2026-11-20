@@ -1,22 +1,11 @@
 """Acceptance: verification, the review panel's decision, rework, merge and ship readiness."""
 from __future__ import annotations
 
-import contextlib
-import shlex
-import shutil
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-
 from ...sandbox import (
     VERIFIER_PREFIX,
-    Runner,
-    SandboxError,
-    SandboxSpec,
     is_name_clash,
-    payload_scripts,
 )
 from .. import governance
-from ..environment import VERIFIER
 from ..model import (
     ACCEPTED,
     BASELINE,
@@ -43,37 +32,14 @@ from ..model import (
     Verdict,
     Verification,
 )
-from ..setup import SETUP_COMMAND
 from ..ship import evaluate
 from . import cleanup
-from .auth import VerifierGrant
 from .common import _slug
 from .core import ChangeCore
-from .provision import sandbox_env
 from .runs import RunLifecycle
+from .sandboxes import Sandboxes
 
 EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
-
-
-@dataclass
-class VerifierSandbox:
-    """A live verifier sandbox with the candidate checked out in <sandbox root>/work."""
-    name: str
-    runner: Runner
-    timeout_s: int
-    workdir: str
-    setup_script: str = ""
-
-    async def setup(self, pin: str, timeout_s: int) -> CommandResult:
-        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
-        rc, out = await self.runner.exec(self.name, ["bash", self.setup_script, pin],
-                                         workdir=self.workdir, timeout=timeout_s)
-        return CommandResult(command=SETUP_COMMAND, exit_code=rc, output=out[-4000:], setup=True)
-
-    async def run(self, cmd: str) -> CommandResult:
-        rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir=self.workdir,
-                                         timeout=self.timeout_s)
-        return CommandResult(command=cmd, exit_code=rc, output=out[-4000:])
 
 
 class Acceptance:
@@ -81,8 +47,8 @@ class Acceptance:
     panel's decision, rework within the cycle budget, the merge (G-A1, G-A2) – and, for the
     change as a whole, the ship readiness check."""
 
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
-        self.c, self.lifecycle = core, lifecycle
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes):
+        self.c, self.lifecycle, self.sandboxes = core, lifecycle, sandboxes
 
     def start_verification(self, node_id: str) -> None:
         """Run the node's deterministic verification in the background (node is VERIFYING)."""
@@ -98,7 +64,7 @@ class Acceptance:
             return result
         for attempt in range(3):
             try:
-                async with self._verifier_sandbox(result.sandbox, label, sha) as box:
+                async with self.sandboxes.verifier(result.sandbox, label, sha) as box:
                     pin = self.c.change.setup_pin
                     if pin:                    # §5.3c, G-V3: setup first; a failure stops here
                         r = await box.setup(pin.blob, self.c.cfg.limits.setup_timeout_s)
@@ -114,50 +80,6 @@ class Acceptance:
                 result.infra_error = str(e)
             return result
         return result
-
-    @contextlib.asynccontextmanager
-    async def _verifier_sandbox(self, name: str, label: str,
-                                sha: str) -> AsyncIterator[VerifierSandbox]:
-        """A non-agent sandbox with a read-only git grant, checked out at ``sha``. On exit the
-        grant is revoked and the sandbox and its payload are deleted, however the block ends."""
-        base = self.c.svc.tmp / "verify" / name
-        payload = base / "payload"
-        payload.mkdir(parents=True, exist_ok=True)
-        (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.c.git_url)}\n")
-        for script, text in payload_scripts().items():
-            (payload / script).write_text(text)
-        ref = None
-        try:
-            env = sandbox_env(self.c.change, VERIFIER)
-            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False,
-                                             network=env.network if env else None)
-            if stale := governance.stale_environment(self.c):
-                raise SandboxError(stale)
-            ref = await self.c.runner.create(SandboxSpec(
-                name=name, payload_dir=payload, policy_file=policy, agent=False,
-                change=self.c.cid, task=label, role="verifier", run=name,
-                env=env))
-            self.c.svc.auth.register_verifier(
-                ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
-            root = self.c.cfg.sandbox.root
-            # the same steps as an agent's detached checkout: clone, then the commit
-            for step in (["clone.sh"], ["checkout.sh", sha]):
-                rc, out = await self.c.runner.exec(
-                    name, ["bash", f"{root}/payload/{step[0]}", *step[1:]], timeout=600,
-                    workdir=None if step[0] == "clone.sh" else f"{root}/work")
-                if rc != 0:
-                    raise SandboxError(f"verifier {step[0]} failed ({rc}): {out[-1500:]}")
-            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s,
-                                  f"{root}/work", f"{root}/payload/mise-setup.sh")
-        finally:
-            if ref:
-                self.c.svc.auth.unregister_verifier(ref)
-            shutil.rmtree(base, ignore_errors=True)
-            if ref:
-                try:
-                    await self.c.runner.delete(name)
-                except Exception as e:
-                    self.c.event("sandbox", f"verifier delete failed: {e}")
 
     async def verify_node(self, node_id: str) -> None:
         """Verify the node's candidate; then review (or merge), rework, or escalate."""

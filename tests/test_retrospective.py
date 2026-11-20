@@ -347,11 +347,11 @@ async def test_the_retrospective_starts_by_itself_once_reflections_are_done(f: F
     f.cfg.retrospective.auto = True
     await f.to_build("R1")
     await f.implement()
-    f.ce._lifecycle.reflector.pending.add("still-reflecting")
+    f.ce._sandboxes.reflector.pending.add("still-reflecting")
     await f.review(verdict="PASS")
     assert f.ce.change.status == ChangeStatus.READY
     assert f.status("retrospective") == "READY" and not f.runs("retrospective")   # waits
-    f.ce._lifecycle.reflector.pending.clear()
+    f.ce._sandboxes.reflector.pending.clear()
     await f.settle()
     run = f.run("retrospective")
     doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")

@@ -41,6 +41,7 @@ from .human import HumanGates
 from .provision import Provisioner
 from .reports import Reports
 from .runs import RunLifecycle
+from .sandboxes import Sandboxes
 from .schedule import Scheduler
 from .services import EngineHost, Services
 
@@ -56,10 +57,11 @@ class ChangeEngine(ChangeCore):
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
         self._graph = StageGraph(self)
-        self._lifecycle = RunLifecycle(self)
-        self._acceptance = Acceptance(self, self._lifecycle)
+        self._sandboxes = Sandboxes(self)
+        self._lifecycle = RunLifecycle(self, self._sandboxes)
+        self._acceptance = Acceptance(self, self._lifecycle, self._sandboxes)
         self._provisioner = Provisioner(self, self._lifecycle, self._acceptance)
-        self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
+        self._dispatcher = Dispatcher(self, self._lifecycle, self._sandboxes, roles=self)
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
@@ -145,7 +147,7 @@ class ChangeEngine(ChangeCore):
         self._lifecycle.accept_runs(node, roles)
 
     def delete_sandbox_later(self, name: str) -> None:
-        self._lifecycle.delete_sandbox_later(name)
+        self._sandboxes.delete_later(name)
 
     def start_verification(self, node_id: str) -> None:
         self._acceptance.start_verification(node_id)
