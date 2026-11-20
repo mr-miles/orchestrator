@@ -81,7 +81,8 @@ class Machine:
 
 
 class StepState(Machine):
-    """pending → running ⇄ escalated → done; any → pending (sent back, or the change ended)."""
+    """pending → running ⇄ escalated → done (→ running again, run in place); any → pending (sent
+    back, or the change ended)."""
     initial = StepStatus.PENDING
     S = StepStatus
 
@@ -91,10 +92,20 @@ class StepState(Machine):
         self.cycles = 0                       # its own rework loops (informational)
         self.feedback: list[str] = []         # for its next start (a send-back's)
         self.escalation: tuple[str, str] | None = None     # (kind, question)
+        self.in_place = False                 # running again after it was done (rerun)
 
     @transition(S.PENDING, to=S.RUNNING)
     def start(self) -> tuple[str, ...]:
         """A new attempt; returns the feedback it starts with."""
+        self.in_place = False
+        self.attempt += 1
+        fb, self.feedback = tuple(self.feedback), []
+        return fb
+
+    @transition(S.DONE, to=S.RUNNING)
+    def rerun(self) -> tuple[str, ...]:
+        """Done, it runs again in place (a new attempt); what was built on it stands."""
+        self.in_place = True
         self.attempt += 1
         fb, self.feedback = tuple(self.feedback), []
         return fb
@@ -122,7 +133,7 @@ class StepState(Machine):
 
     @transition(*S, to=S.PENDING)
     def reset(self) -> None:
-        self.escalation = None
+        self.escalation, self.in_place = None, False
 
 
 class GateState(Machine):

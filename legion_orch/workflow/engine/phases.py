@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe
 from .. import governance
+from ..environment import VERIFIER
 from ..model import (
     AWAITING_HUMAN,
     LIVE_RUN,
@@ -497,6 +498,10 @@ class Verify(Phase):
                 node.candidate_sha = c.change.integration_head
                 rt.phase(node, VERIFYING)
                 c.save()
+        # a verifier sandbox comes from the build: none while it is built again
+        if not await rt.wait_until(node, work,
+                                   lambda: not rt.provisioner.waits_for_environment(VERIFIER)):
+            return
         commands = self.commands_for(c, node)
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                 f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",

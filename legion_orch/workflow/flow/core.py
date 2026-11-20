@@ -1,7 +1,7 @@
 """The workflow core (plan: stages-and-steps.md §1): pure and deterministic. It holds the stage
 tree and every node's state, takes **events** (a step completed or escalated, preconditions
-evaluated) and **actions** (generic: approve, send back, answer, retry, override, evaluate,
-reject, abandon), and returns **effects** for a runtime to carry out (start a step, stop one,
+evaluated) and **actions** (generic: approve, send back, answer, retry, override, rerun,
+evaluate, reject, abandon), and returns **effects** for a runtime to carry out (start a step, stop one,
 evaluate a gate, record a decision, end the change). It does no I/O.
 
 Rules:
@@ -17,6 +17,9 @@ Rules:
 * The actions a node offers are derived from the structure (:meth:`FlowState.actions`): any stage
   the node's work was built on – the stages enclosing it and those before them – may be sent back,
   so a "replan" is just a send-back of the stage that holds the plan.
+* An escalated step may be answered by running an earlier, done, ``rerunnable`` step again in
+  place (``rerun:<step>``: provisioning built again): that step starts a new attempt while what
+  was built on it stands, and the escalated step is retried.
 """
 from __future__ import annotations
 
@@ -73,6 +76,7 @@ class StartStep:
     step: str
     attempt: int
     feedback: tuple[str, ...] = ()
+    rerun: bool = False               # done before: it runs again in place
 
 
 @dataclass(frozen=True)
@@ -276,6 +280,16 @@ class FlowState:
         elif action == "retry":
             self.step(target).resume()
             self._effects.append(RetryStep(target))
+        elif action.startswith("rerun:"):
+            again = action.split(":", 1)[1]
+            st = self.step(again)
+            if text:
+                st.feedback.append(text)
+            self._effects.append(Record("rerun", again, by, text))
+            feedback = st.rerun()
+            self._effects.append(StartStep(again, st.attempt, feedback, rerun=True))
+            self.step(target).resume()
+            self._effects.append(RetryStep(target))
         elif action == "override":
             # the step goes on to finish its work without its own checks (a build is merged);
             # it is done when that finishes
@@ -343,10 +357,18 @@ class FlowState:
                 out.append("reject")
         elif isinstance(node, Step) and st.status == StepStatus.ESCALATED:
             out += ["answer", "retry"] + (["override"] if node.overridable else [])
+            out += [f"rerun:{nid}" for nid in self.rerunnable(target)]
         else:
             return []
         out += [f"send_back:{s}" for s in self.built_on(target)]
         return out + ["abandon"]
+
+    def rerunnable(self, node_id: str) -> list[str]:
+        """The done steps before ``node_id`` (in execution order) that may run again in place."""
+        order = self._order()
+        before = order[:order.index(node_id)] if node_id in order else []
+        return [nid for nid in before if isinstance(self.nodes[nid], Step)
+                and self.nodes[nid].rerunnable and self.status(nid) == StepStatus.DONE]
 
     def built_on(self, node_id: str) -> list[str]:
         """The stages ``node_id``'s work was built on, nearest first: at each level up, the stage
@@ -555,22 +577,27 @@ class FlowState:
         """The state invariants (plan §1); empty when they hold."""
         v = []
         done = (StepStatus.DONE, StageStatus.DONE, GateStatus.DONE)
+
+        def finished(k: str) -> bool:      # done, or done before and running again in place
+            node = self.nodes[k]
+            return self.status(k) in done or (isinstance(node, Step) and node.rerunnable
+                                              and self.step(k).in_place)
         for nid in self._order():
             node, st = self.nodes[nid], self.state[nid]
             if isinstance(node, Stage):
                 kids = [c.id for c in node.children]
                 gate = self.status(node.gate.id)
                 if st.status == StageStatus.DONE and (
-                        gate != GateStatus.DONE or any(self.status(k) not in done for k in kids)):
+                        gate != GateStatus.DONE or any(not finished(k) for k in kids)):
                     v.append(f"{nid} done before its children and gate")
                 if gate in (GateStatus.WAITING, GateStatus.DONE) and \
-                        any(self.status(k) not in done for k in kids):
+                        any(not finished(k) for k in kids):
                     v.append(f"{node.gate.id} reached before {nid}'s children were done")
-                active = [k for k in kids if self.status(k) not in (*done, "pending")]
+                active = [k for k in kids if not finished(k) and self.status(k) != "pending"]
                 if len(active) > 1:
                     v.append(f"{nid} runs several children at once: {active}")
                 for i, k in enumerate(kids):
-                    if self.status(k) not in done and \
+                    if not finished(k) and \
                             any(self.status(x) != "pending" for x in kids[i + 1:]):
                         v.append(f"{nid}: a child after unfinished {k} has started")
                         break

@@ -340,6 +340,12 @@ class HumanGates:
             reason = self._override_accept(node, approver, payload)
             await self.flow.decide(node, "override", approver, reason)
             return ActionResult(status=node.status)
+        if action.startswith("rerun:"):
+            reason = self._rerun(action.split(":", 1)[1], payload)
+            await self.flow.decide(node, action, approver, reason)
+            return ActionResult(status=node.status, note=(
+                "provisioning again from the approved spec and the current library once running "
+                "agents of mapped roles finish; this step is retried in the new build"))
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
         if node.escalation and node.escalation.retrying:
@@ -452,32 +458,26 @@ class HumanGates:
         c.event("retrospective", f"{approver} asked for a retrospective (cycle {node.cycle})", RETRO)
         return f"retrospective queued (cycle {node.cycle})"
 
-    def _reprovision(self, approver: str, payload: dict) -> str:
-        """Build the provisioned environment again from the approved spec against the current
-        library (G-PV1), e.g. after a library entry was fixed. The spec and its H-E1 approval
-        stay; to change what the spec asks for, revise the plan instead. New runs of mapped roles
-        wait from now on; provisioning starts once their live runs end and nothing is verifying
-        or merging (the old build stays in place until the new one is accepted)."""
+    def _rerun(self, step: str, payload: dict) -> str:
+        """An escalation answered by running an earlier step again in place – provisioning:
+        the H-E1-approved spec built again against the current library (G-PV1), e.g. after a
+        library entry was fixed. The spec and its approval stay; to change what the spec asks
+        for, revise the plan instead. Returns the reason (≥24 chars, more than one word)."""
         c = self.c
-        prov = c.current(PROVISION)
-        if prov is None or c.change.environment is None or prov.status != ACCEPTED:
+        prov = c.nodes.get(step)
+        if prov is None or prov.kind != PROVISION or c.change.environment is None \
+                or prov.status != ACCEPTED:
             raise WorkflowError("there is no provisioned environment to rebuild")
         if stale := governance.stale_environment(c):
             raise WorkflowError(f"{stale}; approve the new spec at H-E1 instead")
-        reason = payload.get("reason")
+        reason = (payload.get("reason") or "").strip()
         if not risk.valid_reason(reason):
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
-        if c.change.reprovision:
-            raise WorkflowError(f"reprovisioning is {c.change.reprovision} already")
-        c.change.reprovision = "requested"       # started once the build is idle (on a save)
-        c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
-        return ("provisioning again from the approved spec and the current library once running "
-                "agents of mapped roles finish; their new runs wait until then")
+        return reason
 
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface,
-        promote_proposal (an approved environment proposal into the library), reprovision
-        (rebuild the environment against the current library), retrospective (of an ended
+        promote_proposal (an approved environment proposal into the library), retrospective (of an ended
         change), prune (an ended change's integration branch and evidence refs, §5.14)."""
         payload = payload or {}
         async with self.c.lock:
@@ -495,8 +495,6 @@ class HumanGates:
                                        note="applies only to runs of this task that start after now")
                 elif action == "promote_proposal":
                     res = ActionResult(note=self._promote(approver, payload))
-                elif action == "reprovision":
-                    res = ActionResult(note=self._reprovision(approver, payload))
                 elif action == "retrospective":
                     res = ActionResult(note=self._start_retrospective(approver, payload))
                 elif action == "prune":

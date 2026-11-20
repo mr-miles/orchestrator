@@ -88,7 +88,7 @@ def _oracle(rank: int, environment: bool, blank_repo: bool, n: int) -> Stage | N
     """Everything that makes the oracle and the sandboxes ready, before any task is built."""
     children: list[Stage | Step | Parallel] = []
     if environment:
-        children.append(Step(in_round(PROVISION, n)))
+        children.append(Step(in_round(PROVISION, n), rerunnable=True))   # an answer: build again
     if blank_repo and n == 1:                     # the scaffold is built once (§5.3b)
         children.append(Parallel(SCAFFOLD, []))
     if rank >= 2:

@@ -118,6 +118,7 @@ class VerifierSession:
                 continue
             c.svc.auth.register_verifier(self._ref, VerifierGrant(
                 id=f"verifier:{self.name}", change=c.cid, task=self.label))
+            self.sb.verifiers += 1
             return
 
     async def exec(self, argv: list[str], *, timeout: int, workdir: str | None) -> tuple[int, str]:
@@ -127,6 +128,7 @@ class VerifierSession:
         c = self.sb.c
         if self._ref:
             c.svc.auth.unregister_verifier(self._ref)
+            self.sb.verifiers -= 1
         shutil.rmtree(self._base, ignore_errors=True)
         if self._ref:
             try:
@@ -141,6 +143,7 @@ class Sandboxes:
         self.reflector = Reflector(core, self)
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
         self.to_suspend: set[str] = set()    # to stop once nothing live uses them
+        self.verifiers = 0                   # verifier sandboxes in use
         self._locks: dict[str, asyncio.Lock] = {}
 
     def lock(self, name: str) -> asyncio.Lock:

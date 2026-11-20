@@ -170,7 +170,7 @@ def failing_integration() -> ScriptedRuntime:
 def test_a_failed_integration_offers_send_back_to_everything_it_was_built_on():
     rt = failing_integration()
     assert rt.actions("integration") == [
-        "answer", "retry", "send_back:stage:delivery", "send_back:stage:plan",
+        "answer", "retry", "rerun:provision", "send_back:stage:delivery", "send_back:stage:plan",
         "send_back:stage:requirements", "abandon"]
 
 

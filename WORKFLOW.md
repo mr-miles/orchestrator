@@ -530,16 +530,19 @@ change record; the build log in `control/logs/provision.log`.
 From then on every sandbox of a mapped role is created from its profile's image, with its
 network policies in the sandbox policy and its resources; unmapped roles keep the defaults.
 
-The build is fixed at provisioning: later library edits do not reach it. A decision owner can
-rebuild it with the change-level action `reprovision` (a reason of ≥24 chars), which resolves the
-H-E1-approved spec against the current library again, e.g. after a library entry was fixed. It
-does not change the spec: a tool or policy the spec does not name needs a plan revision and a
-new H-E1. New runs of mapped roles wait from the request on; provisioning starts once their live
-runs have ended and nothing is verifying or merging, and the old build stays in place until the
-new one is accepted. Sandboxes kept across cycles by mapped roles (implementers) are then
-released, after their agent reflects, so each node's next run starts fresh in the new build and
-continues from its pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps
-its session to H-2 through H-E1 and provisioning.
+The build is fixed at provisioning: later library edits do not reach it. When a step escalates
+because of its environment (an agent BLOCKED for a missing tool, a verifier command not found,
+a failed setup), a decision owner may answer by **provisioning again** (`rerun:provision`, a
+reason of ≥24 chars): the provision step runs again in place – the H-E1-approved spec resolved
+against the current library again, e.g. after a library entry was fixed – while what was built
+on it stands, and the escalated step is retried in the new build. It does not change the spec:
+a tool or policy the spec does not name needs a plan revision and a new H-E1. It is offered
+only as an escalation's answer. Provisioning starts once no run of a mapped role is live and no
+verifier sandbox is in use; meanwhile new runs of mapped roles and verifications wait for it.
+Sandboxes kept across cycles by mapped roles (implementers) are then released, after their
+agent reflects, so each node's next run starts fresh in the new build and continues from its
+pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps its session to H-2
+through H-E1 and provisioning. A failure escalates the provision step like any other.
 
 ### 5.3c Repository setup: `mise.toml`
 

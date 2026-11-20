@@ -42,7 +42,7 @@ def round_(n: int) -> Stage:
 def legion(tier: str = "R3") -> Workflow:
     """The change's structure (plan §3): requirements, plan (design, oracle), delivery."""
     low = tier in ("R0", "R1")
-    oracle = [] if low else [Stage("oracle-tests", [Step("provision"), Step("oracle"),
+    oracle = [] if low else [Stage("oracle-tests", [Step("provision", rerunnable=True), Step("oracle"),
                                                      Step("preflight"), Step("baseline")],
                                    gate=Gate("H-2", subjects=["oracle"], preconditions=True),
                                    feedback_to="oracle")]
@@ -112,7 +112,7 @@ def test_an_escalated_step_offers_every_enclosing_stage_to_send_back():
     to_h2(rt)
     assert rt.waiting() == [Waiting("preflight", "verify_unrunnable", "preflight: verify_unrunnable")]
     # what its work was built on, nearest first: its stage, the design before it, the plan, …
-    assert rt.actions("preflight") == ["answer", "retry", "send_back:oracle-tests",
+    assert rt.actions("preflight") == ["answer", "retry", "rerun:provision", "send_back:oracle-tests",
                                        "send_back:design", "send_back:plan",
                                        "send_back:requirements", "abandon"]
     assert rt.actions("H-2") == []                                  # not reached
@@ -134,6 +134,29 @@ def test_retry_runs_the_step_again_in_the_same_attempt():
     rt.act("intake", "retry")
     assert RetryStep("intake") in rt.log and rt.attempt("intake") == 1
     assert rt.waiting() == [Waiting("H-1", "approval")]
+
+
+def test_an_escalation_answered_by_running_an_earlier_step_again_in_place():
+    """Provisioning built again: it runs a new attempt while what was built on it stands (no
+    reset, no stage reopened), and the escalated step is retried."""
+    rt = ScriptedRuntime(legion(), steps={"T1": ["escalate:blocked", "ok"]},
+                         hold={"provision"}).start()
+    to_h2(rt)
+    rt.finish("provision")
+    rt.act("H-2", "approve")
+    assert rt.status("T1") == "escalated"
+    assert "rerun:provision" in rt.actions("T1")
+    assert not [a for a in rt.actions("H-2") if a.startswith("rerun:")]    # only at escalations
+    rt.hold.add("provision")
+    rt.act("T1", "rerun:provision", text="the uv library entry was fixed")
+    assert StartStep("provision", 2, ("the uv library entry was fixed",), rerun=True) in rt.log
+    assert RetryStep("T1") in rt.log and Record("rerun", "provision", "human",
+                                                "the uv library entry was fixed") in rt.log
+    assert rt.status("provision") == "running" and rt.status("oracle") == "done"
+    assert rt.status("plan") == "done" and rt.flow.violations() == []
+    rt.finish("provision")
+    assert rt.status("provision") == "done" and rt.status("T1") == "done"
+    assert rt.flow.violations() == []
 
 
 def test_override_accepts_a_build_and_its_dependants_go_on():
@@ -203,7 +226,7 @@ def test_restarting_the_plan_from_a_round_removes_every_round():
     to_h3(rt.start())
     rt.act("integration", "send_back:delivery", text="fix it")
     rt.act("H-E1-2", "approve")
-    assert rt.actions("preflight-2") == ["answer", "retry", "send_back:oracle-tests-2",
+    assert rt.actions("preflight-2") == ["answer", "retry", "rerun:provision", "send_back:oracle-tests-2",
                                          "send_back:design-2", "send_back:round-2",
                                          "send_back:delivery", "send_back:plan",
                                          "send_back:requirements", "abandon"]

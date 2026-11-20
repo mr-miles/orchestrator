@@ -25,6 +25,7 @@ def table(cls) -> dict[str, tuple[set[str], str]]:
 def test_the_step_machine():
     assert table(StepState) == {
         "start": ({"pending"}, "running"),
+        "rerun": ({"done"}, "running"),
         "rework": ({"running"}, "running"),
         "complete": ({"running"}, "done"),
         "escalate": ({"running"}, "escalated"),

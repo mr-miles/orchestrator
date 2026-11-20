@@ -379,7 +379,7 @@ class FlowRuntime:
             source, atts = self._feedback.pop(text, ("feedback", []))
             feedback.append(Feedback(cycle=node.cycle, source=source, text=text,
                                      attestations=atts))
-        self.runner.start(node, feedback)
+        self.runner.start(node, feedback, rerun=e.rerun)
 
     # ------------------------------------------------------------------ from the step runner
     def completed(self, node: Node) -> None:

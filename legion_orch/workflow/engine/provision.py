@@ -21,9 +21,7 @@ from ..model import (
     ACCEPTED,
     H_ENV,
     LIVE_RUN,
-    MERGING,
     RUNNING,
-    VERIFYING,
     Change,
     EnvironmentBuild,
     Node,
@@ -99,17 +97,15 @@ class Provisioner:
                 driver_config=driver_config(c.cfg, prof.resources))
         return plan
 
-    async def provision(self, node: Node, *, rebuild: bool = False,
-                        dispatch=None) -> PhaseResult | None:
-        """Build the approved environment for ``node`` (the plan's, or a fix round's), then check
-        the setup (G-PV3). The result goes back to the BuildImages phase; None: the node was
-        stopped meanwhile. ``rebuild``: reprovisioning an accepted environment (a change-level
-        operation: the node is not run again). ``dispatch``: the step's dispatcher, for the
-        setup's verification."""
+    async def provision(self, node: Node, *, dispatch=None) -> PhaseResult | None:
+        """Build the approved environment for ``node`` (the plan's, a fix round's, or the same
+        again – an escalation answered by running the step again), then check the setup
+        (G-PV3). The result goes back to the BuildImages phase; None: the node was stopped
+        meanwhile. ``dispatch``: the step's dispatcher, for the setup's verification."""
         c = self.c
 
         def current() -> bool:
-            return c.nodes.get(node.id) is node and (rebuild or node.status == RUNNING)
+            return c.nodes.get(node.id) is node and node.status == RUNNING
         async with c.lock:
             if not current():
                 return None
@@ -185,41 +181,17 @@ class Provisioner:
             return Ok()
 
     def environment_quiescent(self) -> bool:
-        """Provisioning (or reprovisioning) may start: no run of a role the current build maps
-        is live and nothing is verifying or merging in that build."""
+        """Provisioning may start: no run of a role the current build maps is live and no
+        verifier sandbox is in use (a verification waiting for the build uses none)."""
         c = self.c
         mapped = set(c.change.environment.roles) if c.change.environment else set()
         return not any(r.status in LIVE_RUN and r.role in mapped for r in c.runs.values()) \
-            and not any(n.status in (VERIFYING, MERGING) for n in c.nodes.values())
+            and not self.lifecycle.sandboxes.verifiers
 
     def waits_for_environment(self, role: str) -> bool:
-        """A role the provisioned environment maps waits while it is being built or rebuilt
-        (``reprovision``), so no sandbox starts from the old build or the default image."""
+        """A role the provisioned environment maps waits while it is being built again (its
+        provision step running again, or a fix round's not done), so no sandbox starts from the
+        old build."""
         c = self.c
         prov, env = c.current(PROVISION_KIND), c.change.environment
-        return bool(prov and env and role in env.roles
-                    and (prov.status != ACCEPTED or c.change.reprovision))
-
-    def start_requested_rebuild(self) -> None:
-        """A requested reprovisioning starts once nothing uses the build."""
-        c = self.c
-        if c.change.reprovision == "requested" and self.environment_quiescent():
-            c.change.reprovision = "running"
-            c.spawn(self.rebuild())
-
-    async def rebuild(self) -> None:
-        """Reprovisioning (a change-level operation, requested by a decision owner): the
-        accepted environment is built again from its approved spec against the current
-        library. The provision node stays accepted; a failure is reported and the old build
-        stays in place."""
-        c = self.c
-        node = c.current(PROVISION_KIND)
-        result = await self.provision(node, rebuild=True) if node else None
-        async with c.lock:
-            c.change.reprovision = None
-            if isinstance(result, Escalate):
-                c.event("provision", f"reprovisioning failed, the earlier build stays: "
-                        f"{result.question}", node.id if node else None)
-            else:
-                c.event("provision", "reprovisioned", node.id if node else None)
-            c.save()
+        return bool(prov and env and role in env.roles and prov.status != ACCEPTED)

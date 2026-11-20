@@ -37,7 +37,7 @@ flowchart TB
         subgraph svc["Services the layers call"]
             agents["AgentRuns<br/><i>an agent's Work: run record, payload,<br/>commands; what the run did</i>"]
             reports["Reports<br/><i>agent writes and reports, shared guards</i>"]
-            prov["Provisioner<br/><i>environment images, is it quiet,<br/>reprovisioning</i>"]
+            prov["Provisioner<br/><i>environment images, is it quiet,<br/>who waits for it</i>"]
             life["RunLifecycle<br/><i>failure, timers, logs, retiring</i>"]
             gates["HumanGates<br/><i>what approving each gate decides</i>"]
         end
@@ -111,8 +111,8 @@ dispatcher, then the work itself; then it hands its result up. An agent's run en
 agent ends its turn (its process exits); two timers stop an agent that does not: the run
 timeout while it is live, and a grace period after its report was accepted. What follows from
 the change's state is done on each save (housekeeping): an ended change's retrospective queued
-and its cleanup started, kept sandboxes whose hold ended released, a requested reprovisioning
-started, a released step's sandboxes suspended once idle. The controller's only timer sends
+and its cleanup started, kept sandboxes whose hold ended released, a released step's sandboxes
+suspended once idle. The controller's only timer sends
 the attention reminders.
 
 The participants, left to right:
@@ -414,6 +414,11 @@ flowchart LR
 built on. Requirements, Plan, Design and Oracle **start over**; Delivery **appends a round** – a
 Round stage (its own Design, Oracle and tasks, ids `@n`) inserted before integration.
 
+**Run again in place** (`rerun:<step>`) is offered on an escalated step for each earlier, done
+step declared `rerunnable` – provisioning only: the approved spec built again. That step starts a
+new attempt (done → running) while what was built on it stands – nothing is reset, no stage
+reopens – and the escalated step is retried; steps that need the environment wait for it.
+
 Every node is one of three small state machines; each status change is a named transition that
 declares its source statuses (`flow/states.py`):
 
@@ -431,6 +436,7 @@ stateDiagram-v2
         done --> pending : reset
         running --> pending : reset
         escalated --> pending : reset
+        done --> running : rerun (in place)
     }
     state "Gate" as G {
         [*] --> g_pending

@@ -12,6 +12,9 @@ class Step:
     """One unit of work. The core only knows its id and what humans may do with it."""
     id: str
     overridable: bool = False          # a human may accept it without its own checks (builds)
+    # done, it may run again in place – as a later escalated step's answer – while what was
+    # built on it stands (provisioning: the same approved spec, built again)
+    rerunnable: bool = False
     depends_on: list[str] = field(default_factory=list)   # within its Parallel group
 
 

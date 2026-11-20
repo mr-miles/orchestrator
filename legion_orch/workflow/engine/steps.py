@@ -305,10 +305,11 @@ class StepRunner:
         return step_for(node)
 
     # ------------------------------------------------------------------ from the runtime (down)
-    def start(self, node: Node, feedback: list[Feedback]) -> None:
+    def start(self, node: Node, feedback: list[Feedback], rerun: bool = False) -> None:
         """The core started the node's step: a new cycle if it ran before, with the feedback
         it was sent back with. An agent that ran continues in its kept session (REWORK); a
-        round's step that has nothing to redo stands; anything else enters its first phase."""
+        round's step that has nothing to redo stands (not one run again in place, ``rerun``: its
+        work is wanted again); anything else enters its first phase."""
         if node.runs or node.status != PENDING:
             node.cycle += 1
             node.candidate_sha = node.accepted_sha = None
@@ -322,7 +323,7 @@ class StepRunner:
             step.phases[0].start(self, node)
             return
         self.states.reset(node)
-        if step.stands and step.stands.holds(self.c, node):
+        if step.stands and not rerun and step.stands.holds(self.c, node):
             self.c.event(step.stands.kind, step.stands.why, node.id)
             step.stands.keep(self.c, node)
             self.accept(node)
@@ -446,14 +447,12 @@ class StepRunner:
             phase.recover(self, node)
 
     def housekeeping(self, active: bool) -> None:
-        """On a save: kept sandboxes whose hold ended are released; a requested reprovisioning
-        starts; once the change has ended, the steps that do not run after it give their
-        reservations back."""
+        """On a save: kept sandboxes whose hold ended are released, a released step's idle
+        sandboxes stopped; once the change has ended, the steps that do not run after it give
+        their reservations back."""
         self.lifecycle.release_sandboxes()
         self.lifecycle.sandboxes.suspend_due()
-        if active:
-            self.provisioner.start_requested_rebuild()
-        else:
+        if not active:
             for nid in [n for n in self._steps
                         if n not in self.c.nodes or not step_for(self.c.nodes[n]).runs_after_end]:
                 self._steps.pop(nid).reservation.release()
