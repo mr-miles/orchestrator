@@ -327,8 +327,7 @@ classDiagram
         rework_resume
         runs_after_end
         role()
-        judges(change)
-        current(node) Phase
+        phase_in(status) Phase
         after(phase) Phase
     }
     class StepRunner {
@@ -352,6 +351,7 @@ classDiagram
         retry()
         at(phase) ActivePhase
         current() ActivePhase
+        judges()
         run(phase)
         wait_until(phase, ready)
         move(status)

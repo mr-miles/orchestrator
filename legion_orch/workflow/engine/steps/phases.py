@@ -762,7 +762,7 @@ class Merging(ActivePhase):
         from ..services import cleanup
         c = self.c
         sha = node.candidate_sha
-        result = await self.phase.run(self.ctx, node, self.step.type.judges(c))
+        result = await self.phase.run(self.ctx, node, self.step.judges())
         if isinstance(result, Ok):
             node.accepted_sha = sha
             run = c.runs.get(node.current_run) if node.current_run else None

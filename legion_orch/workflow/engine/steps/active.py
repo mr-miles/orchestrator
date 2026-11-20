@@ -28,7 +28,7 @@ from ...results import Escalate, Redo, Rework
 from ..base.common import WorkflowError
 from ..base.dispatch import StepDispatcher, Withdrawn
 from .node_states import WAITING, IllegalNodeTransition
-from .phases import ActivePhase, Merge, Phase, PhaseResult
+from .phases import ActivePhase, Merge, Panel, Phase, PhaseResult
 from .step_types import StepType, step_for
 
 if TYPE_CHECKING:
@@ -244,7 +244,7 @@ class ActiveStep:
 
     def current(self) -> ActivePhase | None:
         """Its current phase, as it runs (None: pending, accepted or waiting)."""
-        phase = self.type.current(self.node)
+        phase = self.type.phase_in(self.node.status)
         return self.at(phase) if phase is not None else None
 
     def run(self, phase: ActivePhase,
@@ -260,6 +260,11 @@ class ActiveStep:
                 pass
         self.c.spawn(task())
 
+    def judges(self) -> tuple[str, ...]:
+        """Its panel's judges, for this change (none: it has no panel)."""
+        panel = self.type.phase(Panel)
+        return panel.roles(self.c) if isinstance(panel, Panel) else ()
+
     def may_work(self) -> bool:
         """The change is active (or the step runs after the end)."""
         return self.c.change.status == "ACTIVE" or self.type.runs_after_end
@@ -269,7 +274,7 @@ class ActiveStep:
         replaced, it moved on from the phase, or the change ended."""
         return (phase.dispatch is not None and phase.dispatch.released) \
             or self.c.nodes.get(self.node.id) is not self.node \
-            or self.type.current(self.node) is not phase.phase \
+            or self.type.phase_in(self.node.status) is not phase.phase \
             or not self.may_work()
 
     def waits_hold(self) -> bool:
@@ -359,7 +364,7 @@ class ActiveStep:
         """A human decides; ``resume`` says where it continues once they have. ``expected``: a
         decision that is due (a gate's approval), not a failure."""
         node, to = self.node, resume_status(resume)
-        if not any(to in p.statuses for p in self.type.phases):
+        if self.type.phase_in(to) is None:
             raise IllegalNodeTransition(f"{node.id}: its step has no phase to resume at {resume}")
         self.release()
         self.states.escalate(node, kind, reason, resume, run=run,

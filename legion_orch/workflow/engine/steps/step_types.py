@@ -39,6 +39,7 @@ from ...model import (
     REWORK,
     Node,
     NodeKind,
+    NodeStatus,
     Resume,
 )
 from ..base.core import ChangeCore
@@ -211,15 +212,12 @@ class StepType:
     def phase(self, cls: type[Phase]) -> Phase | None:
         return next((p for p in self.phases if isinstance(p, cls)), None)
 
-    def judges(self, c: ChangeCore) -> tuple[str, ...]:
-        panel = self.phase(Panel)
-        return panel.roles(c) if isinstance(panel, Panel) else ()
-
-    def current(self, node: Node) -> Phase | None:
-        """The phase the node's status says it is in (None: pending, accepted or escalated)."""
-        return next((p for p in self.phases if node.status in p.statuses), None)
+    def phase_in(self, status: NodeStatus) -> Phase | None:
+        """The phase a node is in while it has ``status`` (None: pending, accepted, waiting)."""
+        return next((p for p in self.phases if status in p.statuses), None)
 
     def after(self, phase: Phase) -> Phase | None:
+        """The phase that follows ``phase`` (None: it is the last)."""
         i = next(i for i, p in enumerate(self.phases) if p is phase)
         return self.phases[i + 1] if i + 1 < len(self.phases) else None
 

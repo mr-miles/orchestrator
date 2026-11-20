@@ -100,7 +100,9 @@ def test_waits_and_resume_points():
 @scenario()
 async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Flow):
     f.ce.change.panel = ["reviewer", "security"]
-    judges = {k: s.judges(f.ce) for k, s in STEP_TYPES.items() if s.judges(f.ce)}
+    def judges(kind):
+        return f.ce._runner.of(Node(id=f"N-{kind}", kind=kind, title="x")).judges()
+    judges = {k: judges(k) for k in STEP_TYPES if k != HUMAN and judges(k)}   # a gate: no panel
     assert judges == {PLAN: ("critic",), BUILD: ("reviewer", "security")}
     assert not STEP_TYPES[PLAN].phase(Panel).decides        # the critic's handler decides
 
@@ -129,7 +131,7 @@ def test_verification_is_recorded_per_task_cycle_or_per_node():
 
 def test_the_current_phase_follows_the_node_status():
     build = STEP_TYPES[BUILD]
-    phase = {s: build.current(Node(id="T", kind=BUILD, title="t", status=s))
+    phase = {s: build.phase_in(s)
              for s in (PENDING, READY, REWORK, RUNNING, VERIFYING, REVIEWING, MERGING, ACCEPTED,
                        ESCALATED)}
     assert {s: type(p).__name__ if p else None for s, p in phase.items()} == {
