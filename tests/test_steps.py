@@ -427,3 +427,27 @@ async def test_an_approved_gate_with_unmet_checks_stays_approved_when_rechecked(
         assert n.status == ACCEPTED
     finally:
         ShipGates.evaluate, ShipGates.unmet = real_evaluate, real_unmet
+
+
+@scenario()
+async def test_a_step_cannot_escalate_to_resume_at_a_phase_it_lacks(f: Flow):
+    """The resume point is checked when it is set: a step resumes only in one of its phases."""
+    import pytest
+
+    from legion_orch.workflow.engine.steps.node_states import IllegalNodeTransition
+    rt, n = f.ce._runner, node(f, PROVISION, status=RUNNING)
+    with pytest.raises(IllegalNodeTransition):
+        rt.escalate(n, "x", "why", Resume.REVIEWING)           # provisioning has no panel
+    assert n.status == RUNNING
+    rt.escalate(n, "x", "why", Resume.READY)
+    assert n.status == ESCALATED and n.escalation.resume == Resume.READY
+
+
+@scenario()
+async def test_a_stale_approval_resumes_where_the_agent_was_paused(f: Flow):
+    """G-B1 at a first run resumes it READY (a new run); at a rework, REWORK."""
+    agents = f.ce._agents
+    agents._approval_fresh = lambda: ["H-2 is stale"]
+    first, again = node(f, BUILD, status=READY), node(f, BUILD, id="N-b2", status=REWORK)
+    assert agents.preconditions(first, "implementer").resume == Resume.READY
+    assert agents.preconditions(again, "implementer").resume == Resume.REWORK

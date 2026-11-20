@@ -206,7 +206,7 @@ sequenceDiagram
     HG->>RT: decide(build:T1, answer)
     RT->>Core: act(build:T1, answer)
     Core-->>RT: effects: ResumeStep(build:T1)
-    RT->>SR: resume_escalation(build:T1)
+    RT->>SR: resume(build:T1, answered)
     SR->>Ph: the phase its escalation named starts its work again (a new reservation)
 ```
 
@@ -216,7 +216,9 @@ The core's step and the engine's node are two levels of one state: the core's is
 step underway?), the node's says where inside it the work is. A node leaves `PENDING` exactly when
 its step starts in the core. The node's states are a declared machine (`engine/steps/node_states.py`):
 an illegal move raises, only resuming leaves an escalation, and nothing but the step runner
-writes a status.
+writes a status. Where a step resumes is fixed when it escalates – by the phase it was in, or (a
+service's escalation) by that phase on its behalf – and must be one of its step's phases; nothing
+above the step layer names a phase: the runtime resumes, overrides (the step's merge) or retries.
 
 | Core step | Engine node |
 | --- | --- |
@@ -303,7 +305,9 @@ classDiagram
     class StepRunner {
         start(node, feedback)
         reset(node)
-        resume(node, phase, answered)
+        resume(node, answered)
+        override(node)
+        retry(node)
         dispatcher(node) StepDispatcher
         held(node) escalations
         run(node, work)
@@ -334,7 +338,7 @@ classDiagram
         on_rework: EscalateFailures
         on_setup_failed: SetupFailurePolicy
         notes: Notes
-        judge(result) PhaseResult
+        interpret(result) PhaseResult
         conclude(...)
     }
     class Panel {
@@ -344,8 +348,7 @@ classDiagram
         decide(node) PhaseResult
     }
     class Merge {
-        judges: JudgeSource
-        run(node) PhaseResult
+        run(node, judges) PhaseResult
     }
     class BuildImages
     class Approval {
@@ -379,6 +382,7 @@ classDiagram
     Phase <|-- Produce
     Produce *-- RoleWork
     Panel ..> RoleWork : a judge each
+    Merge ..> Panel : requires its judges' PASS
     Phase <|-- Verify
     Phase <|-- Panel
     Phase <|-- Merge

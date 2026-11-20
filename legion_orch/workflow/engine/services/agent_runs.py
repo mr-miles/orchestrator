@@ -141,7 +141,7 @@ class AgentRuns:
         resume = Resume.REWORK if node.status == REWORK else Resume.READY
         if h.needs_fresh_approval and not (node.task and node.task.scaffold):
             if stale := self._approval_fresh():
-                return Escalate("approval", "; ".join(stale), Resume.REWORK)
+                return Escalate("approval", "; ".join(stale), resume)
         if sandbox_env(ch, role) and (stale_env := governance.stale_environment(self.c)):
             return Escalate("approval", stale_env, resume)
         return None

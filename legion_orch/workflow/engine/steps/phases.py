@@ -4,7 +4,7 @@ escalate (a human decides).
 
 A phase knows three things, and nothing about which kind of node it serves:
 
-* **its work and result** – ``Verify.judge``, ``Panel.decide``, ``Merge.run`` …;
+* **its work and result** – ``Verify.interpret``, ``Panel.decide``, ``Merge.run`` …;
 * **how it is entered** (``enter``): the node's status while the phase runs;
 * **its work** (``start``): a task that awaits what it needs – its step's waits, a slot from
   the step's dispatcher – runs, and hands its result to the step runner.
@@ -584,7 +584,7 @@ class Verify(Phase):
         work = ctx.sandboxes.verifier_work(name, label, sha, commands)
         return verification_of(sha, await (dispatch or ctx.dispatcher).run(work))
 
-    def judge(self, res: Verification, cycle: int, att: str | None) -> PhaseResult:
+    def interpret(self, res: Verification, cycle: int, att: str | None) -> PhaseResult:
         """What the recorded verification (``att``) means. A setup failure is escalated as
         ``setup_failed`` when failures are expected (nothing was built yet that could have
         caused it); otherwise it fails like any command."""
@@ -614,7 +614,7 @@ class Verify(Phase):
     def verified(self, rt: StepRunner, node: Node, res: Verification, att: str) -> None:
         """Under the lock, once the verification is recorded: the phase's result for the node
         (a failed setup: what the policy makes of it)."""
-        result = self.judge(res, node.cycle, att)
+        result = self.interpret(res, node.cycle, att)
         if isinstance(result, Ok):
             for kind, text in self.notes(rt.c, node, res) if self.notes else []:
                 rt.c.event(kind, text, node.id)
@@ -654,8 +654,8 @@ def setup_failed_text(r: CommandResult) -> str:
 class Merge(Phase):
     """G-A1 (verification and every panel PASS at the candidate, unless overridden), G-H1 (the
     integration head is where the controller left it), then the merge into the integration
-    branch; a conflict is rework onto the new head (G-A2). Under the lock. Ok: the new head."""
-    judges: JudgeSource | tuple[str, ...] = ()
+    branch; a conflict is rework onto the new head (G-A2). Under the lock. Ok: the new head.
+    The judges whose PASS it requires are its step's panel's."""
     statuses: ClassVar = frozenset({MERGING})
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
@@ -674,7 +674,7 @@ class Merge(Phase):
             if rt.stale(node, work, self):
                 return
             sha = node.candidate_sha
-            result = await self.run(rt.ctx, node)
+            result = await self.run(rt.ctx, node, rt.step(node).judges(c))
             if isinstance(result, Ok):
                 node.accepted_sha = sha
                 run = c.runs.get(node.current_run) if node.current_run else None
@@ -684,7 +684,7 @@ class Merge(Phase):
             self.conclude(rt, node, result)
             c.save()
 
-    async def run(self, ctx: PhaseContext, node: Node) -> PhaseResult:
+    async def run(self, ctx: PhaseContext, node: Node, judges: tuple[str, ...]) -> PhaseResult:
         c = ctx.c
         sha = node.candidate_sha
         ver = node.current_verification()
@@ -692,7 +692,7 @@ class Merge(Phase):
         if not ver or not ver.ok or ver.sha != sha:
             v.append("G-A1: no passing deterministic verification at candidate")
         if not node.override:
-            for role in _judges(self.judges, c):
+            for role in judges:
                 r = node.review(node.cycle, role)
                 if not r or r.verdict != Verdict.PASS or r.sha != sha:
                     v.append(f"G-A1: no {role} PASS at candidate")

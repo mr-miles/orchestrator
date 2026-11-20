@@ -569,6 +569,15 @@ def test_the_facade_names_none_of_the_step_layer():
     assert used == set(), used
 
 
+def test_the_runtime_names_no_phase():
+    """The runtime starts, resumes, overrides and retries steps; where a step goes on is the
+    step layer's to say, so nothing in runtime/ names a phase's status."""
+    phases = r"\b(RUNNING|VERIFYING|REVIEWING|MERGING|REWORK)\b"
+    for f in sorted((ROOT / "legion_orch/workflow/engine/runtime").glob("*.py")):
+        src = re.sub(r"(StepStatus|ChangeStatus|NodeStatus)\.\w+", "", f.read_text())
+        assert not re.findall(phases, src), f"{f.name} names a phase"
+
+
 def test_governance_and_ship_use_only_the_change_view():
     """They depend on the ChangeView protocol, never on engine internals."""
     from legion_orch.workflow.view import ChangeView

@@ -39,7 +39,6 @@ from ...flow import (
 from ...flow.states import StepStatus
 from ...model import (
     BUILD,
-    MERGING,
     PENDING,
     READY,
     RETRO,
@@ -327,9 +326,9 @@ class FlowRuntime:
                 node = self.c.nodes.get(e.step)
                 if node is not None and node.status in WAITING:
                     if e.override:                 # it finishes its work without its checks
-                        self.runner.resume(node, MERGING)
+                        self.runner.override(node)
                     else:
-                        self.runner.resume_escalation(node, answered=True)
+                        self.runner.resume(node, answered=True)
             elif isinstance(e, RetryStep):
                 node = self.c.nodes.get(e.step)
                 if node is not None and node.status in WAITING:
@@ -378,9 +377,9 @@ class FlowRuntime:
         elif action == "retry":
             self.runner.retry(node)
         elif action == "override":
-            self.runner.resume(node, MERGING)
+            self.runner.override(node)
         else:
-            self.runner.resume_escalation(node, answered=True)
+            self.runner.resume(node, answered=True)
 
     def redo(self, step: str, feedback: Feedback) -> None:
         """A later step found ``step`` wanting: it and everything after it in its stage start

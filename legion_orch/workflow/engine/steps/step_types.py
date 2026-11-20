@@ -245,7 +245,7 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     BASELINE: agent("baseline", HEAD,
                     Verify(BaselineCommands(), expect_failures=True, notes=BaselineWarnings())),
     BUILD: agent("implementer", SandboxPlan(Checkout.BRANCH, UntilAccepted()),
-                 Verify(TaskCommands()), Panel(TierPanel()), Merge(TierPanel()),
+                 Verify(TaskCommands()), Panel(TierPanel()), Merge(),
                  dispatch_when=(NoOverlap(),), rework_resume=Resume.REWORK),
     INTEGRATION: agent("integration", HEAD,
                        Verify(OracleCommands(), on_rework=EscalateFailures(

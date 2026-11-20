@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from ...model import (
     ESCALATED,
     LIVE_RUN,
+    MERGING,
     PENDING,
     R_REPORTED,
     R_SUPERSEDED,
@@ -24,10 +25,12 @@ from ...model import (
     Run,
 )
 from ...results import Escalate, Redo, Rework
+from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 from ..base.dispatch import StepDispatcher, Withdrawn
-from .node_states import WAITING, NodeStates
+from .node_states import WAITING, IllegalNodeTransition, NodeStates
 from .phases import (
+    Merge,
     Phase,
     PhaseContext,
     PhaseResult,
@@ -56,6 +59,13 @@ class StepEvents(Protocol):
 
     def redo(self, step: str, feedback: Feedback) -> None:
         """An earlier step must do its work again (found wanting by this one)."""
+
+
+def resume_status(point: Resume) -> NodeStatus:
+    """The node's status a step resumes in: another cycle is a rework; READY is a new run."""
+    if point in (Resume.CRITIQUE_BUDGET, Resume.REWORK_CYCLE):
+        return REWORK
+    return NodeStatus(point.value)
 
 
 class StepRunner:
@@ -127,25 +137,14 @@ class StepRunner:
         self.release(node)
         self.states.reset(node)
 
-    def resume(self, node: Node, to: NodeStatus, answered: bool = False) -> None:
-        """The node's escalation is resolved – ``answered`` by a human, or retried: its step
-        goes on in the phase ``to``, which takes up its work again (a verification, a merge, a
-        gate's check)."""
-        self.states.resume(node, to)
-        self.runtime.resumed(node)
-        phase = self.step(node).current(node)
-        if phase is not None:
-            phase.resume(self, node, answered)
-
-    def resume_escalation(self, node: Node, answered: bool = False) -> None:
-        """A human answered (the decision is on the node): the step goes on where its
-        escalation said – one more cycle where a budget ran out, the phase it stopped in, or a
-        new run in a new sandbox."""
+    def resume(self, node: Node, answered: bool = False) -> None:
+        """The node's escalation is resolved – ``answered`` by a human, or retried: the step goes
+        on where its escalation said – one more cycle where a budget ran out, the phase it
+        stopped in, or a new run in a new sandbox."""
         point = node.escalation.resume if node.escalation else Resume.READY
         if point == Resume.CRITIQUE_BUDGET:            # one more critique cycle: rework the plan
             node.extra_cycles += 1
             node.cycle += 1
-            self.resume(node, REWORK, answered)
         elif point == Resume.REWORK_CYCLE:             # one more review cycle
             node.extra_cycles += 1
             cur = self.c.runs.get(node.current_run) if node.current_run else None
@@ -153,19 +152,33 @@ class StepRunner:
                 cur.status = R_SUPERSEDED
             node.cycle += 1
             node.candidate_sha = None
-            self.resume(node, REWORK, answered)
-        elif point in (Resume.VERIFYING, Resume.REVIEWING, Resume.MERGING, Resume.REWORK):
-            self.resume(node, NodeStatus(point.value), answered)
-        else:                                          # a new run, in a new sandbox
+        elif resume_status(point) == READY:            # a new run, in a new sandbox
             self.lifecycle.retire_runs(node)
-            self.resume(node, READY, answered)
+        self._go_on(node, resume_status(point), answered)
+
+    def override(self, node: Node) -> None:
+        """A human accepted the escalated step without its own checks: it finishes its work –
+        its merge (only a step that merges can be overridden)."""
+        merge = self.step(node).phase(Merge)
+        if merge is None:
+            raise WorkflowError(f"{node.id}: its step cannot be overridden")
+        self._go_on(node, MERGING, answered=True)
+
+    def _go_on(self, node: Node, to: NodeStatus, answered: bool) -> None:
+        """Out of the escalation into the phase ``to``, which takes up its work again (a
+        verification, a merge, a gate's check)."""
+        self.states.resume(node, to)
+        self.runtime.resumed(node)
+        phase = self.step(node).current(node)
+        if phase is not None:
+            phase.resume(self, node, answered)
 
     def retry(self, node: Node) -> None:
         """Retry: the failed run's sandbox goes first (a failed delete is reported and the
         retry goes ahead in a new sandbox), then the step goes on where its escalation said."""
         old = self._sandbox_to_remove(node)
         if old is None:
-            self.resume_escalation(node)
+            self.resume(node)
             return
         node.escalation.retrying = True
         self.c.spawn(self._retry_after_removing(node.id, old))
@@ -192,7 +205,7 @@ class StepRunner:
                              node_id)
             if node.sandbox == sandbox:
                 node.sandbox = None     # the next run gets a fresh sandbox
-            self.resume_escalation(node)
+            self.resume(node)
             self.c.event("human_action", f"retry: resumed {esc.resume}", node_id)
             self.c.save()
 
@@ -379,6 +392,9 @@ class StepRunner:
                  expected: bool = False) -> None:
         """A human decides; ``resume`` says where the step continues once they have.
         ``expected``: a decision that is due (a gate's approval), not a failure."""
+        to = resume_status(resume)
+        if not any(to in p.statuses for p in self.step(node).phases):
+            raise IllegalNodeTransition(f"{node.id}: its step has no phase to resume at {resume}")
         self.release(node)
         self.states.escalate(node, kind, reason, resume, run=run,
                              missing_decision=missing_decision, log_tail=log_tail, source=source,

@@ -63,12 +63,12 @@ def cmd(command: str, rc: int = 0, *, setup: bool = False) -> CommandResult:
 # ---------------------------------------------------------------------------- Verify.judge
 def test_passing_verification_is_ok():
     res = ver(cmd("setup", setup=True), cmd("pytest"))
-    assert Verify(("pytest",)).judge(res, 1, "att") == Ok(res)
+    assert Verify(("pytest",)).interpret(res, 1, "att") == Ok(res)
 
 
 def test_failing_commands_are_rework_with_one_blocker_each():
     res = ver(cmd("setup", setup=True), cmd("pytest", 1), cmd("ruff", 2), cmd("mypy"))
-    result = Verify(("pytest", "ruff", "mypy")).judge(res, 3, "file:v@1")
+    result = Verify(("pytest", "ruff", "mypy")).interpret(res, 3, "file:v@1")
     assert isinstance(result, Rework) and result.source == "verification"
     assert [fb.text.split(":")[0] for fb in result.feedback] == ["BLOCKER", "BLOCKER"]
     assert "`pytest` exited 1" in result.feedback[0].text
@@ -76,31 +76,31 @@ def test_failing_commands_are_rework_with_one_blocker_each():
 
 
 def test_an_infrastructure_error_escalates_to_verify_again():
-    result = Verify(("pytest",)).judge(ver(infra="gateway down"), 1, None)
+    result = Verify(("pytest",)).interpret(ver(infra="gateway down"), 1, None)
     assert result == Escalate("verify_infra", "gateway down", Resume.VERIFYING)
 
 
 def test_a_missing_command_escalates_without_spending_a_cycle():
-    result = Verify(("bun test",)).judge(ver(cmd("bun test", 127)), 1, None)
+    result = Verify(("bun test",)).interpret(ver(cmd("bun test", 127)), 1, None)
     assert isinstance(result, Escalate) and result.kind == "verify_unrunnable"
     assert "`bun test`" in result.question and "out of bun test" in result.log_tail
     # a setup that is not found is the setup failing, not the image lacking a command
-    result = Verify((), expect_failures=True).judge(ver(cmd("setup", 127, setup=True)), 1, None)
+    result = Verify((), expect_failures=True).interpret(ver(cmd("setup", 127, setup=True)), 1, None)
     assert result.kind == "setup_failed"
 
 
 def test_expected_failures_are_ok_but_a_failed_setup_is_not():
     phase = Verify(("pytest",), expect_failures=True)
     res = ver(cmd("setup", setup=True), cmd("pytest", 1))
-    assert phase.judge(res, 1, None) == Ok(res)
-    result = phase.judge(ver(cmd("mise run setup", 1, setup=True)), 1, None)
+    assert phase.interpret(res, 1, None) == Ok(res)
+    result = phase.interpret(ver(cmd("mise run setup", 1, setup=True)), 1, None)
     assert isinstance(result, Escalate) and result.kind == "setup_failed"
     assert result.question.startswith("G-V3: the repository's setup `mise run setup` exited 1")
     assert result.resume == Resume.VERIFYING
 
 
 def test_a_failed_setup_in_a_build_fails_like_any_command():
-    result = Verify(("pytest",)).judge(ver(cmd("mise run setup", 1, setup=True)), 1, "att")
+    result = Verify(("pytest",)).interpret(ver(cmd("mise run setup", 1, setup=True)), 1, "att")
     assert isinstance(result, Rework) and "`mise run setup` exited 1" in result.feedback[0].text
 
 
@@ -217,7 +217,7 @@ async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
 async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow):
     node = task(f)
     judged(node, "reviewer", Verdict.PASS, sha=SHA)
-    result = await Merge(("reviewer", "security")).run(ctx(f), node)
+    result = await Merge().run(ctx(f), node, ("reviewer", "security"))
     assert isinstance(result, Escalate) and result.kind == "accept_guard"
     assert result.question.split("; ") == [
         "G-A1: no passing deterministic verification at candidate",
@@ -229,7 +229,7 @@ async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow)
 async def test_an_override_waives_the_panel_but_not_verification(f: Flow):
     from legion_orch.workflow.model import Override
     node = task(f, override=Override(approver="miles", reason="trusted", sha=CAND))
-    result = await Merge(("reviewer",)).run(ctx(f), node)
+    result = await Merge().run(ctx(f), node, ("reviewer",))
     assert result.question == "G-A1: no passing deterministic verification at candidate"
 
 
@@ -238,7 +238,7 @@ async def test_merge_stops_when_the_integration_head_moved(f: Flow):
     node = task(f)
     node.verification["1"] = Verification(sha=CAND, ok=True)
     f.ce.change.integration_head = SHA                     # not where the branch is
-    result = await Merge(()).run(ctx(f), node)
+    result = await Merge().run(ctx(f), node, ())
     assert isinstance(result, Escalate) and result.kind == "head_moved"
     assert result.resume == Resume.MERGING
 
