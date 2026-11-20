@@ -6,10 +6,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 
 from ..model import ACCEPTED, Node
 from .core import ChangeCore
-from .workflow_tree import in_round
+from .ids import in_round
 
 
 class Checkout(StrEnum):
@@ -79,3 +80,14 @@ class SandboxPlan:
 
 
 JUDGE = SandboxPlan(Checkout.CANDIDATE)
+
+
+class Plans(Protocol):
+    """Which plan applies – the step types know (:class:`.steps.StepPlans`); the sandbox layer
+    and the agent runs are given it, so they never ask the step layer."""
+
+    def for_role(self, role: str) -> SandboxPlan:
+        """Where a run of ``role`` works (a judge: :data:`JUDGE`)."""
+
+    def for_node(self, node: Node) -> SandboxPlan | None:
+        """The plan of the node's producer (None: it has no agent)."""

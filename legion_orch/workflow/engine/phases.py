@@ -18,10 +18,10 @@ the next.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe
+from ...sandbox import VERIFIER_PREFIX
 from .. import governance
 from ..environment import VERIFIER
 from ..model import (
@@ -50,8 +50,8 @@ from ..results import Escalate, Ok, PhaseResult, Redo, Rework
 from ..ship import evaluate
 from .common import _slug
 from .core import ChangeCore
+from .ids import in_round
 from .work import COMMAND, PREPARE, SETUP, Outcome
-from .workflow_tree import in_round
 
 if TYPE_CHECKING:
     from .agent_runs import AgentRuns, Ended
@@ -99,6 +99,11 @@ class Phase:
         """Its step's escalation was resolved – ``answered`` by a human, or retried – and it
         goes on in this phase."""
         self.start(rt, node)
+
+    def resume_after(self, rt: StepRunner, node: Node, escalation: Escalate) -> Resume:
+        """Where the step resumes after an escalation in this phase that did not say (a failed
+        run, a BLOCKED report): by default where its step reworks."""
+        return rt.step(node).rework_resume
 
     def conclude(self, rt: StepRunner, node: Node, result: PhaseResult | None) -> None:
         """The phase's result goes to the step runner: ok passes the phase, anything else is
@@ -388,6 +393,11 @@ class Panel(Phase):
         if isinstance(after, Verify):
             rt.c.event("review", f"verification passed; panel {list(roles)}", node.id)
         self.start(rt, node)
+
+    def resume_after(self, rt: StepRunner, node: Node, escalation: Escalate) -> Resume:
+        """A judge's failed run: the panel again (its other judges' reviews stand); a judge's
+        BLOCKED report: where the step reworks."""
+        return Resume.REVIEWING if escalation.kind == "run_failed" else rt.step(node).rework_resume
 
     def _latest(self, c: ChangeCore, node: Node, role: str) -> Run | None:
         """The role's latest run at the node's cycle."""
@@ -706,11 +716,8 @@ class Merge(Phase):
 # ---------------------------------------------------------------------------- environment
 @dataclass(eq=False)
 class BuildImages(Phase):
-    """Build (or find) the image of each recipe. Ok: recipe tag -> image reference. ``log``
-    keeps what was built, for the provisioning record. As a step's phase: provisioning, once
-    dispatched (the provisioner resolves the recipes and checks the setup, G-PV3)."""
-    recipes: dict[str, ImageRecipe] = field(default_factory=dict)
-    log: list[str] = field(default_factory=list)
+    """Provisioning, as a step's phase: once its waits hold, the provisioner builds the approved
+    environment's images and checks the setup (G-PV1, G-PV3); its result is the phase's."""
     statuses: ClassVar = frozenset({READY, RUNNING})
 
     def start(self, rt: StepRunner, node: Node) -> None:
@@ -734,18 +741,6 @@ class BuildImages(Phase):
             if result is not None and not rt.stale(node, work, self) and node.status == RUNNING:
                 self.conclude(rt, node, result)
                 c.save()
-
-    async def run(self, ctx: PhaseContext) -> PhaseResult:
-        images: dict[str, str | None] = {}
-        try:
-            for tag, recipe in self.recipes.items():
-                self.log.append(f"## image {tag}\n\n{recipe.files['Dockerfile']}")
-                images[tag], out = await ctx.c.svc.builder.ensure_image(recipe)
-                self.log.append(out)
-        except (BuildError, OSError) as e:
-            return Escalate("provision_failed", f"G-PV1: {e}"[:2000], Resume.READY,
-                            log_tail="\n".join(self.log)[-4000:] or None)
-        return Ok(images)
 
 
 # ---------------------------------------------------------------------------- gates

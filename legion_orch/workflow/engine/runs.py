@@ -16,7 +16,6 @@ from ..model import (
     R_SUPERSEDED,
     FailureSource,
     Node,
-    Resume,
     Run,
     RunFailure,
 )
@@ -24,7 +23,6 @@ from ..results import Escalate
 from ..roles import handler_for
 from .common import _parse_ts
 from .core import ChangeCore
-from .steps import step_for
 
 if TYPE_CHECKING:
     from .sandboxes import Sandboxes
@@ -171,17 +169,15 @@ class RunLifecycle:
             self.c.spawn(self.sandboxes.delete(run.sandbox))
 
     def escalation(self, run: Run) -> Escalate:
-        """What a failed run means for its step: a human decides (no automatic retries)."""
+        """What a failed run means: a human decides (no automatic retries); where the step
+        resumes is the step's to say."""
         f = run.failure
         source = f.source if f else FailureSource.SYSTEM
         where = f" while {f.stage.lower()}" if f and f.stage and f.stage != "EXITED" else ""
         who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
-        node = self.c.nodes.get(run.node_id)
-        resume = (Resume.REVIEWING if handler_for(run.role).panel or node is None
-                  else step_for(node).rework_resume)
         return Escalate("run_failed", f"{who} ({source.lower()} error{where}): "
-                        f"{f.reason if f else 'failed'}", resume, log_tail=self.log_tail(run.id, 40),
-                        run=run.id, source=source)
+                        f"{f.reason if f else 'failed'}", None, log_tail=self.log_tail(run.id, 40),
+                        run=run.id, source=source)     # where it resumes: its step's decision
 
     def archive_log(self, run: Run) -> None:
         """Move the whole agent log into the store (agents cannot read control/logs/), in parts

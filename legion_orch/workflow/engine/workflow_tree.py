@@ -33,6 +33,7 @@ from ..model import (
     RELEASE,
     NodeKind,
 )
+from .ids import base_id, in_round, round_of, stage_id, stage_title  # noqa: F401  (re-exported)
 
 TASKS, SCAFFOLD = "tasks", "scaffold"          # the parallel groups of build steps
 
@@ -51,33 +52,6 @@ NODES: dict[str, tuple[NodeKind, str]] = {
     RELEASE: (NodeKind.RELEASE, "Release & rollback plan"),
     H_CHANGE: (HUMAN, "Accept the change"),
 }
-
-
-def stage_id(name: str, n: int = 1) -> str:
-    return f"stage:{name}" if n == 1 else f"stage:{name}@{n}"
-
-
-def in_round(nid: str, n: int) -> str:
-    """A node's id in fix round ``n`` (round 1 is the original work)."""
-    return nid if n == 1 else f"{nid}@{n}"
-
-
-def stage_title(sid: str) -> str:
-    """``stage:design@2`` -> ``Design (round 2)``; ``stage:round@2`` -> ``Round 2``."""
-    name, n = base_id(sid).removeprefix("stage:"), round_of(sid)
-    if name == "round":
-        return f"Round {n}"
-    return name.capitalize() + (f" (round {n})" if n > 1 else "")
-
-
-def round_of(nid: str) -> int:
-    base, _, n = nid.rpartition("@")
-    return int(n) if base and n.isdigit() else 1
-
-
-def base_id(nid: str) -> str:
-    """The id without its round suffix."""
-    return nid.rpartition("@")[0] if round_of(nid) > 1 else nid
 
 
 def _design(n: int) -> Stage:

@@ -15,9 +15,10 @@ node's kind; the table at the bottom is the only per-kind knowledge.
 """
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from ...git import paths_overlap
 from ..model import (
@@ -55,6 +56,7 @@ from ..model import (
 from ..results import Escalate, Redo, Rework
 from .core import ChangeCore
 from .dispatch import StepDispatcher, Withdrawn
+from .ids import base_id
 from .node_states import WAITING, NodeStates
 from .phases import (
     AcceptanceCommands,
@@ -82,12 +84,10 @@ from .phases import (
     Verify,
 )
 from .sandbox_plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
-from .workflow_tree import base_id
 
 if TYPE_CHECKING:
     from .provision import Provisioner
     from .runs import RunLifecycle
-    from .runtime import FlowRuntime
 
 
 # ---------------------------------------------------------------------------- waits
@@ -165,7 +165,7 @@ class EnvironmentUnchanged(Stands):
 # ---------------------------------------------------------------------------- resets
 class Reset:
     """What a send-back undoes when it resets a step (the node starting over is generic:
-    :meth:`.FlowRuntime._reset_node`). Once per send-back, whichever of its steps it is on."""
+    the step runner's). Once per send-back, whichever of its steps it is on."""
 
     def applies(self, c: ChangeCore, node: Node) -> bool:
         return True
@@ -296,7 +296,34 @@ def sandbox_plan(role: str) -> SandboxPlan:
     return _PRODUCERS.get(role, JUDGE)
 
 
+class StepPlans:
+    """The sandbox plans the step types declare, for the layers below (:class:`.Plans`)."""
+
+    def for_role(self, role: str) -> SandboxPlan:
+        return sandbox_plan(role)
+
+    def for_node(self, node: Node) -> SandboxPlan | None:
+        return step_for(node).sandbox
+
+
 # ---------------------------------------------------------------------------- the runner
+class StepEvents(Protocol):
+    """What the step runner tells the layer above it (the workflow runtime implements it): a
+    step crossed one of its states. The runner calls nothing else above it."""
+
+    def completed(self, node: Node) -> None:
+        """The step is done (its last phase passed, or a round's step stands)."""
+
+    def escalated(self, node: Node) -> None:
+        """The step waits for a human."""
+
+    def resumed(self, node: Node) -> None:
+        """The step's escalation was resolved: it goes on."""
+
+    def redo(self, step: str, feedback: Feedback) -> None:
+        """An earlier step must do its work again (found wanting by this one)."""
+
+
 class StepRunner:
     """The step layer: moves nodes through their step's phases and owns their states. Above it
     the workflow runtime starts, stops, resets and resumes steps; below it the phases do their
@@ -311,7 +338,7 @@ class StepRunner:
                  provisioner: Provisioner):
         self.c, self.ctx, self.lifecycle, self.provisioner = core, ctx, lifecycle, provisioner
         self.states = NodeStates()
-        self.runtime: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
+        self.runtime: StepEvents = None  # type: ignore[assignment]   # set once it exists
         self._steps: dict[str, StepDispatcher] = {}   # node -> its step's dispatcher
         # (node, cycle) -> role -> a judge's escalation, held until the panel's others finish
         self._held: dict[tuple[str, int], dict[str, Escalate]] = {}
@@ -571,6 +598,11 @@ class StepRunner:
             if result.base and node.status == REWORK:
                 node.base_sha = result.base
         elif isinstance(result, Escalate):
+            if result.resume is None:            # a service's: where it resumes is the step's
+                phase = self.step(node).current(node)
+                result = dataclasses.replace(result, resume=(
+                    phase.resume_after(self, node, result) if phase is not None
+                    else self.step(node).rework_resume))
             node.feedback += result.feedback
             self.escalate(node, result.kind, result.question, result.resume, run=result.run,
                           missing_decision=result.missing_decision, log_tail=result.log_tail,

@@ -26,9 +26,9 @@ from ..model import (
     Run,
 )
 from .common import log
+from .ids import base_id
 from .services import EngineHost, Services
 from .state import StateStore
-from .workflow_tree import base_id
 
 if TYPE_CHECKING:
     pass

@@ -32,11 +32,12 @@ class Rework:
 
 @dataclass(frozen=True)
 class Escalate:
-    """A human decides; ``resume`` says where the node continues once they have. ``feedback``
-    is kept on the node for the producer's next cycle; ``run``: the run it is about."""
+    """A human decides; ``resume`` says where the node continues once they have (None: its step
+    decides – a service reporting a failure does not know the step). ``feedback`` is kept on
+    the node for the producer's next cycle; ``run``: the run it is about."""
     kind: str
     question: str
-    resume: Resume
+    resume: Resume | None
     log_tail: str | None = None
     feedback: list[Feedback] = field(default_factory=list)
     run: str | None = None

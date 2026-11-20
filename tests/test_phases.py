@@ -7,7 +7,6 @@ from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import ImageRecipe, Tool
 from legion_orch.workflow.engine.phases import (
-    BuildImages,
     Escalate,
     Merge,
     Ok,
@@ -252,18 +251,17 @@ def recipe(f: Flow, tool: str) -> ImageRecipe:
 
 @scenario()
 async def test_images_are_built_and_logged(f: Flow):
-    r = recipe(f, "uv")
-    phase = BuildImages({r.tag: r})
-    result = await phase.run(ctx(f))
+    r, log = recipe(f, "uv"), []
+    result = await f.ce._provisioner.build_images({r.tag: r}, log)
     assert result == Ok({r.tag: r.tag}) and f.builder.built == [r.tag]
-    assert phase.log[0].startswith(f"## image {r.tag}") and phase.log[1] == f"built {r.tag}"
+    assert log[0].startswith(f"## image {r.tag}") and log[1] == f"built {r.tag}"
 
 
 @scenario()
 async def test_a_failed_build_escalates_with_the_log(f: Flow):
     r = recipe(f, "uv")
     f.builder.fail = "apt-get failed"
-    result = await BuildImages({r.tag: r}).run(ctx(f))
+    result = await f.ce._provisioner.build_images({r.tag: r}, [])
     assert isinstance(result, Escalate) and result.kind == "provision_failed"
     assert result.question == "G-PV1: apt-get failed" and result.resume == Resume.READY
     assert f"## image {r.tag}" in result.log_tail

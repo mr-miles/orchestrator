@@ -28,7 +28,6 @@ from ..view import RoleContext
 from .common import WorkflowError, log
 from .core import ChangeCore
 from .runs import RunLifecycle
-from .steps import step_for
 
 
 @dataclass
@@ -247,7 +246,7 @@ class Reports:
             with self.c.st.transaction():
                 if run.report.status == ReportStatus.BLOCKED:
                     return Escalate(
-                        "blocked", run.report.blocked_reason or "", step_for(node).rework_resume,
+                        "blocked", run.report.blocked_reason or "", None,  # the step resumes it
                         run=run.id, missing_decision=run.report.missing_decision)
                 # what the role's report means (see workflow/roles/)
                 report = self._accepted.pop(run.id, None) or await self._recheck(run, node)

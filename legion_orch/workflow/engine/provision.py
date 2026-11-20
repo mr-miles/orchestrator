@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...sandbox import ImageRecipe, SandboxEnv, driver_config, policy_entry
+from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
 from .. import guards
 from ..assets import GitMode
 from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
@@ -22,7 +22,6 @@ from ..model import (
     H_ENV,
     LIVE_RUN,
     RUNNING,
-    Change,
     EnvironmentBuild,
     Node,
     Resume,
@@ -32,8 +31,10 @@ from ..model import PROVISION as PROVISION_KIND
 from ..results import Escalate, Ok, PhaseResult
 from .common import ENV_SPEC
 from .core import ChangeCore
-from .phases import BuildImages, PhaseContext, Verify
+from .dispatch import Dispatcher
 from .runs import RunLifecycle
+from .sandboxes import Sandboxes, sandbox_env  # noqa: F401  (sandbox_env: re-exported)
+from .work import PREPARE, SETUP
 
 
 @dataclass
@@ -44,20 +45,11 @@ class ProvisionPlan:
     roles: dict[str, RoleEnvironment] = field(default_factory=dict)      # role -> (image unset)
 
 
-def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
-    """The provisioned environment of a sandbox serving ``role`` ("verifier" for verifiers)."""
-    env = change.environment.roles.get(role) if change.environment else None
-    if env is None:
-        return None
-    # once the ended change was cleaned up its images are gone: a later run (a retrospective
-    # asked for again) uses the default image; the record still says what was built
-    return SandboxEnv(image=None if change.cleaned_at else env.image, network=dict(env.network),
-                      cpu=env.cpu, memory=env.memory, driver_config=env.driver_config)
-
-
 class Provisioner:
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
-        self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes,
+                 dispatcher: Dispatcher):
+        self.c, self.lifecycle = core, lifecycle
+        self.sandboxes, self.dispatcher = sandboxes, dispatcher
 
     def _fail(self, node: Node, reason: str, log: str = "") -> Escalate:
         """G-PV1: the result that stops provisioning (the log is kept)."""
@@ -119,7 +111,7 @@ class Provisioner:
             for key, entry in env.network.items():
                 log.append(f"## {role}: network policy {key} (sandbox policy): "
                            f"binaries {[b['path'] for b in entry['binaries']]}")
-        built = await BuildImages(recipes, log).run(self.ctx)
+        built = await self.build_images(recipes, log)
         if not isinstance(built, Ok):
             async with c.lock:
                 if log:
@@ -166,19 +158,39 @@ class Provisioner:
         """G-PV3: the approved mise.toml's setup task succeeds at the integration head in a fresh
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
-        res = await Verify(()).verification(self.ctx, "provision", c.change.integration_head,
-                                            dispatch=dispatch)
+        work = self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
+                                            c.change.integration_head, ())
+        outcome = await (dispatch or self.dispatcher).run(work)
         async with c.lock:
             if not current():
                 return None
-            r = res.results[0] if res.results else None
-            if res.infra_error or r is None or r.exit_code != 0:
-                why = res.infra_error or (f"`{r.command}` exited {r.exit_code}" if r else "did not run")
+            stop = outcome.stopped
+            infra = outcome.error or (f"{stop.command.label} failed ({stop.result.exit_code})"
+                                      if stop and stop.command.kind == PREPARE else None)
+            setup = outcome.results(SETUP)
+            r = setup[0] if setup else None
+            if infra or r is None or r.exit_code != 0:
+                why = infra or (f"`{r.command}` exited {r.exit_code}" if r else "did not run")
                 return self._fail(node, f"G-PV3: the repository's setup failed in the verifier: {why}",
                                   r.output if r else "")
             c.event("provision", "environment ready; the repository's setup ran in the "
                     f"verifier ({', '.join(roles) or 'no roles'})", node.id)
             return Ok()
+
+    async def build_images(self, recipes: dict[str, ImageRecipe],
+                           log: list[str]) -> Ok | Escalate:
+        """Build (or find) the image of each recipe (G-PV1). Ok: recipe tag -> image reference;
+        ``log`` keeps what was built, for the provisioning record."""
+        images: dict[str, str | None] = {}
+        try:
+            for tag, recipe in recipes.items():
+                log.append(f"## image {tag}\n\n{recipe.files['Dockerfile']}")
+                images[tag], out = await self.c.svc.builder.ensure_image(recipe)
+                log.append(out)
+        except (BuildError, OSError) as e:
+            return Escalate("provision_failed", f"G-PV1: {e}"[:2000], Resume.READY,
+                            log_tail="\n".join(log)[-4000:] or None)
+        return Ok(images)
 
     def environment_quiescent(self) -> bool:
         """Provisioning may start: no run of a role the current build maps is live and no

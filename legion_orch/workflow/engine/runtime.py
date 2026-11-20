@@ -46,6 +46,7 @@ from ..model import (
     ChangeStatus,
     Feedback,
     Node,
+    Run,
 )
 from . import cleanup
 from .core import ChangeCore
@@ -427,6 +428,13 @@ class FlowRuntime:
             await cleanup.end_of_change(self.c)
         finally:
             self._cleaning = False                    # due no more once it is done
+
+    def recover(self, failed: dict[str, Run]) -> None:
+        """After a restart (``failed``: the run of each node that was live and failed with the
+        controller): every step takes its work up again – the step runner's."""
+        for node in list(self.c.nodes.values()):
+            self.runner.recover(node, failed.get(node.id))
+        self.runner.resume_retries()
 
     def add_retrospective(self) -> Node:
         """Queue the retrospective of an ended change – a node outside the tree: a new one, or

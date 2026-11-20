@@ -14,6 +14,7 @@ from pathlib import Path
 from ...sandbox import (
     AGENT_PREFIX,
     VERIFIER_PREFIX,
+    SandboxEnv,
     SandboxError,
     SandboxSpec,
     is_name_clash,
@@ -22,14 +23,24 @@ from ...sandbox import (
 from .. import governance
 from ..assets import GitMode
 from ..environment import VERIFIER
-from ..model import LIVE_RUN, Node, Run, RunStage
+from ..model import LIVE_RUN, Change, Node, Run, RunStage
 from ..setup import SETUP_COMMAND
 from .auth import VerifierGrant
 from .core import ChangeCore
-from .provision import sandbox_env
 from .reflect import Reflector
-from .steps import sandbox_plan, step_for
+from .sandbox_plan import Plans
 from .work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
+
+
+def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
+    """The provisioned environment of a sandbox serving ``role`` ("verifier" for verifiers)."""
+    env = change.environment.roles.get(role) if change.environment else None
+    if env is None:
+        return None
+    # once the ended change was cleaned up its images are gone: a later run (a retrospective
+    # asked for again) uses the default image; the record still says what was built
+    return SandboxEnv(image=None if change.cleaned_at else env.image, network=dict(env.network),
+                      cpu=env.cpu, memory=env.memory, driver_config=env.driver_config)
 
 
 class AgentSession:
@@ -64,7 +75,7 @@ class AgentSession:
         policy = c.svc.write_policy(self._dir / "policy.yaml", agent=True,
                                     network=env.network if env else None)
         run.sandbox_ref = await self.sb.create(run, payload, policy,
-                                               push=sandbox_plan(run.role).pushes)
+                                               push=self.sb.plans.for_role(run.role).pushes)
         await self.stage(RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
 
     async def exec(self, argv: list[str], *, timeout: int, workdir: str | None) -> tuple[int, str]:
@@ -74,7 +85,7 @@ class AgentSession:
     async def close(self) -> None:
         shutil.rmtree(self._dir / "payload", ignore_errors=True)
         (self._dir / "policy.yaml").unlink(missing_ok=True)
-        if sandbox_plan(self.run.role).keeps_session:
+        if self.sb.plans.for_role(self.run.role).keeps_session:
             await self.sb.pause(self.run)
 
 
@@ -138,8 +149,8 @@ class VerifierSession:
 
 
 class Sandboxes:
-    def __init__(self, core: ChangeCore):
-        self.c = core
+    def __init__(self, core: ChangeCore, plans: Plans):
+        self.c, self.plans = core, plans
         self.reflector = Reflector(core, self)
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
         self.to_suspend: set[str] = set()    # to stop once nothing live uses them
@@ -157,7 +168,7 @@ class Sandboxes:
         change is no longer active."""
         if not node.sandbox or self.c.change.status != "ACTIVE":
             return False
-        plan = step_for(node).sandbox
+        plan = self.plans.for_node(node)
         return plan is not None and plan.held(self.c, node)
 
     def held(self) -> set[str]:

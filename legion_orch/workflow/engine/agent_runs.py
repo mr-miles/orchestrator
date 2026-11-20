@@ -42,10 +42,8 @@ from ..roles import handler_for
 from ..view import RoleContext
 from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
-from .provision import sandbox_env
 from .runs import RunLifecycle
-from .sandboxes import AgentSession, Sandboxes
-from .steps import sandbox_plan
+from .sandboxes import AgentSession, Sandboxes, sandbox_env
 from .work import AGENT, Command, Outcome, Session, Work
 
 if TYPE_CHECKING:
@@ -166,7 +164,7 @@ class AgentRuns:
                 prepared.run = run
                 started(run)
                 self.c.save()
-            fresh = not (sandbox_plan(role).keeps and any(
+            fresh = not (self.sandboxes.plans.for_role(role).keeps and any(
                 r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values()))
             work.session = AgentSession(self.sandboxes, run, fresh,
                                         lambda stage, msg: self._stage(run, stage, msg))
@@ -262,7 +260,7 @@ class AgentRuns:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4), or return why it cannot
         run (its prompt does not render)."""
         ch = self.c.change
-        plan = sandbox_plan(role)
+        plan = self.sandboxes.plans.for_role(role)
         if plan.base_at_head(bool(node.base_sha)):
             node.base_sha = ch.integration_head
         if plan.at_head:
@@ -353,7 +351,7 @@ class AgentRuns:
     def _place_in_sandbox(self, run: Run, node: Node) -> None:
         """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
         across the node's cycles."""
-        h, plan = handler_for(run.role), sandbox_plan(run.role)
+        h, plan = handler_for(run.role), self.sandboxes.plans.for_role(run.role)
         if plan.keeps and node.sandbox:
             run.sandbox = node.sandbox
             run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
@@ -366,7 +364,7 @@ class AgentRuns:
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
 
     def _record_dispatch(self, run: Run, node: Node) -> None:
-        h, plan, ch = handler_for(run.role), sandbox_plan(run.role), self.c.change
+        h, plan, ch = handler_for(run.role), self.sandboxes.plans.for_role(run.role), self.c.change
         self.c.runs[run.id] = run
         node.runs.append(run.id)
         if not h.panel:                 # panel members run alongside; the node stays REVIEWING
@@ -415,7 +413,7 @@ class AgentRuns:
     def _resumable_session(self, run: Run) -> tuple[str, str] | None:
         """For a role that keeps its session: the node's previous run in the same sandbox and
         its agent session, which this rework continues."""
-        if not sandbox_plan(run.role).keeps_session:
+        if not self.sandboxes.plans.for_role(run.role).keeps_session:
             return None
         node = self.c.nodes[run.node_id]
         prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]

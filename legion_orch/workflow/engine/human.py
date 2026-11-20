@@ -32,8 +32,8 @@ from ..results import ActionResult
 from . import cleanup
 from .common import ENV_SPEC, WorkflowError, _slug
 from .core import ChangeCore
+from .ids import base_id
 from .runs import RunLifecycle
-from .workflow_tree import base_id
 
 if TYPE_CHECKING:
     from .runtime import FlowRuntime
@@ -149,7 +149,6 @@ class HumanGates:
         if not text:
             raise WorkflowError("feedback is required")
         att = self._feedback_doc(node, approver, text, "feedback")
-        node.escalation = None
         await self.flow.act(node.id, f"send_back:{stage}", approver, text, feedback_doc=att)
         self.c.event("send_back", f"{approver}: {stage} sent back from {node.id}", node.id)
         return ActionResult()
@@ -304,21 +303,24 @@ class HumanGates:
         return ActionResult()
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        res = self._end_change(node, approver, payload, "reject")
-        await self.flow.act(node.id, "reject", approver,
-                            (payload.get("reason") or payload.get("feedback") or "").strip())
-        return res
+        return await self._end_change(node, approver, payload, "reject")
 
-    def _end_change(self, node: Node, approver: str, payload: dict, action: str) -> ActionResult:
+    async def _end_change(self, node: Node, approver: str, payload: dict,
+                          action: str) -> ActionResult:
         """Abandon the change (at an escalation, or rejected at H-3): record who, where and
-        the operator's reason, and run the retrospective on what the change produced so far
-        (unless ``retrospective`` is false), whether or not retrospectives run automatically."""
+        the operator's reason, end it through the workflow (the core ends it; the runtime marks
+        the change abandoned and the node it ended at), and run the retrospective on what the
+        change produced so far (unless ``retrospective`` is false), whether or not
+        retrospectives run automatically."""
         c = self.c
         reason = (payload.get("reason") or payload.get("feedback") or "").strip() or None
         rec = ChangeEnd(by=approver, node=node.id, action=action, reason=reason)
         rec.attestation = c.write_record("control/ended.json", rec).attestation
         c.change.ended = rec
-        c.change.status = ChangeStatus.ABANDONED
+        if action == "reject":
+            await self.flow.act(node.id, "reject", approver, reason or "")
+        else:
+            await self.flow.act(CHANGE, "abandon", approver)
         self.flow.end_at(node)
         verb = "abandoned the change" if action == "abandon" else "rejected the change"
         c.event("abandoned", f"{approver} {verb} at {node.id}: {reason or '(no reason given)'}",
@@ -334,9 +336,7 @@ class HumanGates:
         """What a decision owner decides at an escalation: recorded here, carried out by the
         workflow (the core resumes the step; the step runner takes it up where it stopped)."""
         if action == "abandon":
-            res = self._end_change(node, approver, payload, "abandon")
-            await self.flow.act(CHANGE, "abandon", approver)
-            return res
+            return await self._end_change(node, approver, payload, "abandon")
         if action in ("override_accept", "override"):
             reason = self._override_accept(node, approver, payload)
             await self.flow.decide(node, "override", approver, reason)
@@ -398,7 +398,6 @@ class HumanGates:
         rec.attestation = self.c.write_record(f"control/rounds/{n}.json", rec).attestation
         ch.round = n
         ch.rounds.append(rec)
-        node.escalation = None
         await self.flow.act(node.id, f"send_back:{stage}", approver)
         self.c.event("fix_round", f"{approver}: fix round {n} planned on top of "
                      f"{(ch.integration_head or '')[:12]}", node.id)

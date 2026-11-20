@@ -34,7 +34,7 @@ from .runs import RunLifecycle
 from .runtime import FlowRuntime
 from .sandboxes import Sandboxes
 from .services import EngineHost, Services
-from .steps import StepRunner
+from .steps import StepPlans, StepRunner
 
 
 class ChangeEngine(ChangeCore):
@@ -48,11 +48,11 @@ class ChangeEngine(ChangeCore):
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
-        self._sandboxes = Sandboxes(self)
+        self._sandboxes = Sandboxes(self, StepPlans())
         self._lifecycle = RunLifecycle(self, self._sandboxes)
         self._agents = AgentRuns(self, self._lifecycle, self._sandboxes, roles=self)
         self._phases = PhaseContext(self, self._sandboxes, svc.dispatcher, self._agents)
-        self._provisioner = Provisioner(self, self._lifecycle, self._phases)
+        self._provisioner = Provisioner(self, self._lifecycle, self._sandboxes, svc.dispatcher)
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._agents.reports = self._reports
         self._gates = HumanGates(self, self._lifecycle)
@@ -92,9 +92,7 @@ class ChangeEngine(ChangeCore):
                 self._lifecycle.fail_run(run, "controller restarted while the run was live",
                                          FailureSource.CONTROLLER)
                 failed.setdefault(run.node_id, run)
-        for node in list(self.nodes.values()):
-            self._runner.recover(node, failed.get(node.id))
-        self._runner.resume_retries()
+        self._flow.recover(failed)                 # down the layers, as everything else
         self.save()
 
     # ------------------------------------------------------------------ agents (MCP)
@@ -130,12 +128,6 @@ class ChangeEngine(ChangeCore):
         return self._lifecycle.stored_log(run_id)
 
     # ------------------------------------------------------------------ RoleContext
-    def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
-        self._lifecycle.accept_runs(node, roles)
-
-    def delete_sandbox_later(self, name: str) -> None:
-        self._sandboxes.delete_later(name)
-
     def define_tasks(self, plan: Node) -> list[str]:
         return self._flow.define_tasks(plan)
 
