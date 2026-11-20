@@ -63,7 +63,8 @@ def workflow_state(ce: ChangeEngine) -> dict:
     wf = ce.workflow
     actions = {nid: wf.actions(nid) for nid in ce.nodes if wf.actions(nid)}
     return {"actions": actions, "unmet": {nid: list(wf.unmet(nid)) for nid in ce.nodes
-                                          if wf.unmet(nid)}}
+                                          if wf.unmet(nid)},
+            "stages": wf.stages()}
 
 
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
@@ -78,7 +79,7 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "change": ch.model_dump(mode="json") if ch else None, "nodes": nodes, "runs": runs,
             "gates": governance.gate_set(ce) if ch and ch.tier else [],
             "h2": h2_rows(ce) if ch and ch.requirements else [],
-            "workflow": workflow_state(ce) if ch else {"actions": {}, "unmet": {}},
+            "workflow": workflow_state(ce) if ch else {"actions": {}, "unmet": {}, "stages": []},
             "h3": [r.model_dump() for r in governance.h3_attestations(ce)] if ch and ch.tier else [],
             "surfaces": [s.model_dump() for s in governance.surfaces(ce)] if ch else [],
             "environment": environment_spec(ce),
