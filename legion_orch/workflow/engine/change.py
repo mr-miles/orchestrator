@@ -80,7 +80,7 @@ class ChangeEngine(ChangeCore):
     def load(self) -> None:
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
-        self._flow.load()
+        self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
         self.seed_attention()
 
     def start(self, goal: str, base: str, *, blank_repo: bool = False,

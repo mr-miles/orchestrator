@@ -105,6 +105,7 @@ class FlowRuntime:
         for inp in data["inputs"]:
             self._apply(inp, replay=True)
         self.inputs = data["inputs"]
+        self._materialize()             # the nodes in the tree's order, with its dependencies
 
     def _new_flow(self) -> FlowState:
         wf = (requirements_workflow() if self.tree is None
