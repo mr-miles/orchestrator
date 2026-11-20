@@ -288,30 +288,13 @@ class FlowRuntime:
         # again at once, so it is never seen pending afterwards)
         reset = list(dict.fromkeys(nid for nid, transition, was, _ in self.flow.log[mark:]
                                    if transition == "reset" and was != "pending"))
-        await self._undo(reset)
+        await self._sent_back(reset)
         self._carry_out(effects)
 
-    async def _undo(self, reset: list[str]) -> None:
-        """Steps the core sent back to pending: their nodes start over (the step runner's), and
-        what their step type says a reset undoes is undone (once per policy)."""
-        for policy, node in self._reset(reset):
-            await policy(self.c, self.lifecycle, node)
-
-    def _reset(self, reset: list[str]) -> list:
-        """Reset the steps' nodes; returns the step types' reset policies still to run."""
-        from ..steps import step_for
-        done: set[type] = set()
-        todo = []
-        for nid in reset:
-            node = self.c.nodes.get(nid)
-            if node is None:
-                continue
-            self.runner.reset(node)
-            for policy in step_for(node).on_reset:
-                if type(policy) not in done and policy.applies(self.c, node):
-                    done.add(type(policy))
-                    todo.append((policy, node))
-        return todo
+    def _sent_back(self, reset: list[str]):
+        """Steps the core sent back to pending: the step runner starts their nodes over and
+        returns what their steps' send-back undoes, to be awaited."""
+        return self.runner.send_back([n for n in map(self.c.nodes.get, reset) if n is not None])
 
     # ------------------------------------------------------------------ effects
     def _carry_out(self, effects: list) -> None:
@@ -389,8 +372,7 @@ class FlowRuntime:
         effects = self._input("redo", step, feedback.text)
         reset = list(dict.fromkeys(nid for nid, transition, was, _ in self.flow.log[mark:]
                                    if transition == "reset" and was != "pending"))
-        for policy, node in self._reset(reset):
-            self.c.spawn(policy(self.c, self.lifecycle, node))
+        self.c.spawn(self._sent_back(reset))
         self._carry_out(effects)
 
     def end_at(self, node: Node) -> None:

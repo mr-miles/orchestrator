@@ -155,13 +155,13 @@ async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
               sandbox=f"sb-{len(f.ce.runs)}", status=R_REPORTED)
     f.ce.runs[run.id] = run
     rt = f.ce._runner
-    phase = rt.step(n).current(n)
+    phase = rt.current(n)
     ended = Ended(run, Ok() if result is None else result)
     if isinstance(phase, Panel):                         # a judge's: collated by the panel
-        phase.judged(rt, ended)
-        phase.conclude(rt, n, await phase.result(rt, n, {role: ended}))
+        phase.judged(ended)
+        phase.conclude(await phase.result({role: ended}))
     else:
-        phase.conclude(rt, n, phase.ended(rt, n, ended))
+        phase.conclude(phase.ended(ended))
     return run
 
 
@@ -169,9 +169,8 @@ def capture_work(f: Flow) -> list[str]:
     """The phases whose work the runner was asked to start (not run)."""
     rt, started = f.ce._runner, []
 
-    def run(node, work):
-        started.append(type(rt.step(node).current(node)).__name__)
-        work(rt.dispatcher(node)).close()
+    def run(phase, work=None):
+        started.append(type(phase).__name__)
     rt.run = run
     return started
 
@@ -243,9 +242,9 @@ async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
     retro = node(f, NodeKind.RETROSPECTIVE, id="retrospective", status=READY)
     f.ce._sandboxes.reflector.pending.add("sb")              # an agent still reflects
     assert not rt.waits_hold(retro)
-    assert not step_for(retro).phases[0].ready(rt, retro)
+    assert not rt.at(step_for(retro).phases[0], retro).ready()
     f.ce._sandboxes.reflector.pending.clear()
-    assert step_for(retro).phases[0].ready(rt, retro)
+    assert rt.at(step_for(retro).phases[0], retro).ready()
 
 
 @scenario()
@@ -307,8 +306,9 @@ def ver(*rcs: int, setup: int | None = None) -> Verification:
 
 async def conclude(f: Flow, n: Node, res: Verification) -> None:
     """The verification's result, as its phase's work hands it over."""
-    phase, rt = step_for(n).phase(Verify), f.ce._runner
-    phase.conclude(rt, n, await phase.result(rt, n, res))
+    rt = f.ce._runner
+    phase = rt.at(step_for(n).phase(Verify), n)
+    phase.conclude(await phase.result(res))
 
 
 @scenario()
@@ -392,7 +392,7 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
         rt.phase(n, READY)
     if answered:
         n.approved = True                                # what resuming answered does
-    await phase.task(rt, n, rt.dispatcher(n))
+    await phase.at(rt, n, rt.dispatcher(n)).task()
 
 
 @scenario()

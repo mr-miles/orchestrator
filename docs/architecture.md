@@ -287,6 +287,12 @@ plan, an ordered list of phases configured by **policy objects**, the waits it r
 a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
 `GATE_TYPES`, which configures each gate's `Approval`).
 
+A phase in the table is a declaration – its policies – shared by every node of its kind. The
+step runner reaches a node's phase only **bound** to it (`phase.at(runner, node)`, with the
+step's dispatcher while it works), so a phase's methods take only what varies: a result, an
+escalation, an answer. The policy objects stay functions of the change and the node they are
+given.
+
 Every phase's work has one shape (`Phase.task`): once it is **ready** (at once, or at a later
 save – the step's slot given back meanwhile) it **begins** (its status, under the lock),
 **performs** its work outside the lock (through the step's dispatcher, or a check), and then,
@@ -323,6 +329,7 @@ classDiagram
     class StepRunner {
         start(node, feedback)
         reset(node)
+        send_back(nodes) undo
         resume(node, answered)
         override(node)
         retry(node)
@@ -335,23 +342,25 @@ classDiagram
     }
     class Phase {
         statuses
-        enter(runner, node)
-        start(runner, node)
-        resume(runner, node, answered)
-        recover(runner, node)
-        task(runner, node, dispatch)
-        ready(node) bool
-        begin(node)
-        perform(node, dispatch)
-        result(node, done) PhaseResult
-        conclude(runner, node, result)
+        at(runner, node) Phase
+        enter()
+        start()
+        resume(answered)
+        recover()
+        task()
+        ready() bool
+        begin()
+        perform()
+        result(done) PhaseResult
+        resume_after(escalation)
+        conclude(result)
     }
     class Produce {
         source: RoleWork
     }
     class RoleWork {
         role
-        perform(runner, node, dispatch, phase) Ended
+        perform(phase) Ended
     }
     class Verify {
         commands: CommandSource

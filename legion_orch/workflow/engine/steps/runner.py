@@ -107,7 +107,7 @@ class StepRunner:
         if node.runs and step.role:
             self.states.reset(node)
             self.states.phase(node, REWORK)
-            step.phases[0].start(self, node)
+            self.at(step.phases[0], node).start()
             return
         self.states.reset(node)
         if step.stands and not rerun and step.stands.holds(self.c, node):
@@ -119,7 +119,25 @@ class StepRunner:
 
     def enter(self, node: Node) -> None:
         """The node's first phase."""
-        self.step(node).phases[0].enter(self, node)
+        self.at(self.step(node).phases[0], node).enter()
+
+    def send_back(self, nodes: list[Node]) -> Awaitable[None]:
+        """The core sent these steps back: each node starts over now (:meth:`reset`); what their
+        step types say a send-back undoes (``on_reset``, once per policy) is returned, to be
+        awaited."""
+        done: set[type] = set()
+        todo = []
+        for node in nodes:
+            self.reset(node)
+            for policy in self.step(node).on_reset:
+                if type(policy) not in done and policy.applies(self.c, node):
+                    done.add(type(policy))
+                    todo.append((policy, node))
+
+        async def undo() -> None:
+            for policy, node in todo:
+                await policy(self.c, self.lifecycle, node)
+        return undo()
 
     def reset(self, node: Node) -> None:
         """The core sent the step back or stopped it: its runs end, the node is pending."""
@@ -167,9 +185,9 @@ class StepRunner:
         verification, a merge, a gate's check)."""
         self.states.resume(node, to)
         self.runtime.resumed(node)
-        phase = self.step(node).current(node)
+        phase = self.current(node)
         if phase is not None:
-            phase.resume(self, node, answered)
+            phase.resume(answered)
 
     def retry(self, node: Node) -> None:
         """Retry: the failed run's sandbox goes first (a failed delete is reported and the
@@ -228,7 +246,7 @@ class StepRunner:
     def recover(self, node: Node, failed: Run | None = None) -> None:
         """After a restart: a run of the node that was live failed with the controller (its
         step escalates); otherwise its current phase takes its work up again."""
-        phase = self.step(node).current(node)
+        phase = self.current(node)
         if node.status == ESCALATED:             # its sandboxes stay stopped meanwhile
             self.lifecycle.sandboxes.suspend_when_idle(self._sandboxes(node))
         if phase is None:
@@ -236,7 +254,7 @@ class StepRunner:
         if failed is not None:
             self.apply(node, self.lifecycle.escalation(failed))
         elif self.active(node):
-            phase.recover(self, node)
+            phase.recover()
 
     def housekeeping(self, active: bool) -> None:
         """On a save: kept sandboxes whose hold ended are released, a released step's idle
@@ -272,13 +290,26 @@ class StepRunner:
         return {r.sandbox for r in (self.c.runs.get(rid) for rid in node.runs)
                 if r is not None and r.sandbox and not r.sandbox_deleted}
 
-    def run(self, node: Node, work: Callable[[StepDispatcher], Awaitable[None]]) -> None:
-        """Start a phase's work as a task, with the step's dispatcher."""
-        dispatch = self.dispatcher(node)
+    def at(self, phase: Phase, node: Node) -> Phase:
+        """``phase`` (as its step type declares it) bound to ``node``: the only way the runner
+        reaches a node's phase."""
+        return phase.at(self, node)
+
+    def current(self, node: Node) -> Phase | None:
+        """The node's current phase, bound to it (None: pending, accepted or waiting)."""
+        phase = self.step(node).current(node)
+        return self.at(phase, node) if phase is not None else None
+
+    def run(self, phase: Phase,
+            work: Callable[[Phase], Awaitable[None]] | None = None) -> None:
+        """Start a bound phase's work as a task, bound to the step's dispatcher: its
+        :meth:`~.Phase.task`, or ``work``."""
+        node = phase.node
+        bound = phase.at(self, node, self.dispatcher(node))
 
         async def task() -> None:
             try:
-                await work(dispatch)
+                await (work(bound) if work is not None else bound.task())
             except Withdrawn:                    # its step ended while it waited for a slot
                 pass
         self.c.spawn(task())
@@ -290,7 +321,8 @@ class StepRunner:
     def stale(self, node: Node, dispatch: StepDispatcher, phase: Phase) -> bool:
         """The work's step or phase is over: its result counts no more."""
         return dispatch.released or self.c.nodes.get(node.id) is not node \
-            or self.step(node).current(node) is not phase or not self.active(node)
+            or self.step(node).current(node) is not (phase.declared or phase) \
+            or not self.active(node)
 
     def waits_hold(self, node: Node) -> bool:
         """The step's waits (its ``dispatch_when``) for its first work."""
@@ -325,7 +357,7 @@ class StepRunner:
         if nxt is None:
             self.accept(node)
         else:
-            nxt.enter(self, node)
+            self.at(nxt, node).enter()
 
     def apply(self, node: Node, result: PhaseResult) -> None:
         """A phase's result that does not pass it: rework within the budget, an escalation, or
@@ -336,9 +368,9 @@ class StepRunner:
                 node.base_sha = result.base
         elif isinstance(result, Escalate):
             if result.resume is None:            # a service's: where it resumes is the step's
-                phase = self.step(node).current(node)
+                phase = self.current(node)
                 result = dataclasses.replace(result, resume=(
-                    phase.resume_after(self, node, result) if phase is not None
+                    phase.resume_after(result) if phase is not None
                     else self.step(node).rework_resume))
             node.feedback += result.feedback
             self.escalate(node, result.kind, result.question, result.resume, run=result.run,
@@ -366,7 +398,7 @@ class StepRunner:
         node.candidate_sha = None
         self.states.phase(node, REWORK)
         c.event("rework", f"{source}: rework cycle {node.cycle}", node.id)
-        self.step(node).phases[0].start(self, node)         # its producer again, in its slot
+        self.at(self.step(node).phases[0], node).start()    # its producer again, in its slot
 
     # ------------------------------------------------------------------ the boundaries
     def accept(self, node: Node) -> None:
