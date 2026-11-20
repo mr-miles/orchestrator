@@ -99,7 +99,7 @@ class ChangeCore:
         return next((n for n in self.build_nodes() if n.task and n.task.scaffold), None)
 
     def save(self) -> None:
-        """Persist the state (the caller holds the lock) and wake the scheduler and UI. Every
+        """Persist the state (the caller holds the lock) and wake the clock and the UI. Every
         state change passes through here, so this is where status changes are stamped and
         attention items are raised and resolved (§2.2) – and where the workflow (the stage
         rules) sees what changed (:meth:`sync`)."""

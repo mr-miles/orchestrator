@@ -1,4 +1,4 @@
-"""Controller: shared resources, scheduler loop, sandbox identity binding."""
+"""Controller: shared resources, the clock (its tick loop), sandbox identity binding."""
 from __future__ import annotations
 
 import asyncio
@@ -36,8 +36,8 @@ from .services import Services
 
 
 class Controller:
-    """Owns the shared :class:`Services`, one :class:`ChangeEngine` per change, and the scheduler
-    loop. Implements :class:`EngineHost` for the engines.
+    """Owns the shared :class:`Services`, one :class:`ChangeEngine` per change, and the clock
+    (its tick loop). Implements :class:`EngineHost` for the engines.
 
     Durable state lives only in the document store (``state.db``) and the git remote; ``tmp/``
     holds transient sandbox payloads and live agent logs and is wiped on start.

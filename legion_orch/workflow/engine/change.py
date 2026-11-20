@@ -1,17 +1,15 @@
 """ChangeEngine: one change's workflow, composed of collaborators that each own one concern.
 
 * :class:`ChangeCore` – the state, documents and events (the :class:`ChangeView`)
-* :class:`StageGraph` – which nodes exist and how they depend on each other
-* :class:`RunLifecycle` – failure, timeouts, logs and sandbox deletion of runs
-* :class:`Dispatcher` – turning a ready node into a run and starting its agent
-* :class:`Acceptance` – verification, the review panel's decision, rework, merge, ship
-* :class:`Provisioner` – building the approved sandbox environment
-* :class:`Reports` – agent writes, progress and reports
-* :class:`HumanGates` – decision owners' actions
-* :class:`Scheduler` – the tick that moves the graph forward
+* :class:`FlowRuntime` – the workflow core's runtime: the stage rules, the nodes' existence and
+  order, the gate nodes; the clock's turn enters here (docs/architecture.md §2)
+* :class:`StepRunner` – the step layer: each node through its phases, its state, its results
+* :class:`Dispatcher`, :class:`Reports`, :class:`Acceptance`, :class:`Provisioner`,
+  :class:`RunLifecycle`, :class:`Sandboxes` – the services the phases use
+* :class:`HumanGates` – what decision owners decide (recorded, then handed to the runtime)
 
-Each is given only the parts it uses, so the dependencies are explicit and acyclic
-(core <- graph, lifecycle <- dispatcher, acceptance <- reports, gates <- scheduler).
+Control passes only between neighbouring layers; each is given only the parts it uses, so the
+dependencies are explicit and acyclic.
 """
 from __future__ import annotations
 
@@ -32,7 +30,6 @@ from ..results import ActionResult, ReportOutcome
 from .acceptance import Acceptance
 from .core import ChangeCore
 from .dispatch import Dispatcher
-from .graph import StageGraph
 from .human import HumanGates
 from .phases import PhaseContext
 from .provision import Provisioner
@@ -40,7 +37,6 @@ from .reports import Reports
 from .runs import RunLifecycle
 from .runtime import FlowRuntime
 from .sandboxes import Sandboxes
-from .schedule import Scheduler
 from .services import EngineHost, Services
 from .steps import StepRunner
 
@@ -55,7 +51,6 @@ class ChangeEngine(ChangeCore):
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
-        self._graph = StageGraph(self)
         self._sandboxes = Sandboxes(self)
         self._lifecycle = RunLifecycle(self, self._sandboxes)
         self._phases = PhaseContext(self, self._sandboxes)
@@ -64,16 +59,14 @@ class ChangeEngine(ChangeCore):
         self._dispatcher = Dispatcher(self, self._lifecycle, self._sandboxes, roles=self)
         self._phases.dispatcher = self._dispatcher
         self._reports = Reports(self, self._lifecycle, roles=self)
-        self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
-        self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
-                                    self._acceptance, self._provisioner)
+        self._gates = HumanGates(self, self._acceptance, self._lifecycle)
         self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
-                                  self._provisioner, self._scheduler)
-        self._acceptance.runner = self._scheduler.runner = self._reports.runner = self._runner
+                                  self._provisioner)
+        self._acceptance.runner = self._reports.runner = self._runner
         self._dispatcher.reports = self._reports
         self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
         self._runner.runtime = self._flow
-        self._graph.runner = self._lifecycle.runner = self._runner
+        self._lifecycle.runner = self._runner
         self._gates.flow = self._flow
 
     # ------------------------------------------------------------------ controller
@@ -116,7 +109,8 @@ class ChangeEngine(ChangeCore):
         self.save()
 
     async def tick(self) -> None:
-        await self._scheduler.tick()
+        """A turn of the controller's clock: it cascades from the workflow runtime down."""
+        await self._flow.tick()
 
     # ------------------------------------------------------------------ agents (MCP)
     async def agent_write(self, run: Run, path: str, content: str, base_version: int | None,

@@ -50,11 +50,13 @@ from ..model import (
     HUMAN,
     MERGING,
     PENDING,
+    READY,
     RETRO,
     ChangeStatus,
     Feedback,
     Node,
 )
+from . import cleanup
 from .core import ChangeCore
 from .node_states import NodeStates
 from .workflow_tree import (
@@ -471,6 +473,40 @@ class FlowRuntime:
             c.event("change", "every stage is done: the change is accepted and ready")
         elif c.change.status == ChangeStatus.ACTIVE:
             c.change.status = ChangeStatus.ABANDONED
+
+    # ------------------------------------------------------------------ the clock
+    async def tick(self) -> None:
+        """A turn of the controller's clock (under the lock): what follows from the change's
+        state – an ended change's retrospective queued, its cleanup once that is done – then the
+        step layer's turn (:meth:`.StepRunner.tick`); the runs it prepared are launched outside
+        the lock."""
+        c = self.c
+        async with c.lock:
+            if c.change is None:
+                return
+            active = c.change.status == ChangeStatus.ACTIVE
+            if not active and c.cfg.retrospective.auto and RETRO not in c.nodes:
+                self.add_retrospective()
+                c.event("retrospective", "the change has ended: retrospective queued", RETRO)
+            if cleanup.due(c):                     # ended, retrospective done (§5.14)
+                c.spawn(cleanup.end_of_change(c))
+            launches = await self.runner.tick(active)
+            c.save()
+        self.runner.launch(launches)
+
+    def add_retrospective(self) -> Node:
+        """Queue the retrospective of an ended change – a node outside the tree: a new one, or
+        a new cycle of it."""
+        c = self.c
+        node = c.nodes.get(RETRO)
+        if node is None:
+            node = Node(id=RETRO, kind=RETRO, status=READY,
+                        title="Retrospective: lessons for the assets and process")
+            c.add_node(node)
+        else:
+            node.cycle += 1
+            self.runner.again(node)
+        return node
 
     # ------------------------------------------------------------------ gates and persistence
     _GATE = {GateStatus.PENDING: PENDING, GateStatus.WAITING: AWAITING_HUMAN,

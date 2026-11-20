@@ -81,7 +81,7 @@ class Phase:
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
         rt.phase(node, READY)
 
-    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
+    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
         return []
 
     def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
@@ -246,19 +246,23 @@ class AgentRun(Phase):
     role: str
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
 
-    def start(self, ctx: PhaseContext, node: Node, judged_sha: str | None = None) -> Run | Escalate:
-        """Prepare the run (launched outside the lock), or why a guard stopped it."""
+    def start(self, ctx: PhaseContext, node: Node,
+              judged_sha: str | None = None) -> Run | Escalate | None:
+        """Prepare the run (launched outside the lock), or why a guard stopped it; None: no
+        room for another run now (the dispatcher's parallel-run limit)."""
         assert ctx.dispatcher is not None
         return ctx.dispatcher.prepare(node, self.role, judged_sha=judged_sha)
 
-    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
-        s, c, step = rt.scheduler, rt.c, rt.step(node)
-        if node.status not in (READY, REWORK) or s.waits_for_environment(self.role):
+    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
+        c, step = rt.c, rt.step(node)
+        if node.status not in (READY, REWORK) or rt.provisioner.waits_for_environment(self.role):
             return []
-        if step.judges_head and s.branch_head and (moved := c.head_moved(s.branch_head)):
+        if step.judges_head and rt.branch_head and (moved := c.head_moved(rt.branch_head)):
             rt.apply(node, Escalate("head_moved", moved, Resume.READY))
             return []
         run = self.start(rt.ctx, node)
+        if run is None:
+            return []                            # no room: it waits for the next tick
         if isinstance(run, Escalate):
             rt.apply(node, run)
             return []
@@ -291,17 +295,17 @@ class Panel(Phase):
         if isinstance(after, Verify):
             rt.c.event("review", f"verification passed; panel {list(roles)}", node.id)
 
-    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
+    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
         """The missing judges' runs at the candidate (one per role and cycle)."""
         c, runs = rt.c, []
         for role in self.roles(c):
-            if len(runs) >= capacity:
-                break
             busy = any(r.node_id == node.id and r.role == role and r.cycle == node.cycle
                        and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
             if f"{node.cycle}:{role}" not in node.reviews and not busy \
-                    and not rt.scheduler.waits_for_environment(role):
+                    and not rt.provisioner.waits_for_environment(role):
                 run = AgentRun(role).start(rt.ctx, node, judged_sha=node.candidate_sha)
+                if run is None:
+                    break                        # no room: the rest wait for the next tick
                 if isinstance(run, Escalate):
                     rt.apply(node, run)
                     break
@@ -380,7 +384,7 @@ class Verify(Phase):
             return
         self._start(rt, node)
 
-    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
+    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
         if self.at_head and node.status == READY:
             node.candidate_sha = rt.c.change.integration_head
             self._start(rt, node)
@@ -528,7 +532,7 @@ class BuildImages(Phase):
     log: list[str] = field(default_factory=list)
     statuses: ClassVar = frozenset({READY, RUNNING})
 
-    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
+    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
         if node.status == READY:
             rt.phase(node, RUNNING)
             rt.c.event("provision", "provisioning the approved environment", node.id)

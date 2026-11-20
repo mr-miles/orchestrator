@@ -19,7 +19,9 @@ from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ...git import paths_overlap
 from ..model import (
+    ACTIVE_NODE,
     BASELINE,
     BUILD,
     ESCALATED,
@@ -80,36 +82,42 @@ if TYPE_CHECKING:
     from .provision import Provisioner
     from .runs import RunLifecycle
     from .runtime import FlowRuntime
-    from .schedule import Scheduler
 
 
 # ---------------------------------------------------------------------------- waits
 class Wait:
     """A condition a step waits for (it is not an error while it does not hold)."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
+    def holds(self, rt: StepRunner, node: Node) -> bool:
         raise NotImplementedError
 
 
 class NoOverlap(Wait):
     """No running task touches the same files."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        return not s.graph.overlaps_running(node)
+    def holds(self, rt: StepRunner, node: Node) -> bool:
+        """Guard G-D3 (its file-overlap part)."""
+        mine = node.task.files_modified
+        for other in rt.c.build_nodes():
+            if other.id == node.id or other.status not in ACTIVE_NODE | {REWORK}:
+                continue
+            if any(paths_overlap(a, b) for a in mine for b in other.task.files_modified):
+                return False
+        return True
 
 
 class ReflectionsDone(Wait):
     """The last agents' reflections are recorded (they are its material)."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        return not s.lifecycle.sandboxes.reflector.pending
+    def holds(self, rt: StepRunner, node: Node) -> bool:
+        return not rt.lifecycle.sandboxes.reflector.pending
 
 
 class EnvironmentQuiescent(Wait):
     """No run or verification uses the current build (it is about to be replaced)."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        return s.environment_quiescent()
+    def holds(self, rt: StepRunner, node: Node) -> bool:
+        return rt.provisioner.environment_quiescent()
 
 
 # ---------------------------------------------------------------------------- standing
@@ -280,9 +288,10 @@ class StepRunner:
     resumed, an earlier step redone – it tells the runtime, and nothing else does."""
 
     def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
-                 acceptance: Acceptance, provisioner: Provisioner, scheduler: Scheduler):
+                 acceptance: Acceptance, provisioner: Provisioner):
         self.c, self.ctx, self.lifecycle = core, ctx, lifecycle
-        self.acceptance, self.provisioner, self.scheduler = acceptance, provisioner, scheduler
+        self.acceptance, self.provisioner = acceptance, provisioner
+        self.branch_head: str | None = None      # G-H1: read once per tick
         self.states = NodeStates()
         self.runtime: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
 
@@ -418,8 +427,43 @@ class StepRunner:
         phase = self.step(node).current(node)
         return phase.resume(self, node) if phase else None
 
-    # ------------------------------------------------------------------ from the clock
-    def dispatch(self, node: Node, capacity: int) -> list[Run]:
+    # ------------------------------------------------------------------ the clock (from the runtime)
+    async def tick(self, active: bool) -> list[Run]:
+        """Under the lock: the step layer's turn of the clock. Its services keep house (kept
+        sandboxes released, timed-out runs failed, a requested reprovisioning started), then
+        what its nodes' phases have ready starts (as far as the dispatcher has room for runs).
+        Returns the runs to launch (outside the lock: :meth:`launch`). ``active``: the
+        change has not ended (an ended one runs only a retrospective asked for)."""
+        c = self.c
+        if self.lifecycle.release_sandboxes():      # a gate passed, or the change ended
+            c.save()
+        if not active and not any(step_for(n).runs_after_end for n in c.nodes.values()):
+            return []
+        self.lifecycle.check_timeouts()
+        if active:
+            self.provisioner.start_requested_rebuild()
+        # G-H1: the branch head, if a run at the head may be dispatched this tick
+        self.branch_head = (await c.git.integration_head(c.change.id)
+                            if active and any(self.judges_head(n) for n in c.nodes.values())
+                            else None)
+        launches: list[Run] = []
+        for node in list(c.nodes.values()):
+            if active or step_for(node).runs_after_end:
+                launches += self.dispatch(node)
+        return launches
+
+    def launch(self, runs: list[Run]) -> None:
+        """Start the prepared runs' agents (their sandboxes are created, prepared, started)."""
+        for run in runs:
+            self.c.spawn(self.ctx.dispatcher.launch(run.id))
+
+    @staticmethod
+    def judges_head(node: Node) -> bool:
+        """A node about to dispatch a run at the integration head (not the retrospective, which
+        reads an ended change)."""
+        return node.status in (READY, REWORK) and step_for(node).judges_head
+
+    def dispatch(self, node: Node) -> list[Run]:
         """The runs (or controller work) its current phase may start now: a step's first
         work waits until its step type's ``dispatch_when`` hold."""
         step = self.step(node)
@@ -427,9 +471,9 @@ class StepRunner:
         if phase is None:
             return []
         if phase is step.phases[0] and node.status in (READY, REWORK) \
-                and not all(w.holds(self.scheduler, node) for w in step.dispatch_when):
+                and not all(w.holds(self, node) for w in step.dispatch_when):
             return []
-        return phase.dispatch(self, node, capacity)
+        return phase.dispatch(self, node)
 
     # ------------------------------------------------------------------ from the phases (up)
     def phase(self, node: Node, to: NodeStatus) -> None:

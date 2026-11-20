@@ -225,7 +225,7 @@ async def test_entering_a_step_sets_its_first_phase_and_dispatch_starts_its_work
     assert pre.status == READY and spawned == []           # its verification waits its turn
     f.ce.nodes[pre.id] = pre
     async with f.ce.lock:
-        assert rt.dispatch(pre, 4) == []
+        assert rt.dispatch(pre) == []
     assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
     assert spawned == ["Acceptance.verify_node"]
 
@@ -235,7 +235,7 @@ async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
     rt = f.ce._runner
     retro = node(f, NodeKind.RETROSPECTIVE, id="retrospective", status=READY)
     f.ce._sandboxes.reflector.pending.add("sb")              # an agent still reflects
-    assert rt.dispatch(retro, 4) == [] and retro.status == READY
+    assert rt.dispatch(retro) == [] and retro.status == READY
 
 
 @scenario()
@@ -251,7 +251,7 @@ async def test_after_a_restart_only_controller_work_resumes(f: Flow):
 @scenario()
 async def test_an_agent_step_dispatches_only_when_ready(f: Flow):
     n = node(f, BUILD, status=RUNNING)
-    assert f.ce._runner.dispatch(n, 4) == []                 # its agent's run is live
+    assert f.ce._runner.dispatch(n) == []                 # its agent's run is live
 
 
 # ---------------------------------------------------------------------------- what results mean
@@ -321,6 +321,16 @@ async def test_a_baseline_setup_failure_escalates(f: Flow):
 async def test_the_retrospective_waits_for_the_last_reflections(f: Flow):
     retro = Node(id="retro-x", kind=NodeKind.RETROSPECTIVE, title="x")
     wait = STEP_TYPES[NodeKind.RETROSPECTIVE].dispatch_when[0]
-    assert wait.holds(f.ce._scheduler, retro)
+    assert wait.holds(f.ce._runner, retro)
     f.ce._sandboxes.reflector.pending.add("sb")
-    assert not wait.holds(f.ce._scheduler, retro)
+    assert not wait.holds(f.ce._runner, retro)
+
+
+@scenario(max_parallel=1)
+async def test_a_step_waits_while_the_dispatcher_has_no_room(f: Flow):
+    """The parallel-run limit is the dispatcher's: the step layer asks, and waits when told
+    there is no room (it knows no limit)."""
+    assert f.run("intake")                                   # the one run allowed is live
+    n = node(f, NodeKind.RELEASE, status=READY)
+    assert f.ce._runner.dispatch(n) == [] and n.status == READY
+    assert not f.ce._dispatcher.has_room()

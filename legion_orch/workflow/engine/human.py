@@ -33,7 +33,6 @@ from . import cleanup
 from .acceptance import Acceptance
 from .common import ENV_SPEC, WorkflowError, _slug
 from .core import ChangeCore
-from .graph import StageGraph
 from .runs import RunLifecycle
 from .workflow_tree import base_id
 
@@ -44,9 +43,9 @@ if TYPE_CHECKING:
 class HumanGates:
     """What a decision owner may do to a change, checked and applied under the lock."""
 
-    def __init__(self, core: ChangeCore, graph: StageGraph, acceptance: Acceptance,
+    def __init__(self, core: ChangeCore, acceptance: Acceptance,
                  lifecycle: RunLifecycle):
-        self.c, self.graph, self.acceptance, self.lifecycle = core, graph, acceptance, lifecycle
+        self.c, self.acceptance, self.lifecycle = core, acceptance, lifecycle
         self.flow: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
 
     def _check_approver(self, approver: str) -> None:
@@ -326,7 +325,7 @@ class HumanGates:
         c.event("abandoned", f"{approver} {verb} at {node.id}: {reason or '(no reason given)'}",
                 node.id)
         if payload.get("retrospective", True) is not False and RETRO not in c.nodes:
-            self.graph.add_retrospective()
+            self.flow.add_retrospective()
             c.event("retrospective", "the change was abandoned: retrospective queued", RETRO)
         return ActionResult(attestation=rec.attestation)
 
@@ -446,7 +445,7 @@ class HumanGates:
         node = c.nodes.get(RETRO)
         if node is not None and node.status not in (ACCEPTED, FAILED, ESCALATED):
             raise WorkflowError(f"a retrospective is already {node.status}")
-        node = self.graph.add_retrospective()
+        node = self.flow.add_retrospective()
         focus = (payload.get("focus") or payload.get("feedback") or "").strip()
         if focus:
             att = self._feedback_doc(node, approver, focus, "focus")
@@ -472,7 +471,7 @@ class HumanGates:
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
         if c.change.reprovision:
             raise WorkflowError(f"reprovisioning is {c.change.reprovision} already")
-        c.change.reprovision = "requested"       # the scheduler starts it once the build is idle
+        c.change.reprovision = "requested"       # started once the build is idle (a tick)
         c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
         return ("provisioning again from the approved spec and the current library once running "
                 "agents of mapped roles finish; their new runs wait until then")

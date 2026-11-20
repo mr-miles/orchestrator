@@ -18,8 +18,12 @@ from .. import guards
 from ..assets import GitMode
 from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
 from ..model import (
+    ACCEPTED,
     H_ENV,
+    LIVE_RUN,
+    MERGING,
     RUNNING,
+    VERIFYING,
     Change,
     EnvironmentBuild,
     Node,
@@ -175,6 +179,29 @@ class Provisioner:
             c.event("provision", "environment ready; the repository's setup ran in the "
                     f"verifier ({', '.join(roles) or 'no roles'})", node.id)
             return Ok()
+
+    def environment_quiescent(self) -> bool:
+        """Provisioning (or reprovisioning) may start: no run of a role the current build maps
+        is live and nothing is verifying or merging in that build."""
+        c = self.c
+        mapped = set(c.change.environment.roles) if c.change.environment else set()
+        return not any(r.status in LIVE_RUN and r.role in mapped for r in c.runs.values()) \
+            and not any(n.status in (VERIFYING, MERGING) for n in c.nodes.values())
+
+    def waits_for_environment(self, role: str) -> bool:
+        """A role the provisioned environment maps waits while it is being built or rebuilt
+        (``reprovision``), so no sandbox starts from the old build or the default image."""
+        c = self.c
+        prov, env = c.current(PROVISION_KIND), c.change.environment
+        return bool(prov and env and role in env.roles
+                    and (prov.status != ACCEPTED or c.change.reprovision))
+
+    def start_requested_rebuild(self) -> None:
+        """A requested reprovisioning starts once nothing uses the build."""
+        c = self.c
+        if c.change.reprovision == "requested" and self.environment_quiescent():
+            c.change.reprovision = "running"
+            c.spawn(self.rebuild())
 
     async def rebuild(self) -> None:
         """Reprovisioning (a change-level operation, requested by a decision owner): the

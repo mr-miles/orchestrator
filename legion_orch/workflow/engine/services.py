@@ -57,7 +57,7 @@ class EngineHost(Protocol):
         """Run a background task; failures are logged (and passed to ``on_error``)."""
 
     def changed(self) -> None:
-        """State was saved: refresh the UI and wake the scheduler."""
+        """State was saved: refresh the UI and wake the clock."""
 
     def touch(self) -> None:
         """Something visible changed (UI refresh only)."""

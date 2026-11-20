@@ -23,10 +23,10 @@ flowchart TB
         subgraph wf["Workflow: the stage rules"]
             core["Workflow core – pure<br/>flow/core.py, states.py<br/><i>stages, gates, send-back, rounds</i>"]
             tree["Stage tree per tier<br/>workflow_tree.py"]
-            rt["FlowRuntime<br/>runtime.py<br/><i>events in, effects out, persistence</i>"]
+            rt["FlowRuntime<br/>runtime.py<br/><i>events in, effects out, persistence,<br/>the clock's entry</i>"]
         end
         subgraph steps["Steps: what each kind of node is made of"]
-            runner["StepRunner<br/><i>moves a node through its phases</i>"]
+            runner["StepRunner<br/><i>moves a node through its phases,<br/>owns its state</i>"]
             types["STEP_TYPES<br/>steps.py<br/><i>the only per-kind table</i>"]
         end
         subgraph layers["The three layers of a step"]
@@ -35,13 +35,12 @@ flowchart TB
             sbx["Sandbox layer<br/>sandbox_plan.py – SandboxPlan<br/>sandboxes.py – Sandboxes"]
         end
         subgraph svc["Services the layers call"]
-            disp["Dispatcher<br/><i>a run: assignment, payload, launch</i>"]
+            disp["Dispatcher<br/><i>a run: assignment, payload, launch,<br/>the parallel-run limit</i>"]
             reports["Reports<br/><i>agent writes and reports, shared guards</i>"]
             acc["Acceptance<br/><i>verify / panel / merge results</i>"]
-            prov["Provisioner<br/><i>environment images</i>"]
+            prov["Provisioner<br/><i>environment images, is it quiet,<br/>reprovisioning</i>"]
             life["RunLifecycle<br/><i>failure, timeouts, logs, retiring</i>"]
             gates["HumanGates<br/><i>what approving each gate decides</i>"]
-            sched["Scheduler<br/><i>the tick</i>"]
         end
         state["ChangeCore + StateStore<br/><i>change, nodes, runs, events</i>"]
     end
@@ -59,13 +58,13 @@ flowchart TB
         builder["EnvironmentBuilder<br/>podman"]
     end
 
+    clock(["controller's clock"]) --> rt
     web --> engine
     cli --> web
     mcp --> reports
     rt <--> core
     rt --> tree
     rt --> runner
-    sched --> runner
     gates --> rt
     runner --> types
     types --> agent & phases & sbx
@@ -100,16 +99,21 @@ stops, resets and resumes steps through the step runner, which enters and resume
 start their work. **Up:** a phase's result (from an agent's report, a verification, a merge, a
 failed run) goes to the step runner, which applies it to its node and – when the node crosses
 its step's states (done, escalated, resumed, an earlier step redone) – tells the runtime, which
-tells the core. The scheduler is the clock: it only asks the step runner what may start now.
+tells the core. **The clock** (the controller's loop, every change in turn) enters at the top
+and cascades the same way: the runtime does what follows from the change's state (an ended
+change's retrospective and cleanup) and gives the step runner its turn, which asks its services
+to keep house (timeouts, kept sandboxes, a requested reprovisioning) and its nodes' phases to
+start what they have ready. How many agent runs may be live at once (`limits.max_parallel`,
+across every change) is the dispatcher's to say: a phase asks it for a run, and is told when
+there is no room.
 
 The participants, left to right:
 
 | Participant | Layer (§1) | Code | Responsible for (and owns) |
 | --- | --- | --- | --- |
 | **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, what a send-back or a redo resets. Owns the steps' and gates' states. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns. Owns the core's record (`workflow.json`) and the gate nodes, which follow their gates. |
-| **Scheduler** | the clock | `engine/schedule.py` | Each tick: asking the step runner what may start now, within the parallel-run limit; timeouts; releasing sandboxes; starting a requested reprovisioning. Owns no state of the workflow. |
-| **StepRunner** | Steps | `engine/steps.py`, `engine/node_states.py` | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries. Owns the step nodes' states, as a declared machine nested in the core's (§2.1). |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; taking the clock's turn first. Owns the core's record (`workflow.json`), the nodes' existence and order, the gate nodes (which follow their gates) and the retrospective's node. |
+| **StepRunner** | Steps | `engine/steps.py`, `engine/node_states.py` | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; on the clock's turn, starting what its phases have ready (each step's waits checked). Owns the step nodes' states, as a declared machine nested in the core's (§2.1). |
 | **Phases** | Orchestrator layer of a step | `engine/phases.py` (their services: `Dispatcher`, `Acceptance`, `Provisioner`, `RunLifecycle`, and `Sandboxes` below them) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging, provisioning – each ending in a result (ok, rework, escalate, redo) handed to the step runner. |
 | **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
 
@@ -120,7 +124,6 @@ sequenceDiagram
     autonumber
     participant Core as Workflow core
     participant RT as FlowRuntime
-    participant Sch as Scheduler
     participant SR as StepRunner
     participant Ph as Phases
     actor Agent
@@ -130,9 +133,10 @@ sequenceDiagram
     RT->>SR: start(build:T1)
     SR->>Ph: AgentRun.enter
     Ph->>SR: phase(READY)
-    Sch->>SR: tick: dispatch(build:T1), within capacity
+    Note over RT,SR: the clock's turn enters at the runtime
+    RT->>SR: tick
     SR->>Ph: its waits hold → AgentRun.dispatch
-    Ph->>Agent: run launched in its sandbox (Dispatcher → Sandboxes)
+    Ph->>Agent: run launched in its sandbox (the Dispatcher has room → Sandboxes)
     Ph->>SR: phase(RUNNING)
     Agent->>Ph: report over MCP: checked, recorded – reply: end your turn
     Agent-->>Ph: turn ends: the implementer's handler judges the report
@@ -140,7 +144,7 @@ sequenceDiagram
     SR->>Ph: advance → Verify.enter (VERIFYING), in a fresh verifier sandbox
     Ph->>SR: result Ok
     SR->>Ph: advance → Panel.enter (REVIEWING)
-    Sch->>SR: tick: dispatch(build:T1)
+    RT->>SR: tick
     SR->>Ph: Panel.dispatch
     Ph->>Agent: one judge run each, in fresh sandboxes
     Agent-->>Ph: each judge's turn ends → Panel.decide
@@ -287,7 +291,7 @@ classDiagram
         <<Ok, Rework, Escalate or Redo>>
     }
     class Wait {
-        holds(scheduler, node)
+        holds(runner, node)
     }
     class Reset {
         applies(node)

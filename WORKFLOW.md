@@ -54,7 +54,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 ```
                         +-------------------- controller (python) --------------------+
  human --- web UI ----> |  workflow engine  |  guards  |  doc store  |  git remote     |
-                        |  scheduler        |  risk/gates            |  openshell CLI  |
+                        |  clock            |  risk/gates            |  openshell CLI  |
                         +-----------^-----------------------------------------|-------+
                                     | MCP + git (gateway-injected bearer)     | sandbox create / upload /
                                     |                                         | exec / delete
