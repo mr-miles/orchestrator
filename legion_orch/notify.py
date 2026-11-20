@@ -1,7 +1,7 @@
 """Outbound notifications for attention items (WORKFLOW.md §2.2).
 
 The controller calls :meth:`Notifier.raised` / :meth:`Notifier.resolved` when a change's save
-raises or resolves an item, and :meth:`Notifier.remind` from its scheduler loop. Each delivery is
+raises or resolves an item, and :meth:`Notifier.remind` from its reminders timer. Each delivery is
 a background task with a few retries; it never raises into the engine and never blocks it. A
 delivery that fails for good is only recorded (the timeline and the log): the UI is always the
 authority, and a still-waiting blocking item is sent again by the reminder.
@@ -63,7 +63,7 @@ class Notifier:
 
     def remind(self, items: list[AttentionItem], now: float | None = None) -> None:
         """Send again every blocking item that has waited ``remind_after_s`` since it was last
-        sent (called from the scheduler loop with every change's current items)."""
+        sent (called from the controller's reminders timer with every change's current items)."""
         if self.cfg.remind_after_s <= 0:
             return
         now = time.monotonic() if now is None else now

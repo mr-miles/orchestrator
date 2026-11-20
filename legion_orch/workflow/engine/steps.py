@@ -287,7 +287,8 @@ class StepRunner:
     the workflow runtime starts, stops, resets and resumes steps; below it the phases do their
     work – as tasks (:meth:`run`), each awaiting its step's waits (:meth:`wait_until`) and a
     slot from the step's dispatcher – and hand back their results. Each running step holds a
-    reservation with the dispatcher, from its first work until it is done, sent back or
+    reservation with the dispatcher – a slot from its first work, given back while it waits on
+    its conditions – until it is done, sent back or
     escalated (:meth:`dispatcher`). At the boundaries of a step's states – done, escalated,
     resumed, an earlier step redone – it tells the runtime, and nothing else does."""
 
@@ -506,14 +507,16 @@ class StepRunner:
 
     async def wait_until(self, node: Node, work: StepDispatcher,
                          ready: Callable[[], bool]) -> bool:
-        """Await ``ready`` – checked now and at each save of the change. False: the step ended
-        first (released, or the change ended)."""
+        """Await ``ready`` – checked now and at each save of the change; while it does not
+        hold, the step's reservation holds no slot. False: the step ended first (released, or
+        the change ended)."""
         phase = self.step(node).current(node)
         while True:
             if phase is None or self.stale(node, work, phase):
                 return False
             if ready():
                 return True
+            work.idle()                          # a waiting step holds no slot
             self.waiting += 1
             try:
                 await self.c.next_save()

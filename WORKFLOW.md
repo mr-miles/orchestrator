@@ -54,7 +54,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 ```
                         +-------------------- controller (python) --------------------+
  human --- web UI ----> |  workflow engine  |  guards  |  doc store  |  git remote     |
-                        |  clock            |  risk/gates            |  openshell CLI  |
+                        |  dispatcher       |  risk/gates            |  openshell CLI  |
                         +-----------^-----------------------------------------|-------+
                                     | MCP + git (gateway-injected bearer)     | sandbox create / upload /
                                     |                                         | exec / delete
@@ -405,7 +405,7 @@ Universal guards apply to every task and are listed once.
 | --- | --- | --- |
 | G-D1 | dispatch | Every dependency node is `ACCEPTED`. |
 | G-D2 | dispatch | Assets resolve: soul, skills and prompt exist; every `{{var}}` is bound; the prompt pin is recorded on the run. |
-| G-D3 | dispatch | `live agent runs + verifier sandboxes in use < max_parallel` (across every change; a verification waits for room the same way), and no `RUNNING` build node shares a `files_modified` entry with the candidate. |
+| G-D3 | dispatch | `live agent runs + verifier sandboxes in use < max_parallel` (across every change; the dispatcher runs a step's work in a slot, and a step's reservation keeps its slot for the work that follows straight on – its verification, its judges), and no `RUNNING` build node shares a `files_modified` entry with the candidate. |
 | G-D4 | dispatch | Independence: judge roles (critic, reviewer, security, integration, verifier) get a fresh sandbox and a run id distinct from the run being judged. |
 | G-R1 | report | `status ∈ {DONE, BLOCKED}`. |
 | G-R2 | report | `BLOCKED` requires non-empty `blocked_reason` and `missing_decision`. |

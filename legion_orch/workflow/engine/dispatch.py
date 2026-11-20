@@ -9,7 +9,10 @@ commands; the dispatcher only calls its ``execute``).
 **Reservations.** A step holds one, so the work of its phases – its agent's run, then its
 verification, then its judges – follows on in the same slot instead of queueing behind other
 steps' new work. A reservation takes a real slot only when its first work runs, and keeps it
-between pieces of work until it is released (the step is done, sent back or escalated). Work
+between pieces of work that follow straight on. While its step waits on its conditions (a
+rework waiting for the environment, say) it gives the slot back (:meth:`Dispatcher.idle`): a
+waiting step holds no slot, so it cannot starve the work it waits for. Its next work binds a
+slot again. It is released when the step is done, sent back or escalated. Work
 dispatched under a reservation while its slot is busy (a panel's judges, in parallel) waits for
 a free slot that nobody holds, or for the reserved one as the work in it completes – whichever
 comes first. Waiting work is served first come, first served.
@@ -84,6 +87,14 @@ class Dispatcher:
         finally:
             self._done(reservation, reserved)
 
+    def idle(self, reservation: Reservation) -> None:
+        """The reservation's step waits on its conditions: its idle slot goes back (it stays
+        reserved; its next work binds a slot again)."""
+        if reservation.bound and not reservation.busy:
+            reservation.bound = False
+            self.in_use -= 1
+            self._grant()
+
     def release(self, reservation: Reservation) -> None:
         """The step needs its slot no more: work still waiting under it is withdrawn, and the
         slot goes back once the work in it (if any) completes."""
@@ -146,6 +157,10 @@ class StepDispatcher:
 
     async def run(self, work: Executable[T]) -> T:
         return await self._dispatcher.run(work, self.reservation)
+
+    def idle(self) -> None:
+        """The step waits on its conditions: it holds no slot meanwhile."""
+        self._dispatcher.idle(self.reservation)
 
 
 __all__ = ["Dispatcher", "Executable", "Reservation", "StepDispatcher", "Withdrawn"]

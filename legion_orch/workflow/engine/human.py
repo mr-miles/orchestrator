@@ -469,7 +469,7 @@ class HumanGates:
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
         if c.change.reprovision:
             raise WorkflowError(f"reprovisioning is {c.change.reprovision} already")
-        c.change.reprovision = "requested"       # started once the build is idle (a tick)
+        c.change.reprovision = "requested"       # started once the build is idle (on a save)
         c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
         return ("provisioning again from the approved spec and the current library once running "
                 "agents of mapped roles finish; their new runs wait until then")
