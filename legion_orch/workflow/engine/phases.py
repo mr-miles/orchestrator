@@ -392,14 +392,16 @@ class Verify(Phase):
 
     def _start(self, rt: StepRunner, node: Node) -> None:
         rt.phase(node, VERIFYING)
-        rt.c.spawn(rt.acceptance.verify_node(node.id))
+        rt.ctx.sandboxes.reserve()               # its verifier goes before new agent runs
+        rt.c.spawn(rt.acceptance.verify_node(node.id, reserved=True))
 
     def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
         """Verify again (resumed, or after a restart)."""
         return rt.acceptance.verify_node(node.id) if node.status == VERIFYING else None
 
     async def verification(self, ctx: PhaseContext, label: str, sha: str,
-                           commands: tuple[str, ...] | None = None) -> Verification:
+                           commands: tuple[str, ...] | None = None, *,
+                           reserved: bool = False) -> Verification:
         """Run it. Never raises. A name the gateway already has (another controller) is
         replaced and the sandbox created again."""
         c = ctx.c
@@ -407,10 +409,13 @@ class Verify(Phase):
         result = Verification(sha=sha, sandbox=c.host.new_sandbox_name(VERIFIER_PREFIX))
         if not commands and not c.change.setup_pin:
             result.infra_error = "no commands to verify"
+            if reserved:
+                ctx.sandboxes.unreserve()
             return result
         for attempt in range(3):
             try:
-                async with ctx.sandboxes.verifier(result.sandbox, label, sha) as box:
+                async with ctx.sandboxes.verifier(result.sandbox, label, sha,
+                                                  reserved=reserved and attempt == 0) as box:
                     pin = c.change.setup_pin
                     if pin:                    # §5.3c, G-V3: setup first; a failure stops here
                         r = await box.setup(pin.blob, c.cfg.limits.setup_timeout_s)

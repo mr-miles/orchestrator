@@ -948,12 +948,15 @@ async def test_failed_sandbox_deletion_is_reported_not_fatal(f: Flow):
 async def test_parallel_limit_and_file_overlap(f: Flow):
     tasks = [TASKS[0], TASKS[0] | {"id": "T2", "files_modified": ["src/bye.txt"]}]
     await f.to_build(tasks=tasks)
-    assert [n.status for n in f.ce.build_nodes()] == [RUNNING, READY]   # one slot
-    await f.implement("T1")                             # T1 verified; T2 takes the free slot
-    assert f.status("build:T1") == REVIEWING and f.status("build:T2") == RUNNING
-    assert not f.runs("build:T1", "reviewer")
-    await f.implement("T2")
+    assert [n.status for n in f.ce.build_nodes()] == [RUNNING, READY]   # one sandbox
+    # T1's agent ends: its verifier takes the sandbox first (work in flight goes first), then
+    # its reviewer; T2 waits until T1 is merged
+    await f.implement("T1")
+    assert f.status("build:T1") == REVIEWING and f.status("build:T2") == READY
+    assert f.runs("build:T1", "reviewer")
     await f.review("T1")
+    assert f.status("build:T1") == ACCEPTED and f.status("build:T2") == RUNNING
+    await f.implement("T2")
     await f.review("T2")
     assert f.ce.change.status == ChangeStatus.READY
 

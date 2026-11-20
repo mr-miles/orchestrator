@@ -17,6 +17,7 @@ from legion_orch.workflow.model import (
     BUILD,
     H_REQUIREMENTS,
     INTAKE,
+    R_FAILED,
     R_REPORTED,
     ChangeStatus,
     Node,
@@ -278,3 +279,25 @@ async def test_a_refused_delete_is_reported_and_not_recorded(f: Flow):
     assert await sb(f).delete("sb-t9") is False
     assert not run.sandbox_deleted
     assert any("delete of sb-t9 failed" in e for e in events(f))
+
+
+@scenario(max_parallel=1)
+async def test_a_verifier_waits_for_room_within_the_limit(f: Flow):
+    """Verifier sandboxes count against limits.max_parallel with the agent runs: with the one
+    sandbox allowed in use by an agent, a verification waits until it is free."""
+    run = f.run("intake")                                     # the one sandbox allowed
+    assert not sb(f).has_room()
+    entered = asyncio.Event()
+
+    async def verify():
+        async with sb(f).verifier("v-1", "T1", JUDGED):
+            entered.set()
+    task = asyncio.create_task(verify())
+    await asyncio.sleep(0.1)
+    assert not entered.is_set() and "v-1" not in f.runner.created
+    async with f.ce.lock:
+        run.status = R_FAILED                                 # its sandbox is free
+        f.ce.save()
+    await asyncio.wait_for(task, 5)
+    assert entered.is_set() and f.runner.deleted[-1] == "v-1"
+    assert f.ctl.sandboxes_in_use() == 0

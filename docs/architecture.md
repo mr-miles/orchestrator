@@ -103,9 +103,11 @@ tells the core. **The clock** (the controller's loop, every change in turn) ente
 and cascades the same way: the runtime does what follows from the change's state (an ended
 change's retrospective and cleanup) and gives the step runner its turn, which asks its services
 to keep house (timeouts, kept sandboxes, a requested reprovisioning) and its nodes' phases to
-start what they have ready. How many agent runs may be live at once (`limits.max_parallel`,
-across every change) is the dispatcher's to say: a phase asks it for a run, and is told when
-there is no room.
+start what they have ready. How many sandboxes may be in use at once (`limits.max_parallel`,
+across every change: agent runs – until their agent ends its turn – and verifiers) is the
+sandbox layer's to say: a phase asking for an agent run is told when there is no room, and a
+verification waits for one. Verifications go first – they finish work in flight – so a
+verification's place is held from the moment its phase starts.
 
 The participants, left to right:
 
@@ -156,7 +158,8 @@ sequenceDiagram
     Core-->>RT: effects: StartStep(next) … or Evaluate(H-3)
 ```
 
-An escalation goes up the same way, and the human's decision comes down through every layer:
+An escalation goes up the same way – the core only records it – and, when a human decides,
+the decision comes down through every layer:
 
 ```mermaid
 sequenceDiagram
@@ -173,6 +176,8 @@ sequenceDiagram
     Ph->>SR: result Escalate(run_failed) (RunLifecycle → its phase)
     SR->>RT: escalated(build:T1) – its node ESCALATED
     RT->>Core: on(Escalated(build:T1))
+    Note over Core: records it: the step holds its stage, and now offers<br/>answer, retry, override and send_back – the core calls nothing
+    Note over Human,HG: later: the attention list shows the escalation, and a decision owner acts
     Human->>HG: answer: "use the v2 API"
     HG->>HG: records the decision (question and answer)
     HG->>RT: decide(build:T1, answer)

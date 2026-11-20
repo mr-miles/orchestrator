@@ -70,5 +70,19 @@ class EngineHost(Protocol):
     def new_sandbox_name(self, prefix: str) -> str:
         """A readable sandbox name this controller has never used (agents and verifiers)."""
 
+    def sandboxes_in_use(self) -> int:
+        """Live agent runs and verifier sandboxes in use, across every change."""
+
+    def verifiers_waiting(self) -> int: ...
+
+    def verifier_waits(self, waiting: bool) -> None: ...
+
+    def verifier_started(self) -> None: ...
+
+    def verifier_ended(self) -> None: ...
+
+    async def room_changed(self) -> None:
+        """Wait until a sandbox may have been freed."""
+
     def live_count(self) -> int:
         """Live runs across all changes (the parallel limit is global)."""

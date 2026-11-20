@@ -70,7 +70,7 @@ class ServerConfig:
 
 @dataclass
 class LimitsConfig:
-    max_parallel: int = 4
+    max_parallel: int = 4         # sandboxes in use at once (agent runs and verifiers), every change
     review_max_cycles: int = 3
     critique_max_cycles: int = 3   # a real BLOCKER in cycle 1 often needs two more to settle
     fix_rounds: int = 2           # fix rounds a change may plan after integration fails (§5.10a)

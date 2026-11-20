@@ -60,6 +60,47 @@ class Sandboxes:
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
         self._locks: dict[str, asyncio.Lock] = {}
 
+    # ------------------------------------------------------------------ the limit
+    def has_room(self, *, for_agent: bool = True) -> bool:
+        """Another sandbox may be in use: fewer than ``limits.max_parallel`` live agent runs and
+        verifier sandboxes across every change (a prepared run counts at once). Verifiers
+        waiting for room go first: they finish work in flight, so a new agent run waits for
+        them too."""
+        used = self.c.host.sandboxes_in_use()
+        if for_agent:
+            used += self.c.host.verifiers_waiting()
+        return used < self.c.cfg.limits.max_parallel
+
+    def reserve(self) -> None:
+        """A verification is about to start (under the lock): its verifier holds a place ahead
+        of new agent runs until it takes a sandbox (:meth:`slot`) or gives the place up."""
+        self.c.host.verifier_waits(True)
+
+    def unreserve(self) -> None:
+        self.c.host.verifier_waits(False)
+
+    @contextlib.asynccontextmanager
+    async def slot(self, *, reserved: bool = False) -> AsyncIterator[None]:
+        """A verifier sandbox's place within the limit: waits (outside the lock) for one.
+        ``reserved``: its place was held since its verification started."""
+        waiting = reserved
+        try:
+            if not self.has_room(for_agent=False):
+                self.c.event("sandbox", "a verifier waits for room within limits.max_parallel")
+                if not waiting:
+                    self.c.host.verifier_waits(True)
+                    waiting = True
+                while not self.has_room(for_agent=False):
+                    await self.c.host.room_changed()
+        finally:
+            if waiting:
+                self.c.host.verifier_waits(False)
+        self.c.host.verifier_started()
+        try:
+            yield
+        finally:
+            self.c.host.verifier_ended()
+
     def lock(self, name: str) -> asyncio.Lock:
         """Serialises what happens to one sandbox (a rework's launch against a pause)."""
         return self._locks.setdefault(name, asyncio.Lock())
@@ -183,9 +224,17 @@ class Sandboxes:
 
     # ------------------------------------------------------------------ verifier sandboxes
     @contextlib.asynccontextmanager
-    async def verifier(self, name: str, label: str, sha: str) -> AsyncIterator[VerifierSandbox]:
-        """A non-agent sandbox with a read-only git grant, checked out at ``sha``. On exit the
-        grant is revoked and the sandbox and its payload are deleted, however the block ends."""
+    async def verifier(self, name: str, label: str, sha: str, *,
+                       reserved: bool = False) -> AsyncIterator[VerifierSandbox]:
+        """A non-agent sandbox with a read-only git grant, checked out at ``sha``, once there is
+        room for it (:meth:`slot`). On exit the grant is revoked and the sandbox and its payload
+        are deleted, however the block ends."""
+        async with self.slot(reserved=reserved):
+            async with self._verifier(name, label, sha) as box:
+                yield box
+
+    @contextlib.asynccontextmanager
+    async def _verifier(self, name: str, label: str, sha: str) -> AsyncIterator[VerifierSandbox]:
         base = self.c.svc.tmp / "verify" / name
         payload = base / "payload"
         payload.mkdir(parents=True, exist_ok=True)

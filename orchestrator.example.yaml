@@ -23,7 +23,7 @@ server:
                                  # service, or set token_scheme: https)
   # operator_token: set LEGION_OPERATOR_TOKEN instead of committing it
 limits:
-  max_parallel: 4
+  max_parallel: 4            # sandboxes in use at once: live agent runs and verifiers
   review_max_cycles: 3
   critique_max_cycles: 3
   fix_rounds: 2                 # fix rounds after a late integration failure (WORKFLOW.md §5.10a)

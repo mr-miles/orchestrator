@@ -128,16 +128,11 @@ class Dispatcher:
                          + (f" (evidence: {atts})" if atts else ""))
         return "\n".join(lines)
 
-    def has_room(self) -> bool:
-        """Another agent run may start: fewer than ``limits.max_parallel`` are live across every
-        change (a prepared run counts at once)."""
-        return self.c.host.live_count() < self.c.cfg.limits.max_parallel
-
     def prepare(self, node: Node, role: str,
                 judged_sha: str | None = None) -> Run | Escalate | None:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4, G-B1), or return why it
         cannot run (the phase that asked passes it to its step); None: no room now."""
-        if not self.has_room():
+        if not self.sandboxes.has_room():            # the limit is the sandbox layer's
             return None
         ch, h = self.c.change, handler_for(role)
         # the blank repository's scaffold is built before H-2, on the critique's PASS (§5.3b)

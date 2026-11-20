@@ -333,4 +333,4 @@ async def test_a_step_waits_while_the_dispatcher_has_no_room(f: Flow):
     assert f.run("intake")                                   # the one run allowed is live
     n = node(f, NodeKind.RELEASE, status=READY)
     assert f.ce._runner.dispatch(n) == [] and n.status == READY
-    assert not f.ce._dispatcher.has_room()
+    assert not f.ce._sandboxes.has_room()
