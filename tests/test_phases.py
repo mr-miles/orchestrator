@@ -189,7 +189,7 @@ async def test_rework_supersedes_the_report_and_starts_the_next_cycle(f: Flow):
     f.ce.runs[run.id] = run
     node = task(f, current_run=run.id)
     fb = [Feedback(cycle=1, source="merge", text="conflict")]
-    f.ce._runner.apply(node, Rework(fb, "merge", base=SHA))
+    f.ce._runner.of(node).apply(Rework(fb, "merge", base=SHA))
     assert (node.status, node.cycle, node.candidate_sha, node.base_sha) == (REWORK, 2, None, SHA)
     assert run.status == R_SUPERSEDED and node.feedback == fb
 
@@ -197,7 +197,7 @@ async def test_rework_supersedes_the_report_and_starts_the_next_cycle(f: Flow):
 @scenario(review_max_cycles=1)
 async def test_rework_past_the_budget_escalates(f: Flow):
     node = task(f)
-    f.ce._runner.apply(node, Rework([], "review", base=SHA))
+    f.ce._runner.of(node).apply(Rework([], "review", base=SHA))
     assert node.status == ESCALATED and node.escalation.kind == "cycle_budget"
     assert node.cycle == 1 and node.base_sha is None
 
@@ -206,7 +206,7 @@ async def test_rework_past_the_budget_escalates(f: Flow):
 async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
     node = task(f)
     fb = [Feedback(cycle=1, source="review", text="same again")]
-    f.ce._runner.apply(node, Escalate("stale_loop", "why", Resume.REWORK_CYCLE, log_tail="tail",
+    f.ce._runner.of(node).apply(Escalate("stale_loop", "why", Resume.REWORK_CYCLE, log_tail="tail",
                                 feedback=fb))
     assert node.status == ESCALATED and node.feedback == fb
     assert (node.escalation.kind, node.escalation.resume) == ("stale_loop", Resume.REWORK_CYCLE)

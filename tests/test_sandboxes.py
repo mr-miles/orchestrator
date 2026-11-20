@@ -308,7 +308,7 @@ async def test_an_escalated_steps_sandbox_is_stopped_once_nothing_live_uses_it(f
     node = build_node(f, sandbox=None, status=RUNNING)
     run = make_run(f, "integration", sandbox="sb-x", status=R_ACTIVE)
     node.runs.append(run.id)
-    f.ce._runner.escalate(node, "x", "why", Resume.READY)     # its reservation goes back
+    f.ce._runner.of(node).escalate("x", "why", Resume.READY)     # its reservation goes back
     f.ce.save()
     await f.settle()
     assert f.runner.stopped == []                            # its run is still live

@@ -9,7 +9,7 @@ composition of small objects instead of per-kind code:
 * **waits** – what must hold before it is promoted or dispatched;
 * where a failed or blocked run of it resumes.
 
-:class:`.StepRunner` (:mod:`.runner`) is the one place that moves a node through its phases: a
+:class:`.ActiveStep` (:mod:`.active`) is the one place that moves a node through its phases: a
 phase that passes hands over to the next, and after the last the node is accepted. Nothing here switches on a
 node's kind; the table at the bottom is the only per-kind knowledge.
 """
@@ -70,24 +70,25 @@ from .phases import (
 
 if TYPE_CHECKING:
     from ..services.runs import RunLifecycle
-    from .runner import StepRunner
+    from .active import ActiveStep
 
 
 # ---------------------------------------------------------------------------- waits
 class Wait:
     """A condition a step waits for (it is not an error while it does not hold)."""
 
-    def holds(self, rt: StepRunner, node: Node) -> bool:
+    def holds(self, step: ActiveStep) -> bool:
         raise NotImplementedError
 
 
 class NoOverlap(Wait):
     """No running task touches the same files."""
 
-    def holds(self, rt: StepRunner, node: Node) -> bool:
+    def holds(self, step: ActiveStep) -> bool:
         """Guard G-D3 (its file-overlap part)."""
+        node = step.node
         mine = node.task.files_modified
-        for other in rt.c.build_nodes():
+        for other in step.c.build_nodes():
             if other.id == node.id or other.status not in ACTIVE_NODE | {REWORK}:
                 continue
             if any(paths_overlap(a, b) for a in mine for b in other.task.files_modified):
@@ -98,15 +99,15 @@ class NoOverlap(Wait):
 class ReflectionsDone(Wait):
     """The last agents' reflections are recorded (they are its material)."""
 
-    def holds(self, rt: StepRunner, node: Node) -> bool:
-        return not rt.lifecycle.sandboxes.reflector.pending
+    def holds(self, step: ActiveStep) -> bool:
+        return not step.lifecycle.sandboxes.reflector.pending
 
 
 class EnvironmentQuiescent(Wait):
     """No run or verification uses the current build (it is about to be replaced)."""
 
-    def holds(self, rt: StepRunner, node: Node) -> bool:
-        return rt.provisioner.environment_quiescent()
+    def holds(self, step: ActiveStep) -> bool:
+        return step.provisioner.environment_quiescent()
 
 
 # ---------------------------------------------------------------------------- standing

@@ -155,7 +155,7 @@ async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
               sandbox=f"sb-{len(f.ce.runs)}", status=R_REPORTED)
     f.ce.runs[run.id] = run
     rt = f.ce._runner
-    phase = rt.current(n)
+    phase = rt.of(n).current()
     ended = Ended(run, Ok() if result is None else result)
     if isinstance(phase, Panel):                         # a judge's: collated by the panel
         phase.judged(ended)
@@ -169,9 +169,13 @@ def capture_work(f: Flow) -> list[str]:
     """The phases whose work the runner was asked to start (not run)."""
     rt, started = f.ce._runner, []
 
-    def run(phase, work=None):
-        started.append(type(phase).__name__)
-    rt.run = run
+    of = rt.of
+
+    def capturing(node):
+        step = of(node)
+        step.run = lambda phase, work=None: started.append(type(phase).__name__)
+        return step
+    rt.of = capturing
     return started
 
 
@@ -182,15 +186,15 @@ async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f
     started = capture_work(f)
     await report(f, n)                                         # the implementer's report
     assert n.status == VERIFYING and started == ["Verify"]
-    rt.advance(n, rt.step(n).current(n))                 # verification passed
+    rt.of(n).advance(rt.of(n).current())                 # verification passed
     assert n.status == REVIEWING and started[-1] == "Panel"     # its judge's run
     judge = await report(f, n, result=None, role="reviewer")   # its handler records the review only
     assert n.status == REVIEWING                         # the panel decides: no review yet
     assert judge.status == "ACCEPTED" and judge.concluded
     assert judge.sandbox in f.ce._sandboxes.retiring     # the judge's sandbox goes
-    rt.advance(n, rt.step(n).current(n))                 # the panel passed
+    rt.of(n).advance(rt.of(n).current())                 # the panel passed
     assert n.status == MERGING and started[-1] == "Merge"
-    rt.advance(n, rt.step(n).current(n))                 # merged
+    rt.of(n).advance(rt.of(n).current())                 # merged
     assert n.status == ACCEPTED
 
 
@@ -199,7 +203,7 @@ async def test_an_empty_panel_is_passed_straight_to_the_merge(f: Flow):
     rt, n = f.ce._runner, node(f, BUILD, status=VERIFYING)
     f.ce.change.panel = []
     capture_work(f)
-    rt.advance(n, rt.step(n).current(n))
+    rt.of(n).advance(rt.of(n).current())
     assert n.status == MERGING
 
 
@@ -241,10 +245,10 @@ async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
     rt = f.ce._runner
     retro = node(f, NodeKind.RETROSPECTIVE, id="retrospective", status=READY)
     f.ce._sandboxes.reflector.pending.add("sb")              # an agent still reflects
-    assert not rt.waits_hold(retro)
-    assert not rt.at(step_for(retro).phases[0], retro).ready()
+    assert not rt.of(retro).waits_hold()
+    assert not rt.of(retro).at(step_for(retro).phases[0]).ready()
     f.ce._sandboxes.reflector.pending.clear()
-    assert rt.at(step_for(retro).phases[0], retro).ready()
+    assert rt.of(retro).at(step_for(retro).phases[0]).ready()
 
 
 @scenario()
@@ -252,25 +256,27 @@ async def test_a_waiting_step_goes_on_at_a_save_once_its_waits_hold(f: Flow):
     import asyncio
     rt = f.ce._runner
     n = node(f, NodeKind.RELEASE, status=READY)
-    work, holds = rt.dispatcher(n), [False]
-    waiting = asyncio.ensure_future(rt.wait_until(n, work, lambda: holds[0]))
+    step, holds = rt.of(n), [False]
+    phase = step_for(n).phases[0].at(step, step.dispatch)
+    waiting = asyncio.ensure_future(step.wait_until(phase, lambda: holds[0]))
     await asyncio.sleep(0)
     assert rt.waiting == 1 and not waiting.done()
     holds[0] = True
     f.ce.notify()                                            # a save
     assert await waiting is True and rt.waiting == 0
-    rt.release(n)                                            # the step is over: it waits no more
-    assert await rt.wait_until(n, work, lambda: False) is False
+    step.release()                                           # the step is over: it waits no more
+    assert await step.wait_until(phase, lambda: False) is False
 
 
 @scenario()
 async def test_a_step_holds_one_reservation_until_it_is_over(f: Flow):
     rt = f.ce._runner
     n = node(f, NodeKind.RELEASE, status=READY)
-    work = rt.dispatcher(n)
-    assert rt.dispatcher(n) is work and not work.released
-    rt.escalate(n, "x", "why", Resume.READY)
-    assert work.released and rt.dispatcher(n) is not work    # resuming takes a new one
+    step = rt.of(n)
+    work = step.dispatch
+    assert step.dispatch is work and not work.released
+    step.escalate("x", "why", Resume.READY)
+    assert work.released and step.dispatch is not work       # resuming takes a new one
 
 
 @scenario()
@@ -307,7 +313,7 @@ def ver(*rcs: int, setup: int | None = None) -> Verification:
 async def conclude(f: Flow, n: Node, res: Verification) -> None:
     """The verification's result, as its phase's work hands it over."""
     rt = f.ce._runner
-    phase = rt.at(step_for(n).phase(Verify), n)
+    phase = rt.of(n).at(step_for(n).phase(Verify))
     phase.conclude(await phase.result(res))
 
 
@@ -366,9 +372,9 @@ async def test_a_baseline_setup_failure_escalates(f: Flow):
 async def test_the_retrospective_waits_for_the_last_reflections(f: Flow):
     retro = Node(id="retro-x", kind=NodeKind.RETROSPECTIVE, title="x")
     wait = STEP_TYPES[NodeKind.RETROSPECTIVE].dispatch_when[0]
-    assert wait.holds(f.ce._runner, retro)
+    assert wait.holds(f.ce._runner.of(retro))
     f.ce._sandboxes.reflector.pending.add("sb")
-    assert not wait.holds(f.ce._runner, retro)
+    assert not wait.holds(f.ce._runner.of(retro))
 
 
 @scenario(max_parallel=1)
@@ -389,10 +395,11 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
     rt = f.ce._runner
     phase = step_for(n).phases[0]
     if answered is None:
-        rt.phase(n, READY)
+        rt.of(n).move(READY)
     if answered:
         n.approved = True                                # what resuming answered does
-    await phase.at(rt, n, rt.dispatcher(n)).task()
+    step = rt.of(n)
+    await phase.at(step, step.dispatch).task()
 
 
 @scenario()
@@ -446,9 +453,9 @@ async def test_a_step_cannot_escalate_to_resume_at_a_phase_it_lacks(f: Flow):
     from legion_orch.workflow.engine.steps.node_states import IllegalNodeTransition
     rt, n = f.ce._runner, node(f, PROVISION, status=RUNNING)
     with pytest.raises(IllegalNodeTransition):
-        rt.escalate(n, "x", "why", Resume.REVIEWING)           # provisioning has no panel
+        rt.of(n).escalate("x", "why", Resume.REVIEWING)           # provisioning has no panel
     assert n.status == RUNNING
-    rt.escalate(n, "x", "why", Resume.READY)
+    rt.of(n).escalate("x", "why", Resume.READY)
     assert n.status == ESCALATED and n.escalation.resume == Resume.READY
 
 
