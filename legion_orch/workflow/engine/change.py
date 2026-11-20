@@ -2,10 +2,11 @@
 
 * :class:`ChangeCore` – the state, documents and events (the :class:`ChangeView`)
 * :class:`FlowRuntime` – the workflow core's runtime: the stage rules, the nodes' existence and
-  order, the gate nodes; the clock's turn enters here (docs/architecture.md §2)
+  order, the gate nodes (docs/architecture.md §2)
 * :class:`StepRunner` – the step layer: each node through its phases, its state, its results
-* :class:`Dispatcher`, :class:`Reports`, :class:`Acceptance`, :class:`Provisioner`,
-  :class:`RunLifecycle`, :class:`Sandboxes` – the services the phases use
+* :class:`AgentRuns`, :class:`Reports`, :class:`Provisioner`, :class:`RunLifecycle`,
+  :class:`Sandboxes` – the services the phases use; the shared :class:`Dispatcher` runs their
+  work within the sandbox limit
 * :class:`HumanGates` – what decision owners decide (recorded, then handed to the runtime)
 
 Control passes only between neighbouring layers; each is given only the parts it uses, so the
@@ -16,10 +17,6 @@ from __future__ import annotations
 from ...store import DocCheck, DocVersion
 from ..model import (
     LIVE_RUN,
-    MERGING,
-    R_REPORTED,
-    RUNNING,
-    VERIFYING,
     Change,
     FailureSource,
     Node,
@@ -27,9 +24,8 @@ from ..model import (
     SetupPin,
 )
 from ..results import ActionResult, ReportOutcome
-from .acceptance import Acceptance
+from .agent_runs import AgentRuns
 from .core import ChangeCore
-from .dispatch import Dispatcher
 from .human import HumanGates
 from .phases import PhaseContext
 from .provision import Provisioner
@@ -46,27 +42,23 @@ class ChangeEngine(ChangeCore):
 
     It is the change's :class:`ChangeCore` plus its collaborators, and the one public surface:
     the controller, the servers and the role handlers (as :class:`RoleContext`) use only the
-    methods below. It is given the shared :class:`Services` and an :class:`EngineHost` for the
-    few controller operations it needs (background tasks, run ids, the global parallel limit)."""
+    methods below. It is given the shared :class:`Services` (the dispatcher among them) and an
+    :class:`EngineHost` for the few controller operations it needs (background tasks, run
+    ids)."""
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
         self._sandboxes = Sandboxes(self)
         self._lifecycle = RunLifecycle(self, self._sandboxes)
-        self._phases = PhaseContext(self, self._sandboxes)
-        self._acceptance = Acceptance(self, self._lifecycle, self._phases)
+        self._agents = AgentRuns(self, self._lifecycle, self._sandboxes, roles=self)
+        self._phases = PhaseContext(self, self._sandboxes, svc.dispatcher, self._agents)
         self._provisioner = Provisioner(self, self._lifecycle, self._phases)
-        self._dispatcher = Dispatcher(self, self._lifecycle, self._sandboxes, roles=self)
-        self._phases.dispatcher = self._dispatcher
         self._reports = Reports(self, self._lifecycle, roles=self)
-        self._gates = HumanGates(self, self._acceptance, self._lifecycle)
-        self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
-                                  self._provisioner)
-        self._acceptance.runner = self._reports.runner = self._runner
-        self._dispatcher.reports = self._reports
-        self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
+        self._agents.reports = self._reports
+        self._gates = HumanGates(self, self._lifecycle)
+        self._runner = StepRunner(self, self._phases, self._lifecycle, self._provisioner)
+        self._flow = FlowRuntime(self, self._runner, self._lifecycle)
         self._runner.runtime = self._flow
-        self._lifecycle.runner = self._runner
         self._gates.flow = self._flow
 
     # ------------------------------------------------------------------ controller
@@ -90,27 +82,21 @@ class ChangeEngine(ChangeCore):
         self.save()
 
     def recover(self) -> None:
-        """After a restart the agent processes are gone, so live runs fail (and escalate);
-        interrupted verification, merge and ship steps resume."""
+        """After a restart the agent processes are gone, so live runs fail (and their steps
+        escalate); every other step's phase takes its work up again (waiting, verifying,
+        merging, provisioning, concluding a turn that ended with the controller)."""
+        failed = {}
         for run in self.runs.values():
             if run.status in LIVE_RUN:
                 self._lifecycle.fail_run(run, "controller restarted while the run was live",
                                          FailureSource.CONTROLLER)
-            elif run.status == R_REPORTED and not run.concluded:
-                # its agent's turn ended (with the controller): its report goes to its phase
-                self.spawn(self._reports.conclude_later(run.id))
-        for node in self.nodes.values():
-            if node.status in (VERIFYING, MERGING, RUNNING) \
-                    and (work := self._runner.resume_work(node)):
-                self.spawn(work)                    # verifying, merging, provisioning
+                failed.setdefault(run.node_id, run)
+        for node in list(self.nodes.values()):
+            self._runner.recover(node, failed.get(node.id))
         for gate in self._flow.evaluating():
             self.spawn(self._flow.evaluate(gate))   # a gate's preconditions
         self._runner.resume_retries()
         self.save()
-
-    async def tick(self) -> None:
-        """A turn of the controller's clock: it cascades from the workflow runtime down."""
-        await self._flow.tick()
 
     # ------------------------------------------------------------------ agents (MCP)
     async def agent_write(self, run: Run, path: str, content: str, base_version: int | None,

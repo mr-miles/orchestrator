@@ -154,7 +154,7 @@ async def test_h3_reject_abandons_the_change(f: Flow):
     await f.human("H-3", "reject")
     assert f.status("H-3") == FAILED and f.ce.change.status == ChangeStatus.ABANDONED
     runs_before = len(f.ce.runs)
-    await f.ce.tick()                                   # nothing is scheduled any more
+    await f.settle()                                    # nothing is scheduled any more
     assert len(f.ce.runs) == runs_before
 
 
@@ -687,6 +687,7 @@ async def test_agent_exit_without_report_fails_the_run(f: Flow):
 async def test_runs_time_out(f: Flow):
     r = f.run("intake")
     r.created_at = "2020-01-01T00:00:00.000Z"
+    f.ce.notify()                                   # its timer reads the state again
     await f.settle()
     assert r.status == R_FAILED and "timed out" in f.ce.nodes["intake"].escalation.reason
 
@@ -797,6 +798,7 @@ async def test_rejected_reports_are_an_agent_error(f: Flow):
 async def test_timeout_is_its_own_source(f: Flow):
     r = f.run("intake")
     r.created_at = "2020-01-01T00:00:00.000Z"
+    f.ce.notify()                                   # its timer reads the state again
     await f.settle()
     assert r.failure.source == FailureSource.TIMEOUT
 
@@ -816,7 +818,7 @@ async def test_sandboxes_get_readable_names_never_reused(f: Flow):
     assert len(set(agents)) == len(agents) and not set(agents) & set(verifiers)
     assert set(agents) <= f.ctl.used_sandbox_names()
     other = await f.ctl.start_change("Another goal")       # names stay unique across changes
-    await other.tick()
+
     await f.settle()
     assert [r.sandbox for r in other.runs.values()] and not (
         {r.sandbox for r in other.runs.values()} & set(agents + verifiers))
@@ -1151,6 +1153,7 @@ async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
             await f.write(run, "intake/risk.json", signals())]
     await f.report(run, atts, exit_agent=False)
     grace, RunLifecycle.END_TURN_GRACE_S = RunLifecycle.END_TURN_GRACE_S, 0
+    f.ce.notify()                                       # its timer reads the state again
     try:
         await f.settle()
     finally:

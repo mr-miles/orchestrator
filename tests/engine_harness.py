@@ -3,8 +3,9 @@
 A real Controller, document store and git remote, but a fake sandbox runner whose agents never
 run on their own: the test plays each agent by calling the engine's agent API (``agent_write``,
 ``handle_report``) exactly as the MCP server would, and decides when the agent process exits.
-``Flow.settle()`` ticks the scheduler until every background task (verification, merge, ship,
-sandbox deletion) has finished, so each step ends in a stable, assertable state.
+``Flow.settle()`` waits until every background task (verification, merge, ship, sandbox
+deletion) has finished or legitimately waits – on an agent's process, a step's waits, or a slot
+– so each step ends in a stable, assertable state.
 """
 from __future__ import annotations
 
@@ -269,18 +270,23 @@ class Flow:
 
     # ------------------------------------------------------------------ driving
     async def settle(self, timeout: float = 20) -> None:
-        """Tick until nothing changes and the only pending tasks are agents waiting to exit."""
+        """Wait until nothing changes and every pending task waits legitimately: on an agent
+        process that has not exited, on its step's waits, or for a slot."""
         last = None
         for _ in range(int(timeout / 0.02)):
-            await self.ce.tick()
             await asyncio.sleep(0.02)
             pending = [t for t in self.ctl._tasks if not t.done()]
-            waiting = [p for p in self.ctl.svc.procs.values() if p.returncode is None]
             state = (self._fingerprint(), len(pending))
-            if len(pending) <= len(waiting) and state == last:
+            if len(pending) <= self.waiting() and state == last:
                 return
             last = state
         raise AssertionError(f"engine did not settle; nodes={self.status()}")
+
+    def waiting(self) -> int:
+        """Tasks that wait legitimately (across the controller's changes)."""
+        procs = sum(1 for p in self.ctl.svc.procs.values() if p.returncode is None)
+        steps = sum(ce._runner.waiting for ce in self.ctl.changes.values())
+        return procs + steps + self.ctl.svc.dispatcher.waiting
 
     def _fingerprint(self):
         ch = self.ce.change

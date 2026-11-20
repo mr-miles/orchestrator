@@ -4,6 +4,7 @@ It implements :class:`~legion_orch.workflow.view.ChangeView` (what governance an
 is handed to each engine collaborator; it knows nothing of dispatch, reports or verification."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import UTC, datetime
@@ -58,6 +59,7 @@ class ChangeCore:
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
+        self._saved = asyncio.Event()                  # set (and replaced) on every save
 
     # ------------------------------------------------------------------ state
     @property
@@ -99,7 +101,7 @@ class ChangeCore:
         return next((n for n in self.build_nodes() if n.task and n.task.scaffold), None)
 
     def save(self) -> None:
-        """Persist the state (the caller holds the lock) and wake the clock and the UI. Every
+        """Persist the state (the caller holds the lock) and wake what waits on it and the UI. Every
         state change passes through here, so this is where status changes are stamped and
         attention items are raised and resolved (§2.2) – and where the workflow (the stage
         rules) sees what changed (:meth:`sync`)."""
@@ -108,7 +110,17 @@ class ChangeCore:
         self._update_attention()
         self.st.save()
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
+        self.notify()
         self.host.changed()
+
+    def notify(self) -> None:
+        """Wake what waits on the change's state (:meth:`next_save`)."""
+        saved, self._saved = self._saved, asyncio.Event()
+        saved.set()
+
+    async def next_save(self) -> None:
+        """Return at the change's next save: what a phase waits for may hold now."""
+        await self._saved.wait()
 
     def before_save(self) -> None:
         """Hook: the workflow's own record, saved with the change."""

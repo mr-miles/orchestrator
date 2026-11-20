@@ -15,7 +15,7 @@ from ...store import DocStore
 from ..assets import Assets
 from ..attention import AttentionItem
 from .auth import WorkloadAuth
-from .sandbox_queue import SandboxQueue
+from .dispatch import Dispatcher
 
 
 @dataclass
@@ -32,8 +32,8 @@ class Services:
     # Builds environment images (podman; no-op locally).
     builder: EnvironmentBuilder = field(default_factory=NoBuilder)
     procs: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
-    # the sandboxes in use and who waits (limits.max_parallel), used through the Dispatcher
-    queue: SandboxQueue = field(default_factory=lambda: SandboxQueue(4))
+    # runs the work of every change within limits.max_parallel (agent runs, verifiers)
+    dispatcher: Dispatcher = field(default_factory=lambda: Dispatcher(4))
 
     @property
     def git_url(self) -> str:
@@ -60,7 +60,7 @@ class EngineHost(Protocol):
         """Run a background task; failures are logged (and passed to ``on_error``)."""
 
     def changed(self) -> None:
-        """State was saved: refresh the UI and wake the clock."""
+        """State was saved: refresh the UI."""
 
     def touch(self) -> None:
         """Something visible changed (UI refresh only)."""
@@ -73,5 +73,3 @@ class EngineHost(Protocol):
     def new_sandbox_name(self, prefix: str) -> str:
         """A readable sandbox name this controller has never used (agents and verifiers)."""
 
-    def live_count(self) -> int:
-        """Live runs across all changes (the parallel limit is global)."""

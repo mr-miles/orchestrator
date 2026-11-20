@@ -15,9 +15,9 @@ node's kind; the table at the bottom is the only per-kind knowledge.
 """
 from __future__ import annotations
 
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ...git import paths_overlap
 from ..model import (
@@ -53,6 +53,7 @@ from ..model import (
 )
 from ..results import Escalate, Redo, Rework
 from .core import ChangeCore
+from .dispatch import StepDispatcher, Withdrawn
 from .node_states import NodeStates
 from .phases import (
     AcceptanceCommands,
@@ -78,7 +79,6 @@ from .phases import (
 from .sandbox_plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
 
 if TYPE_CHECKING:
-    from .acceptance import Acceptance
     from .provision import Provisioner
     from .runs import RunLifecycle
     from .runtime import FlowRuntime
@@ -283,17 +283,20 @@ def sandbox_plan(role: str) -> SandboxPlan:
 # ---------------------------------------------------------------------------- the runner
 class StepRunner:
     """The step layer: moves nodes through their step's phases and owns their states. Above it
-    the workflow runtime starts, stops, resets and resumes steps; below it the phases enter,
-    dispatch and report their results. At the boundaries of a step's states – done, escalated,
+    the workflow runtime starts, stops, resets and resumes steps; below it the phases do their
+    work – as tasks (:meth:`run`), each awaiting its step's waits (:meth:`wait_until`) and a
+    slot from the step's dispatcher – and hand back their results. Each running step holds a
+    reservation with the dispatcher, from its first work until it is done, sent back or
+    escalated (:meth:`dispatcher`). At the boundaries of a step's states – done, escalated,
     resumed, an earlier step redone – it tells the runtime, and nothing else does."""
 
     def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
-                 acceptance: Acceptance, provisioner: Provisioner):
-        self.c, self.ctx, self.lifecycle = core, ctx, lifecycle
-        self.acceptance, self.provisioner = acceptance, provisioner
-        self.branch_head: str | None = None      # G-H1: read once per tick
+                 provisioner: Provisioner):
+        self.c, self.ctx, self.lifecycle, self.provisioner = core, ctx, lifecycle, provisioner
         self.states = NodeStates()
         self.runtime: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
+        self._steps: dict[str, StepDispatcher] = {}   # node -> its step's dispatcher
+        self.waiting = 0                     # phase tasks waiting on the change's state
 
     @staticmethod
     def step(node: Node) -> StepType:
@@ -310,9 +313,11 @@ class StepRunner:
         for f in feedback:
             node.feedback.append(f.model_copy(update={"cycle": node.cycle}))
         step = self.step(node)
+        self.release(node)
         if node.runs and step.role:
             self.states.reset(node)
             self.states.phase(node, REWORK)
+            step.phases[0].start(self, node)
             return
         self.states.reset(node)
         if step.stands and step.stands.holds(self.c, node):
@@ -336,6 +341,7 @@ class StepRunner:
                 r.status = R_SUPERSEDED
         self.lifecycle.retire_runs(node)
         node.candidate_sha = node.accepted_sha = None
+        self.release(node)
         self.states.reset(node)
 
     def resume(self, node: Node, to: NodeStatus) -> None:
@@ -344,8 +350,8 @@ class StepRunner:
         self.states.resume(node, to)
         self.runtime.resumed(node)
         phase = self.step(node).current(node)
-        if phase is not None and (work := phase.resume(self, node)):
-            self.c.spawn(work)
+        if phase is not None:
+            phase.start(self, node)
 
     def resume_escalation(self, node: Node) -> None:
         """A human answered (the decision is on the node): the step goes on where its
@@ -416,64 +422,93 @@ class StepRunner:
 
     def end(self, node: Node) -> None:
         """The change ended at this node (abandoned at its escalation)."""
+        self.release(node)
         self.states.end(node)
 
     def again(self, node: Node) -> None:
         """A node outside the workflow's tree (the retrospective) runs again."""
         self.states.again(node)
+        self.enter(node)
 
-    def resume_work(self, node: Node) -> Coroutine[Any, Any, None] | None:
-        """After a restart: the controller work of a RUNNING node to start again."""
+    def recover(self, node: Node, failed: Run | None = None) -> None:
+        """After a restart: a run of the node that was live failed with the controller (its
+        step escalates); otherwise its current phase takes its work up again."""
         phase = self.step(node).current(node)
-        return phase.resume(self, node) if phase else None
+        if phase is None:
+            return
+        if failed is not None:
+            self.apply(node, self.lifecycle.escalation(failed))
+        elif self.active(node):
+            phase.recover(self, node)
 
-    # ------------------------------------------------------------------ the clock (from the runtime)
-    async def tick(self, active: bool) -> list[Run]:
-        """Under the lock: the step layer's turn of the clock. Its services keep house (kept
-        sandboxes released, timed-out runs failed, a requested reprovisioning started), then
-        what its nodes' phases have ready starts (as far as the dispatcher has room for runs).
-        Returns the runs to launch (outside the lock: :meth:`launch`). ``active``: the
-        change has not ended (an ended one runs only a retrospective asked for)."""
-        c = self.c
-        if self.lifecycle.release_sandboxes():      # a gate passed, or the change ended
-            c.save()
-        if not active and not any(step_for(n).runs_after_end for n in c.nodes.values()):
-            return []
-        self.lifecycle.check_timeouts()
+    def housekeeping(self, active: bool) -> None:
+        """On a save: kept sandboxes whose hold ended are released; a requested reprovisioning
+        starts; once the change has ended, the steps that do not run after it give their
+        reservations back."""
+        self.lifecycle.release_sandboxes()
         if active:
             self.provisioner.start_requested_rebuild()
-        # G-H1: the branch head, if a run at the head may be dispatched this tick
-        self.branch_head = (await c.git.integration_head(c.change.id)
-                            if active and any(self.judges_head(n) for n in c.nodes.values())
-                            else None)
-        launches: list[Run] = []
-        for node in list(c.nodes.values()):
-            if active or step_for(node).runs_after_end:
-                launches += self.dispatch(node)
-        return launches
+        else:
+            for nid in [n for n in self._steps
+                        if n not in self.c.nodes or not step_for(self.c.nodes[n]).runs_after_end]:
+                self._steps.pop(nid).reservation.release()
 
-    def launch(self, runs: list[Run]) -> None:
-        """Start the prepared runs' agents (their sandboxes are created, prepared, started)."""
-        for run in runs:
-            self.c.spawn(self.ctx.dispatcher.launch(run.id))
+    # ------------------------------------------------------------------ the phases' work
+    def dispatcher(self, node: Node) -> StepDispatcher:
+        """The step's dispatcher: the dispatcher with the step's reservation (taken now; it
+        holds a slot from the first work on)."""
+        work = self._steps.get(node.id)
+        if work is None or work.released:
+            work = self._steps[node.id] = StepDispatcher(self.ctx.dispatcher,
+                                                         self.ctx.dispatcher.reserve())
+        return work
 
-    @staticmethod
-    def judges_head(node: Node) -> bool:
-        """A node about to dispatch a run at the integration head (not the retrospective, which
-        reads an ended change)."""
-        return node.status in (READY, REWORK) and step_for(node).judges_head
+    def release(self, node: Node) -> None:
+        """The step is over (done, sent back, escalated, ended): its reservation goes back, and
+        its work still waiting is withdrawn."""
+        work = self._steps.pop(node.id, None)
+        if work is not None:
+            work.reservation.release()
 
-    def dispatch(self, node: Node) -> list[Run]:
-        """The runs (or controller work) its current phase may start now: a step's first
-        work waits until its step type's ``dispatch_when`` hold."""
-        step = self.step(node)
-        phase = step.current(node)
-        if phase is None:
-            return []
-        if phase is step.phases[0] and node.status in (READY, REWORK) \
-                and not all(w.holds(self, node) for w in step.dispatch_when):
-            return []
-        return phase.dispatch(self, node)
+    def run(self, node: Node, work: Callable[[StepDispatcher], Awaitable[None]]) -> None:
+        """Start a phase's work as a task, with the step's dispatcher."""
+        dispatch = self.dispatcher(node)
+
+        async def task() -> None:
+            try:
+                await work(dispatch)
+            except Withdrawn:                    # its step ended while it waited for a slot
+                pass
+        self.c.spawn(task())
+
+    def active(self, node: Node) -> bool:
+        """The node's step may work: the change is active (or it runs after the end)."""
+        return self.c.change.status == "ACTIVE" or step_for(node).runs_after_end
+
+    def stale(self, node: Node, work: StepDispatcher, phase: Phase) -> bool:
+        """The work's step or phase is over: its result counts no more."""
+        return work.released or self.c.nodes.get(node.id) is not node \
+            or self.step(node).current(node) is not phase or not self.active(node)
+
+    def waits_hold(self, node: Node) -> bool:
+        """The step's waits (its ``dispatch_when``) for its first work."""
+        return all(w.holds(self, node) for w in self.step(node).dispatch_when)
+
+    async def wait_until(self, node: Node, work: StepDispatcher,
+                         ready: Callable[[], bool]) -> bool:
+        """Await ``ready`` – checked now and at each save of the change. False: the step ended
+        first (released, or the change ended)."""
+        phase = self.step(node).current(node)
+        while True:
+            if phase is None or self.stale(node, work, phase):
+                return False
+            if ready():
+                return True
+            self.waiting += 1
+            try:
+                await self.c.next_save()
+            finally:
+                self.waiting -= 1
 
     # ------------------------------------------------------------------ from the phases (up)
     def phase(self, node: Node, to: NodeStatus) -> None:
@@ -487,21 +522,6 @@ class StepRunner:
             self.accept(node)
         else:
             nxt.enter(self, node, phase)
-
-    def reported(self, node: Node, run: Run, result: PhaseResult | None) -> None:
-        """An agent's turn ended after an accepted report: its role handler's result goes to
-        the node's current phase, which applies it."""
-        phase = self.step(node).current(node)
-        assert phase is not None, f"{node.id} is not in a phase ({node.status})"
-        phase.reported(self, node, run, result)
-
-    def run_failed(self, node: Node, run: Run, result: Escalate) -> None:
-        """A run ended in failure (its service reports it): the phase the node is in decides
-        (a human, always: no automatic retries). A node no longer in a phase just keeps the
-        record."""
-        phase = self.step(node).current(node)
-        if phase is not None:
-            phase.failed(self, node, run, result)
 
     def apply(self, node: Node, result: PhaseResult) -> None:
         """A phase's result that does not pass it: rework within the budget, an escalation, or
@@ -537,10 +557,12 @@ class StepRunner:
         node.candidate_sha = None
         self.states.phase(node, REWORK)
         c.event("rework", f"{source}: rework cycle {node.cycle}", node.id)
+        self.step(node).phases[0].start(self, node)         # its producer again, in its slot
 
     # ------------------------------------------------------------------ the boundaries
     def accept(self, node: Node) -> None:
         """The step's work is done: its runs are accepted, and the workflow is told."""
+        self.release(node)
         self.states.accept(node)
         self.lifecycle.accept_runs(node)
         self.runtime.completed(node)
@@ -549,6 +571,7 @@ class StepRunner:
                  run: str | None = None, missing_decision: str | None = None,
                  log_tail: str | None = None, source: FailureSource | None = None) -> None:
         """A human decides; ``resume`` says where the step continues once they have."""
+        self.release(node)
         self.states.escalate(node, kind, reason, resume, run=run,
                              missing_decision=missing_decision, log_tail=log_tail, source=source)
         self.c.event("escalation", f"{kind}: {reason}", node.id, run)

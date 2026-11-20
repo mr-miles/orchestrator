@@ -7,7 +7,6 @@ from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import ImageRecipe, Tool
 from legion_orch.workflow.engine.phases import (
-    AgentRun,
     BuildImages,
     Escalate,
     Evaluate,
@@ -290,11 +289,20 @@ async def test_evaluate_is_ok_with_the_readiness_whatever_the_verdict(f: Flow):
 
 
 @scenario()
-async def test_an_agent_run_is_prepared_by_the_dispatcher(f: Flow):
-    calls = []
-    real = ctx(f).dispatcher.prepare
-    ctx(f).dispatcher.prepare = lambda node, role, judged_sha=None: calls.append(
-        (node.id, role, judged_sha)) or real
-    node = task(f)
-    AgentRun("reviewer").start(ctx(f), node, judged_sha=CAND)
-    assert calls == [("T9", "reviewer", CAND)]
+async def test_an_agent_run_is_work_its_step_may_still_withdraw(f: Flow):
+    from legion_orch.workflow.engine.agent_runs import AgentWork
+    node = task(f, status="READY")
+    before = len(f.ce.runs)
+    assert await AgentWork(ctx(f).agents, node, "reviewer", still=lambda: False).run() is None
+    assert len(f.ce.runs) == before                          # nothing was prepared
+
+
+@scenario()
+async def test_a_guard_that_stops_an_agent_run_is_its_result(f: Flow):
+    from legion_orch.workflow.engine.agent_runs import AgentWork
+    node = task(f, id="R9", kind="release", status="READY")
+    f.ce.assets.render_role = lambda role, variables: (_ for _ in ()).throw(
+        __import__("legion_orch.workflow.assets", fromlist=["AssetError"]).AssetError("bad"))
+    ended = await AgentWork(ctx(f).agents, node, "release").run()
+    assert ended.run is None and isinstance(ended.result, Escalate)
+    assert ended.result.kind == "assets"

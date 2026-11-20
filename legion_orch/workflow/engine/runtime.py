@@ -73,7 +73,6 @@ from .workflow_tree import (
 )
 
 if TYPE_CHECKING:
-    from .acceptance import Acceptance
     from .runs import RunLifecycle
     from .steps import StepRunner
 
@@ -83,9 +82,9 @@ APPROVAL_GATES = {"explicit_human_approval", "whole_change_acceptance_evidence"}
 
 
 class FlowRuntime:
-    def __init__(self, core: ChangeCore, runner: StepRunner, lifecycle: RunLifecycle,
-                 acceptance: Acceptance):
-        self.c, self.runner, self.lifecycle, self.acceptance = core, runner, lifecycle, acceptance
+    def __init__(self, core: ChangeCore, runner: StepRunner, lifecycle: RunLifecycle):
+        self.c, self.runner, self.lifecycle = core, runner, lifecycle
+        self._cleaning = False                       # the end-of-change cleanup was started
         self.flow = FlowState(requirements_workflow())
         self.tree: dict[str, Any] | None = None       # rank, environment, blank_repo (after H-1)
         self.inputs: list[list[Any]] = []             # every input to the core, in order
@@ -474,25 +473,28 @@ class FlowRuntime:
         elif c.change.status == ChangeStatus.ACTIVE:
             c.change.status = ChangeStatus.ABANDONED
 
-    # ------------------------------------------------------------------ the clock
-    async def tick(self) -> None:
-        """A turn of the controller's clock (under the lock): what follows from the change's
-        state – an ended change's retrospective queued, its cleanup once that is done – then the
-        step layer's turn (:meth:`.StepRunner.tick`); the runs it prepared are launched outside
-        the lock."""
+    # ------------------------------------------------------------------ on a save
+    def housekeeping(self) -> None:
+        """What follows from the change's state, on each save (no clock): an ended change's
+        retrospective queued, its cleanup once that is done, and the step layer's housekeeping
+        (:meth:`.StepRunner.housekeeping`)."""
         c = self.c
-        async with c.lock:
-            if c.change is None:
-                return
-            active = c.change.status == ChangeStatus.ACTIVE
-            if not active and c.cfg.retrospective.auto and RETRO not in c.nodes:
-                self.add_retrospective()
-                c.event("retrospective", "the change has ended: retrospective queued", RETRO)
-            if cleanup.due(c):                     # ended, retrospective done (§5.14)
-                c.spawn(cleanup.end_of_change(c))
-            launches = await self.runner.tick(active)
-            c.save()
-        self.runner.launch(launches)
+        if c.change is None:
+            return
+        active = c.change.status == ChangeStatus.ACTIVE
+        if not active and c.cfg.retrospective.auto and RETRO not in c.nodes:
+            self.add_retrospective()
+            c.event("retrospective", "the change has ended: retrospective queued", RETRO)
+        if not self._cleaning and cleanup.due(c):     # ended, retrospective done (§5.14)
+            self._cleaning = True
+            c.spawn(self._clean_up())
+        self.runner.housekeeping(active)
+
+    async def _clean_up(self) -> None:
+        try:
+            await cleanup.end_of_change(self.c)
+        finally:
+            self._cleaning = False                    # due no more once it is done
 
     def add_retrospective(self) -> Node:
         """Queue the retrospective of an ended change – a node outside the tree: a new one, or
@@ -503,6 +505,7 @@ class FlowRuntime:
             node = Node(id=RETRO, kind=RETRO, status=READY,
                         title="Retrospective: lessons for the assets and process")
             c.add_node(node)
+            self.runner.enter(node)
         else:
             node.cycle += 1
             self.runner.again(node)
@@ -527,8 +530,9 @@ class FlowRuntime:
                     self.c.event("human", "awaiting human decision", nid)
 
     def persist(self) -> None:
-        """Before a save: the core's record."""
+        """Before a save: housekeeping, then the core's record."""
         if self.c.change is not None:
+            self.housekeeping()
             self.save()
 
     def evaluating(self) -> list[str]:

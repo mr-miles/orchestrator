@@ -30,7 +30,6 @@ from ..model import (
 )
 from ..results import ActionResult
 from . import cleanup
-from .acceptance import Acceptance
 from .common import ENV_SPEC, WorkflowError, _slug
 from .core import ChangeCore
 from .runs import RunLifecycle
@@ -43,9 +42,8 @@ if TYPE_CHECKING:
 class HumanGates:
     """What a decision owner may do to a change, checked and applied under the lock."""
 
-    def __init__(self, core: ChangeCore, acceptance: Acceptance,
-                 lifecycle: RunLifecycle):
-        self.c, self.acceptance, self.lifecycle = core, acceptance, lifecycle
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
+        self.c, self.lifecycle = core, lifecycle
         self.flow: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
 
     def _check_approver(self, approver: str) -> None:

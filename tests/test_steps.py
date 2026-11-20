@@ -147,40 +147,44 @@ def node(f: Flow, kind: NodeKind, **kw) -> Node:
 
 
 def report(f: Flow, n: Node, result=None, role: str = "implementer"):
-    """An agent's accepted report in the node's current phase, with its handler's result."""
-    from legion_orch.workflow.model import Run
+    """An agent's turn ended after an accepted report in the node's current phase, with its
+    handler's result (what the agent's work returns to its phase)."""
+    from legion_orch.workflow.engine.agent_runs import Ended
+    from legion_orch.workflow.model import R_REPORTED, Run
     run = Run(id=f"r{9100 + len(f.ce.runs)}", node_id=n.id, role=role, soul="s", cycle=n.cycle,
-              sandbox=f"sb-{len(f.ce.runs)}")
+              sandbox=f"sb-{len(f.ce.runs)}", status=R_REPORTED)
     f.ce.runs[run.id] = run
-    f.ce._runner.reported(n, run, Ok() if result is None else result)
+    rt = f.ce._runner
+    rt.step(n).current(n).ended(rt, n, Ended(run, Ok() if result is None else result))
     return run
 
 
-def capture_spawns(f: Flow) -> list[str]:
-    spawned: list[str] = []
+def capture_work(f: Flow) -> list[str]:
+    """The phases whose work the runner was asked to start (not run)."""
+    rt, started = f.ce._runner, []
 
-    def spawn(coro):
-        spawned.append(coro.__qualname__)
-        coro.close()
-    f.ce.spawn = spawn
-    return spawned
+    def run(node, work):
+        started.append(type(rt.step(node).current(node)).__name__)
+        work(rt.dispatcher(node)).close()
+    rt.run = run
+    return started
 
 
 @scenario()
 async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f: Flow):
     rt, n = f.ce._runner, node(f, BUILD)
     f.ce.change.panel = ["reviewer"]
-    spawned = capture_spawns(f)
+    started = capture_work(f)
     report(f, n)                                         # the implementer's report
-    assert n.status == VERIFYING and spawned == ["Acceptance.verify_node"]
+    assert n.status == VERIFYING and started == ["Verify"]
     rt.advance(n, rt.step(n).current(n))                 # verification passed
-    assert n.status == REVIEWING
+    assert n.status == REVIEWING and started[-1] == "Panel"     # its judge's run
     judge = report(f, n, result=None, role="reviewer")   # its handler records the review only
     assert n.status == REVIEWING                         # the panel decides: no review yet
-    assert judge.status == "ACCEPTED"
+    assert judge.status == "ACCEPTED" and judge.concluded
     assert judge.sandbox in f.ce._sandboxes.retiring     # the judge's sandbox goes
     rt.advance(n, rt.step(n).current(n))                 # the panel passed
-    assert n.status == MERGING and spawned[-1] == "Acceptance.merge_node"
+    assert n.status == MERGING and started[-1] == "Merge"
     rt.advance(n, rt.step(n).current(n))                 # merged
     assert n.status == ACCEPTED
 
@@ -189,7 +193,7 @@ async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f
 async def test_an_empty_panel_is_passed_straight_to_the_merge(f: Flow):
     rt, n = f.ce._runner, node(f, BUILD, status=VERIFYING)
     f.ce.change.panel = []
-    capture_spawns(f)
+    capture_work(f)
     rt.advance(n, rt.step(n).current(n))
     assert n.status == MERGING
 
@@ -205,6 +209,7 @@ async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
 async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
     from legion_orch.workflow.engine.phases import Escalate, Rework
     from legion_orch.workflow.model import Feedback, Resume
+    capture_work(f)
     n = node(f, NodeKind.INTEGRATION)
     report(f, n, Escalate("integration_failed", "FAIL", Resume.READY, run="r1"), "integration")
     assert n.status == ESCALATED and n.escalation.run == "r1"
@@ -215,19 +220,15 @@ async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
 
 
 @scenario()
-async def test_entering_a_step_sets_its_first_phase_and_dispatch_starts_its_work(f: Flow):
+async def test_entering_a_step_sets_its_first_phase_and_starts_its_work(f: Flow):
     rt = f.ce._runner
-    spawned = capture_spawns(f)
+    started = capture_work(f)
     gate, pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (HUMAN, PREFLIGHT, BUILD))
     for n in (gate, pre, task):
         rt.enter(n)
-    assert gate.status == AWAITING_HUMAN and task.status == READY
-    assert pre.status == READY and spawned == []           # its verification waits its turn
-    f.ce.nodes[pre.id] = pre
-    async with f.ce.lock:
-        assert rt.dispatch(pre) == []
-    assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
-    assert spawned == ["Acceptance.verify_node"]
+    assert gate.status == AWAITING_HUMAN                   # a human's decision: no work
+    assert pre.status == task.status == READY              # each waits its turn, as work
+    assert started == ["Verify", "AgentRun"]
 
 
 @scenario()
@@ -235,23 +236,59 @@ async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
     rt = f.ce._runner
     retro = node(f, NodeKind.RETROSPECTIVE, id="retrospective", status=READY)
     f.ce._sandboxes.reflector.pending.add("sb")              # an agent still reflects
-    assert rt.dispatch(retro) == [] and retro.status == READY
+    assert not rt.waits_hold(retro)
+    assert not step_for(retro).phases[0].ready(rt, retro)
+    f.ce._sandboxes.reflector.pending.clear()
+    assert step_for(retro).phases[0].ready(rt, retro)
 
 
 @scenario()
-async def test_after_a_restart_only_controller_work_resumes(f: Flow):
+async def test_a_waiting_step_goes_on_at_a_save_once_its_waits_hold(f: Flow):
+    import asyncio
     rt = f.ce._runner
-    prov, agent = Node(id="p", kind=PROVISION, title="p", status=RUNNING), node(f, BUILD)
-    work = rt.resume_work(prov)
-    assert work is not None and work.__qualname__ == "BuildImages._provision"   # its result comes back
-    work.close()
-    assert rt.resume_work(agent) is None
+    n = node(f, NodeKind.RELEASE, status=READY)
+    work, holds = rt.dispatcher(n), [False]
+    waiting = asyncio.ensure_future(rt.wait_until(n, work, lambda: holds[0]))
+    await asyncio.sleep(0)
+    assert rt.waiting == 1 and not waiting.done()
+    holds[0] = True
+    f.ce.notify()                                            # a save
+    assert await waiting is True and rt.waiting == 0
+    rt.release(n)                                            # the step is over: it waits no more
+    assert await rt.wait_until(n, work, lambda: False) is False
 
 
 @scenario()
-async def test_an_agent_step_dispatches_only_when_ready(f: Flow):
-    n = node(f, BUILD, status=RUNNING)
-    assert f.ce._runner.dispatch(n) == []                 # its agent's run is live
+async def test_a_step_holds_one_reservation_until_it_is_over(f: Flow):
+    rt = f.ce._runner
+    n = node(f, NodeKind.RELEASE, status=READY)
+    work = rt.dispatcher(n)
+    assert rt.dispatcher(n) is work and not work.released
+    rt.escalate(n, "x", "why", Resume.READY)
+    assert work.released and rt.dispatcher(n) is not work    # resuming takes a new one
+
+
+@scenario()
+async def test_after_a_restart_a_step_takes_its_work_up_again(f: Flow):
+    rt = f.ce._runner
+    started = capture_work(f)
+    prov = node(f, PROVISION, id="p", status=RUNNING)
+    rt.recover(prov)
+    assert started == ["BuildImages"]                        # its provisioning again
+    agent = node(f, BUILD, status=READY)
+    rt.recover(agent)
+    assert started[-1] == "AgentRun"                         # it waits for its turn again
+
+
+@scenario()
+async def test_a_run_live_at_a_restart_escalates_its_step(f: Flow):
+    from legion_orch.workflow.model import FailureSource, Run
+    rt, n = f.ce._runner, node(f, BUILD)
+    run = Run(id="r9999", node_id=n.id, role="implementer", soul="s", cycle=1)
+    f.ce.runs[run.id] = run
+    f.ce._lifecycle.fail_run(run, "controller restarted", FailureSource.CONTROLLER)
+    rt.recover(n, run)
+    assert n.status == ESCALATED and n.escalation.kind == "run_failed"
 
 
 # ---------------------------------------------------------------------------- what results mean
@@ -328,9 +365,11 @@ async def test_the_retrospective_waits_for_the_last_reflections(f: Flow):
 
 @scenario(max_parallel=1)
 async def test_a_step_waits_while_the_dispatcher_has_no_room(f: Flow):
-    """The sandbox limit is the dispatcher's (its queue): the step layer asks, and waits when
-    told there is no room (it knows no limit)."""
+    """The sandbox limit is the dispatcher's: a step's work waits for a slot there (the step
+    layer knows no limit)."""
     assert f.run("intake")                                   # the one run allowed is live
     n = node(f, NodeKind.RELEASE, status=READY)
-    assert f.ce._runner.dispatch(n) == [] and n.status == READY
-    assert f.ctl.svc.queue.in_use == 1
+    f.ce._runner.enter(n)
+    await f.settle()
+    assert n.status == READY and f.ctl.svc.dispatcher.waiting == 1
+    assert f.ctl.svc.dispatcher.in_use == 1

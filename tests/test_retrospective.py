@@ -349,6 +349,7 @@ async def test_the_retrospective_starts_by_itself_once_reflections_are_done(f: F
     assert f.ce.change.status == ChangeStatus.READY
     assert f.status("retrospective") == "READY" and not f.runs("retrospective")   # waits
     f.ce._sandboxes.reflector.pending.clear()
+    f.ce.notify()                                            # as a finished reflection does
     await f.settle()
     run = f.run("retrospective")
     doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")

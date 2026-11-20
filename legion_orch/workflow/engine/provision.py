@@ -99,11 +99,13 @@ class Provisioner:
                 driver_config=driver_config(c.cfg, prof.resources))
         return plan
 
-    async def provision(self, node: Node, *, rebuild: bool = False) -> PhaseResult | None:
+    async def provision(self, node: Node, *, rebuild: bool = False,
+                        dispatch=None) -> PhaseResult | None:
         """Build the approved environment for ``node`` (the plan's, or a fix round's), then check
         the setup (G-PV3). The result goes back to the BuildImages phase; None: the node was
         stopped meanwhile. ``rebuild``: reprovisioning an accepted environment (a change-level
-        operation: the node is not run again)."""
+        operation: the node is not run again). ``dispatch``: the step's dispatcher, for the
+        setup's verification."""
         c = self.c
 
         def current() -> bool:
@@ -161,13 +163,15 @@ class Provisioner:
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                         node.id)
                 return Ok()
-        return await self._check_setup(node, sorted(roles), current)
+        return await self._check_setup(node, sorted(roles), current, dispatch)
 
-    async def _check_setup(self, node: Node, roles: list[str], current) -> PhaseResult | None:
+    async def _check_setup(self, node: Node, roles: list[str], current,
+                           dispatch=None) -> PhaseResult | None:
         """G-PV3: the approved mise.toml's setup task succeeds at the integration head in a fresh
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
-        res = await Verify(()).verification(self.ctx, "provision", c.change.integration_head)
+        res = await Verify(()).verification(self.ctx, "provision", c.change.integration_head,
+                                            dispatch=dispatch)
         async with c.lock:
             if not current():
                 return None

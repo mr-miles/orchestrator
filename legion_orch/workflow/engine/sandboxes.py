@@ -240,6 +240,7 @@ class Sandboxes:
                 await self.reflector.reflect(name, stopped)
             finally:
                 self.reflector.pending.discard(name)
+                self.c.notify()             # a retrospective may wait for the reflections
             await self.delete(name)
         finally:
             self.retiring.discard(name)

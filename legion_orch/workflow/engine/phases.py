@@ -5,8 +5,9 @@ escalate (a human decides).
 A phase knows three things, and nothing about which kind of node it serves:
 
 * **its work and result** – ``Verify.judge``, ``Panel.decide``, ``Merge.run`` …;
-* **how it is entered** (``enter``): the node's status while the phase runs, and the work spawned;
-* **how it is dispatched** (``dispatch``, for phases that wait their turn: an agent run, a build).
+* **how it is entered** (``enter``): the node's status while the phase runs;
+* **its work** (``start``): a task that awaits what it needs – its step's waits, a slot from
+  the step's dispatcher – runs, and hands its result to the step runner.
 
 What varies between nodes is passed in as small policy objects – which commands to verify
 (:class:`CommandSource`), which judges sit on a panel (:class:`JudgeSource`), what a failed
@@ -16,10 +17,8 @@ the next.
 """
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, is_name_clash
 from .. import governance
@@ -53,7 +52,8 @@ from .core import ChangeCore
 from .workflow_tree import in_round
 
 if TYPE_CHECKING:
-    from .dispatch import Dispatcher
+    from .agent_runs import AgentRuns, Ended
+    from .dispatch import Dispatcher, StepDispatcher
     from .sandboxes import Sandboxes
     from .steps import StepRunner
 
@@ -66,38 +66,32 @@ __all__ = ["Escalate", "Ok", "PhaseResult", "Rework"]
 
 @dataclass
 class PhaseContext:
-    """What phases work with: the change, its sandboxes, and (for agent runs) the dispatcher."""
+    """What phases work with: the change, its sandboxes, the dispatcher (shared: it runs work
+    within the sandbox limit) and the change's agent runs."""
     c: ChangeCore
     sandboxes: Sandboxes
-    dispatcher: Dispatcher | None = None
+    dispatcher: Dispatcher = None  # type: ignore[assignment]
+    agents: AgentRuns = None  # type: ignore[assignment]
 
 
 class Phase:
-    """The defaults: entered by becoming READY, nothing to dispatch, nothing to resume.
-    Entering only sets the node's status (or, after a producer, starts the controller's own
-    work on its result); work that has to wait its turn starts in ``dispatch``."""
+    """The defaults: entered by becoming READY, no work of its own. ``start`` begins the phase's
+    work as a task (:meth:`.StepRunner.run`) – on entering, on resuming, and after a restart –
+    which awaits what it needs, dispatches its work through the step's dispatcher, and gives
+    its result to :meth:`conclude`."""
     #: the node statuses while this phase is the node's current one
     statuses: ClassVar[frozenset[NodeStatus]] = frozenset()
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
         rt.phase(node, READY)
+        self.start(rt, node)
 
-    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
-        return []
+    def start(self, rt: StepRunner, node: Node) -> None:
+        """Begin the phase's work for the node's status (entered, resumed, or restarted)."""
 
-    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
-        """The controller's work to start again after a restart, while the node is RUNNING."""
-        return None
-
-    def reported(self, rt: StepRunner, node: Node, run: Run, result: PhaseResult | None) -> None:
-        """An agent's report in this phase was accepted; its role handler says what it means:
-        ok passes the phase, rework or escalate is applied, None waits for more."""
-        self.conclude(rt, node, result)
-
-    def failed(self, rt: StepRunner, node: Node, run: Run, result: Escalate) -> None:
-        """A run of this phase failed (crashed, timed out, ended without a report): a human
-        decides."""
-        self.conclude(rt, node, result)
+    def recover(self, rt: StepRunner, node: Node) -> None:
+        """After a restart: take the work up again."""
+        self.start(rt, node)
 
     def conclude(self, rt: StepRunner, node: Node, result: PhaseResult | None) -> None:
         """The phase's result goes to the step runner: ok passes the phase, anything else is
@@ -241,34 +235,77 @@ class BaselineWarnings(Notes):
 # ---------------------------------------------------------------------------- agent work
 @dataclass(frozen=True, eq=False)
 class AgentRun(Phase):
-    """Dispatch the role's agent for the node (guards G-D1..G-D4, G-B1, G-H1). The run ends
-    with a report; the role's handler records what it says and returns the phase's result
-    (:meth:`Phase.reported`)."""
+    """The role's agent for the node (guards G-D1..G-D4, G-B1, G-H1), as work dispatched once
+    the step's waits hold. Its result – the role handler's, after the agent's turn ended with
+    an accepted report, or the failure's escalation – is the phase's."""
     role: str
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
 
-    def start(self, ctx: PhaseContext, node: Node,
-              judged_sha: str | None = None) -> Run | Escalate | None:
-        """Prepare the run (launched outside the lock), or why a guard stopped it; None: no
-        room for another run now (the dispatcher's parallel-run limit)."""
-        assert ctx.dispatcher is not None
-        return ctx.dispatcher.prepare(node, self.role, judged_sha=judged_sha)
+    def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
+        if node.status != REWORK:                # a rework continues in REWORK
+            rt.phase(node, READY)
+        self.start(rt, node)
 
-    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
-        c, step = rt.c, rt.step(node)
-        if node.status not in (READY, REWORK) or rt.provisioner.waits_for_environment(self.role):
-            return []
-        if step.judges_head and rt.branch_head and (moved := c.head_moved(rt.branch_head)):
-            rt.apply(node, Escalate("head_moved", moved, Resume.READY))
-            return []
-        run = self.start(rt.ctx, node)
-        if run is None:
-            return []                            # no room: it waits for the next tick
-        if isinstance(run, Escalate):
-            rt.apply(node, run)
-            return []
-        rt.phase(node, RUNNING)                  # its agent works
-        return [run]
+    def start(self, rt: StepRunner, node: Node) -> None:
+        if node.status in (READY, REWORK):
+            rt.run(node, lambda work: self._work(rt, node, work))
+
+    def recover(self, rt: StepRunner, node: Node) -> None:
+        """After a restart: a run whose agent ended its turn after an accepted report while the
+        controller was down is concluded; a waiting step waits again."""
+        run = rt.c.runs.get(node.current_run) if node.current_run else None
+        if node.status == RUNNING and run is not None and run.status == R_REPORTED \
+                and not run.concluded:
+            rt.run(node, lambda work: conclude_later(rt, self, node, run, work))
+        else:
+            self.start(rt, node)
+
+    def ready(self, rt: StepRunner, node: Node) -> bool:
+        return node.status in (READY, REWORK) and rt.waits_hold(node) \
+            and not rt.provisioner.waits_for_environment(self.role)
+
+    async def _work(self, rt: StepRunner, node: Node, work: StepDispatcher) -> None:
+        from .agent_runs import AgentWork
+        c = rt.c
+        while await rt.wait_until(node, work, lambda: self.ready(rt, node)):
+            if rt.step(node).judges_head:        # G-H1: the head is where the controller left it
+                head = await c.git.integration_head(c.change.id)
+                async with c.lock:
+                    if rt.stale(node, work, self):
+                        return
+                    if moved := c.head_moved(head):
+                        rt.apply(node, Escalate("head_moved", moved, Resume.READY))
+                        c.save()
+                        return
+            ended = await work.run(AgentWork(
+                rt.ctx.agents, node, self.role,
+                still=lambda: not rt.stale(node, work, self) and self.ready(rt, node),
+                started=lambda run: rt.phase(node, RUNNING)))       # its agent works
+            if ended is not None:
+                async with c.lock:
+                    if not rt.stale(node, work, self):
+                        self.ended(rt, node, ended)
+                        c.save()
+                return
+            # its waits no longer held when its slot came: it waits again
+
+    def ended(self, rt: StepRunner, node: Node, ended: Ended) -> None:
+        """The agent's turn ended: its result is the phase's."""
+        if ended.run is not None:
+            ended.run.concluded = True
+        self.conclude(rt, node, ended.result)
+
+
+async def conclude_later(rt: StepRunner, phase: AgentRun | Panel, node: Node, run: Run,
+                         work: StepDispatcher) -> None:
+    """After a restart: what an agent's accepted report means, to its phase."""
+    from .agent_runs import Ended
+    async with rt.c.lock:
+        if rt.stale(node, work, phase) or run.concluded or run.status != R_REPORTED:
+            return
+        result = await rt.ctx.agents.reports.conclude(run)
+        phase.ended(rt, node, Ended(run, result))
+        rt.c.save()
 
 
 @dataclass(frozen=True, eq=False)
@@ -295,33 +332,62 @@ class Panel(Phase):
         rt.phase(node, REVIEWING)
         if isinstance(after, Verify):
             rt.c.event("review", f"verification passed; panel {list(roles)}", node.id)
+        self.start(rt, node)
 
-    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
-        """The missing judges' runs at the candidate (one per role and cycle)."""
-        c, runs = rt.c, []
-        for role in self.roles(c):
-            busy = any(r.node_id == node.id and r.role == role and r.cycle == node.cycle
-                       and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
-            if f"{node.cycle}:{role}" not in node.reviews and not busy \
-                    and not rt.provisioner.waits_for_environment(role):
-                run = AgentRun(role).start(rt.ctx, node, judged_sha=node.candidate_sha)
-                if run is None:
-                    break                        # no room: the rest wait for the next tick
-                if isinstance(run, Escalate):
-                    rt.apply(node, run)
-                    break
-                runs.append(run)
-        return runs
+    def _busy(self, c: ChangeCore, node: Node, role: str) -> bool:
+        return any(r.node_id == node.id and r.role == role and r.cycle == node.cycle
+                   and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
 
-    def reported(self, rt: StepRunner, node: Node, run: Run, result: PhaseResult | None) -> None:
-        """A judge reported: its run is done and its sandbox retired. An escalation stands;
-        otherwise the panel decides once every judge has reported – or, where a judge's own
-        handler decides (the critic), its result does."""
-        run.status = R_ACCEPTED
-        rt.lifecycle.sandboxes.delete_later(run.sandbox)
+    def start(self, rt: StepRunner, node: Node) -> None:
+        """The missing judges' runs at the candidate (one per role and cycle), in parallel."""
+        if node.status != REVIEWING:
+            return
+        for role in self.roles(rt.c):
+            if f"{node.cycle}:{role}" not in node.reviews and not self._busy(rt.c, node, role):
+                rt.run(node, lambda work, role=role: self._judge(rt, node, role, work))
+
+    def recover(self, rt: StepRunner, node: Node) -> None:
+        for r in [r for r in rt.c.runs.values() if r.node_id == node.id and r.cycle == node.cycle
+                  and r.role in self.roles(rt.c) and r.status == R_REPORTED and not r.concluded]:
+            rt.run(node, lambda work, r=r: conclude_later(rt, self, node, r, work))
+        self.start(rt, node)
+
+    def wanted(self, rt: StepRunner, node: Node, role: str, cycle: int) -> bool:
+        return node.status == REVIEWING and node.cycle == cycle \
+            and f"{cycle}:{role}" not in node.reviews
+
+    async def _judge(self, rt: StepRunner, node: Node, role: str, work: StepDispatcher) -> None:
+        from .agent_runs import AgentWork
+        c, cycle = rt.c, node.cycle
+        while await rt.wait_until(node, work, lambda: self.wanted(rt, node, role, cycle) and
+                                  not rt.provisioner.waits_for_environment(role)):
+            ended = await work.run(AgentWork(
+                rt.ctx.agents, node, role, judged_sha=node.candidate_sha,
+                still=lambda: not rt.stale(node, work, self) and node.cycle == cycle
+                and self.wanted(rt, node, role, cycle)
+                and not rt.provisioner.waits_for_environment(role)))
+            if ended is not None:
+                async with c.lock:
+                    if not rt.stale(node, work, self) and node.cycle == cycle:
+                        self.ended(rt, node, ended)
+                        c.save()
+                return
+            if not self.wanted(rt, node, role, cycle):
+                return
+
+    def ended(self, rt: StepRunner, node: Node, ended: Ended) -> None:
+        """A judge's turn ended: its run is done and its sandbox retired. An escalation (its
+        failure, or its handler's) stands; otherwise the panel decides once every judge has
+        reported – or, where a judge's own handler decides (the critic), its result does."""
+        run, result = ended.run, ended.result
+        if run is not None:
+            run.concluded = True
+            if run.status == R_REPORTED:
+                run.status = R_ACCEPTED
+                rt.lifecycle.sandboxes.delete_later(run.sandbox)
         if self.decides and not isinstance(result, Escalate):
             result = self.decide(node, rt.c)
-        super().reported(rt, node, run, result)
+        self.conclude(rt, node, result)
 
     def decide(self, node: Node, c: ChangeCore | None = None) -> PhaseResult | None:
         """None until every judge has reported (records the cycle's finding fingerprints)."""
@@ -378,46 +444,58 @@ class Verify(Phase):
         return f"control/verification/{_slug(node.id)}.json", str(node.kind)
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
-        """After a producer, its candidate is verified at once; at the head (nothing produced
-        it) the verification waits to be dispatched, like any step's first work."""
-        if self.at_head:
-            rt.phase(node, READY)
-            return
-        self._start(rt, node)
+        """After a producer, its candidate is verified at once (in the step's slot); at the head
+        (nothing produced it) the step starts READY, like any step's first work."""
+        rt.phase(node, READY if self.at_head else VERIFYING)
+        self.start(rt, node)
 
-    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
-        if self.at_head and node.status == READY:
-            node.candidate_sha = rt.c.change.integration_head
-            self._start(rt, node)
-        return []
+    def start(self, rt: StepRunner, node: Node) -> None:
+        if node.status in (READY, VERIFYING):
+            rt.run(node, lambda work: self._work(rt, node, work))
 
-    def _start(self, rt: StepRunner, node: Node) -> None:
-        rt.phase(node, VERIFYING)
-        request = rt.ctx.dispatcher.request_verifier()   # its place, ahead of new agent runs
-        rt.c.spawn(rt.acceptance.verify_node(node.id, slot=request))
-
-    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
-        """Verify again (resumed, or after a restart)."""
-        return rt.acceptance.verify_node(node.id) if node.status == VERIFYING else None
+    async def _work(self, rt: StepRunner, node: Node, work: StepDispatcher) -> None:
+        c = rt.c
+        if node.status == READY:                 # at the head: once its waits hold
+            if not await rt.wait_until(node, work, lambda: rt.waits_hold(node)):
+                return
+            async with c.lock:
+                if rt.stale(node, work, self):
+                    return
+                node.candidate_sha = c.change.integration_head
+                rt.phase(node, VERIFYING)
+                c.save()
+        commands = self.commands_for(c, node)
+        c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
+                f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
+                node.id)
+        res = await self.verification(rt.ctx, node.id, node.candidate_sha, commands,
+                                      dispatch=work)
+        async with c.lock:
+            if rt.stale(node, work, self) or node.status != VERIFYING:
+                return
+            path, key = self.record(node)
+            att = c.write_record(path, res).attestation
+            # The node keeps a compact copy (the stored record has the command output).
+            node.verification[key] = res.model_copy(update={
+                "attestation": att,
+                "results": [r.model_copy(update={"output": ""}) for r in res.results]})
+            self.verified(rt, node, res, att)
+            c.save()
 
     async def verification(self, ctx: PhaseContext, label: str, sha: str,
                            commands: tuple[str, ...] | None = None, *,
-                           slot: asyncio.Future | None = None) -> Verification:
-        """Run it. Never raises. A name the gateway already has (another controller) is
-        replaced and the sandbox created again."""
+                           dispatch: StepDispatcher | Dispatcher | None = None) -> Verification:
+        """Run it, as work for the dispatcher (``dispatch``: a step's, else the shared one).
+        Never raises (other than :class:`.Withdrawn`, its step having ended). A name the gateway
+        already has (another controller) is replaced and the sandbox created again."""
         c = ctx.c
         commands = self.commands_for(None, None) if commands is None else commands
         result = Verification(sha=sha, sandbox=c.host.new_sandbox_name(VERIFIER_PREFIX))
         if not commands and not c.change.setup_pin:
             result.infra_error = "no commands to verify"
-            if slot is not None:
-                slot.cancel()
             return result
-        place = await ctx.dispatcher.verifier_slot(slot)     # within limits.max_parallel
-        try:
-            return await self._run(ctx, result, label, sha, commands)
-        finally:
-            place.release()
+        return await (dispatch or ctx.dispatcher).run(
+            VerifierWork(self, ctx, result, label, sha, commands))
 
     async def _run(self, ctx: PhaseContext, result: Verification, label: str, sha: str,
                    commands: tuple[str, ...]) -> Verification:
@@ -481,6 +559,20 @@ class Verify(Phase):
         self.conclude(rt, node, result)
 
 
+@dataclass
+class VerifierWork:
+    """A verification as work for the dispatcher: the commands in a fresh verifier sandbox."""
+    phase: Verify
+    ctx: PhaseContext
+    result: Verification
+    label: str
+    sha: str
+    commands: tuple[str, ...]
+
+    async def run(self) -> Verification:
+        return await self.phase._run(self.ctx, self.result, self.label, self.sha, self.commands)
+
+
 def setup_failure(res: Verification) -> CommandResult | None:
     return next((r for r in res.results if r.setup and r.exit_code != 0), None)
 
@@ -501,11 +593,29 @@ class Merge(Phase):
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
         rt.phase(node, MERGING)
-        rt.c.spawn(rt.acceptance.merge_node(node.id))
+        self.start(rt, node)
 
-    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
-        """Merge again (resumed, overridden, or after a restart)."""
-        return rt.acceptance.merge_node(node.id)
+    def start(self, rt: StepRunner, node: Node) -> None:
+        """Merge (entered, resumed, overridden, or after a restart)."""
+        if node.status == MERGING:
+            rt.run(node, lambda work: self._work(rt, node, work))
+
+    async def _work(self, rt: StepRunner, node: Node, work: StepDispatcher) -> None:
+        from . import cleanup
+        c = rt.c
+        async with c.lock:
+            if rt.stale(node, work, self):
+                return
+            sha = node.candidate_sha
+            result = await self.run(rt.ctx, node)
+            if isinstance(result, Ok):
+                node.accepted_sha = sha
+                run = c.runs.get(node.current_run) if node.current_run else None
+                await cleanup.delete_run_branch(c, run.branch if run else None, node.id)
+                c.event("accepted", f"merged {sha[:12]} -> integration {result.value[:12]}",
+                        node.id)
+            self.conclude(rt, node, result)
+            c.save()
 
     async def run(self, ctx: PhaseContext, node: Node) -> PhaseResult:
         c = ctx.c
@@ -546,23 +656,27 @@ class BuildImages(Phase):
     log: list[str] = field(default_factory=list)
     statuses: ClassVar = frozenset({READY, RUNNING})
 
-    def dispatch(self, rt: StepRunner, node: Node) -> list[Run]:
+    def start(self, rt: StepRunner, node: Node) -> None:
+        if node.status in (READY, RUNNING):
+            rt.run(node, lambda work: self._provision(rt, node, work))
+
+    async def _provision(self, rt: StepRunner, node: Node, work: StepDispatcher) -> None:
+        """Once its waits hold: the provisioner's work, and its result to the step runner."""
+        c = rt.c
         if node.status == READY:
-            rt.phase(node, RUNNING)
-            rt.c.event("provision", "provisioning the approved environment", node.id)
-            rt.c.spawn(self._provision(rt, node))
-        return []
-
-    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
-        return self._provision(rt, node)
-
-    async def _provision(self, rt: StepRunner, node: Node) -> None:
-        """The provisioner's work, and its result to the step runner."""
-        result = await rt.provisioner.provision(node)
-        async with rt.c.lock:
-            if result is not None and rt.c.nodes.get(node.id) is node and node.status == RUNNING:
+            if not await rt.wait_until(node, work, lambda: rt.waits_hold(node)):
+                return
+            async with c.lock:
+                if rt.stale(node, work, self):
+                    return
+                rt.phase(node, RUNNING)
+                c.event("provision", "provisioning the approved environment", node.id)
+                c.save()
+        result = await rt.provisioner.provision(node, dispatch=work)
+        async with c.lock:
+            if result is not None and not rt.stale(node, work, self) and node.status == RUNNING:
                 self.conclude(rt, node, result)
-                rt.c.save()
+                c.save()
 
     async def run(self, ctx: PhaseContext) -> PhaseResult:
         images: dict[str, str | None] = {}
@@ -595,6 +709,6 @@ class Approval(Phase):
     statuses: ClassVar = frozenset({AWAITING_HUMAN})
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
-        rt.runtime.gates.gate(node, AWAITING_HUMAN)
+        rt.runtime.gates.gate(node, AWAITING_HUMAN)     # a human's decision: no work
         rt.c.event("human", "awaiting human decision", node.id)
 
