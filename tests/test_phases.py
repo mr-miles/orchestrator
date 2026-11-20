@@ -1,0 +1,298 @@
+"""The orchestrator phases (engine/phases.py) on their own: what each one concludes – ok, rework or
+escalate – from scripted runner, builder and judge results, and how a result becomes a node's
+state."""
+from __future__ import annotations
+
+from engine_harness import Flow, scenario
+
+from legion_orch.sandbox import ImageRecipe, Tool
+from legion_orch.workflow.engine.phases import (
+    AgentRun,
+    BuildImages,
+    Escalate,
+    Evaluate,
+    Merge,
+    Ok,
+    Panel,
+    PhaseContext,
+    Rework,
+    Verify,
+)
+from legion_orch.workflow.model import (
+    BUILD,
+    ESCALATED,
+    R_REPORTED,
+    R_SUPERSEDED,
+    REWORK,
+    CommandResult,
+    Confidence,
+    Feedback,
+    Finding,
+    Node,
+    Readiness,
+    Resume,
+    ReviewResult,
+    Run,
+    Severity,
+    Verdict,
+    Verification,
+)
+
+SHA = "a" * 40
+CAND = "c" * 40
+
+
+def ctx(f: Flow) -> PhaseContext:
+    return f.ce._phases
+
+
+def task(f: Flow, **kw) -> Node:
+    node = Node(id="T9", kind=BUILD, title="a task", candidate_sha=CAND, **kw)
+    f.ce.nodes[node.id] = node
+    return node
+
+
+def ver(*results: CommandResult, infra: str | None = None) -> Verification:
+    return Verification(sha=CAND, ok=all(r.exit_code == 0 for r in results), results=list(results),
+                        infra_error=infra)
+
+
+def cmd(command: str, rc: int = 0, *, setup: bool = False) -> CommandResult:
+    return CommandResult(command=command, exit_code=rc, output=f"out of {command}", setup=setup)
+
+
+# ---------------------------------------------------------------------------- Verify.judge
+def test_passing_verification_is_ok():
+    res = ver(cmd("setup", setup=True), cmd("pytest"))
+    assert Verify(("pytest",)).judge(res, 1, "att") == Ok(res)
+
+
+def test_failing_commands_are_rework_with_one_blocker_each():
+    res = ver(cmd("setup", setup=True), cmd("pytest", 1), cmd("ruff", 2), cmd("mypy"))
+    result = Verify(("pytest", "ruff", "mypy")).judge(res, 3, "file:v@1")
+    assert isinstance(result, Rework) and result.source == "verification"
+    assert [fb.text.split(":")[0] for fb in result.feedback] == ["BLOCKER", "BLOCKER"]
+    assert "`pytest` exited 1" in result.feedback[0].text
+    assert all(fb.cycle == 3 and fb.attestations == ["file:v@1"] for fb in result.feedback)
+
+
+def test_an_infrastructure_error_escalates_to_verify_again():
+    result = Verify(("pytest",)).judge(ver(infra="gateway down"), 1, None)
+    assert result == Escalate("verify_infra", "gateway down", Resume.VERIFYING)
+
+
+def test_a_missing_command_escalates_without_spending_a_cycle():
+    result = Verify(("bun test",)).judge(ver(cmd("bun test", 127)), 1, None)
+    assert isinstance(result, Escalate) and result.kind == "verify_unrunnable"
+    assert "`bun test`" in result.question and "out of bun test" in result.log_tail
+    # a setup that is not found is the setup failing, not the image lacking a command
+    result = Verify((), expect_failures=True).judge(ver(cmd("setup", 127, setup=True)), 1, None)
+    assert result.kind == "setup_failed"
+
+
+def test_expected_failures_are_ok_but_a_failed_setup_is_not():
+    phase = Verify(("pytest",), expect_failures=True)
+    res = ver(cmd("setup", setup=True), cmd("pytest", 1))
+    assert phase.judge(res, 1, None) == Ok(res)
+    result = phase.judge(ver(cmd("mise run setup", 1, setup=True)), 1, None)
+    assert isinstance(result, Escalate) and result.kind == "setup_failed"
+    assert result.question.startswith("G-V3: the repository's setup `mise run setup` exited 1")
+    assert result.resume == Resume.VERIFYING
+
+
+def test_a_failed_setup_in_a_build_fails_like_any_command():
+    result = Verify(("pytest",)).judge(ver(cmd("mise run setup", 1, setup=True)), 1, "att")
+    assert isinstance(result, Rework) and "`mise run setup` exited 1" in result.feedback[0].text
+
+
+# ---------------------------------------------------------------------------- Verify.verification
+@scenario()
+async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
+    before = list(f.runner.created)
+    res = await Verify(()).verification(ctx(f), "T9", SHA)
+    assert res.infra_error == "no commands to verify" and f.runner.created == before
+
+
+@scenario()
+async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: Flow):
+    from legion_orch.workflow.model import SetupPin
+    f.ce.change.setup_pin = SetupPin(blob="b" * 40, source="base")
+    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA)
+    assert [r.command for r in res.results][1:] == ["first", "second"] and res.ok
+    assert res.results[0].setup
+    f.runner.commands["b" * 40] = (1, "no setup task")
+    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA)
+    assert len(res.results) == 1 and not res.ok
+    assert len(f.runner.deleted) == 2                        # every verifier is removed
+
+
+@scenario()
+async def test_a_taken_verifier_name_is_replaced(f: Flow):
+    before = list(f.runner.created)
+    f.runner.clash = 1
+    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA)
+    assert res.ok and f.runner.created == [*before, res.sandbox]
+
+
+@scenario()
+async def test_a_verifier_that_cannot_start_is_reported_not_raised(f: Flow):
+    f.runner.fail_create = "verifier"
+    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA)
+    assert not res.ok and "quota" in res.infra_error
+
+
+# ---------------------------------------------------------------------------- Panel
+def finding(title: str) -> Finding:
+    return Finding(severity=Severity.BLOCKER, confidence=Confidence.HIGH, title=title,
+                   fix="do it", attestations=["file:src/a.py@1"])
+
+
+def judged(node: Node, role: str, verdict: Verdict, *, sha: str = CAND, findings=()) -> None:
+    node.reviews[node.review_key(node.cycle, role)] = ReviewResult(
+        verdict=verdict, sha=sha, run=f"r-{role}", findings=list(findings), doc=f"file:{role}@1")
+
+
+def test_the_panel_waits_for_every_judge():
+    node = Node(id="T9", kind=BUILD, title="t", candidate_sha=CAND)
+    panel = Panel(("reviewer", "security"))
+    judged(node, "reviewer", Verdict.PASS)
+    assert panel.missing(node) == ["security"] and panel.decide(node) is None
+
+
+def test_a_unanimous_pass_at_the_candidate_is_ok():
+    node = Node(id="T9", kind=BUILD, title="t", candidate_sha=CAND)
+    judged(node, "reviewer", Verdict.PASS)
+    judged(node, "security", Verdict.PASS)
+    assert Panel(("reviewer", "security")).decide(node) == Ok()
+    judged(node, "security", Verdict.PASS, sha=SHA)          # judged an older candidate
+    assert isinstance(Panel(("reviewer", "security")).decide(node), Rework)
+
+
+def test_high_findings_are_rework_and_repeated_ones_escalate():
+    node = Node(id="T9", kind=BUILD, title="t", candidate_sha=CAND)
+    panel = Panel(("reviewer",))
+    judged(node, "reviewer", Verdict.FAIL, findings=[finding("Unsafe eval")])
+    first = panel.decide(node)
+    assert isinstance(first, Rework) and first.source == "review"
+    assert "Unsafe eval" in first.feedback[0].text
+    assert first.feedback[-1].attestations == ["file:reviewer@1"]
+    node.cycle = 2
+    judged(node, "reviewer", Verdict.FAIL, findings=[finding("unsafe eval ")])
+    second = panel.decide(node)
+    assert isinstance(second, Escalate) and second.kind == "stale_loop"
+    assert second.resume == Resume.REWORK_CYCLE and second.feedback
+
+
+# ---------------------------------------------------------------------------- applying results
+@scenario()
+async def test_rework_supersedes_the_report_and_starts_the_next_cycle(f: Flow):
+    run = Run(id="r9001", node_id="T9", role="implementer", soul="s", cycle=1, status=R_REPORTED)
+    f.ce.runs[run.id] = run
+    node = task(f, current_run=run.id)
+    fb = [Feedback(cycle=1, source="merge", text="conflict")]
+    ctx(f).apply(node, Rework(fb, "merge", base=SHA))
+    assert (node.status, node.cycle, node.candidate_sha, node.base_sha) == (REWORK, 2, None, SHA)
+    assert run.status == R_SUPERSEDED and node.feedback == fb
+
+
+@scenario(review_max_cycles=1)
+async def test_rework_past_the_budget_escalates(f: Flow):
+    node = task(f)
+    ctx(f).apply(node, Rework([], "review", base=SHA))
+    assert node.status == ESCALATED and node.escalation.kind == "cycle_budget"
+    assert node.cycle == 1 and node.base_sha is None
+
+
+@scenario()
+async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
+    node = task(f)
+    fb = [Feedback(cycle=1, source="review", text="same again")]
+    ctx(f).apply(node, Escalate("stale_loop", "why", Resume.REWORK_CYCLE, log_tail="tail",
+                                feedback=fb))
+    assert node.status == ESCALATED and node.feedback == fb
+    assert (node.escalation.kind, node.escalation.resume) == ("stale_loop", Resume.REWORK_CYCLE)
+
+
+# ---------------------------------------------------------------------------- Merge
+@scenario()
+async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow):
+    node = task(f)
+    judged(node, "reviewer", Verdict.PASS, sha=SHA)
+    result = await Merge(("reviewer", "security")).run(ctx(f), node)
+    assert isinstance(result, Escalate) and result.kind == "accept_guard"
+    assert result.question.split("; ") == [
+        "G-A1: no passing deterministic verification at candidate",
+        "G-A1: no reviewer PASS at candidate", "G-A1: no security PASS at candidate"]
+    assert result.resume == Resume.REWORK
+
+
+@scenario()
+async def test_an_override_waives_the_panel_but_not_verification(f: Flow):
+    from legion_orch.workflow.model import Override
+    node = task(f, override=Override(approver="miles", reason="trusted", sha=CAND))
+    result = await Merge(("reviewer",)).run(ctx(f), node)
+    assert result.question == "G-A1: no passing deterministic verification at candidate"
+
+
+@scenario()
+async def test_merge_stops_when_the_integration_head_moved(f: Flow):
+    node = task(f)
+    node.verification["1"] = Verification(sha=CAND, ok=True)
+    f.ce.change.integration_head = SHA                     # not where the branch is
+    result = await Merge(()).run(ctx(f), node)
+    assert isinstance(result, Escalate) and result.kind == "head_moved"
+    assert result.resume == Resume.MERGING
+
+
+# ---------------------------------------------------------------------------- BuildImages
+def recipe(f: Flow, tool: str) -> ImageRecipe:
+    return ImageRecipe.make("base:1", [Tool(tool, tool, {tool: "1"})], mise_version="2025.1.0", user="agent",
+                            registry=None, change=f.ce.cid)
+
+
+@scenario()
+async def test_images_are_built_and_logged(f: Flow):
+    r = recipe(f, "uv")
+    phase = BuildImages({r.tag: r})
+    result = await phase.run(ctx(f))
+    assert result == Ok({r.tag: r.tag}) and f.builder.built == [r.tag]
+    assert phase.log[0].startswith(f"## image {r.tag}") and phase.log[1] == f"built {r.tag}"
+
+
+@scenario()
+async def test_a_failed_build_escalates_with_the_log(f: Flow):
+    r = recipe(f, "uv")
+    f.builder.fail = "apt-get failed"
+    result = await BuildImages({r.tag: r}).run(ctx(f))
+    assert isinstance(result, Escalate) and result.kind == "provision_failed"
+    assert result.question == "G-PV1: apt-get failed" and result.resume == Resume.READY
+    assert f"## image {r.tag}" in result.log_tail
+
+
+# ---------------------------------------------------------------------------- Evaluate, AgentRun
+@scenario()
+async def test_evaluate_is_ok_with_the_readiness_whatever_the_verdict(f: Flow):
+    import legion_orch.workflow.engine.phases as phases
+    real = phases.evaluate
+    for verdict in ("READY", "NOT_READY"):
+        async def fake(c, verdict=verdict):
+            assert c is f.ce
+            return Readiness(verdict=verdict, tier="R1", integration_head=SHA,
+                             integration_branch="legion/x", gates={})
+        phases.evaluate = fake
+        try:
+            result = await Evaluate().run(ctx(f))
+        finally:
+            phases.evaluate = real
+        assert isinstance(result, Ok) and result.value.verdict == verdict
+
+
+@scenario()
+async def test_an_agent_run_is_prepared_by_the_dispatcher(f: Flow):
+    calls = []
+    real = ctx(f).dispatcher.prepare
+    ctx(f).dispatcher.prepare = lambda node, role, judged_sha=None: calls.append(
+        (node.id, role, judged_sha)) or real
+    node = task(f)
+    AgentRun("reviewer").start(ctx(f), node, judged_sha=CAND)
+    assert calls == [("T9", "reviewer", CAND)]

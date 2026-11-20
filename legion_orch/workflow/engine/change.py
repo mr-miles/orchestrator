@@ -38,6 +38,7 @@ from .core import ChangeCore
 from .dispatch import Dispatcher
 from .graph import StageGraph
 from .human import HumanGates
+from .phases import PhaseContext
 from .provision import Provisioner
 from .reports import Reports
 from .runs import RunLifecycle
@@ -59,9 +60,11 @@ class ChangeEngine(ChangeCore):
         self._graph = StageGraph(self)
         self._sandboxes = Sandboxes(self)
         self._lifecycle = RunLifecycle(self, self._sandboxes)
-        self._acceptance = Acceptance(self, self._lifecycle, self._sandboxes)
-        self._provisioner = Provisioner(self, self._lifecycle, self._acceptance)
+        self._phases = PhaseContext(self, self._sandboxes)
+        self._acceptance = Acceptance(self, self._lifecycle, self._phases)
+        self._provisioner = Provisioner(self, self._lifecycle, self._phases)
         self._dispatcher = Dispatcher(self, self._lifecycle, self._sandboxes, roles=self)
+        self._phases.dispatcher = self._dispatcher
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
