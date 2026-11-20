@@ -104,7 +104,9 @@ class PhaseContext:
 
 
 class Phase:
-    """The defaults: entered by becoming READY, nothing to dispatch, nothing to resume."""
+    """The defaults: entered by becoming READY, nothing to dispatch, nothing to resume.
+    Entering only sets the node's status (or, after a producer, starts the controller's own
+    work on its result); work that has to wait its turn starts in ``dispatch``."""
     #: the node statuses while this phase is the node's current one
     statuses: ClassVar[frozenset[NodeStatus]] = frozenset()
 
@@ -258,9 +260,7 @@ class AgentRun(Phase):
 
     def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
         s, c, step = rt.scheduler, rt.c, rt.step(node)
-        if node.status not in (READY, REWORK) \
-                or not all(w.holds(s, node) for w in step.dispatch_when) \
-                or s.waits_for_environment(self.role):
+        if node.status not in (READY, REWORK) or s.waits_for_environment(self.role):
             return []
         if step.judges_head and s.branch_head and (moved := c.head_moved(s.branch_head)):
             c.escalate(node, "head_moved", moved, resume=Resume.READY)
@@ -356,7 +356,10 @@ class Verify(Phase):
     on_rework: EscalateFailures | None = None
     on_setup_failed: SetupFailurePolicy | None = None
     notes: Notes | None = None
-    statuses: ClassVar = frozenset({VERIFYING})
+    @property
+    def statuses(self) -> frozenset[NodeStatus]:  # type: ignore[override]
+        # at the head (no producer): READY until dispatched, then VERIFYING
+        return frozenset({READY, VERIFYING}) if self.at_head else frozenset({VERIFYING})
 
     def commands_for(self, c: ChangeCore | None, node: Node | None) -> tuple[str, ...]:
         if isinstance(self.commands, tuple):
@@ -371,8 +374,20 @@ class Verify(Phase):
         return f"control/verification/{_slug(node.id)}.json", str(node.kind)
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
+        """After a producer, its candidate is verified at once; at the head (nothing produced
+        it) the verification waits to be dispatched, like any step's first work."""
         if self.at_head:
+            node.status = READY
+            return
+        self._start(rt, node)
+
+    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
+        if self.at_head and node.status == READY:
             node.candidate_sha = rt.c.change.integration_head
+            self._start(rt, node)
+        return []
+
+    def _start(self, rt: StepRunner, node: Node) -> None:
         node.status = VERIFYING
         rt.c.spawn(rt.acceptance.verify_node(node.id))
 

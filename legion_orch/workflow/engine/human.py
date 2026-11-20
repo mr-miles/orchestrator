@@ -18,7 +18,6 @@ from ..model import (
     HUMAN,
     LIVE_RUN,
     MERGING,
-    PENDING,
     PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
@@ -546,7 +545,7 @@ class HumanGates:
         reason = payload.get("reason")
         if not risk.valid_reason(reason):
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
-        prov.status = PENDING
+        self.flow.runner.enter(prov)       # its wait: no run or verification uses the build
         c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
         return ("provisioning again from the approved spec and the current library once running "
                 "agents of mapped roles finish; their new runs wait until then")
