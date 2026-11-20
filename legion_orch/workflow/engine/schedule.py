@@ -31,6 +31,7 @@ from .acceptance import Acceptance
 from .core import ChangeCore
 from .dispatch import Dispatcher
 from .graph import StageGraph
+from .phases import AgentRun
 from .provision import Provisioner
 from .runs import RunLifecycle
 
@@ -146,7 +147,7 @@ class Scheduler:
                     and (moved := c.head_moved(self._branch_head)):
                 c.escalate(node, "head_moved", moved, resume=Resume.READY)
                 return []
-            run = self.dispatcher.prepare(node, ROLE_FOR_KIND[node.kind])
+            run = AgentRun(ROLE_FOR_KIND[node.kind]).start(self.acceptance.ctx, node)
             return [run] if run else []
         runs: list[Run] = []
         if node.status == REVIEWING:
@@ -159,7 +160,8 @@ class Scheduler:
                            and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
                 if f"{node.cycle}:{role}" not in node.reviews and not busy \
                         and not self._waits_for_environment(role):
-                    run = self.dispatcher.prepare(node, role, judged_sha=node.candidate_sha)
+                    run = AgentRun(role).start(self.acceptance.ctx, node,
+                                           judged_sha=node.candidate_sha)
                     if run:
                         runs.append(run)
         return runs

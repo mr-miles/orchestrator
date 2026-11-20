@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...sandbox import BuildError, ImageRecipe, SandboxEnv, driver_config, policy_entry
+from ...sandbox import ImageRecipe, SandboxEnv, driver_config, policy_entry
 from .. import guards
 from ..assets import GitMode
 from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
@@ -29,6 +29,7 @@ from ..model import (
 )
 from .common import ENV_SPEC
 from .core import ChangeCore
+from .phases import BuildImages, Ok, PhaseContext, Verify
 from .runs import RunLifecycle
 
 
@@ -52,8 +53,8 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
 
 
 class Provisioner:
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, acceptance=None):
-        self.c, self.lifecycle, self.acceptance = core, lifecycle, acceptance
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
+        self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
 
     def _fail(self, reason: str, log: str = "") -> None:
         if log:
@@ -111,18 +112,18 @@ class Provisioner:
             for key, entry in env.network.items():
                 log.append(f"## {role}: network policy {key} (sandbox policy): "
                            f"binaries {[b['path'] for b in entry['binaries']]}")
-        images: dict[str, str | None] = {}           # recipe tag -> image reference
-        try:
-            for tag, recipe in recipes.items():
-                log.append(f"## image {tag}\n\n{recipe.files['Dockerfile']}")
-                images[tag], out = await c.svc.builder.ensure_image(recipe)
-                log.append(out)
-        except (BuildError, OSError) as e:
+        build_images = BuildImages(recipes, log)
+        built = await build_images.run(self.ctx)
+        if not isinstance(built, Ok):
             async with c.lock:
                 if c.nodes[PROVISION].status == RUNNING:
-                    self._fail(str(e), "\n".join(log))
+                    if log:
+                        c.write_record("control/logs/provision.log", "\n".join(log))
+                    c.escalate(c.nodes[PROVISION], built.kind, built.question,
+                               resume=built.resume, log_tail=built.log_tail)
                     c.save()
             return
+        images: dict[str, str | None] = built.value          # recipe tag -> image reference
         async with c.lock:
             node = c.nodes.get(PROVISION)
             if node is None or node.status != RUNNING:
@@ -148,7 +149,7 @@ class Provisioner:
                 c.event("provision", f"released sandbox {sb}: not from this build", PROVISION)
                 self.lifecycle.sandboxes.delete_later(sb, stopped)
             pin = c.change.setup_pin
-            check = self.acceptance is not None and pin is not None and pin.source == H_ENV
+            check = pin is not None and pin.source == H_ENV
             if check and c.setup_waits_for_scaffold():
                 check = False
                 c.event("provision", "the repository is blank: its setup is checked at the "
@@ -165,7 +166,7 @@ class Provisioner:
         """G-PV3: the approved mise.toml's setup task succeeds at the integration head in a fresh
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
-        res = await self.acceptance._verify("provision", c.change.integration_head, [])
+        res = await Verify(()).verification(self.ctx, "provision", c.change.integration_head)
         async with c.lock:
             node = c.nodes.get(PROVISION)
             if node is None or node.status != RUNNING:
