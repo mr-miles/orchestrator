@@ -98,6 +98,18 @@ core's **effects** (`StartStep`, `StopStep`, `Evaluate`, `EndChange`, …), whic
 carries out, and the engine's **saves**, on which `FlowRuntime.sync` tells the core what the
 nodes did (accepted → `Completed`, escalated → `Escalated`, resolved → resumed).
 
+The participants, left to right:
+
+| Participant | Layer (§1) | Code | Responsible for |
+| --- | --- | --- | --- |
+| **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, and what a send-back resets – between steps. |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Carrying out the core's effects on the change's nodes, telling the core what the nodes did on every save, and persisting the core as its inputs. |
+| **Scheduler** | Services | `engine/schedule.py` | The tick: promoting the nodes the core has started, dispatching what has capacity, failing timed-out runs and releasing sandboxes. |
+| **StepRunner** | Steps | `engine/steps.py` | Moving one node through its step type's phases: entering the first, advancing to the next when one passes, accepting the node after the last. |
+| **Phases** | Orchestrator layer of a step | `engine/phases.py` (with `Dispatcher`, `Acceptance`, `Provisioner`) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging – each ending in ok, rework or escalate. |
+| **Agent (role handler)** | Agent layer of a step | `roles/*.py` (reports via `engine/reports.py`) | One role's own part: its prompt variables and context, its guards on a report, and what an accepted report records before it calls `step_done()`. |
+| **Sandboxes** | Sandbox layer of a step | `engine/sandboxes.py`, `engine/sandbox_plan.py` | Creating, preparing, pausing, holding and retiring the sandboxes a step's plan asks for, and the verifier sandboxes. |
+
 ```mermaid
 sequenceDiagram
     autonumber
