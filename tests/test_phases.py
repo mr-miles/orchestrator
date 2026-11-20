@@ -108,7 +108,7 @@ def test_a_failed_setup_in_a_build_fails_like_any_command():
 @scenario()
 async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
     before = list(f.runner.created)
-    res = await Verify(()).verification(ctx(f), "T9", SHA)
+    res = await Verify(()).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
     assert res.infra_error == "no commands to verify" and f.runner.created == before
 
 
@@ -116,11 +116,11 @@ async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
 async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: Flow):
     from legion_orch.workflow.model import SetupPin
     f.ce.change.setup_pin = SetupPin(blob="b" * 40, source="base")
-    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA)
+    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
     assert [r.command for r in res.results][1:] == ["first", "second"] and res.ok
     assert res.results[0].setup
     f.runner.commands["b" * 40] = (1, "no setup task")
-    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA)
+    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
     assert len(res.results) == 1 and not res.ok
     assert len(f.runner.deleted) == 2                        # every verifier is removed
 
@@ -129,14 +129,14 @@ async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: F
 async def test_a_taken_verifier_name_is_replaced(f: Flow):
     before = list(f.runner.created)
     f.runner.clash = 1
-    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA)
+    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
     assert res.ok and f.runner.created == [*before, res.sandbox]
 
 
 @scenario()
 async def test_a_verifier_that_cannot_start_is_reported_not_raised(f: Flow):
     f.runner.fail_create = "verifier"
-    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA)
+    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
     assert not res.ok and "quota" in res.infra_error
 
 

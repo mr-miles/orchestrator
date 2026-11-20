@@ -155,7 +155,8 @@ def report(f: Flow, n: Node, result=None, role: str = "implementer"):
               sandbox=f"sb-{len(f.ce.runs)}", status=R_REPORTED)
     f.ce.runs[run.id] = run
     rt = f.ce._runner
-    rt.step(n).current(n).ended(rt, n, Ended(run, Ok() if result is None else result))
+    phase = rt.step(n).current(n)
+    phase.conclude(rt, n, phase.ended(rt, n, Ended(run, Ok() if result is None else result)))
     return run
 
 
@@ -300,7 +301,8 @@ def ver(*rcs: int, setup: int | None = None) -> Verification:
 
 
 def conclude(f: Flow, n: Node, res: Verification) -> None:
-    step_for(n).phase(Verify).verified(f.ce._runner, n, res, "att")
+    phase = step_for(n).phase(Verify)
+    phase.conclude(f.ce._runner, n, phase.verified(f.ce._runner, n, res, "att"))
 
 
 @scenario()
@@ -383,7 +385,7 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
     if answered is None:
         rt.phase(n, READY)
     work = rt.dispatcher(n)
-    await phase._work(rt, n, work, answered=bool(answered))
+    await phase.task(rt, n, work, bool(answered))
 
 
 @scenario()

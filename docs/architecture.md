@@ -287,6 +287,24 @@ plan, an ordered list of phases configured by **policy objects**, the waits it r
 a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
 `GATE_TYPES`, which configures each gate's `Approval`).
 
+Every phase's work has one shape (`Phase.task`): once it is **ready** (at once, or at a later
+save – the step's slot given back meanwhile) it **begins** (its status, under the lock),
+**performs** its work outside the lock (through the step's dispatcher, or a check), and then,
+under the lock and unless its step or phase ended meanwhile, its **result** says what the work
+means – the one method each phase answers with a `PhaseResult`:
+
+| Phase | ready | perform | result |
+| --- | --- | --- | --- |
+| Produce | its waits hold, its environment built | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
+| Panel (per judge) | the judge still wanted, its environment built | the judge's work | none until every judge has finished, then `decide` (or the held escalations) |
+| Verify | at the head: its waits hold; the verifier built | the verification | recorded, then `interpret` and its policies |
+| Merge | at once | – | the guards and the merge, at once under the lock |
+| BuildImages | its waits hold | the provisioner's build and setup check | the provisioner's |
+| Approval | at once | its checks evaluated | approved, still pending, or preconditions unmet |
+
+`enter` is the move into a phase (its first status, then `start`); `start` begins its work for
+the status the node is in – on entering, resuming and after a restart.
+
 ```mermaid
 classDiagram
     direction LR
@@ -318,10 +336,15 @@ classDiagram
     }
     class Phase {
         statuses
-        enter(runner, node, after)
+        enter(runner, node)
         start(runner, node)
         resume(runner, node, answered)
         recover(runner, node)
+        task(runner, node, work, job)
+        ready(node, job) bool
+        begin(node, job)
+        perform(node, work, job)
+        result(node, done, job) PhaseResult
         conclude(runner, node, result)
     }
     class Produce {
@@ -329,7 +352,7 @@ classDiagram
     }
     class RoleWork {
         role
-        dispatch(runner, node, ...)
+        perform(runner, node, work, phase) Ended
     }
     class Verify {
         commands: CommandSource
@@ -339,7 +362,6 @@ classDiagram
         on_setup_failed: SetupFailurePolicy
         notes: Notes
         interpret(result) PhaseResult
-        conclude(...)
     }
     class Panel {
         judges: JudgeSource

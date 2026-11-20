@@ -121,7 +121,7 @@ class StepRunner:
 
     def enter(self, node: Node) -> None:
         """The node's first phase."""
-        self.step(node).phases[0].enter(self, node, None)
+        self.step(node).phases[0].enter(self, node)
 
     def reset(self, node: Node) -> None:
         """The core sent the step back or stopped it: its runs end, the node is pending."""
@@ -335,7 +335,7 @@ class StepRunner:
         if nxt is None:
             self.accept(node)
         else:
-            nxt.enter(self, node, phase)
+            nxt.enter(self, node)
 
     def apply(self, node: Node, result: PhaseResult) -> None:
         """A phase's result that does not pass it: rework within the budget, an escalation, or
