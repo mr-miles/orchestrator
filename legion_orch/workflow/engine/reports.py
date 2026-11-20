@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
@@ -22,11 +23,14 @@ from ..model import (
     RunReport,
     RunStage,
 )
-from ..results import ReportOutcome
+from ..results import Escalate, PhaseResult, ReportOutcome
 from ..roles import Report, handler_for
 from ..view import RoleContext
 from .common import WorkflowError, log
 from .core import ChangeCore
+
+if TYPE_CHECKING:
+    from .steps import StepRunner
 from .runs import RunLifecycle
 from .steps import step_for
 
@@ -58,6 +62,7 @@ class Reports:
 
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, roles: RoleContext):
         self.c, self.lifecycle, self.roles = core, lifecycle, roles
+        self.runner: StepRunner = None  # type: ignore[assignment]   # set once the runner exists
         self._report_locks: dict[str, asyncio.Lock] = {}     # serialise reports of one run
 
     def docs_write(self, run: Run, path: str, content: str, base_version: int | None,
@@ -217,11 +222,12 @@ class Reports:
                 self.c.event("report", f"{run.role} reported {r.status}: {r.summary[:200]}",
                              node.id, run.id)
                 if r.status == ReportStatus.BLOCKED:
-                    self.c.escalate(node, "blocked", r.blocked_reason or "",
-                                    resume=step_for(node).rework_resume,
-                                    run=run.id, missing_decision=r.missing_decision)
-                else:   # role-specific transition (see workflow/roles/)
-                    await handler_for(run.role).on_done(self.roles, report)
+                    result: PhaseResult | None = Escalate(
+                        "blocked", r.blocked_reason or "", step_for(node).rework_resume,
+                        run=run.id, missing_decision=r.missing_decision)
+                else:   # what the role's report means (see workflow/roles/)
+                    result = await handler_for(run.role).on_done(self.roles, report)
+                self.runner.reported(node, run, result)          # the phase applies it
                 self.c.save()
         except Exception as e:
             log.exception("applying report of %s failed", run.id)

@@ -210,7 +210,7 @@ class RunLifecycle:
             if r.sandbox and not r.sandbox_deleted and r.status in (R_ACCEPTED, R_SUPERSEDED, R_FAILED):
                 sandboxes.add(r.sandbox)
         held = self.sandboxes.held()
-        for sb in sandboxes - held:
+        for sb in sandboxes - held - self.sandboxes.retiring:     # retiring already: a judge's
             if any(r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
                 continue
             stopped = False

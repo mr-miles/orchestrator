@@ -5,16 +5,13 @@ from __future__ import annotations
 from .. import guards
 from ..engine.common import ENV_SPEC, PLAN_DOCS
 from ..model import (
-    R_ACCEPTED,
-    R_REPORTED,
-    R_SUPERSEDED,
-    REWORK,
     Feedback,
     Node,
     Resume,
     ReviewResult,
     Verdict,
 )
+from ..results import Escalate, Ok, PhaseResult, Rework
 from ..view import RoleContext
 from .base import (
     Report,
@@ -49,36 +46,27 @@ class Critic(RoleHandler):
         latest = {e.p(p): e.latest(p) for p in docs}
         return guards.critique(r.data, plan_atts, latest, r.repo_atts)
 
-    async def on_done(self, e: RoleContext, r: Report) -> None:
-        """PASS accepts the plan and creates the build tasks; REWORK sends it back to the planner
-        (a new plan cycle) within the critique budget (G-C2), else escalates."""
+    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
+        """PASS accepts the plan, whose task graph's build tasks are then known; REWORK sends it
+        back to the planner (a new plan cycle) within the critique budget (G-C2), else
+        escalates."""
         run, node, data = r.run, r.node, r.data
         node.reviews[node.review_key(run.cycle, run.role)] = ReviewResult(
             verdict=data.verdict, run=run.id, findings=brief_findings(data.findings),
             doc=str(r.docs[run.required_docs[0]]))
-        run.status = R_ACCEPTED
         if data.verdict == Verdict.PASS:
-            # the task graph is known: its build tasks (a fix round's new ones), then the plan
-            # step is done – the critic's sandbox goes, the planner's is held to H-E1
-            ids = e.define_tasks(node)
-            e.step_done(node)
+            ids = e.define_tasks(node)       # a fix round's: its new ones
             what = f"fix round {node.round}" if node.round > 1 else "plan"
             e.event("plan", f"{what} accepted by critic; {len(ids)} build task(s)"
                     + (f": {', '.join(ids)}" if node.round > 1 else ""))
-            return
-        e.delete_sandbox_later(run.sandbox)
-        planner = e.runs.get(node.current_run) if node.current_run else None
-        if planner and planner.status == R_REPORTED:
-            planner.status = R_SUPERSEDED
-        node.feedback.append(Feedback(
+            return Ok()
+        feedback = [Feedback(
             cycle=node.cycle, source="critique", text="critique requested rework: "
             + "; ".join(f"{f.severity}: {f.title}" for f in data.findings),
-            attestations=[str(a) for a in r.docs.values()]))
+            attestations=[str(a) for a in r.docs.values()])]
         limit = e.cfg.limits.critique_max_cycles + node.extra_cycles
         cycles = node.cycle - node.round_start_cycle + 1      # a fix round has its own budget
         if cycles >= limit:
-            e.escalate(node, "critique_budget", f"G-C2: {cycles} critique cycles without PASS",
-                       resume=Resume.CRITIQUE_BUDGET)
-        else:
-            node.cycle += 1
-            node.status = REWORK
+            return Escalate("critique_budget", f"G-C2: {cycles} critique cycles without PASS",
+                            Resume.CRITIQUE_BUDGET, feedback=feedback)
+        return Rework(feedback, "critique", budget_checked=True)

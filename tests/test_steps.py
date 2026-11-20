@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from engine_harness import Flow, scenario
 
-from legion_orch.workflow.engine.phases import Panel, Verify
+from legion_orch.workflow.engine.phases import Ok, Panel, Verify
 from legion_orch.workflow.engine.sandbox_plan import JUDGE
 from legion_orch.workflow.engine.steps import (
     STEP_TYPES,
@@ -148,6 +148,16 @@ def node(f: Flow, kind: NodeKind, **kw) -> Node:
     return n
 
 
+def report(f: Flow, n: Node, result=None, role: str = "implementer"):
+    """An agent's accepted report in the node's current phase, with its handler's result."""
+    from legion_orch.workflow.model import Run
+    run = Run(id=f"r{9100 + len(f.ce.runs)}", node_id=n.id, role=role, soul="s", cycle=n.cycle,
+              sandbox=f"sb-{len(f.ce.runs)}")
+    f.ce.runs[run.id] = run
+    f.ce._runner.reported(n, run, Ok() if result is None else result)
+    return run
+
+
 def capture_spawns(f: Flow) -> list[str]:
     spawned: list[str] = []
 
@@ -163,13 +173,17 @@ async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f
     rt, n = f.ce._runner, node(f, BUILD)
     f.ce.change.panel = ["reviewer"]
     spawned = capture_spawns(f)
-    rt.step_done(n)
+    report(f, n)                                         # the implementer's report
     assert n.status == VERIFYING and spawned == ["Acceptance.verify_node"]
-    rt.step_done(n)
+    rt.advance(n, rt.step(n).current(n))                 # verification passed
     assert n.status == REVIEWING
-    rt.step_done(n)
+    judge = report(f, n, result=None, role="reviewer")   # its handler records the review only
+    assert n.status == REVIEWING                         # the panel decides: no review yet
+    assert judge.status == "ACCEPTED"
+    assert judge.sandbox in f.ce._sandboxes.retiring     # the judge's sandbox goes
+    rt.advance(n, rt.step(n).current(n))                 # the panel passed
     assert n.status == MERGING and spawned[-1] == "Acceptance.merge_node"
-    rt.step_done(n)
+    rt.advance(n, rt.step(n).current(n))                 # merged
     assert n.status == ACCEPTED
 
 
@@ -178,15 +192,28 @@ async def test_an_empty_panel_is_passed_straight_to_the_merge(f: Flow):
     rt, n = f.ce._runner, node(f, BUILD, status=VERIFYING)
     f.ce.change.panel = []
     capture_spawns(f)
-    rt.step_done(n)
+    rt.advance(n, rt.step(n).current(n))
     assert n.status == MERGING
 
 
 @scenario()
 async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
-    rt, n = f.ce._runner, node(f, NodeKind.RELEASE)
-    rt.step_done(n)
+    n = node(f, NodeKind.RELEASE)
+    report(f, n, role="release")
     assert n.status == ACCEPTED
+
+
+@scenario()
+async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
+    from legion_orch.workflow.engine.phases import Escalate, Rework
+    from legion_orch.workflow.model import Feedback, Resume
+    n = node(f, NodeKind.INTEGRATION)
+    report(f, n, Escalate("integration_failed", "FAIL", Resume.READY, run="r1"), "integration")
+    assert n.status == ESCALATED and n.escalation.run == "r1"
+    p = node(f, PLAN, status=REVIEWING)                  # the critic's verdict at the panel
+    fb = [Feedback(cycle=1, source="critique", text="thin")]
+    report(f, p, Rework(fb, "critique", budget_checked=True), "critic")
+    assert (p.status, p.cycle, p.feedback) == (REWORK, 2, fb)
 
 
 @scenario()

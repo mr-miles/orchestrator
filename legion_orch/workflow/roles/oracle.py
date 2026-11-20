@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .. import guards
 from ..model import Oracle, Resume
+from ..results import Escalate, Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, register, scaffold_note
 
@@ -31,18 +32,17 @@ class OracleAuthor(RoleHandler):
                 v.append(f"G-O2: acceptance test {p} missing at {r.sha[:12]}")
         return v
 
-    async def on_done(self, e: RoleContext, r: Report) -> None:
+    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
         ch, node = e.change, r.node
         node.candidate_sha = r.sha
         await e.git.pin(r.run.id, r.sha)
         ok, head = await e.git.merge(ch.id, r.sha, f"legion {ch.id}: oracle (protected acceptance tests)")
         if not ok:
-            e.escalate(node, "merge", f"oracle merge failed: {head[:400]}", resume=Resume.READY)
-            return
+            return Escalate("merge", f"oracle merge failed: {head[:400]}", Resume.READY)
         ch.oracle_sha, ch.integration_head = r.sha, head
         ch.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
         node.accepted_sha = r.sha
         # merged: the branch's commit is in the integration history, the evidence ref pins it
         if r.run.branch and await e.git.delete_ref(f"refs/heads/{r.run.branch}"):
             e.event("cleanup", f"deleted branch {r.run.branch} (merged)", node.id)
-        await super().on_done(e, r)
+        return Ok()
