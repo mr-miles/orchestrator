@@ -26,7 +26,7 @@ flowchart TB
             rt["FlowRuntime<br/>runtime/flow_runtime.py<br/><i>events in, effects out, persistence,<br/>housekeeping on saves</i>"]
         end
         subgraph steps["Steps: what each kind of node is made of"]
-            runner["StepRunner<br/>steps/runner.py<br/><i>moves a node through its phases,<br/>owns its state and its reservation</i>"]
+            runner["StepRunner, ActiveStep<br/>steps/runner.py, steps/active.py<br/><i>each node's step as it runs: moves it through<br/>its phases, owns its state and its reservation</i>"]
             types["STEP_TYPES, GATE_TYPES<br/>steps/step_types.py<br/><i>the only per-kind table</i>"]
         end
         subgraph layers["The three layers of a step"]
@@ -100,7 +100,7 @@ the layers above it (the import contracts in `pyproject.toml`, checked by `lint-
 | Package | Holds |
 | --- | --- |
 | `runtime/` | `FlowRuntime`, the stage tree, `HumanGates` (decisions in) |
-| `steps/` | `StepRunner` and `StepEvents`, the step and gate types, the phases, the node states |
+| `steps/` | `StepRunner` and `StepEvents`, `ActiveStep`, the step and gate types, the phases (declared, and as they run), the node states |
 | `services/` | `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the end-of-change cleanup |
 | `sandboxes/` | `Sandboxes` and their sessions, sandbox plans (given as `Plans`), reflections |
 | `base/` | `ChangeCore`, `StateStore`, `Services`, node ids, the `Dispatcher` and `Work` |
@@ -137,7 +137,7 @@ The participants, left to right:
 | --- | --- | --- | --- |
 | **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, what a send-back or a redo resets, what a human may do at an escalated step. Knows only steps – a gate is the step that ends its stage. Owns the steps' and stages' states. |
 | **FlowRuntime** | Workflow: the stage rules | `engine/runtime/flow_runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
-| **StepRunner** | Steps | `engine/steps/` (`runner.py`, `node_states.py`, `step_types.py`) | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
+| **StepRunner**, **ActiveStep** | Steps | `engine/steps/` (`runner.py`, `active.py`, `node_states.py`, `step_types.py`) | The runner takes the runtime's calls and does what spans steps (a send-back's undoing, retries after a restart, housekeeping); each node's step as it runs is an `ActiveStep`: moving the node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
 | **Phases** | Orchestrator layer of a step | `engine/steps/phases.py` (their services, `engine/services/`: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
 | **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
 | **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/services/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
@@ -287,13 +287,18 @@ plan, an ordered list of phases configured by **policy objects**, the waits it r
 a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
 `GATE_TYPES`, which configures each gate's `Approval`).
 
-A phase in the table is a declaration – its policies – shared by every node of its kind. The
-step runner reaches a node's phase only **bound** to it (`phase.at(runner, node)`, with the
-step's dispatcher while it works), so a phase's methods take only what varies: a result, an
-escalation, an answer. The policy objects stay functions of the change and the node they are
-given.
+A step and a phase each exist twice: **declared** – a `StepType` and its `Phase`s in the table,
+holding only policies, shared by every node of its kind – and **as they run** for one node. The
+step runner makes each node's `ActiveStep` (from the node, its step type and the runner's
+services; it owns the node's reservation), and the active step makes its phase's `ActivePhase`
+(`phase.at(step)`: the phase's own `Active` class – `Producing`, `Reviewing`, `Verifying`,
+`Merging`, `Provisioning`, `Approving` – with the step's dispatcher while it works). Nothing is
+handed the node, the change or the runner again: their methods take only what varies – a
+result, an escalation, an answer. Everything that lasts is on the node, so both are made again
+after a restart. The policy objects stay functions of what they are given (a wait: the active
+step; a command source: the change and the node).
 
-Every phase's work has one shape (`Phase.task`): once it is **ready** (at once, or at a later
+Every phase's work has one shape (`ActivePhase.task`): once it is **ready** (at once, or at a later
 save – the step's slot given back meanwhile) it **begins** (its status, under the lock),
 **performs** its work outside the lock (through the step's dispatcher, or a check), and then,
 under the lock and unless its step or phase ended meanwhile, its **result** says what the work
@@ -327,22 +332,45 @@ classDiagram
         after(phase) Phase
     }
     class StepRunner {
+        of(node) ActiveStep
         start(node, feedback)
-        reset(node)
         send_back(nodes) undo
         resume(node, answered)
         override(node)
         retry(node)
-        dispatcher(node) StepDispatcher
-        run(node, work)
-        wait_until(node, ready)
-        phase(node, status)
-        advance(node, phase)
-        apply(node, result)
+        recover(node)
+        housekeeping()
+    }
+    class ActiveStep {
+        node
+        type: StepType
+        dispatch: StepDispatcher
+        start(feedback)
+        reset()
+        resume(answered)
+        override()
+        retry()
+        at(phase) ActivePhase
+        current() ActivePhase
+        run(phase)
+        wait_until(phase, ready)
+        move(status)
+        advance(phase)
+        apply(result)
+        escalate(...)
+        accept()
     }
     class Phase {
+        <<declared>>
         statuses
-        at(runner, node) Phase
+        starts_in
+        Active: type
+        at(step) ActivePhase
+    }
+    class ActivePhase {
+        step
+        phase
+        dispatch
         enter()
         start()
         resume(answered)
@@ -397,14 +425,17 @@ classDiagram
         <<Ok, Rework, Escalate or Redo>>
     }
     class Wait {
-        holds(runner, node)
+        holds(step)
     }
     class Reset {
         applies(node)
         undo(node)
     }
 
-    StepRunner --> StepType : asks
+    StepRunner *-- ActiveStep : one per node
+    ActiveStep --> StepType : runs
+    ActiveStep *-- ActivePhase : its current phase
+    ActivePhase --> Phase : runs
     StepType *-- Phase
     StepType *-- SandboxPlan
     StepType *-- Wait

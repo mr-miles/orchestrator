@@ -28,7 +28,7 @@ from ...results import Escalate, Redo, Rework
 from ..base.common import WorkflowError
 from ..base.dispatch import StepDispatcher, Withdrawn
 from .node_states import WAITING, IllegalNodeTransition
-from .phases import Merge, Phase, PhaseResult
+from .phases import ActivePhase, Merge, Phase, PhaseResult
 from .step_types import StepType, step_for
 
 if TYPE_CHECKING:
@@ -237,20 +237,21 @@ class ActiveStep:
                 if r is not None and r.sandbox and not r.sandbox_deleted}
 
     # ------------------------------------------------------------------ its phases' work
-    def at(self, phase: Phase) -> Phase:
-        """``phase`` (as its step type declares it) bound to this step: the only way a phase
-        of a node is reached."""
+    def at(self, phase: Phase) -> ActivePhase:
+        """``phase`` (as its step type declares it) as it runs for this step: the only way a
+        phase of a node is reached."""
         return phase.at(self)
 
-    def current(self) -> Phase | None:
-        """Its current phase, bound (None: pending, accepted or waiting)."""
+    def current(self) -> ActivePhase | None:
+        """Its current phase, as it runs (None: pending, accepted or waiting)."""
         phase = self.type.current(self.node)
         return self.at(phase) if phase is not None else None
 
-    def run(self, phase: Phase, work: Callable[[Phase], Awaitable[None]] | None = None) -> None:
-        """Start a bound phase's work as a task, with its dispatcher: its
-        :meth:`~.Phase.task`, or ``work``."""
-        bound = phase.at(self, self.dispatch)
+    def run(self, phase: ActivePhase,
+            work: Callable[[ActivePhase], Awaitable[None]] | None = None) -> None:
+        """Start a phase's work as a task, with its dispatcher: its :meth:`~.ActivePhase.task`,
+        or ``work``."""
+        bound = phase.phase.at(self, self.dispatch)
 
         async def task() -> None:
             try:
@@ -263,19 +264,19 @@ class ActiveStep:
         """The change is active (or the step runs after the end)."""
         return self.c.change.status == "ACTIVE" or self.type.runs_after_end
 
-    def stale(self, phase: Phase) -> bool:
+    def stale(self, phase: ActivePhase) -> bool:
         """The work of ``phase`` counts no more: its reservation went back, the node was
         replaced, it moved on from the phase, or the change ended."""
         return (phase.dispatch is not None and phase.dispatch.released) \
             or self.c.nodes.get(self.node.id) is not self.node \
-            or self.type.current(self.node) is not (phase.declared or phase) \
+            or self.type.current(self.node) is not phase.phase \
             or not self.may_work()
 
     def waits_hold(self) -> bool:
         """Its waits (its ``dispatch_when``) for its first work."""
         return all(w.holds(self) for w in self.type.dispatch_when)
 
-    async def wait_until(self, phase: Phase, ready: Callable[[], bool]) -> bool:
+    async def wait_until(self, phase: ActivePhase, ready: Callable[[], bool]) -> bool:
         """Await ``ready`` – checked now and at each save of the change; while it does not
         hold, its reservation holds no slot. False: ``phase``'s work counts no more first."""
         while True:
@@ -295,9 +296,9 @@ class ActiveStep:
         """A phase moves the node (entering it, starting its work, handing over)."""
         self.states.phase(self.node, to)
 
-    def advance(self, phase: Phase) -> None:
+    def advance(self, phase: ActivePhase) -> None:
         """``phase`` passed: enter the next one, or accept the node after the last."""
-        nxt = self.type.after(phase.declared or phase)
+        nxt = self.type.after(phase.phase)
         if nxt is None:
             self.accept()
         else:

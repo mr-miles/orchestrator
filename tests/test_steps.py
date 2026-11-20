@@ -157,7 +157,7 @@ async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     rt = f.ce._runner
     phase = rt.of(n).current()
     ended = Ended(run, Ok() if result is None else result)
-    if isinstance(phase, Panel):                         # a judge's: collated by the panel
+    if isinstance(phase.phase, Panel):                   # a judge's: collated by the panel
         phase.judged(ended)
         phase.conclude(await phase.result({role: ended}))
     else:
@@ -173,7 +173,7 @@ def capture_work(f: Flow) -> list[str]:
 
     def capturing(node):
         step = of(node)
-        step.run = lambda phase, work=None: started.append(type(phase).__name__)
+        step.run = lambda phase, work=None: started.append(type(phase.phase).__name__)
         return step
     rt.of = capturing
     return started
