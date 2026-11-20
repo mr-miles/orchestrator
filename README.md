@@ -17,7 +17,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   ship gates, and it is where humans approve, revise and resolve escalations.
 * A sandbox is deleted as soon as the work it produced is accepted. Intake, planner and oracle
   keep theirs, stopped, with the agent's session until the gate that can send the work back
-  passes (H-1, H-2), so a rework continues the same conversation.
+  passes (H-1, H-E1, H-2), so a rework continues the same conversation.
 * Before a finished agent's sandbox is deleted, the agent reflects on its session (what cost it
   time, where its instructions failed) into `control/reflections/`. When a change ends, a
   **retrospective** runs (and a decision owner can ask for more): an agent that reads the reflections, the whole agent
@@ -30,9 +30,17 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   from the store on restart. Several changes can run side by side, and `state_dir` is set once.
 
 ```
-start (intake) -> H-1 -> plan (planner <-> critique, with [environment]) -> [H-E1 -> provision] -> oracle -> [baseline] -> H-2 -> build DAG
-   (verify -> review panel -> rework loop -> merge) -> integration -> [release] -> H-3 -> ship
+Requirements  intake                                             ◆ H-1 accept requirements & tier
+Plan          Design: planner <-> critic (with [environment])    ◆ H-E1 approve the plan
+              Oracle: [provision] [scaffold] oracle preflight [baseline]   ◆ H-2 approve the oracle
+Delivery      build DAG (verify -> review panel -> rework loop -> merge)
+              integration [release]                              ◆ H-3 accept (its preconditions: the ship gates)
 ```
+
+The stage rules run in a pure workflow core (`legion_orch/workflow/flow/`): every gate can send
+back any stage the work was built on, a stage sent back starts over, and a late integration
+failure appends a fix round (WORKFLOW.md §4.1). Lower tiers leave stages out and approve H-3
+automatically once the ship gates hold.
 
 ## Run
 
@@ -46,7 +54,8 @@ legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
 legion-orch -c orchestrator.yaml start "Add a /health endpoint"   # or use the UI
 legion-orch -c orchestrator.yaml changes                            # list changes
 legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
-legion-orch -c orchestrator.yaml act <change-id> H-2 approve --approver miles --payload '{"subjects": ["REQ-1"]}'
+legion-orch -c orchestrator.yaml act <change-id> H-E1 approve --approver miles --payload '{"subjects": ["REQ-1"]}'
+legion-orch -c orchestrator.yaml act <change-id> H-E1 send_back --approver miles --payload '{"stage": "design", "feedback": "split T1"}'
 legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
   --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
 legion-orch -c orchestrator.yaml govern <change-id> reprovision --approver miles \
@@ -72,7 +81,7 @@ controller reads from its assets. Breadcrumbs show where you are (`Workloads ›
 change over server-sent events: `/api/changes/<id>/events` pushes the
 change's state, the change list and every change's attention items whenever they differ, and
 `/api/runs/<run>/log/events` an agent's log as it grows. The header's bell lists what **needs
-you** (gates, escalations and changes the ship check found not ready, across all changes) and the **inbox** (ended changes, retrospective
+you** (gates, escalations and H-3s waiting on their ship gates, across all changes) and the **inbox** (ended changes, retrospective
 reports); `notify:` sends the same items to ntfy, a webhook or a command, with reminders while
 they wait (WORKFLOW.md §2.2). `legion-orch attention` and `legion-orch digest --since 8h` show
 them on the command line. The H-2 and H-3 cards and the Gates tab show the **traceability
@@ -130,7 +139,7 @@ With an `environment:` section in the config, the planner also writes `plan/envi
 memory/vCPU/disk if non-default) and which role runs in which profile. Profiles are composed from
 a library in [`environments/`](environments/README.md): tools installed with **mise**, and network
 policies (credentialless endpoint lists) that become rules in the sandbox's own policy. The spec is critiqued with the
-plan and approved at **H-E1**. The controller then provisions it: `podman build` of one image per
+plan and approved at **H-E1**, with the plan. The controller then provisions it: `podman build` of one image per
 profile (`FROM sandbox.image`, or `sandbox.verifier_image` for the verifier) tagged by content and
 reused when identical, and the
 resources as `sandbox create --cpu` / `--memory` (disk, which has no flag, rendered from

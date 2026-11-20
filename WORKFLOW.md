@@ -13,7 +13,8 @@ this document and the code drift apart, or if a link below points at a missing a
 The model follows [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended):
 
 ```
-start (intake) -> plan (+critique, oracle) -> approve spec -> build (verify, review loop) -> accept -> ship
+Requirements (intake) ◆H-1 -> Plan [ Design (plan + critique) ◆H-E1 -> Oracle (oracle, preflight, baseline) ◆H-2 ]
+                     -> Delivery (build, verify, review loop; integration, release) ◆H-3 (its preconditions: the ship gates)
 ```
 
 …with the same product contract: **the controller refuses to call a change shippable until the
@@ -155,6 +156,7 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
 | `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
+| `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
 | `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
 | `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
 | `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
@@ -177,7 +179,7 @@ upload, and live agent logs). `tmp/` is wiped on start. The access-token signing
 in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
 restart the controller rebuilds every change from the store; runs that were live lost their agent
 process, so they are failed and escalated (no automatic retry), and interrupted verification,
-merge or ship steps are resumed.
+merges, provisioning and gate evaluations are resumed.
 
 ### 2.2 Attention and notifications
 
@@ -189,7 +191,7 @@ all use. Nothing here gates the workflow; it only says what is waiting.
 | --- | --- | --- |
 | `gate` | a human gate is `AWAITING_HUMAN` (H-1, H-E1, H-2, H-3) | yes |
 | `escalation` | a node is `ESCALATED` (its kind and reason) | yes |
-| `not_ready` | the ship check found the change `NOT_READY` (its unsatisfied gates and why); resolved when a re-run finds it `READY` | yes |
+| `not_ready` | H-3 is accepted (or automatic, at R0/R1) but waits on its preconditions: the ship gates not satisfied, and why; resolved when a recheck finds them all met | yes |
 | `change_ended` | the change is `READY` or `ABANDONED` | no (inbox) |
 | `retrospective` | the retrospective report is ready (each cycle is a new item) | no (inbox) |
 
@@ -263,13 +265,13 @@ scope_breadth, novelty_uncertainty, verification_quality`).
 | R2 | `approved_delta_spec`, `protected_oracle`, `task_contract`, `deterministic_verification`, `task_level_independent_review`, `integration_or_real_interface_checks`, `whole_change_acceptance_evidence` | oracle task with verification surfaces, reviewer per task (+security reviewer if `security`/`authorization` ≥ 2, +architecture reviewer if `scope_breadth`/`novelty_uncertainty` ≥ 2), integration verifier, H-3 |
 | R3 | `independent_baseline`, `approved_spec_and_oracle`, `protected_oracle`, `deterministic_verification`, `architecture_or_security_review`, `protected_acceptance_tests`, `security_or_e2e_evaluator`, `explicit_human_approval`, `release_observation_plan`, `rollback_or_forward_fix_evidence` | adds baseline, security and architecture reviewers on every task, release planner, and human attestations (§5.12) |
 
-Each gate is reported as `satisfied`, `unsatisfied` or `unevaluable` by the deterministic ship check
-(§5.11). Where each gate's evidence comes from:
+Each gate is reported as `satisfied`, `unsatisfied` or `unevaluable` by the deterministic ship check,
+which is H-3's precondition (§5.11). Where each gate's evidence comes from:
 
 | Gate | Evidence |
 | --- | --- |
-| `approved_delta_spec` | every delta spec `plan/specs/<REQ>.md` (and the plan) approved at H-2 against its current version |
-| `approved_spec_and_oracle` | all H-2 subjects approved and fresh, the **last** approval before the first build run (a blank repository's scaffold excepted, §5.3b) |
+| `approved_delta_spec` | every delta spec `plan/specs/<REQ>.md` (and the plan) approved at H-E1 against its current version |
+| `approved_spec_and_oracle` | every subject of H-E1 (plan, delta specs) and H-2 (oracle) approved and fresh, the **last** approval before the first build run (a blank repository's scaffold excepted, §5.3b) |
 | `protected_oracle` / `protected_acceptance_tests` | acceptance-test blobs unchanged since the oracle commit, except paths a human approved beforehand (G-PP1); acceptance commands pass at head |
 | `integration_or_real_interface_checks` | integration verifier PASS, oracle and **surface** commands pass at head, surface pins unchanged or re-affirmed (G-SF1) |
 | `independent_baseline` | human `independent-baseline` attestation (pass), recorded **before** the first build run (the scaffold excepted) |
@@ -285,37 +287,58 @@ listed in the readiness result.
 
 ## 4. State machines
 
-### 4.1 Change (stage) graph
+### 4.1 Stages, gates and steps
+
+A change's workflow is a tree of **stages**, each ending in a **gate**; the steps inside a stage
+run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
+environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/workflow_tree.py`):
 
 ```
- [map+intake] -> (H-1 accept requirements) -> [plan: planner -> critique --REWORK--> planner]
-       ^ revise                                                            | PASS
-       +-------------------------------------------------------------------+
-                         {(H-E1 approve sandbox environment, pinned) -> [provision]}
-                                                             |
-                                        <blank repository: [build scaffold]>
-                                                             |
-                                    R2+: [oracle] -> [preflight] -> R3: [baseline]
-                                                             |
-                                    (H-2 approve spec + oracle, pinned)
-                                                             |
-                     [build T1] [build T2] ... (DAG from plan/taskgraph.json)
-                                                             |
-                           R2+: [integration] , R3: [release]
-                                                             |
-                                    R2+: (H-3 accept change, pinned to head sha)
-                                                             |
-                                                         [ship check]
+Requirements   intake ─────────────────────────────────────────────── ◆ H-1 accept requirements & tier
+Plan                                                                 ◆ plan-approved (automatic)
+  Design       plan (planner ⇄ critic) ─────────────────────────────── ◆ H-E1 approve the plan
+  Oracle       {provision} <scaffold> [oracle preflight] [baseline] ─── ◆ H-2 approve the oracle
+Delivery       tasks (DAG of build:<id>) ─ [integration] ─ [release] ── ◆ H-3 accept the change
 ```
 
-Every box is a node in the **task graph** shown by the UI; human gates are nodes of kind `human`.
-Like a build task with its review, the plan node holds its own critique: it is `REVIEWING` while
-the critic judges the planner's documents and `ACCEPTED` only when the critic passes them.
-Steps in `{…}` exist only when the controller is configured with an `environment:` section
-(§5.3a); the planner then also writes the sandbox environment spec. Without it the graph is
-unchanged. The step in `<…>` exists only when the change starts from a blank repository (§5.3b).
-A late integration failure is fixed by a **fix round** (§5.10a): plan, critique, H-2, new build
-tasks and integration again, on top of the integration head.
+* **Per tier.** Stages without content are left out: R0/R1 have no oracle, preflight, baseline,
+  integration or release (an Oracle stage there holds only provision or the scaffold, and its gate
+  is automatic). `[…]` R2+, the baseline and release R3.
+* **Gates** are a human approval (or automatic) plus **preconditions** the controller evaluates:
+  H-2's at R3 is the `independent-baseline` attestation; H-3's are the tier's ship gates (§3,
+  §5.11) – at R0/R1 H-3 is automatic, so the change is accepted as soon as they hold. A gate node
+  is `AWAITING_HUMAN` while its gate waits.
+* `{…}` exists only with an `environment:` section (§5.3a); `<…>` only in a blank repository
+  (§5.3b). The build tasks are added once the critic passes the plan.
+
+**Who decides what.** The stage rules run in a pure **workflow core** (`legion_orch/workflow/flow/`,
+no I/O): which step starts when, gates, send-backs, fix rounds and the end. Within a step the
+engine decides: its phases (§5.6–5.9), rework cycles, escalations and their answers. The engine's
+nodes report to the core on every save – accepted completes the step, escalated escalates it,
+resolved resumes it – and the core's effects start, stop and evaluate (`engine/runtime.py`).
+
+**Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a), **send
+back**, **reject** (H-3) and, with preconditions, **recheck**. On an escalated step: **answer**,
+**retry**, **override** (build tasks) and **send back**. **Send back** (`send_back`, with a stage
+and feedback) is offered for every stage the node's work was built on – the stages enclosing it
+and, at each level, the stages before them – nearest first; the UI's names map onto it:
+
+| Action | Sends back |
+| --- | --- |
+| H-1 revise | Requirements |
+| H-E1 revise | Design (of its round) |
+| H-2 revise | Oracle (of its round) |
+| H-2 restart, **Restart plan** | Plan: every round goes |
+| an oracle, preflight or baseline escalation: **Revise the plan** (`revise_plan`) | Design |
+| an `integration_failed` escalation: **Plan a fix** (`plan_fix`) | Delivery: a fix round (§5.10a) |
+
+What sending a stage back does is the stage's **rework policy**. Requirements, Plan, Design and
+Oracle **start over**: everything in them, and every later stage built on them, goes back to
+pending and runs again, and the stage's first step gets the feedback. Delivery **appends a
+round**: its merged tasks stay, and a Round stage is inserted before integration (§5.10a). What a
+reset undoes outside the workflow is declared per step type (`on_reset`): the plan's restart
+re-initialises the integration branch, the oracle, the rounds, the run branches and the surface
+pins; provisioning's drops the environment approval and build.
 
 ### 4.2 Node status
 
@@ -324,7 +347,7 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
                        ^           |             |           |
                        +-- REWORK -+-------------+-----------+   (evidence-driven, cycle budget)
               any -> ESCALATED (human) -> READY | ACCEPTED (override) | FAILED
-              human nodes: PENDING -> AWAITING_HUMAN -> ACCEPTED
+              human nodes: PENDING -> AWAITING_HUMAN -> ACCEPTED (they show their gate)
               plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> ACCEPTED, REWORK on REWORK
 ```
 
@@ -467,7 +490,7 @@ overwrites a library entry.
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
 | G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that runs the setup (those that work with a commit), and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
-| H-E1 | After a critique PASS, a human approves the environment (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise → `plan` is reworked with the feedback attested and critiqued again. H-2 revise and a critique-budget rework drop the approval and the build. |
+| H-E1 | After a critique PASS, a human approves the plan (§5.5a) – with it the environment, its own subject (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise sends the Design back: `plan` is reworked with the feedback attested and critiqued again. Any send-back that resets `provision` drops the approval and the build. |
 
 ### `provision` – build the environment (controller, no agent)
 
@@ -552,20 +575,19 @@ configuration and a placeholder entry point – none of the requirements' behavi
 instructions fix every choice the acceptance tests depend on, and whose verification commands
 pass without them. The critic is told to check this.
 
-The scaffold is a build node (`build:<id>`) at every tier, but it depends on the plan (or
-`provision`) instead of H-2, and the oracle and H-2 depend on it:
+The scaffold is a build node (`build:<id>`) at every tier, but it opens the Oracle stage (after
+provisioning) instead of joining the other tasks in Delivery:
 
 ```
-plan (critique PASS) -> {H-E1 -> provision} -> build scaffold -> R2+: oracle -> R3: baseline -> H-2 -> other builds
+plan (critique PASS) -> H-E1 -> {provision} -> build scaffold -> R2+: oracle -> preflight -> R3: baseline -> H-2 -> other builds
 ```
 
-It is implemented, verified, reviewed and merged like any build task (§5.6–5.9); the critic's
-PASS releases it, with no human gate of its own. G-B1 does not apply to it, and it does not count
-as the first build run for `approved_spec_and_oracle` and `independent_baseline`. The oracle then
-works at the integration head that contains it, with the scaffold's commit in its context, and
-writes its tests for that project. At H-2 the plan subject (the task graph, scaffold included) is
-approved as usual, after the scaffold was built. **Restart plan** drops the scaffold with every
-other build node; a fix round never adds one.
+It is implemented, verified, reviewed and merged like any build task (§5.6–5.9) once H-E1 has
+approved the plan (task graph, scaffold included). G-B1 does not apply to it, and it does not
+count as the first build run for `approved_spec_and_oracle` and `independent_baseline`. The oracle
+then works at the integration head that contains it, with the scaffold's commit in its context,
+and writes its tests for that project. **Restart plan** resets the scaffold with every other build
+task (a new task graph replaces them); a fix round never adds one.
 
 ### 5.4 `oracle` (R2+) – protected acceptance tests
 
@@ -593,7 +615,7 @@ Results are recorded in `control/verification/preflight.json`; fix rounds run it
 
 | ID | Rule |
 | --- | --- |
-| G-PF1 | The repository's setup (`mise run setup`, when pinned) exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the setup – the plan's environment – or the plan), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the plan back. |
+| G-PF1 | The repository's setup (`mise run setup`, when pinned) exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the setup – the plan's environment – or the plan), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the Design back. While the oracle's author reworks, preflight waits for the oracle to be accepted again. |
 
 ### 5.5 `baseline` (R3) – independent baseline
 
@@ -609,19 +631,23 @@ change is built) and which failures were already there. The integration verifier
 | G-BL2 | The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's. |
 
 
-**Revise the plan from an escalation.** An oracle, preflight or baseline that escalates before H-2 (its
-commands cannot run, say) never reaches the H-2 card, where Request revision lives. Its
-escalation therefore also offers **Revise the plan** (`revise_plan`, `feedback` required): the
-plan goes back to the planner with the feedback exactly as Request revision does at H-2 – in
-round 1 the plan restarts (the oracle and baseline start over from it); in a fix round the round
-goes back, and the baseline reruns once the revised plan passes critique.
+**Revise the plan from an escalation.** An oracle, preflight or baseline that escalates (its
+commands cannot run, say) never reaches H-2. Its escalation therefore also offers **Revise the
+plan** (`revise_plan`, `feedback` required): it sends its round's Design back to the planner with
+the feedback – the plan is critiqued and approved at H-E1 again, and the oracle stage starts
+over from it (in round 1 with the integration branch, §4.1).
 
-### H-2 approve spec and oracle
+### 5.5a H-E1 approve the plan, H-2 approve the oracle
+
+Each gate's subjects are separate decisions, possibly by different approvers ∈ `decision_owners`,
+each pinned to the document versions approved. H-E1 approves the plan before the oracle is
+written or any task is built on it; H-2 approves the oracle before any task but the scaffold is
+built.
 
 | ID | Rule |
 | --- | --- |
-| H-2 | Separate decisions, possibly by different approvers ∈ `decision_owners`: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md`, and the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). The node completes when every subject is approved against current versions; at R3 it also requires an `independent-baseline` pass attestation, so the baseline is recorded before any build run. That attestation is decided with the subjects: approving the `independent-baseline` subject (or approving all) records it, citing `baseline/report.md` and the controller's own baseline verification (G-AT1); it is stale once the baseline runs again (a fix round). |
-| G-B1 | (dispatch of any build run but the scaffold, §5.3b) every H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
+| H-2 | **H-E1** subjects: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md` and, with an environment, the **environment** (§5.3a). **H-2** subject (R2+): the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). A gate completes when every one of its subjects is approved against current versions; at R3 H-2's precondition is an `independent-baseline` pass attestation, so the baseline is recorded before any build run. That attestation is decided with the oracle: approving the `independent-baseline` subject (or approving all) records it, citing `baseline/report.md` and the controller's own baseline verification (G-AT1); it is stale once the baseline runs again (a fix round). |
+| G-B1 | (dispatch of any build run but the scaffold, §5.3b) every H-E1 and H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
 
 The H-2 card shows the traceability matrix and its warnings (§2.3); a stale subject offers the
 diff since the version approved.
@@ -702,15 +728,18 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 | G-INT1 | Attested head equals the integration head; `data.verdict ∈ {PASS, FAIL}`; `data.results` covers every acceptance and integration command. The controller also re-runs the oracle commands deterministically at the head (G-V1 semantics). FAIL ⇒ escalate. |
 | G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
 | G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha and recommends a recovery strategy on its own line, `Strategy: rollback` or `Strategy: forward-fix` (with a `Rationale:`). |
-| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). The gates only a human attestation satisfies are rows on the card, attested with the acceptance (G-AT1). `rollback_or_forward_fix_evidence` shows the release planner's recommended strategy and rationale with `release/rollback.md`: confirming it attests `rollback-evidence` or `forward-fix-evidence` accordingly, citing the plan. `security_or_e2e_evaluator` is attested `pass` citing the evidence ticked (security reviews, the integration report, the controller's oracle run) or named. A row with no specific evidence behind it – any but a recommended recovery plan – may instead be attested `not_applicable` with a reason, recorded against the integration report (else the integration head); the gate itself is not waived. Every row has one **Attest** button that records it at once; the card's own action (Accept change, Re-run readiness check; at H-2 Approve all pending for the baseline) also records every row that is complete, and says which. A gate left unattested is reported as a warning: the ship check will be `NOT_READY` until one is recorded. |
+| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). The gates only a human attestation satisfies are rows on the card, attested with the acceptance (G-AT1). `rollback_or_forward_fix_evidence` shows the release planner's recommended strategy and rationale with `release/rollback.md`: confirming it attests `rollback-evidence` or `forward-fix-evidence` accordingly, citing the plan. `security_or_e2e_evaluator` is attested `pass` citing the evidence ticked (security reviews, the integration report, the controller's oracle run) or named. A row with no specific evidence behind it – any but a recommended recovery plan – may instead be attested `not_applicable` with a reason, recorded against the integration report (else the integration head); the gate itself is not waived. Every row has one **Attest** button that records it at once; the card's own action (Accept change, Re-check the ship gates; at H-2 Approve all pending for the baseline) also records every row that is complete, and says which. A gate left unattested is reported as a warning: H-3 waits on it (its preconditions, §5.11) until one is recorded. |
 
 ### 5.10a Fix rounds
 
 A late failure – the integration verifier reports FAIL, or the oracle commands fail at the head
 (`integration_failed`) – is fixed by **planning new work on top of the integration head**, as if
 the change started from existing code. Accepted tasks are never reopened: a round adds tasks.
-Round 1 is the original plan; each fix round `n ≥ 2` goes through plan, critique, H-2, build and
-integration again. A round **revises the plan documents in place**: it appends tasks to
+Round 1 is the original plan; each fix round `n ≥ 2` is a **Round stage** of Delivery, inserted
+before integration: its own Design (plan, critique ◆H-E1), its own Oracle stage (provision and the
+oracle only if the round changes them, preflight, baseline ◆H-2) and its new tasks; then
+integration runs again. Its nodes are suffixed `@n` (`plan@2`, `H-E1@2`, `oracle@2`, …); every
+earlier node keeps its record. A round **revises the plan documents in place**: it appends tasks to
 `plan/taskgraph.json` (and revises the spec, a delta spec, the oracle or the environment only
 when the fix needs it); the store's versions and the approval pins record what each round added.
 
@@ -719,9 +748,9 @@ when the fix needs it); the store's versions and the approval pins record what e
 can then still be answered, overridden at the gates or abandoned. The round is recorded in
 `control/rounds/<n>.json` (approver, comment, the head it starts from, and the failure: the
 integration run's report documents and the failed verification record). The integration node's
-escalation is cleared, its finished runs are superseded and their sandboxes deleted (after they
-reflect); it returns to `PENDING`, a new cycle, and waits for H-2 as well as for its tasks. The
-plan node starts the round (a new cycle) and H-2 returns to `PENDING`.
+escalation is cleared and Delivery is sent back: its policy appends the Round stage, integration
+returns to `PENDING` (its finished runs superseded, their sandboxes deleted after they reflect)
+and runs again after the round, a new cycle. The round's `plan@n` starts it.
 
 **Plan (planner, fix mode).** A fresh planner sandbox and session, at the integration head. Its
 assignment adds the round (`{{fix_round}}`: the failure, the comment, every task already built
@@ -747,29 +776,31 @@ record and the failure documents as context; feedback starts at the round. It re
 tasks must together address every failure it names, each saying which one it fixes and why. G-C1
 as usual (the latest plan documents); G-C2 counts the round's own cycles.
 
-**After the critique passes**, what the round changed runs again:
+**After the critique passes**, the round's H-E1 approves its plan: the revised task graph makes
+the `plan` subject stale, as does any revised spec or delta spec; unchanged subjects keep their
+approval. Then what the round changed runs again:
 
-* **Environment.** Unchanged ⇒ the H-E1 approval and the build stand. Changed (the latest
-  `plan/environment.json` is not the one H-E1 pinned) ⇒ H-E1 approves the new version and
-  `provision` builds it, as in round 1 (§5.3a).
-* **Oracle.** Unchanged ⇒ the oracle commit, protected paths and surface pins stand. Changed ⇒ the
-  `oracle` node takes a new cycle: the test engineer works at the integration head (its own branch
+* **Environment.** Unchanged ⇒ the build stands (`provision@n` passes at once). Changed (the
+  latest `plan/environment.json` is not the one H-E1 pinned) ⇒ the round's H-E1 approves the new
+  version with the plan and `provision@n` builds it, as in round 1 (§5.3a).
+* **Oracle.** Unchanged ⇒ `oracle@n` passes at once: the oracle commit, protected paths and
+  surface pins stand. Changed ⇒ the test engineer works at the integration head (its own branch
   for the round) and its commit must stay within the (new) protected paths (G-O1, G-O2); it is
   merged and becomes the oracle commit that G-INT2 and `protected_oracle` compare against, and its
-  approval at H-2 re-pins the surfaces.
+  approval at the round's H-2 re-pins the surfaces.
+* **Preflight** runs again at the round's head.
 * **Baseline (R3).** Every round runs the baseline again at the integration head, after the
   oracle (changed or not) and before the round's builds: it records what fails before the fix. A
   decision owner attests `independent-baseline` again: H-2 only completes with an attestation
   newer than the current baseline run.
 * **Build nodes** are added for the appended tasks (`build:<id>`, the round recorded on the node);
-  integration waits for them too.
+  they run after the round's H-2.
 
-**H-2 for the round.** The gate returns to `AWAITING_HUMAN` once the plan, oracle, baseline and
-environment are accepted. The revised task graph makes the `plan` subject stale, as does any
-revised spec, delta spec or oracle (G-B1); unchanged subjects keep their approval. **Revise**
-sends the round back to the planner with the feedback (its build nodes are withdrawn; earlier
-rounds stand). **Restart plan** (`restart`) restarts the whole plan as a round-1 revise does:
-every build node, the integration branch, the oracle and the surface pins start over.
+**H-2 for the round** waits once the round's oracle, preflight and baseline are accepted; a
+revised oracle makes the `oracle` subject stale (G-B1). **Revise** at the round's H-E1 sends the
+round's Design back to the planner with the feedback (the round's tasks are planned again;
+earlier rounds stand). **Restart plan** sends the Plan back: every round goes, and every build,
+the integration branch, the oracle and the surface pins start over.
 
 **Build.** The round's tasks are dispatched from the integration head as usual: implementer,
 verification, review, merge (§5.6–5.9). Earlier rounds' tasks stay as accepted.
@@ -784,16 +815,19 @@ only while every approval of their time was fresh (G-B1).
 
 **Not covered.** A FAIL from `release` (R3) does not offer a round.
 
-### 5.11 `ship` – deterministic readiness verdict
+### 5.11 Ship gates – H-3's preconditions
 
 The controller evaluates every gate of the tier (§3) against the store and the mirror, re-resolving
 every attestation it relies on, and writes `control/ship/readiness.json`. Verdict `READY` iff every
 gate is `satisfied` (or validly waived). It publishes nothing.
 
-The verdict is the change's status, and the node shows it: `ACCEPTED` when `READY`, `FAILED` when
-`NOT_READY`. A `NOT_READY` change needs you (§2.2, `not_ready`): the node's card lists the gates not
-satisfied and why, takes the attestations only a human can give (as at H-3), and re-runs the check
-(`recheck`, from either status) once the evidence is recorded.
+The ship gates are **H-3's preconditions**: evaluated when H-3 opens, when it is accepted, and on
+**recheck**; the gates H-3's own acceptance satisfies (`explicit_human_approval`,
+`whole_change_acceptance_evidence`) count only once it is given. H-3 completes – and the change
+is `READY` – when it is accepted (automatically at R0/R1) and every gate holds. Until then the
+change stays active and H-3 waits: once accepted (or at R0/R1) it needs you as `not_ready`
+(§2.2), and its card lists the gates not satisfied and why, takes the attestations only a human
+can give, and rechecks once the evidence is recorded.
 
 ### 5.12 Change-level governance (human)
 
@@ -830,7 +864,7 @@ or `retrospective.reflect_timeout_s` skips it, and the deletion goes ahead. Turn
 the judges (`reviewer`, `security`, `architecture`, `critic`): what a judge missed shows in later
 outcomes, not in its own account (see `findings.json` below).
 
-**Retrospective.** When a change ends (`READY`, `NOT_READY` or `ABANDONED`), node
+**Retrospective.** When a change ends (`READY` or `ABANDONED`), node
 `retrospective` is added and dispatched even though the change is no longer active – once the
 reflections of the sandboxes released at the end have finished, as they are part of its material.
 `retrospective.auto: false` leaves it to a decision owner, who can also ask for another at any time
@@ -866,8 +900,8 @@ What a change leaves in the hub and on the controller's host, and when it goes:
 | What | Goes |
 | --- | --- |
 | a run branch (`legion/<change>/build-<task>`, `…/oracle[-rN]`) | when its node is accepted: the merge made its commit part of the integration history, and the evidence ref keeps every candidate. **Restart plan** removes all of the change's run branches (a restarted task of the same name must not continue the old plan's commits). |
-| leftover run branches and the change's environment images (local `podman` images labelled with the change) | once, when the change has ended (`READY`, `NOT_READY`, `ABANDONED`), nothing of it is running and its retrospective is done (`change.cleaned_at`). A run after that – a retrospective asked for again – uses the default image. Images pushed to `environment.registry` stay: a shared registry is the operator's to clean. |
-| `legion/<change>/integration` (the deliverable: what the ship check judged) and `refs/legion/evidence/<run>` (every reported candidate, so reviews' and reports' `git:` attestations resolve) | when a human **prunes** the ended change (change action `prune`, `legion-orch prune <change>`) after taking the integration branch. The change's records stay; its `git:` attestations no longer resolve, and the ship check can no longer be re-run. |
+| leftover run branches and the change's environment images (local `podman` images labelled with the change) | once, when the change has ended (`READY` or `ABANDONED`), nothing of it is running and its retrospective is done (`change.cleaned_at`). A run after that – a retrospective asked for again – uses the default image. Images pushed to `environment.registry` stay: a shared registry is the operator's to clean. |
+| `legion/<change>/integration` (the deliverable: what the ship check judged) and `refs/legion/evidence/<run>` (every reported candidate, so reviews' and reports' `git:` attestations resolve) | when a human **prunes** the ended change (change action `prune`, `legion-orch prune <change>`) after taking the integration branch. The change's records stay; its `git:` attestations no longer resolve, and the ship gates can no longer be rechecked. |
 
 The controller never publishes: merging the integration branch into the repository's own branches
 is the people's step, after which `prune` tidies the hub.
