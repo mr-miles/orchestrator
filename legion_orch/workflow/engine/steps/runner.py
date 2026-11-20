@@ -84,8 +84,6 @@ class StepRunner:
         self.states = NodeStates()
         self.runtime: StepEvents = None  # type: ignore[assignment]   # set once it exists
         self._steps: dict[str, StepDispatcher] = {}   # node -> its step's dispatcher
-        # (node, cycle) -> role -> a judge's escalation, held until the panel's others finish
-        self._held: dict[tuple[str, int], dict[str, Escalate]] = {}
         self.waiting = 0                     # phase tasks waiting on the change's state
 
     @staticmethod
@@ -255,27 +253,19 @@ class StepRunner:
     def dispatcher(self, node: Node) -> StepDispatcher:
         """The step's dispatcher: the dispatcher with the step's reservation (taken now; it
         holds a slot from the first work on)."""
-        work = self._steps.get(node.id)
-        if work is None or work.released:
-            work = self._steps[node.id] = StepDispatcher(self.ctx.dispatcher,
+        dispatch = self._steps.get(node.id)
+        if dispatch is None or dispatch.released:
+            dispatch = self._steps[node.id] = StepDispatcher(self.ctx.dispatcher,
                                                          self.ctx.dispatcher.reserve())
-        return work
-
-    def held(self, node: Node, clear: bool = False) -> dict[str, Escalate]:
-        """The escalations a phase holds for the node's cycle (the panel: until every judge has
-        finished); ``clear``: given up."""
-        key = (node.id, node.cycle)
-        return self._held.pop(key, {}) if clear else self._held.setdefault(key, {})
+        return dispatch
 
     def release(self, node: Node) -> None:
         """The step is over (done, sent back, escalated, ended): its reservation goes back, its
         work still waiting is withdrawn, and its sandboxes are stopped once nothing live uses
         them (deleted ones aside: a judge's, a verifier's, an accepted run's)."""
-        work = self._steps.pop(node.id, None)
-        if work is not None:
-            work.reservation.release()
-        for key in [k for k in self._held if k[0] == node.id]:
-            del self._held[key]
+        dispatch = self._steps.pop(node.id, None)
+        if dispatch is not None:
+            dispatch.reservation.release()
         self.lifecycle.sandboxes.suspend_when_idle(self._sandboxes(node))
 
     def _sandboxes(self, node: Node) -> set[str]:
@@ -297,27 +287,27 @@ class StepRunner:
         """The node's step may work: the change is active (or it runs after the end)."""
         return self.c.change.status == "ACTIVE" or step_for(node).runs_after_end
 
-    def stale(self, node: Node, work: StepDispatcher, phase: Phase) -> bool:
+    def stale(self, node: Node, dispatch: StepDispatcher, phase: Phase) -> bool:
         """The work's step or phase is over: its result counts no more."""
-        return work.released or self.c.nodes.get(node.id) is not node \
+        return dispatch.released or self.c.nodes.get(node.id) is not node \
             or self.step(node).current(node) is not phase or not self.active(node)
 
     def waits_hold(self, node: Node) -> bool:
         """The step's waits (its ``dispatch_when``) for its first work."""
         return all(w.holds(self, node) for w in self.step(node).dispatch_when)
 
-    async def wait_until(self, node: Node, work: StepDispatcher,
+    async def wait_until(self, node: Node, dispatch: StepDispatcher,
                          ready: Callable[[], bool]) -> bool:
         """Await ``ready`` – checked now and at each save of the change; while it does not
         hold, the step's reservation holds no slot. False: the step ended first (released, or
         the change ended)."""
         phase = self.step(node).current(node)
         while True:
-            if phase is None or self.stale(node, work, phase):
+            if phase is None or self.stale(node, dispatch, phase):
                 return False
             if ready():
                 return True
-            work.idle()                          # a waiting step holds no slot
+            dispatch.idle()                      # a waiting step holds no slot
             self.waiting += 1
             try:
                 await self.c.next_save()

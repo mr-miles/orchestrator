@@ -724,8 +724,8 @@ The architecture reviewer uses skill `architecture-checklist` and writes
 
 The panel's members run in parallel and the panel decides once **every** member has finished its
 turn. A member that fails, reports BLOCKED or cannot be dispatched does not escalate the node
-while the others still work: its escalation is held until they finish, then the node escalates
-with each one (a retry dispatches only the members without a review at the cycle).
+while the others still work: the panel's one task runs every member and collates their results
+once all have finished, then the node escalates with each escalation (a retry dispatches only the members without a review at the cycle).
 
 FAIL ⇒ node `REWORK`: the implementer run is re-dispatched **in the same sandbox** with all
 HIGH findings attested as feedback (cycle + 1).

@@ -146,7 +146,7 @@ def node(f: Flow, kind: NodeKind, **kw) -> Node:
     return n
 
 
-def report(f: Flow, n: Node, result=None, role: str = "implementer"):
+async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     """An agent's turn ended after an accepted report in the node's current phase, with its
     handler's result (what the agent's work returns to its phase)."""
     from legion_orch.workflow.engine.services.agent_runs import Ended
@@ -156,7 +156,12 @@ def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     f.ce.runs[run.id] = run
     rt = f.ce._runner
     phase = rt.step(n).current(n)
-    phase.conclude(rt, n, phase.ended(rt, n, Ended(run, Ok() if result is None else result)))
+    ended = Ended(run, Ok() if result is None else result)
+    if isinstance(phase, Panel):                         # a judge's: collated by the panel
+        phase.judged(rt, ended)
+        phase.conclude(rt, n, await phase.result(rt, n, {role: ended}))
+    else:
+        phase.conclude(rt, n, phase.ended(rt, n, ended))
     return run
 
 
@@ -176,11 +181,11 @@ async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f
     rt, n = f.ce._runner, node(f, BUILD)
     f.ce.change.panel = ["reviewer"]
     started = capture_work(f)
-    report(f, n)                                         # the implementer's report
+    await report(f, n)                                         # the implementer's report
     assert n.status == VERIFYING and started == ["Verify"]
     rt.advance(n, rt.step(n).current(n))                 # verification passed
     assert n.status == REVIEWING and started[-1] == "Panel"     # its judge's run
-    judge = report(f, n, result=None, role="reviewer")   # its handler records the review only
+    judge = await report(f, n, result=None, role="reviewer")   # its handler records the review only
     assert n.status == REVIEWING                         # the panel decides: no review yet
     assert judge.status == "ACCEPTED" and judge.concluded
     assert judge.sandbox in f.ce._sandboxes.retiring     # the judge's sandbox goes
@@ -202,7 +207,7 @@ async def test_an_empty_panel_is_passed_straight_to_the_merge(f: Flow):
 @scenario()
 async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
     n = node(f, NodeKind.RELEASE)
-    report(f, n, role="release")
+    await report(f, n, role="release")
     assert n.status == ACCEPTED
 
 
@@ -212,11 +217,11 @@ async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
     from legion_orch.workflow.model import Feedback, Resume
     capture_work(f)
     n = node(f, NodeKind.INTEGRATION)
-    report(f, n, Escalate("integration_failed", "FAIL", Resume.READY, run="r1"), "integration")
+    await report(f, n, Escalate("integration_failed", "FAIL", Resume.READY, run="r1"), "integration")
     assert n.status == ESCALATED and n.escalation.run == "r1"
     p = node(f, PLAN, status=REVIEWING)                  # the critic's verdict at the panel
     fb = [Feedback(cycle=1, source="critique", text="thin")]
-    report(f, p, Rework(fb, "critique", budget_checked=True), "critic")
+    await report(f, p, Rework(fb, "critique", budget_checked=True), "critic")
     assert (p.status, p.cycle, p.feedback) == (REWORK, 2, fb)
 
 
@@ -300,15 +305,16 @@ def ver(*rcs: int, setup: int | None = None) -> Verification:
     return Verification(sha=CAND, ok=all(r.exit_code == 0 for r in results), results=results)
 
 
-def conclude(f: Flow, n: Node, res: Verification) -> None:
-    phase = step_for(n).phase(Verify)
-    phase.conclude(f.ce._runner, n, phase.verified(f.ce._runner, n, res, "att"))
+async def conclude(f: Flow, n: Node, res: Verification) -> None:
+    """The verification's result, as its phase's work hands it over."""
+    phase, rt = step_for(n).phase(Verify), f.ce._runner
+    phase.conclude(rt, n, await phase.result(rt, n, res))
 
 
 @scenario()
 async def test_a_failing_integration_escalates_instead_of_reworking(f: Flow):
     n = node(f, INTEGRATION, status=VERIFYING)
-    conclude(f, n, ver(1, 0, 2))
+    await conclude(f, n, ver(1, 0, 2))
     assert n.status == ESCALATED and n.escalation.kind == "integration_failed"
     assert "2 oracle command(s) failed" in n.escalation.reason and n.cycle == 1
 
@@ -316,7 +322,7 @@ async def test_a_failing_integration_escalates_instead_of_reworking(f: Flow):
 @scenario()
 async def test_a_task_that_fails_verification_is_reworked(f: Flow):
     n = node(f, BUILD, status=VERIFYING)
-    conclude(f, n, ver(1))
+    await conclude(f, n, ver(1))
     assert (n.status, n.cycle) == (REWORK, 2)
 
 
@@ -325,7 +331,7 @@ async def test_a_baseline_and_a_preflight_pass_with_expected_failures_and_note_p
     f.ce.change.oracle = ORACLE_DOC
     for kind in (BASELINE, PREFLIGHT):
         n = node(f, kind, status=VERIFYING)
-        conclude(f, n, ver(1, 0))
+        await conclude(f, n, ver(1, 0))
         assert n.status == ACCEPTED, kind
     timeline = "\n".join(f.ce._timeline)
     assert "acceptance command `cmd1` already passes before any build" in timeline
@@ -351,7 +357,7 @@ async def test_a_preflight_setup_failure_redoes_its_rounds_oracle(f: Flow):
 @scenario()
 async def test_a_baseline_setup_failure_escalates(f: Flow):
     n = node(f, BASELINE, status=VERIFYING)
-    conclude(f, n, ver(setup=1))
+    await conclude(f, n, ver(setup=1))
     assert n.status == ESCALATED and n.escalation.kind == "setup_failed"
 
 
@@ -384,8 +390,9 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
     phase = step_for(n).phases[0]
     if answered is None:
         rt.phase(n, READY)
-    work = rt.dispatcher(n)
-    await phase.task(rt, n, work, bool(answered))
+    if answered:
+        n.approved = True                                # what resuming answered does
+    await phase.task(rt, n, rt.dispatcher(n))
 
 
 @scenario()

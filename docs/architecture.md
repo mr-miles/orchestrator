@@ -296,7 +296,7 @@ means – the one method each phase answers with a `PhaseResult`:
 | Phase | ready | perform | result |
 | --- | --- | --- | --- |
 | Produce | its waits hold, its environment built | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
-| Panel (per judge) | the judge still wanted, its environment built | the judge's work | none until every judge has finished, then `decide` (or the held escalations) |
+| Panel | at once | every judge still to review, in parallel (each once its environment is built) | their escalations as one, or `decide` |
 | Verify | at the head: its waits hold; the verifier built | the verification | recorded, then `interpret` and its policies |
 | Merge | at once | – | the guards and the merge, at once under the lock |
 | BuildImages | its waits hold | the provisioner's build and setup check | the provisioner's |
@@ -327,7 +327,6 @@ classDiagram
         override(node)
         retry(node)
         dispatcher(node) StepDispatcher
-        held(node) escalations
         run(node, work)
         wait_until(node, ready)
         phase(node, status)
@@ -340,11 +339,11 @@ classDiagram
         start(runner, node)
         resume(runner, node, answered)
         recover(runner, node)
-        task(runner, node, work, job)
-        ready(node, job) bool
-        begin(node, job)
-        perform(node, work, job)
-        result(node, done, job) PhaseResult
+        task(runner, node, dispatch)
+        ready(node) bool
+        begin(node)
+        perform(node, dispatch)
+        result(node, done) PhaseResult
         conclude(runner, node, result)
     }
     class Produce {
@@ -352,7 +351,7 @@ classDiagram
     }
     class RoleWork {
         role
-        perform(runner, node, work, phase) Ended
+        perform(runner, node, dispatch, phase) Ended
     }
     class Verify {
         commands: CommandSource
@@ -366,7 +365,7 @@ classDiagram
     class Panel {
         judges: JudgeSource
         decides
-        outstanding(node, held) roles
+        perform: its judges, gathered
         decide(node) PhaseResult
     }
     class Merge {
