@@ -70,7 +70,7 @@ class ChangeEngine(ChangeCore):
                                   self._provisioner, self._scheduler)
         self._acceptance.runner = self._scheduler.runner = self._reports.runner = self._runner
         self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
-        self._gates.flow = self._scheduler.flow = self._flow
+        self._gates.flow = self._flow
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:

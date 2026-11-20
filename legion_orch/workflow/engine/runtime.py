@@ -173,12 +173,6 @@ class FlowRuntime:
     def status(self, nid: str) -> str | None:
         return self.flow.status(nid) if nid in self.flow.state else None
 
-    def should_start(self, node: Node) -> bool:
-        """The node waits to be started by the scheduler: its step is running in the core – or
-        done there, and the engine runs it again within the step (reprovisioning)."""
-        return node.status == PENDING and self.status(node.id) in (StepStatus.RUNNING,
-                                                                     StepStatus.DONE)
-
     def actions(self, nid: str) -> list[str]:
         return self.flow.actions(nid) if nid in self.flow.nodes or nid == CHANGE else []
 
@@ -376,13 +370,16 @@ class FlowRuntime:
             _, atts = self._feedback.pop(text, ("human", []))
             node.feedback.append(Feedback(cycle=node.cycle, source="feedback", text=text,
                                           attestations=atts))
-        # an agent that ran before continues in its kept session (REWORK); anything else waits
-        # for the scheduler to start it (PENDING)
-        node.status = REWORK if node.runs and self.runner.step(node).role else PENDING
-        if node.status == PENDING and node.kind == "oracle" and node.round > 1:
+        if node.runs and self.runner.step(node).role:
+            node.status = REWORK        # its agent continues, in its kept session
+            return
+        node.status = PENDING
+        if node.kind == "oracle" and node.round > 1:
             self._reuse_oracle(node)
-        elif node.status == PENDING and node.kind == "provision" and node.round > 1:
+        elif node.kind == "provision" and node.round > 1:
             self._reuse_environment(node)
+        if node.status == PENDING:
+            self.runner.enter(node)     # its first phase; the scheduler starts its work
 
     def _reuse_oracle(self, node: Node) -> None:
         """A fix round's oracle runs only if the round changed ``plan/oracle.json``."""

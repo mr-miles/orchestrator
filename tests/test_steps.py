@@ -89,10 +89,9 @@ def test_verifications_differ_only_in_their_policies():
 
 
 def test_waits_and_resume_points():
-    assert {k: type(s.promote_when[0]) for k, s in STEP_TYPES.items() if s.promote_when} == {
-        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
     assert {k: type(s.dispatch_when[0]) for k, s in STEP_TYPES.items() if s.dispatch_when} == {
-        BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone}
+        BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone,
+        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
     assert [k for k, s in STEP_TYPES.items() if s.runs_after_end] == [NodeKind.RETROSPECTIVE]
     assert {k for k, s in STEP_TYPES.items() if s.rework_resume == Resume.REWORK} == {BUILD}
     assert {k for k, s in STEP_TYPES.items() if s.judges_head} == {BASELINE, INTEGRATION,
@@ -217,15 +216,31 @@ async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
 
 
 @scenario()
-async def test_promotion_enters_the_first_phase(f: Flow):
+async def test_entering_a_step_sets_its_first_phase_and_dispatch_starts_its_work(f: Flow):
     rt = f.ce._runner
-    capture_spawns(f)
+    spawned = capture_spawns(f)
     gate, pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (HUMAN, PREFLIGHT, BUILD))
     for n in (gate, pre, task):
-        rt.promote(n)
-    assert gate.status == AWAITING_HUMAN
+        rt.enter(n)
+    assert gate.status == AWAITING_HUMAN and task.status == READY
+    assert pre.status == READY and spawned == []           # its verification waits its turn
+    f.ce.nodes[pre.id] = pre
+    async with f.ce.lock:
+        assert rt.dispatch(pre, 4) == []
     assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
-    assert task.status == READY
+    assert spawned == ["Acceptance.verify_node"]
+
+
+@scenario()
+async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
+    rt = f.ce._runner
+    capture_spawns(f)
+    oracle = node(f, ORACLE, id="oracle", status=REWORK)        # sent back by its preflight
+    pre = node(f, PREFLIGHT, status=READY)
+    assert rt.dispatch(pre, 4) == [] and pre.status == READY    # OracleAccepted does not hold
+    oracle.status = ACCEPTED
+    rt.dispatch(pre, 4)
+    assert pre.status == VERIFYING
 
 
 @scenario()
@@ -287,7 +302,7 @@ async def test_a_preflight_setup_failure_goes_back_to_the_oracle(f: Flow):
     oracle = node(f, ORACLE, id=ORACLE, status=ACCEPTED)
     n = node(f, PREFLIGHT, status=VERIFYING)
     conclude(f, n, ver(setup=1))
-    assert (oracle.status, oracle.cycle, n.status) == (REWORK, 2, PENDING)
+    assert (oracle.status, oracle.cycle, n.status) == (REWORK, 2, READY)   # waits for it
     assert "BLOCKER (preflight)" in oracle.feedback[-1].text
     # without a cycle left, a human decides
     n.status, oracle.cycle = VERIFYING, f.cfg.limits.review_max_cycles

@@ -109,16 +109,15 @@ async def test_a_send_back_restarts_the_stage_with_its_feedback(f: Flow):
 
 
 @scenario()
-async def test_an_engine_rerun_of_a_done_step_is_started_by_the_scheduler(f: Flow):
-    """Within a step the engine may run its node again (reprovisioning); the core, which
-    sees the step done, is not asked."""
+async def test_a_started_step_is_in_its_first_phase_before_any_tick(f: Flow):
+    """The core starting a step enters its first phase at once (the runtime, through the step
+    runner); the scheduler only starts the work, when there is room."""
     await f.intake()
-    node = f.ce.nodes["intake"]
-    async with f.ce.lock:
-        node.status = PENDING
-        assert f.ce.workflow.should_start(node)              # done in the core, pending here
-        f.ce.nodes["H-1"].status = PENDING
-        assert not f.ce.workflow.should_start(f.ce.nodes["H-1"])    # a gate is never started
+    await f.ce.human_action("H-1", "accept", "miles", {})     # no settle: no tick has run
+    assert core(f, "plan") == "running" and f.status("plan") == "READY"
+    assert not f.runs("plan")
+    await f.settle()
+    assert f.runs("plan") and f.status("plan") == "RUNNING"
 
 
 # ---------------------------------------------------------------------------- persistence

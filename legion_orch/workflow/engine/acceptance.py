@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from ..model import (
     ORACLE,
-    PENDING,
     REWORK,
     VERIFYING,
     CommandResult,
@@ -78,7 +77,7 @@ class Acceptance:
                      "it as missing_decision."))
             oracle.candidate_sha = None
             oracle.status = REWORK
-            node.status = PENDING        # runs again once the oracle is accepted
+            self.runner.enter(node)      # runs again once the oracle is accepted (its wait)
             c.event("rework", f"preflight: {what}: oracle rework cycle {oracle.cycle}", oracle.id)
             return
         self.ctx.apply(node, escalation)
