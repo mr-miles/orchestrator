@@ -5,7 +5,7 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.workflow.engine.sandboxes.plan import JUDGE
-from legion_orch.workflow.engine.steps.phases import Ok, Panel, Verify
+from legion_orch.workflow.engine.steps.phases import ActivePhase, Ok, Panel, Verify
 from legion_orch.workflow.engine.steps.step_types import (
     STEP_TYPES,
     EnvironmentQuiescent,
@@ -111,21 +111,25 @@ async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Fl
 async def test_each_verification_resolves_its_commands(f: Flow):
     f.ce.change.oracle = ORACLE_DOC
     n = Node(id="x", kind=BASELINE, title="x")
-    cmds = {k: STEP_TYPES[k].phase(Verify).commands_for(f.ce, n)
+    cmds = {k: f.ce._runner.of(n).at(STEP_TYPES[k].phase(Verify)).commands()
             for k in (BASELINE, PREFLIGHT, INTEGRATION)}
     assert cmds[BASELINE] == ("bun test acc", "bun install")
     assert cmds[PREFLIGHT] == ("bun test acc",)
     assert cmds[INTEGRATION][:2] == ("bun test acc", "bun install")
 
 
-def test_verification_is_recorded_per_task_cycle_or_per_node():
+@scenario()
+async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
     class T:
         id = "T3"
     build = Node(id="T3", kind=BUILD, title="t", cycle=2)
     build.task = T()  # type: ignore[assignment]
-    assert Verify.record(build) == ("tasks/T3/verification.json", "2")
+
+    def record(n: Node) -> tuple[str, str]:
+        return f.ce._runner.of(n).at(step_for(n).phase(Verify)).record()
+    assert record(build) == ("tasks/T3/verification.json", "2")
     for kind in (BASELINE, PREFLIGHT, INTEGRATION):
-        path, key = Verify.record(Node(id=f"{kind}-node", kind=kind, title="x"))
+        path, key = record(Node(id=f"{kind}-node", kind=kind, title="x"))
         assert key == str(kind) and path.startswith("control/verification/")
 
 
@@ -259,7 +263,7 @@ async def test_a_waiting_step_goes_on_at_a_save_once_its_waits_hold(f: Flow):
     rt = f.ce._runner
     n = node(f, NodeKind.RELEASE, status=READY)
     step, holds = rt.of(n), [False]
-    phase = step_for(n).phases[0].at(step, step.dispatch)
+    phase = ActivePhase.of(step, step_for(n).phases[0], step.dispatch)
     waiting = asyncio.ensure_future(step.wait_until(phase, lambda: holds[0]))
     await asyncio.sleep(0)
     assert rt.waiting == 1 and not waiting.done()
@@ -401,7 +405,7 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
     if answered:
         n.approved = True                                # what resuming answered does
     step = rt.of(n)
-    await phase.at(step, step.dispatch).task()
+    await ActivePhase.of(step, phase, step.dispatch).task()
 
 
 @scenario()

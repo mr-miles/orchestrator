@@ -240,7 +240,7 @@ class ActiveStep:
     def at(self, phase: Phase) -> ActivePhase:
         """``phase`` (as its step type declares it) as it runs for this step: the only way a
         phase of a node is reached."""
-        return phase.at(self)
+        return ActivePhase.of(self, phase)
 
     def current(self) -> ActivePhase | None:
         """Its current phase, as it runs (None: pending, accepted or waiting)."""
@@ -251,7 +251,7 @@ class ActiveStep:
             work: Callable[[ActivePhase], Awaitable[None]] | None = None) -> None:
         """Start a phase's work as a task, with its dispatcher: its :meth:`~.ActivePhase.task`,
         or ``work``."""
-        bound = phase.phase.at(self, self.dispatch)
+        bound = ActivePhase.of(self, phase.phase, self.dispatch)
 
         async def task() -> None:
             try:
@@ -263,7 +263,7 @@ class ActiveStep:
     def judges(self) -> tuple[str, ...]:
         """Its panel's judges, for this change (none: it has no panel)."""
         panel = self.type.phase(Panel)
-        return panel.roles(self.c) if isinstance(panel, Panel) else ()
+        return self.at(panel).roles() if isinstance(panel, Panel) else ()   # type: ignore[attr-defined]
 
     def may_work(self) -> bool:
         """The change is active (or the step runs after the end)."""

@@ -7,6 +7,7 @@ from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import ImageRecipe, Tool
 from legion_orch.workflow.engine.steps.phases import (
+    ActivePhase,
     Escalate,
     Merge,
     Ok,
@@ -14,6 +15,7 @@ from legion_orch.workflow.engine.steps.phases import (
     PhaseContext,
     Rework,
     Verify,
+    verification,
 )
 from legion_orch.workflow.model import (
     BUILD,
@@ -108,7 +110,7 @@ def test_a_failed_setup_in_a_build_fails_like_any_command():
 @scenario()
 async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
     before = list(f.runner.created)
-    res = await Verify(()).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
+    res = await verification(ctx(f), "T9", SHA, (), dispatch=f.ce.svc.dispatcher)
     assert res.infra_error == "no commands to verify" and f.runner.created == before
 
 
@@ -116,11 +118,11 @@ async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
 async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: Flow):
     from legion_orch.workflow.model import SetupPin
     f.ce.change.setup_pin = SetupPin(blob="b" * 40, source="base")
-    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
+    res = await verification(ctx(f), "T9", SHA, ("first", "second"), dispatch=f.ce.svc.dispatcher)
     assert [r.command for r in res.results][1:] == ["first", "second"] and res.ok
     assert res.results[0].setup
     f.runner.commands["b" * 40] = (1, "no setup task")
-    res = await Verify(("first", "second")).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
+    res = await verification(ctx(f), "T9", SHA, ("first", "second"), dispatch=f.ce.svc.dispatcher)
     assert len(res.results) == 1 and not res.ok
     assert len(f.runner.deleted) == 2                        # every verifier is removed
 
@@ -129,14 +131,14 @@ async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: F
 async def test_a_taken_verifier_name_is_replaced(f: Flow):
     before = list(f.runner.created)
     f.runner.clash = 1
-    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
+    res = await verification(ctx(f), "T9", SHA, ("pytest",), dispatch=f.ce.svc.dispatcher)
     assert res.ok and f.runner.created == [*before, res.sandbox]
 
 
 @scenario()
 async def test_a_verifier_that_cannot_start_is_reported_not_raised(f: Flow):
     f.runner.fail_create = "verifier"
-    res = await Verify(("pytest",)).verification(ctx(f), "T9", SHA, dispatch=f.ce.svc.dispatcher)
+    res = await verification(ctx(f), "T9", SHA, ("pytest",), dispatch=f.ce.svc.dispatcher)
     assert not res.ok and "quota" in res.infra_error
 
 
@@ -151,33 +153,41 @@ def judged(node: Node, role: str, verdict: Verdict, *, sha: str = CAND, findings
         verdict=verdict, sha=sha, run=f"r-{role}", findings=list(findings), doc=f"file:{role}@1")
 
 
-def test_the_panel_waits_for_every_judge():
-    node = Node(id="T9", kind=BUILD, title="t", candidate_sha=CAND)
-    panel = Panel(("reviewer", "security"))
+def reviewing(f: Flow, node: Node, *roles: str) -> ActivePhase:
+    """A panel of ``roles`` as it runs for ``node``."""
+    return f.ce._runner.of(node).at(Panel(roles))
+
+
+@scenario()
+async def test_the_panel_waits_for_every_judge(f: Flow):
+    node = task(f)
+    panel = reviewing(f, node, "reviewer", "security")
     judged(node, "reviewer", Verdict.PASS)
-    assert panel.missing(node) == ["security"] and panel.decide(node) is None
+    assert panel.missing() == ["security"] and panel.decide() is None
 
 
-def test_a_unanimous_pass_at_the_candidate_is_ok():
-    node = Node(id="T9", kind=BUILD, title="t", candidate_sha=CAND)
+@scenario()
+async def test_a_unanimous_pass_at_the_candidate_is_ok(f: Flow):
+    node = task(f)
     judged(node, "reviewer", Verdict.PASS)
     judged(node, "security", Verdict.PASS)
-    assert Panel(("reviewer", "security")).decide(node) == Ok()
+    assert reviewing(f, node, "reviewer", "security").decide() == Ok()
     judged(node, "security", Verdict.PASS, sha=SHA)          # judged an older candidate
-    assert isinstance(Panel(("reviewer", "security")).decide(node), Rework)
+    assert isinstance(reviewing(f, node, "reviewer", "security").decide(), Rework)
 
 
-def test_high_findings_are_rework_and_repeated_ones_escalate():
-    node = Node(id="T9", kind=BUILD, title="t", candidate_sha=CAND)
-    panel = Panel(("reviewer",))
+@scenario()
+async def test_high_findings_are_rework_and_repeated_ones_escalate(f: Flow):
+    node = task(f)
+    panel = reviewing(f, node, "reviewer")
     judged(node, "reviewer", Verdict.FAIL, findings=[finding("Unsafe eval")])
-    first = panel.decide(node)
+    first = panel.decide()
     assert isinstance(first, Rework) and first.source == "review"
     assert "Unsafe eval" in first.feedback[0].text
     assert first.feedback[-1].attestations == ["file:reviewer@1"]
     node.cycle = 2
     judged(node, "reviewer", Verdict.FAIL, findings=[finding("unsafe eval ")])
-    second = panel.decide(node)
+    second = panel.decide()
     assert isinstance(second, Escalate) and second.kind == "stale_loop"
     assert second.resume == Resume.REWORK_CYCLE and second.feedback
 
@@ -213,11 +223,16 @@ async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
 
 
 # ---------------------------------------------------------------------------- Merge
+def merging(f: Flow, node: Node) -> ActivePhase:
+    return f.ce._runner.of(node).at(Merge())
+
+
 @scenario()
 async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow):
     node = task(f)
     judged(node, "reviewer", Verdict.PASS, sha=SHA)
-    result = await Merge().run(ctx(f), node, ("reviewer", "security"))
+    f.ce.change.panel = ["reviewer", "security"]           # the build's judges
+    result = await merging(f, node).merge()
     assert isinstance(result, Escalate) and result.kind == "accept_guard"
     assert result.question.split("; ") == [
         "G-A1: no passing deterministic verification at candidate",
@@ -229,7 +244,8 @@ async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow)
 async def test_an_override_waives_the_panel_but_not_verification(f: Flow):
     from legion_orch.workflow.model import Override
     node = task(f, override=Override(approver="miles", reason="trusted", sha=CAND))
-    result = await Merge().run(ctx(f), node, ("reviewer",))
+    f.ce.change.panel = ["reviewer"]
+    result = await merging(f, node).merge()
     assert result.question == "G-A1: no passing deterministic verification at candidate"
 
 
@@ -238,7 +254,8 @@ async def test_merge_stops_when_the_integration_head_moved(f: Flow):
     node = task(f)
     node.verification["1"] = Verification(sha=CAND, ok=True)
     f.ce.change.integration_head = SHA                     # not where the branch is
-    result = await Merge().run(ctx(f), node, ())
+    f.ce.change.panel = []
+    result = await merging(f, node).merge()
     assert isinstance(result, Escalate) and result.kind == "head_moved"
     assert result.resume == Resume.MERGING
 
