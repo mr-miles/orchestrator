@@ -1,18 +1,12 @@
 """Acceptance: verification, the review panel's decision, rework, merge and ship readiness."""
 from __future__ import annotations
 
-from .. import governance
 from ..model import (
     ACCEPTED,
-    BASELINE,
-    BUILD,
     FAILED,
-    INTEGRATION,
     MERGING,
     ORACLE,
     PENDING,
-    PREFLIGHT,
-    REVIEWING,
     REWORK,
     SHIP,
     VERIFYING,
@@ -20,12 +14,9 @@ from ..model import (
     CommandResult,
     Feedback,
     Node,
-    Oracle,
     ReadinessVerdict,
-    Resume,
 )
 from . import cleanup
-from .common import _slug
 from .core import ChangeCore
 from .phases import (
     Escalate,
@@ -34,12 +25,10 @@ from .phases import (
     Ok,
     Panel,
     PhaseContext,
-    Rework,
-    Verify,
     setup_failed_text,
-    setup_failure,
 )
 from .runs import RunLifecycle
+from .steps import step_for
 
 
 class Acceptance:
@@ -55,21 +44,12 @@ class Acceptance:
         """Run the node's deterministic verification in the background (node is VERIFYING)."""
         self.c.spawn(self.verify_node(node_id))
 
-    def _verify_phase(self, node: Node) -> Verify:
-        c = self.c
-        if node.kind == BUILD:
-            return Verify(tuple(node.task.verification))
-        if node.kind == BASELINE:
-            return Verify(tuple(c.baseline_commands()), expect_failures=True)
-        if node.kind == PREFLIGHT:
-            return Verify(tuple((c.change.oracle or Oracle()).acceptance_commands),
-                          expect_failures=True)
-        return Verify(tuple(c.oracle_commands()))
-
     async def verify_node(self, node_id: str) -> None:
-        """Verify the node's candidate; then review (or merge), rework, or escalate."""
+        """Verify the node's candidate; its step type says what the result means (review or
+        merge, accept, rework, or escalate)."""
         c, node = self.c, self.c.nodes[node_id]
-        phase = self._verify_phase(node)
+        step = step_for(node)
+        phase = step.verify(c, node)
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                 f"({'setup and ' if c.change.setup_pin else ''}{len(phase.commands)} command(s))",
                 node_id)
@@ -77,54 +57,16 @@ class Acceptance:
         async with c.lock:
             if node.status != VERIFYING:
                 return
-            att = c.write_record(f"tasks/{node.task.id}/verification.json" if node.kind == BUILD
-                                 else f"control/verification/{_slug(node_id)}.json", res).attestation
+            path, key = step.verification_record(node)
+            att = c.write_record(path, res).attestation
             # The node keeps a compact copy (the stored record has the command output).
-            key = {INTEGRATION: "integration", BASELINE: "baseline",
-                   PREFLIGHT: "preflight"}.get(node.kind, str(node.cycle))
             node.verification[key] = res.model_copy(update={
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
-            result = phase.judge(res, node.cycle, att)
-            if isinstance(result, Escalate) and result.kind == "setup_failed" \
-                    and node.kind == PREFLIGHT:
-                self._setup_failed(node, setup_failure(res), att, result)
-            elif not isinstance(result, Ok):
-                if isinstance(result, Rework) and node.kind != BUILD:
-                    # nothing at integration reworks: a human decides
-                    fails = [r for r in res.results if r.exit_code != 0]
-                    result = Escalate("integration_failed",
-                                      f"G-V1: {len(fails)} oracle command(s) failed at head",
-                                      Resume.READY)
-                self.ctx.apply(node, result)
-            elif node.kind == PREFLIGHT:
-                # G-PF1: the commands can be run here; before the build they are expected to
-                # fail, so an acceptance command that already passes is only noted
-                node.status = ACCEPTED
-                for r in res.results:
-                    if not r.setup and r.exit_code == 0:
-                        c.event("preflight", f"acceptance command `{r.command}` already passes "
-                                "before any build: it may not test the change", node_id)
-            elif node.kind == BASELINE:
-                # before any build, failures are expected: they are recorded, not reworked
-                # (G-BL2 flags at H-2 what already passes or differs from the agent's results)
-                node.status = ACCEPTED
-                self.lifecycle.accept_runs(node)
-                for w in governance.baseline_warnings(c):
-                    c.event("baseline", w, node_id)
-            elif node.kind == BUILD:
-                if c.change.panel:
-                    node.status = REVIEWING
-                    c.event("review", f"verification passed; panel {c.change.panel}", node_id)
-                else:
-                    node.status = MERGING
-                    c.spawn(self.merge_node(node_id))
-            else:  # integration
-                node.status = ACCEPTED
-                self.lifecycle.accept_runs(node)
+            step.verified(self, node, res, phase.judge(res, node.cycle, att), att)
             c.save()
 
-    def _setup_failed(self, node: Node, r: CommandResult, att: str, escalation: Escalate) -> None:
+    def setup_failed(self, node: Node, r: CommandResult, att: str, escalation: Escalate) -> None:
         """G-V3 at preflight: the repository's setup failed, so nothing after it ran. The
         oracle's author is sent the output (one oracle cycle; fixing it may need the plan's
         environment, which it then reports BLOCKED); without a cycle left, a human decides. (At
