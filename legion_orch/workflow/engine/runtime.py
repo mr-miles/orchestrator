@@ -31,6 +31,7 @@ from ..flow import (
     Parallel,
     Preconditions,
     Record,
+    Stage,
     StartStep,
     Step,
     StopStep,
@@ -65,6 +66,7 @@ from .workflow_tree import (
     in_round,
     requirements_workflow,
     round_of,
+    stage_title,
     task_steps,
 )
 
@@ -186,17 +188,46 @@ class FlowRuntime:
     # ------------------------------------------------------------------ the engine's nodes
     def _materialize(self) -> None:
         """An engine node for every step and every gate a human sees (a gate that is not
-        automatic, or has preconditions), in the tree's order; nodes the tree dropped (a
-        round, an earlier task graph) go."""
-        c, wanted, prev = self.c, [], None
-        for n in (n for s in self.flow.workflow.stages for n in walk(s)):
-            if isinstance(n, Step) or (isinstance(n, Gate) and (not n.automatic or n.preconditions)):
-                wanted.append(n.id)
-                if n.id not in c.nodes:
-                    self._create(n.id, prev)
-                prev = n.id
-            elif isinstance(n, Parallel) and n.steps:
-                prev = n.steps[-1].id
+        automatic, or has preconditions), in the tree's order, each depending (for the task
+        graph shown) on what runs just before it; nodes the tree dropped (a round, an earlier
+        task graph) go."""
+        c, wanted = self.c, []
+
+        def visible(n) -> bool:
+            return isinstance(n, Step) or (isinstance(n, Gate) and (not n.automatic or n.preconditions))
+
+        def place(nid: str, deps: list[str]) -> None:
+            wanted.append(nid)
+            if nid not in c.nodes:
+                self._create(nid, deps)
+            elif not nid.startswith("build:") or not c.nodes[nid].depends_on:
+                c.nodes[nid].depends_on = deps
+
+        def run(node, before: list[str]) -> list[str]:
+            """Place ``node``'s nodes after ``before``; returns what comes last in it."""
+            if isinstance(node, Stage):
+                for child in node.children:
+                    before = run(child, before)
+                return run(node.gate, before)
+            if isinstance(node, Parallel):
+                ids = {st.id for st in node.steps}
+                for st in node.steps:
+                    inside = [d for d in st.depends_on if d in ids]
+                    place(st.id, inside or before)
+                    if st.id in c.nodes and not inside:      # a task with no task before it
+                        c.nodes[st.id].depends_on = list(dict.fromkeys(
+                            [*before, *c.nodes[st.id].depends_on]))
+                used = {d for st in node.steps for d in st.depends_on}
+                ends = [st.id for st in node.steps if st.id not in used]
+                return ends or before
+            if visible(node):
+                place(node.id, before)
+                return [node.id]
+            return before
+
+        before: list[str] = []
+        for stage in self.flow.workflow.stages:
+            before = run(stage, before)
         for nid in [k for k, n in c.nodes.items() if k not in self.flow.nodes and n.kind != RETRO]:
             del c.nodes[nid]
         order = wanted + [k for k in c.nodes if k not in wanted]
@@ -204,13 +235,35 @@ class FlowRuntime:
             if k in c.nodes:
                 c.nodes[k] = c.nodes.pop(k)
 
-    def _create(self, nid: str, prev: str | None) -> None:
+    def stages(self) -> list[dict[str, Any]]:
+        """The stages (outermost first) with the nodes shown in each, for the task graph."""
+        out: list[dict[str, Any]] = []
+
+        def nodes_in(st: Stage) -> list[str]:
+            return [n.id for n in walk(st) if n.id in self.c.nodes]
+
+        def level(st: Stage) -> int:
+            inner = [level(ch) for ch in st.children if isinstance(ch, Stage)]
+            return 1 + max(inner) if inner else 0
+
+        def visit(st: Stage, depth: int) -> None:
+            out.append({"id": st.id, "title": stage_title(st.id), "depth": depth,
+                        "level": level(st), "gate": st.gate.id, "nodes": nodes_in(st),
+                        "status": self.status(st.id)})
+            for ch in st.children:
+                if isinstance(ch, Stage):
+                    visit(ch, depth + 1)
+        for st in self.flow.workflow.stages:
+            visit(st, 0)
+        return [x for x in out if x["nodes"]]
+
+    def _create(self, nid: str, deps: list[str]) -> None:
         if nid.startswith("build:"):
             return                                   # made with its task (define_tasks)
         kind, title = NODES[base_id(nid)]
         n = round_of(nid)
         self.c.add_node(Node(id=nid, kind=kind, title=title + (f" (round {n})" if n > 1 else ""),
-                             round=n, depends_on=[prev] if prev else []))
+                             round=n, depends_on=list(deps)))
 
     def define_tasks(self, plan: Node) -> list[str]:
         """The critic passed the plan: its task graph's build nodes, as the steps of the tasks

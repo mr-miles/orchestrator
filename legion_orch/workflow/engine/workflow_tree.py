@@ -62,6 +62,12 @@ def in_round(nid: str, n: int) -> str:
     return nid if n == 1 else f"{nid}@{n}"
 
 
+def stage_title(sid: str) -> str:
+    """``stage:design@2`` -> ``Design (round 2)``."""
+    name, n = base_id(sid).removeprefix("stage:"), round_of(sid)
+    return name.capitalize() + (f" (round {n})" if n > 1 else "")
+
+
 def round_of(nid: str) -> int:
     base, _, n = nid.rpartition("@")
     return int(n) if base and n.isdigit() else 1
