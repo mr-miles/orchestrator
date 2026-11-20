@@ -19,11 +19,9 @@ from .. import attest, governance
 from ..assets import AssetError
 from ..model import (
     ACCEPTED,
-    BUILD,
     H_ENV,
     H_REQUIREMENTS,
     LIVE_RUN,
-    ORACLE,
     PLAN,
     REWORK,
     RUNNING,
@@ -140,16 +138,15 @@ class Dispatcher:
             self.c.escalate(node, "approval", stale_env,
                             resume=Resume.REWORK if node.status == REWORK else Resume.READY)
             return None
-        if node.kind == ORACLE or (node.kind == BUILD and not node.base_sha):
-            node.base_sha = ch.integration_head
         plan = sandbox_plan(role)
+        if plan.base_at_head(bool(node.base_sha)):
+            node.base_sha = ch.integration_head
         if plan.at_head:
             judged_sha = ch.integration_head
         run_id = self.c.host.next_run_id()
-        # a fix round's oracle starts from the integration head, not from round 1's oracle branch
-        again = f"-r{node.round}" if node.kind == ORACLE and node.round > 1 else ""
-        # only roles that push get a branch; the others check their commit out detached
-        branch = f"legion/{ch.id}/{_slug(node.id)}{again}" if plan.pushes else None
+        # only roles that push get a branch (one per node: a fix round's oracle is its own node,
+        # oracle@n, so its branch starts afresh); the others check their commit out detached
+        branch = f"legion/{ch.id}/{_slug(node.id)}" if plan.pushes else None
         asg = self._assignment(node, role, branch, judged_sha)
         try:
             rendered = self.c.assets.render_role(role, asg.variables)
@@ -255,7 +252,7 @@ class Dispatcher:
         if plan.keeps and node.sandbox is None:
             node.sandbox = run.sandbox
         # approved_spec_and_oracle compares with these (the scaffold precedes H-2, §5.3b)
-        if node.kind == BUILD and plan.pushes and not node.task.scaffold:
+        if node.task and plan.pushes and not node.task.scaffold:     # a build run
             if ch.first_build_at is None:
                 ch.first_build_at = now_iso()
             rnd = next((x for x in ch.rounds if x.number == node.round), None)

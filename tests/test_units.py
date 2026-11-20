@@ -604,6 +604,10 @@ def test_role_dispatch_policy():
     everyone = set(Assets(ROOT / "assets").roles)
     plans = {r: sandbox_plan(r) for r in everyone}
     assert {r for r, p in plans.items() if p.pushes} == {"implementer", "oracle"}
+    # the oracle's branch starts from the head at every run, a build task's only at its first
+    assert plans["oracle"].base_at_head(True) and plans["oracle"].base_at_head(False)
+    assert plans["implementer"].base_at_head(False) and not plans["implementer"].base_at_head(True)
+    assert not plans["reviewer"].base_at_head(False)              # judges check out detached
     assert {r for r, p in plans.items() if p.at_head} == {"baseline", "integration", "release",
                                                           "retrospective"}
     assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {"critic"}

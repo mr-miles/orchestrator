@@ -63,8 +63,10 @@ def in_round(nid: str, n: int) -> str:
 
 
 def stage_title(sid: str) -> str:
-    """``stage:design@2`` -> ``Design (round 2)``."""
+    """``stage:design@2`` -> ``Design (round 2)``; ``stage:round@2`` -> ``Round 2``."""
     name, n = base_id(sid).removeprefix("stage:"), round_of(sid)
+    if name == "round":
+        return f"Round {n}"
     return name.capitalize() + (f" (round {n})" if n > 1 else "")
 
 
