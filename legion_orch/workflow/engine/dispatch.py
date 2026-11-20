@@ -40,6 +40,7 @@ from .core import ChangeCore
 from .provision import sandbox_env
 from .runs import RunLifecycle
 from .sandboxes import Sandboxes
+from .steps import sandbox_plan
 
 
 @dataclass
@@ -141,13 +142,14 @@ class Dispatcher:
             return None
         if node.kind == ORACLE or (node.kind == BUILD and not node.base_sha):
             node.base_sha = ch.integration_head
-        if h.judges_head:
+        plan = sandbox_plan(role)
+        if plan.at_head:
             judged_sha = ch.integration_head
         run_id = self.c.host.next_run_id()
         # a fix round's oracle starts from the integration head, not from round 1's oracle branch
         again = f"-r{ch.round}" if node.kind == ORACLE and ch.round > 1 else ""
         # only roles that push get a branch; the others check their commit out detached
-        branch = f"legion/{ch.id}/{_slug(node.id)}{again}" if h.pushes else None
+        branch = f"legion/{ch.id}/{_slug(node.id)}{again}" if plan.pushes else None
         asg = self._assignment(node, role, branch, judged_sha)
         try:
             rendered = self.c.assets.render_role(role, asg.variables)
@@ -231,8 +233,8 @@ class Dispatcher:
     def _place_in_sandbox(self, run: Run, node: Node) -> None:
         """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
         across the node's cycles."""
-        h = handler_for(run.role)
-        if h.keeps_sandbox and node.sandbox:
+        h, plan = handler_for(run.role), sandbox_plan(run.role)
+        if plan.keeps and node.sandbox:
             run.sandbox = node.sandbox
             run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
                                     if r.sandbox == node.sandbox and r.sandbox_ref), None)
@@ -244,16 +246,16 @@ class Dispatcher:
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
 
     def _record_dispatch(self, run: Run, node: Node) -> None:
-        h, ch = handler_for(run.role), self.c.change
+        h, plan, ch = handler_for(run.role), sandbox_plan(run.role), self.c.change
         self.c.runs[run.id] = run
         node.runs.append(run.id)
         if not h.panel:                 # panel members run alongside; the node stays REVIEWING
             node.current_run = run.id
             node.status = RUNNING
-        if h.keeps_sandbox and node.sandbox is None:
+        if plan.keeps and node.sandbox is None:
             node.sandbox = run.sandbox
         # approved_spec_and_oracle compares with these (the scaffold precedes H-2, §5.3b)
-        if node.kind == BUILD and h.pushes and not node.task.scaffold:
+        if node.kind == BUILD and plan.pushes and not node.task.scaffold:
             if ch.first_build_at is None:
                 ch.first_build_at = now_iso()
             rnd = next((x for x in ch.rounds if x.number == node.round), None)
@@ -294,7 +296,7 @@ class Dispatcher:
     def _resumable_session(self, run: Run) -> tuple[str, str] | None:
         """For a role that keeps its session: the node's previous run in the same sandbox and
         its agent session, which this rework continues."""
-        if handler_for(run.role).keeps_session_until is None:
+        if not sandbox_plan(run.role).keeps_session:
             return None
         node = self.c.nodes[run.node_id]
         prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]
@@ -317,8 +319,8 @@ class Dispatcher:
         run = self.c.runs[run_id]
         payload = self.c.run_dir(run_id) / "payload"
         try:
-            h = handler_for(run.role)
-            reuse = h.keeps_sandbox and any(
+            plan = sandbox_plan(run.role)
+            reuse = plan.keeps and any(
                 r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values())
             log_file = self.c.run_dir(run_id) / "agent.log"
             if reuse:
@@ -338,7 +340,7 @@ class Dispatcher:
                 policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
                                                  network=env.network if env else None,
                                                  agent=True)
-                run.sandbox_ref = await self.sandboxes.create(run, payload, policy, push=h.pushes)
+                run.sandbox_ref = await self.sandboxes.create(run, payload, policy, push=plan.pushes)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
                 await self.sandboxes.prepare(run, log_file, fresh=True)
                 proc = await self.sandboxes.start_agent(run.sandbox, log_file)
@@ -368,7 +370,7 @@ class Dispatcher:
             run.stage = RunStage.EXITED
             self.lifecycle.archive_log(run)
             self.c.save()
-        if handler_for(run.role).keeps_session_until is not None:
+        if sandbox_plan(run.role).keeps_session:
             await self.sandboxes.pause(run)
 
     def _exit_reason(self, run: Run, rc: int) -> tuple[str, FailureSource]:

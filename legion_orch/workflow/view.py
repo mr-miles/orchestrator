@@ -69,7 +69,8 @@ class RoleContext(ChangeView, Protocol):
 
     def delete_sandbox_later(self, name: str) -> None: ...
 
-    def start_verification(self, node_id: str) -> None: ...
+    def step_done(self, node: Node) -> None:
+        """The node's current phase passed: its step goes on to the next (or accepts it)."""
 
     def materialize_builds(self, taskgraph: dict) -> None:
         """Create the build nodes from an accepted task graph."""

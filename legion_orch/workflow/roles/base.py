@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..attest import Attestation
-from ..model import ACCEPTED, Finding, Node, Record, Run
+from ..model import Finding, Node, Record, Run
 from ..view import RoleContext
 
 
@@ -37,15 +37,9 @@ class Report:
 class RoleHandler:
     roles: tuple[str, ...] = ()
 
-    # ---- dispatch policy (read by the engine instead of hard-coded role names)
-    pushes = False                # pushes its own branch: one branch per node, git push allowed
+    # ---- dispatch policy (where its agent works is its step's sandbox plan: engine/steps.py)
     judge = False                 # judges another run's work: always a fresh sandbox (G-D4)
-    panel = False                 # review-panel member: dispatched per cycle on the candidate
-    judges_head = False           # works at the integration head (judged sha = head)
-    reuses_sandbox = False        # keeps its sandbox across the node's rework cycles
-    # Keeps its sandbox (stopped between runs) and its agent session across the node's rework
-    # cycles until this gate node is accepted: a rework continues the earlier conversation.
-    keeps_session_until: str | None = None
+    panel = False                 # judge dispatched per cycle on the candidate (node REVIEWING)
     needs_fresh_approval = False  # spec/oracle approval must be fresh before dispatch (G-B1)
     # ---- context given to the run (attestations listed in the prompt / assignment)
     sees_requirements = True      # accepted requirements and risk (H-1 pins)
@@ -55,11 +49,6 @@ class RoleHandler:
     # A build task's roles: of the approved delta specs, only those of the task's own
     # requirements (the others are about other tasks).
     task_scoped_specs = False
-
-    @property
-    def keeps_sandbox(self) -> bool:
-        """Its node holds the sandbox between runs (``node.sandbox``)."""
-        return self.reuses_sandbox or self.keeps_session_until is not None
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
         """Role-specific context attestations beyond the common ones."""
@@ -77,9 +66,9 @@ class RoleHandler:
         return []
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
-        """Default: the work is accepted; the node completes and its sandboxes are deleted."""
-        r.node.status = ACCEPTED
-        e.accept_runs(r.node)
+        """Default: the agent's phase passed; the step goes on (accepted after its last
+        phase, which deletes its sandboxes)."""
+        e.step_done(r.node)
 
 
 def brief_findings(findings: list[Finding]) -> list[Finding]:
@@ -190,5 +179,5 @@ def handler_for(role: str) -> RoleHandler:
 
 
 def roles_where(attr: str) -> set[str]:
-    """Role names whose handler declares ``attr`` true, e.g. ``roles_where("pushes")``."""
+    """Role names whose handler declares ``attr`` true, e.g. ``roles_where("panel")``."""
     return {name for name, h in REGISTRY.items() if getattr(h, attr)}

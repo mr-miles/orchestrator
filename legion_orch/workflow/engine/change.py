@@ -43,7 +43,7 @@ from .runs import RunLifecycle
 from .sandboxes import Sandboxes
 from .schedule import Scheduler
 from .services import EngineHost, Services
-from .steps import step_for
+from .steps import StepRunner
 
 
 class ChangeEngine(ChangeCore):
@@ -68,6 +68,9 @@ class ChangeEngine(ChangeCore):
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
                                     self._acceptance, self._provisioner)
+        self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
+                                  self._provisioner, self._scheduler)
+        self._acceptance.runner = self._scheduler.runner = self._runner
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:
@@ -102,7 +105,7 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.verify_node(node.id))
             elif node.status == MERGING:
                 self.spawn(self._acceptance.merge_node(node.id))
-            elif node.status == RUNNING and (work := step_for(node).controller_work(self._scheduler)):
+            elif node.status == RUNNING and (work := self._runner.resume(node)):
                 self.spawn(work)                    # provisioning, the ship check
         self._gates.resume_retries()
         self.save()
@@ -149,8 +152,8 @@ class ChangeEngine(ChangeCore):
     def delete_sandbox_later(self, name: str) -> None:
         self._sandboxes.delete_later(name)
 
-    def start_verification(self, node_id: str) -> None:
-        self._acceptance.start_verification(node_id)
+    def step_done(self, node: Node) -> None:
+        self._runner.step_done(node)
 
     def panel_complete(self, node: Node) -> None:
         self._acceptance.panel_complete(node)

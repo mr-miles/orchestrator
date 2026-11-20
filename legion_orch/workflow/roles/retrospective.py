@@ -169,7 +169,6 @@ def review_ledger(e: RoleContext) -> dict[str, Any]:
 @register
 class Retrospective(RoleHandler):
     roles = ("retrospective",)
-    judges_head = True            # reads the change's final state; pushes nothing
     sees_oracle_commit = False
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:

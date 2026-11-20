@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .. import guards, risk
-from ..model import H_REQUIREMENTS, ReportStatus
+from ..model import ReportStatus
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -10,7 +10,6 @@ from .base import Report, RoleHandler, register
 @register
 class Intake(RoleHandler):
     roles = ("intake",)
-    keeps_session_until = H_REQUIREMENTS       # reworked (sent back) until this gate passes
     sees_requirements = False
     sees_oracle_commit = False
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from .. import guards
 from ..engine.common import ENV_SPEC, PLAN_DOCS
 from ..model import (
-    ACCEPTED,
     H_ENV,
     R_ACCEPTED,
     R_REPORTED,
@@ -60,8 +59,7 @@ class Critic(RoleHandler):
             doc=str(r.docs[run.required_docs[0]]))
         run.status = R_ACCEPTED
         if data.verdict == Verdict.PASS:
-            node.status = ACCEPTED
-            e.accept_runs(node)      # the critic's sandbox goes; the planner's is held to H-2
+            e.step_done(node)        # accepted; the critic's sandbox goes, the planner's is held
             if node.round > 1:       # a fix round: rerun what it changed, add its tasks
                 ids = e.start_round(node.round)
                 e.event("plan", f"fix round {node.round} accepted by critic; {len(ids)} new "

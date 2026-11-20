@@ -6,7 +6,7 @@ from .. import governance, guards
 from ..assets import GitMode
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
-from ..model import H_ENV, H_SPEC, REVIEWING, Node
+from ..model import H_ENV, Node
 from ..view import RoleContext
 from .base import Report, RoleHandler, fix_round_note, register, scaffold_note
 
@@ -17,7 +17,6 @@ NO_ENVIRONMENT = (f"No sandbox environment stage is configured: do not write `{E
 @register
 class Planner(RoleHandler):
     roles = ("planner",)
-    keeps_session_until = H_SPEC       # reworked (sent back) until this gate passes
     sees_oracle_commit = False
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
@@ -89,4 +88,4 @@ class Planner(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         """The plan is critiqued next (the critic is dispatched while it is REVIEWING); it is
         accepted when the critic passes it."""
-        r.node.status = REVIEWING
+        e.step_done(r.node)                 # the critic next

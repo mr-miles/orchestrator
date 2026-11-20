@@ -1,285 +1,223 @@
-"""Step types (plan: stages-and-steps.md §2): one per kind of node, composing its agent work (the
-role, and the judges while it is reviewed), the phases the controller runs around it and what
-their results mean for it. The scheduler, acceptance and recovery ask the node's step type
-instead of switching on its kind.
+"""Step types (plan: stages-and-steps.md §2): what each kind of node is made of, declared as a
+composition of small objects instead of per-kind code:
 
-The agent layer stays in the role handlers (workflow/roles/); the sandbox layer is
-:class:`.Sandboxes`; the phases are in :mod:`.phases`."""
+* **agent work** – the role of its first :class:`.AgentRun` (the handler in workflow/roles/ is
+  the agent layer: prompt, guards, how its report is judged);
+* **a sandbox plan** (:mod:`.sandbox_plan`) – where that agent works and how long it is kept;
+* **phases** (:mod:`.phases`) – the orchestrator's work, in order, each configured by policies
+  (which commands, which judges, what a failure means);
+* **waits** – what must hold before it is promoted or dispatched;
+* where a failed or blocked run of it resumes.
+
+:class:`StepRunner` is the one place that moves a node through its phases: a phase that passes
+hands over to the next, and after the last the node is accepted. Nothing here switches on a
+node's kind; the table at the bottom is the only per-kind knowledge.
+"""
 from __future__ import annotations
 
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from .. import governance
 from ..model import (
     ACCEPTED,
-    AWAITING_HUMAN,
     BASELINE,
     BUILD,
+    H_REQUIREMENTS,
+    H_SPEC,
     HUMAN,
     INTAKE,
     INTEGRATION,
-    MERGING,
     ORACLE,
     PLAN,
     PREFLIGHT,
     PROVISION,
-    READY,
     RELEASE,
     RETRO,
-    REVIEWING,
-    RUNNING,
     SHIP,
-    VERIFYING,
-    CommandResult,
     Node,
     NodeKind,
-    Oracle,
     Resume,
     Run,
-    Verification,
 )
-from ..roles import handler_for
-from .common import _slug
 from .core import ChangeCore
-from .phases import AgentRun, Escalate, Ok, PhaseResult, Rework, Verify, setup_failure
+from .phases import (
+    AcceptanceCommands,
+    AgentRun,
+    AlreadyPassing,
+    Approval,
+    BaselineCommands,
+    BaselineWarnings,
+    BuildImages,
+    EscalateFailures,
+    Evaluate,
+    Judges,
+    Merge,
+    OracleCommands,
+    OracleReworks,
+    Panel,
+    Phase,
+    PhaseContext,
+    TaskCommands,
+    TierPanel,
+    Verify,
+)
+from .sandbox_plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
 
 if TYPE_CHECKING:
     from .acceptance import Acceptance
+    from .provision import Provisioner
+    from .runs import RunLifecycle
     from .schedule import Scheduler
 
 
+# ---------------------------------------------------------------------------- waits
+class Wait:
+    """A condition a step waits for (it is not an error while it does not hold)."""
+
+    def holds(self, s: Scheduler, node: Node) -> bool:
+        raise NotImplementedError
+
+
+class NoOverlap(Wait):
+    """No running task touches the same files."""
+
+    def holds(self, s: Scheduler, node: Node) -> bool:
+        return not s.graph.overlaps_running(node)
+
+
+class ReflectionsDone(Wait):
+    """The last agents' reflections are recorded (they are its material)."""
+
+    def holds(self, s: Scheduler, node: Node) -> bool:
+        return not s.lifecycle.sandboxes.reflector.pending
+
+
+class EnvironmentQuiescent(Wait):
+    """No run or verification uses the current build (it is about to be replaced)."""
+
+    def holds(self, s: Scheduler, node: Node) -> bool:
+        return s.environment_quiescent()
+
+
+# ---------------------------------------------------------------------------- step types
+@dataclass(frozen=True)
 class StepType:
-    """The defaults: no agent, no verification, ready once its dependencies are accepted."""
-    role: str | None = None              # the agent that does the step's work
-    runs_after_end = False               # dispatched once the change has ended
-    rework_resume = Resume.READY         # where a failed or blocked run of it resumes
+    phases: tuple[Phase, ...]
+    sandbox: SandboxPlan | None = None           # the producing agent's (None: no agent)
+    promote_when: tuple[Wait, ...] = ()          # before it starts
+    dispatch_when: tuple[Wait, ...] = ()         # before each run is dispatched
+    runs_after_end: bool = False                 # dispatched once the change has ended
+    rework_resume: Resume = Resume.READY         # where a failed or blocked run resumes
 
-    # ------------------------------------------------------------------ scheduling
-    def judges(self, c: ChangeCore) -> tuple[str, ...]:
-        """The judges dispatched at the candidate while the node is REVIEWING."""
-        return ()
-
-    def may_promote(self, s: Scheduler) -> bool:
-        """Its dependencies are accepted: may it start now?"""
-        return True
-
-    def promote(self, s: Scheduler, node: Node) -> None:
-        node.status = READY
-
-    def start(self, s: Scheduler, node: Node) -> list[Run]:
-        """The node is READY (or in REWORK): the runs to launch (outside the lock)."""
-        return []
+    @property
+    def role(self) -> str | None:
+        first = self.phases[0]
+        return first.role if isinstance(first, AgentRun) else None
 
     @property
     def judges_head(self) -> bool:
         """Its run judges the integration head (G-H1 is checked before it is dispatched)."""
-        return False
+        return bool(self.sandbox and self.sandbox.at_head and not self.runs_after_end)
 
-    def controller_work(self, s: Scheduler) -> Coroutine[Any, Any, None] | None:
-        """The controller's own work while the node is RUNNING (resumed after a restart)."""
-        return None
-
-    # ------------------------------------------------------------------ verification
-    def verify(self, c: ChangeCore, node: Node) -> Verify:
-        raise NotImplementedError(f"{node.kind} is not verified")
-
-    def verification_record(self, node: Node) -> tuple[str, str]:
-        """Where the verification is stored, and its key on the node."""
-        return f"control/verification/{_slug(node.id)}.json", str(node.kind)
-
-    def verified(self, a: Acceptance, node: Node, res: Verification, result: PhaseResult,
-                 att: str) -> None:
-        """Under the lock: what the (recorded) verification means for the node. A rework or an
-        escalation is applied; ``on_verified`` says what passing means."""
-        if isinstance(result, Ok):
-            self.on_verified(a, node, res)
-        else:
-            a.ctx.apply(node, result)
-
-    def on_verified(self, a: Acceptance, node: Node, res: Verification) -> None:
-        node.status = ACCEPTED
-        a.lifecycle.accept_runs(node)
-
-
-# ---------------------------------------------------------------------------- agent steps
-class AgentStep(StepType):
-    """A role's agent does the work; its handler judges the report."""
-
-    def __init__(self, role: str):
-        self.role = role
-
-    @property
-    def judges_head(self) -> bool:
-        return handler_for(self.role).judges_head and not self.runs_after_end
-
-    def may_dispatch(self, s: Scheduler, node: Node) -> bool:
-        return True
-
-    def start(self, s: Scheduler, node: Node) -> list[Run]:
-        c = s.c
-        if not s.graph.deps_accepted(node) or not self.may_dispatch(s, node):
-            return []
-        if s.waits_for_environment(self.role):
-            return []
-        if s.judges_head(node) and s.branch_head and (moved := c.head_moved(s.branch_head)):
-            c.escalate(node, "head_moved", moved, resume=Resume.READY)
-            return []
-        run = AgentRun(self.role).start(s.acceptance.ctx, node)
-        return [run] if run else []
-
-
-class Plan(AgentStep):
-    """The planner, judged by the critic (its REWORK loops back within G-C2's budget)."""
+    def phase(self, cls: type[Phase]) -> Phase | None:
+        return next((p for p in self.phases if isinstance(p, cls)), None)
 
     def judges(self, c: ChangeCore) -> tuple[str, ...]:
-        return ("critic",)
+        panel = self.phase(Panel)
+        return panel.roles(c) if isinstance(panel, Panel) else ()
+
+    def current(self, node: Node) -> Phase | None:
+        """The phase the node's status says it is in (None: pending, accepted or escalated)."""
+        return next((p for p in self.phases if node.status in p.statuses), None)
+
+    def after(self, phase: Phase) -> Phase | None:
+        i = next(i for i, p in enumerate(self.phases) if p is phase)
+        return self.phases[i + 1] if i + 1 < len(self.phases) else None
 
 
-class BuildTask(AgentStep):
-    """AgentRun → Verify(task) → Panel(tier) → Merge (the scaffold too)."""
-    rework_resume = Resume.REWORK
-
-    def judges(self, c: ChangeCore) -> tuple[str, ...]:
-        return tuple(c.change.panel)
-
-    def may_dispatch(self, s: Scheduler, node: Node) -> bool:
-        return not s.graph.overlaps_running(node)
-
-    def verify(self, c: ChangeCore, node: Node) -> Verify:
-        return Verify(tuple(node.task.verification))
-
-    def verification_record(self, node: Node) -> tuple[str, str]:
-        return f"tasks/{node.task.id}/verification.json", str(node.cycle)
-
-    def on_verified(self, a: Acceptance, node: Node, res: Verification) -> None:
-        c = a.c
-        if c.change.panel:
-            node.status = REVIEWING
-            c.event("review", f"verification passed; panel {c.change.panel}", node.id)
-        else:
-            node.status = MERGING
-            c.spawn(a.merge_node(node.id))
+def agent(role: str, sandbox: SandboxPlan, *after: Phase, **kw) -> StepType:
+    """A step whose agent works first, then the controller's ``after`` phases."""
+    return StepType((AgentRun(role), *after), sandbox=sandbox, **kw)
 
 
-class Baseline(AgentStep):
-    """AgentRun → Verify(oracle, expect_failures): before any build, failures are expected:
-    they are recorded, not reworked (G-BL2 flags at H-2 what already passes or differs from the
-    agent's results)."""
-
-    def verify(self, c: ChangeCore, node: Node) -> Verify:
-        return Verify(tuple(c.baseline_commands()), expect_failures=True)
-
-    def on_verified(self, a: Acceptance, node: Node, res: Verification) -> None:
-        super().on_verified(a, node, res)
-        for w in governance.baseline_warnings(a.c):
-            a.c.event("baseline", w, node.id)
-
-
-class Integration(AgentStep):
-    """AgentRun → Verify(oracle) at the head. Nothing reworks here: a failure escalates."""
-
-    def verify(self, c: ChangeCore, node: Node) -> Verify:
-        return Verify(tuple(c.oracle_commands()))
-
-    def verified(self, a: Acceptance, node: Node, res: Verification, result: PhaseResult,
-                 att: str) -> None:
-        if isinstance(result, Rework):
-            fails = [r for r in res.results if r.exit_code != 0]
-            result = Escalate("integration_failed",
-                              f"G-V1: {len(fails)} oracle command(s) failed at head", Resume.READY)
-        super().verified(a, node, res, result, att)
-
-
-class Retrospective(AgentStep):
-    """Read the ended change – after its agents' last reflections."""
-    runs_after_end = True
-
-    def may_dispatch(self, s: Scheduler, node: Node) -> bool:
-        return not s.lifecycle.sandboxes.reflector.pending
-
-
-# ---------------------------------------------------------------------------- controller steps
-class HumanGate(StepType):
-    def promote(self, s: Scheduler, node: Node) -> None:
-        node.status = AWAITING_HUMAN
-        s.c.event("human", "awaiting human decision", node.id)
-
-
-class Provision(StepType):
-    """BuildImages → Verify(setup) (G-PV3), once no run or verification uses the build."""
-
-    def may_promote(self, s: Scheduler) -> bool:
-        return s.environment_quiescent()
-
-    def start(self, s: Scheduler, node: Node) -> list[Run]:
-        if node.status == READY:
-            node.status = RUNNING
-            s.c.event("provision", "provisioning the approved environment", node.id)
-            s.c.spawn(s.provisioner.provision())
-        return []
-
-    def controller_work(self, s: Scheduler) -> Coroutine[Any, Any, None] | None:
-        return s.provisioner.provision()
-
-
-class Preflight(StepType):
-    """Verify(acceptance commands, expect_failures) at the integration head: the oracle's
-    commands can be run there (G-PF1). A failed setup goes back to the oracle's author."""
-
-    def promote(self, s: Scheduler, node: Node) -> None:
-        node.candidate_sha = s.c.change.integration_head
-        node.status = VERIFYING
-        s.c.spawn(s.acceptance.verify_node(node.id))
-
-    def verify(self, c: ChangeCore, node: Node) -> Verify:
-        return Verify(tuple((c.change.oracle or Oracle()).acceptance_commands),
-                      expect_failures=True)
-
-    def verified(self, a: Acceptance, node: Node, res: Verification, result: PhaseResult,
-                 att: str) -> None:
-        if isinstance(result, Escalate) and result.kind == "setup_failed":
-            setup: CommandResult = setup_failure(res)
-            a.setup_failed(node, setup, att, result)
-        else:
-            super().verified(a, node, res, result, att)
-
-    def on_verified(self, a: Acceptance, node: Node, res: Verification) -> None:
-        # before the build the commands are expected to fail, so one that already passes is
-        # only noted
-        node.status = ACCEPTED
-        for r in res.results:
-            if not r.setup and r.exit_code == 0:
-                a.c.event("preflight", f"acceptance command `{r.command}` already passes "
-                          "before any build: it may not test the change", node.id)
-
-
-class Ship(StepType):
-    """Evaluate(ship gates): the readiness verdict is the change's status."""
-
-    def promote(self, s: Scheduler, node: Node) -> None:
-        node.status = RUNNING
-        s.c.spawn(s.acceptance.ship())
-
-    def controller_work(self, s: Scheduler) -> Coroutine[Any, Any, None] | None:
-        return s.acceptance.ship()
-
+BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
 
 STEP_TYPES: dict[NodeKind, StepType] = {
-    INTAKE: AgentStep("intake"),
-    PLAN: Plan("planner"),
-    ORACLE: AgentStep("oracle"),
-    BASELINE: Baseline("baseline"),
-    BUILD: BuildTask("implementer"),
-    INTEGRATION: Integration("integration"),
-    RELEASE: AgentStep("release"),
-    RETRO: Retrospective("retrospective"),
-    HUMAN: HumanGate(),
-    PROVISION: Provision(),
-    PREFLIGHT: Preflight(),
-    SHIP: Ship(),
+    INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
+    PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_SPEC)),
+                Panel(Judges(("critic",)), decides=False)),         # the critic decides (G-C2)
+    PROVISION: StepType((BuildImages(),), promote_when=(EnvironmentQuiescent(),)),
+    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC))),   # merges itself
+    PREFLIGHT: StepType((Verify(AcceptanceCommands(), expect_failures=True, at_head=True,
+                                on_setup_failed=OracleReworks(), notes=AlreadyPassing()),)),
+    BASELINE: agent("baseline", HEAD,
+                    Verify(BaselineCommands(), expect_failures=True, notes=BaselineWarnings())),
+    BUILD: agent("implementer", SandboxPlan(Checkout.BRANCH, UntilAccepted()),
+                 Verify(TaskCommands()), Panel(TierPanel()), Merge(TierPanel()),
+                 dispatch_when=(NoOverlap(),), rework_resume=Resume.REWORK),
+    INTEGRATION: agent("integration", HEAD,
+                       Verify(OracleCommands(), on_rework=EscalateFailures(
+                           "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
+    RELEASE: agent("release", HEAD),
+    RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
+    HUMAN: StepType((Approval(),)),
+    SHIP: StepType((Evaluate(),)),
 }
 
 
 def step_for(node: Node) -> StepType:
     return STEP_TYPES[node.kind]
+
+
+_PRODUCERS = {s.role: s.sandbox for s in STEP_TYPES.values() if s.role and s.sandbox}
+
+
+def sandbox_plan(role: str) -> SandboxPlan:
+    """Where a run of ``role`` works: its step's plan, or – a judge – a fresh sandbox at the
+    commit it judges."""
+    return _PRODUCERS.get(role, JUDGE)
+
+
+# ---------------------------------------------------------------------------- the runner
+class StepRunner:
+    """Moves nodes through their step's phases. Phases call back into it (``advance``) when they
+    pass; role handlers do through ``RoleContext.step_done``."""
+
+    def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
+                 acceptance: Acceptance, provisioner: Provisioner, scheduler: Scheduler):
+        self.c, self.ctx, self.lifecycle = core, ctx, lifecycle
+        self.acceptance, self.provisioner, self.scheduler = acceptance, provisioner, scheduler
+
+    @staticmethod
+    def step(node: Node) -> StepType:
+        return step_for(node)
+
+    def promote(self, node: Node) -> None:
+        """Its dependencies are accepted: enter its first phase."""
+        self.step(node).phases[0].enter(self, node, None)
+
+    def dispatch(self, node: Node, capacity: int) -> list[Run]:
+        """The runs (or controller work) its current phase starts now."""
+        phase = self.step(node).current(node)
+        return phase.dispatch(self, node, capacity) if phase else []
+
+    def advance(self, node: Node, phase: Phase) -> None:
+        """``phase`` passed: enter the next one, or accept the node after the last."""
+        nxt = self.step(node).after(phase)
+        if nxt is None:
+            node.status = ACCEPTED
+            self.lifecycle.accept_runs(node)
+        else:
+            nxt.enter(self, node, phase)
+
+    def step_done(self, node: Node) -> None:
+        """The node's current phase passed (an agent's report was accepted)."""
+        phase = self.step(node).current(node)
+        assert phase is not None, f"{node.id} is not in a phase ({node.status})"
+        self.advance(node, phase)
+
+    def resume(self, node: Node) -> Coroutine[Any, Any, None] | None:
+        """After a restart: the controller work of a RUNNING node to start again."""
+        phase = self.step(node).current(node)
+        return phase.resume(self) if phase else None

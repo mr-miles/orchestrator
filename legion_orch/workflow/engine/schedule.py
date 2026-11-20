@@ -7,10 +7,8 @@ from ..model import (
     MERGING,
     PENDING,
     PROVISION,
-    R_REPORTED,
     READY,
     RETRO,
-    REVIEWING,
     REWORK,
     VERIFYING,
     Node,
@@ -21,10 +19,9 @@ from .acceptance import Acceptance
 from .core import ChangeCore
 from .dispatch import Dispatcher
 from .graph import StageGraph
-from .phases import AgentRun
 from .provision import Provisioner
 from .runs import RunLifecycle
-from .steps import step_for
+from .steps import StepRunner, step_for
 
 
 class Scheduler:
@@ -34,6 +31,7 @@ class Scheduler:
         self.dispatcher, self.acceptance = dispatcher, acceptance
         self.provisioner = provisioner
         self.branch_head: str | None = None      # G-H1: read once per tick
+        self.runner: StepRunner = None  # type: ignore[assignment]   # set once the runner exists
 
     async def tick(self) -> None:
         """Under the lock: promote nodes whose dependencies are accepted, fail timed-out runs
@@ -58,8 +56,8 @@ class Scheduler:
             if active:
                 for node in list(c.nodes.values()):
                     if node.status == PENDING and self.graph.deps_accepted(node) \
-                            and step_for(node).may_promote(self):
-                        step_for(node).promote(self, node)
+                            and all(w.holds(self, node) for w in step_for(node).promote_when):
+                        self.runner.promote(node)
             self.lifecycle.check_timeouts()
             # G-H1: the branch head, if a head-judging run may be dispatched this tick
             self.branch_head = (await c.git.integration_head(c.change.id)
@@ -71,7 +69,7 @@ class Scheduler:
                     break
                 if not active and not step_for(node).runs_after_end:
                     continue
-                for run in self._dispatch(node, capacity):
+                for run in self.runner.dispatch(node, capacity):
                     launches.append(run)
                     capacity -= 1
             c.save()
@@ -98,24 +96,3 @@ class Scheduler:
         """A node about to dispatch a run at the integration head (not the retrospective, which
         reads an ended change)."""
         return node.status in (READY, REWORK) and step_for(node).judges_head
-
-    def _dispatch(self, node: Node, capacity: int) -> list[Run]:
-        """Prepare at most ``capacity`` runs for the node: what its step starts when it is ready
-        (or in rework), or the missing judges' runs while it is under review."""
-        c, step = self.c, step_for(node)
-        if node.status in (READY, REWORK):
-            return step.start(self, node)
-        runs: list[Run] = []
-        if node.status == REVIEWING:
-            for role in step.judges(c):
-                if len(runs) >= capacity:
-                    break
-                busy = any(r.node_id == node.id and r.role == role and r.cycle == node.cycle
-                           and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
-                if f"{node.cycle}:{role}" not in node.reviews and not busy \
-                        and not self.waits_for_environment(role):
-                    run = AgentRun(role).start(self.acceptance.ctx, node,
-                                               judged_sha=node.candidate_sha)
-                    if run:
-                        runs.append(run)
-        return runs

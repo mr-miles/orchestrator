@@ -23,13 +23,13 @@ from ...sandbox import (
 from .. import governance
 from ..assets import GitMode
 from ..environment import VERIFIER
-from ..model import ACCEPTED, LIVE_RUN, ROLE_FOR_KIND, CommandResult, Node, Run
-from ..roles import handler_for
+from ..model import LIVE_RUN, CommandResult, Node, Run
 from ..setup import SETUP_COMMAND
 from .auth import VerifierGrant
 from .core import ChangeCore
 from .provision import sandbox_env
 from .reflect import Reflector
+from .steps import step_for
 
 
 @dataclass
@@ -66,16 +66,13 @@ class Sandboxes:
 
     # ------------------------------------------------------------------ which are held
     def holds(self, node: Node) -> bool:
-        """The node's producer still keeps ``node.sandbox`` for rework: roles with
-        ``keeps_session_until`` until that gate is accepted, the implementer until its node is.
-        Nothing is held once the change is no longer active."""
-        if not node.sandbox or node.kind not in ROLE_FOR_KIND or self.c.change.status != "ACTIVE":
+        """The node's producer still keeps ``node.sandbox`` for rework, as its step's sandbox
+        plan says (until a gate is accepted, or until the node is). Nothing is held once the
+        change is no longer active."""
+        if not node.sandbox or self.c.change.status != "ACTIVE":
             return False
-        h = handler_for(ROLE_FOR_KIND[node.kind])
-        if h.keeps_session_until is not None:
-            gate = self.c.nodes.get(h.keeps_session_until)
-            return gate is not None and gate.status != ACCEPTED
-        return h.reuses_sandbox and node.status != ACCEPTED
+        plan = step_for(node).sandbox
+        return plan is not None and plan.held(self.c, node)
 
     def held(self) -> set[str]:
         return {n.sandbox for n in self.c.nodes.values() if self.holds(n)}

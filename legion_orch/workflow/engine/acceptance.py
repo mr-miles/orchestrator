@@ -4,7 +4,6 @@ from __future__ import annotations
 from ..model import (
     ACCEPTED,
     FAILED,
-    MERGING,
     ORACLE,
     PENDING,
     REWORK,
@@ -25,10 +24,11 @@ from .phases import (
     Ok,
     Panel,
     PhaseContext,
+    Verify,
     setup_failed_text,
 )
 from .runs import RunLifecycle
-from .steps import step_for
+from .steps import StepRunner, step_for
 
 
 class Acceptance:
@@ -39,31 +39,29 @@ class Acceptance:
 
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
         self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
-
-    def start_verification(self, node_id: str) -> None:
-        """Run the node's deterministic verification in the background (node is VERIFYING)."""
-        self.c.spawn(self.verify_node(node_id))
+        self.runner: StepRunner = None  # type: ignore[assignment]   # set once the runner exists
 
     async def verify_node(self, node_id: str) -> None:
-        """Verify the node's candidate; its step type says what the result means (review or
-        merge, accept, rework, or escalate)."""
+        """Verify the node's candidate with its step's Verify phase, which then says what the
+        result means (the next phase, rework, or escalate)."""
         c, node = self.c, self.c.nodes[node_id]
-        step = step_for(node)
-        phase = step.verify(c, node)
+        phase = step_for(node).phase(Verify)
+        assert isinstance(phase, Verify), f"{node.kind} is not verified"
+        commands = phase.commands_for(c, node)
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
-                f"({'setup and ' if c.change.setup_pin else ''}{len(phase.commands)} command(s))",
+                f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
                 node_id)
-        res = await phase.verification(self.ctx, node_id, node.candidate_sha)
+        res = await phase.verification(self.ctx, node_id, node.candidate_sha, commands)
         async with c.lock:
             if node.status != VERIFYING:
                 return
-            path, key = step.verification_record(node)
+            path, key = phase.record(node)
             att = c.write_record(path, res).attestation
             # The node keeps a compact copy (the stored record has the command output).
             node.verification[key] = res.model_copy(update={
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
-            step.verified(self, node, res, phase.judge(res, node.cycle, att), att)
+            phase.conclude(self.runner, node, res, att)
             c.save()
 
     def setup_failed(self, node: Node, r: CommandResult, att: str, escalation: Escalate) -> None:
@@ -95,12 +93,13 @@ class Acceptance:
     def panel_complete(self, node: Node) -> None:
         """Once every panel member has reported: merge on a unanimous PASS at the candidate,
         otherwise rework with the HIGH findings (or escalate a stale loop, G-RV5)."""
-        result = Panel(tuple(self.c.change.panel)).decide(node)
+        panel = step_for(node).phase(Panel)
+        assert isinstance(panel, Panel)
+        result = panel.decide(node, self.c)
         if result is None:
             return
         if isinstance(result, Ok):
-            node.status = MERGING
-            self.c.spawn(self.merge_node(node.id))
+            self.runner.advance(node, panel)
             return
         self.ctx.apply(node, result)
 
@@ -115,17 +114,18 @@ class Acceptance:
         async with c.lock:
             node = c.nodes[node_id]
             sha = node.candidate_sha
-            result = await Merge(tuple(c.change.panel)).run(self.ctx, node)
+            merge = step_for(node).phase(Merge)
+            assert isinstance(merge, Merge)
+            result = await merge.run(self.ctx, node)
             if not isinstance(result, Ok):
                 self.ctx.apply(node, result)
                 c.save()
                 return
             node.accepted_sha = sha
-            node.status = ACCEPTED
             run = c.runs.get(node.current_run) if node.current_run else None
             await cleanup.delete_run_branch(c, run.branch if run else None, node_id)
             c.event("accepted", f"merged {sha[:12]} -> integration {result.value[:12]}", node_id)
-            self.lifecycle.accept_runs(node)  # deletes the implementer sandbox (principle 8)
+            self.runner.advance(node, merge)  # accepted; its sandbox goes (principle 8)
             c.save()
 
     async def ship(self) -> None:

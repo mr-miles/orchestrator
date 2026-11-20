@@ -556,7 +556,7 @@ def test_engine_collaborators_are_acyclic():
     the facade, and the imports between the parts form a DAG."""
     eng = ROOT / "legion_orch/workflow/engine"
     parts = {"core", "graph", "runs", "dispatch", "acceptance", "reports", "human", "schedule",
-             "provision"}
+             "provision", "sandboxes", "sandbox_plan", "phases", "steps"}
     deps = {}
     for name in parts:
         src = (eng / f"{name}.py").read_text()
@@ -595,16 +595,26 @@ def test_every_role_has_exactly_one_handler():
 
 
 def test_role_dispatch_policy():
-    """The dispatch policy each handler declares (formerly hard-coded role sets in the engine)."""
+    """The dispatch policy each handler declares, and where each role's agent works (its step's
+    sandbox plan; judges get a fresh one) – formerly hard-coded role sets in the engine."""
+    from legion_orch.workflow.engine.sandbox_plan import Checkout, UntilAccepted, UntilGate
+    from legion_orch.workflow.engine.steps import sandbox_plan
     from legion_orch.workflow.roles import roles_where
     panel = {"reviewer", "security", "architecture"}
-    assert roles_where("pushes") == {"implementer", "oracle"}
+    everyone = set(Assets(ROOT / "assets").roles)
+    plans = {r: sandbox_plan(r) for r in everyone}
+    assert {r for r, p in plans.items() if p.pushes} == {"implementer", "oracle"}
+    assert {r for r, p in plans.items() if p.at_head} == {"baseline", "integration", "release",
+                                                          "retrospective"}
+    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {"critic"}
+    assert {r: p.keep for r, p in plans.items() if p.keeps} == {
+        "intake": UntilGate("H-1"), "planner": UntilGate("H-2"), "oracle": UntilGate("H-2"),
+        "implementer": UntilAccepted()}
     assert roles_where("panel") == panel | {"critic"}         # the critic judges the plan node
     assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
-    assert roles_where("judges_head") == {"baseline", "integration", "release", "retrospective"}
-    assert roles_where("reuses_sandbox") == roles_where("needs_fresh_approval") == {"implementer"}
+    assert not any(plans[r].keeps for r in roles_where("judge"))   # G-D4
+    assert roles_where("needs_fresh_approval") == {"implementer"}
     assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
-    everyone = set(Assets(ROOT / "assets").roles)
     assert everyone - roles_where("sees_requirements") == {"intake"}
     assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle",
                                                             "retrospective"}
