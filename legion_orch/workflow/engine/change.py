@@ -107,15 +107,12 @@ class ChangeEngine(ChangeCore):
                 # its agent's turn ended (with the controller): its report goes to its phase
                 self.spawn(self._reports.conclude_later(run.id))
         for node in self.nodes.values():
-            if node.status == VERIFYING:
-                self.spawn(self._acceptance.verify_node(node.id))
-            elif node.status == MERGING:
-                self.spawn(self._acceptance.merge_node(node.id))
-            elif node.status == RUNNING and (work := self._runner.resume_work(node)):
-                self.spawn(work)                    # provisioning
+            if node.status in (VERIFYING, MERGING, RUNNING) \
+                    and (work := self._runner.resume_work(node)):
+                self.spawn(work)                    # verifying, merging, provisioning
         for gate in self._flow.evaluating():
             self.spawn(self._flow.evaluate(gate))   # a gate's preconditions
-        self._gates.resume_retries()
+        self._runner.resume_retries()
         self.save()
 
     async def tick(self) -> None:

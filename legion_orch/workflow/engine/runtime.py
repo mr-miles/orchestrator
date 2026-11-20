@@ -31,6 +31,8 @@ from ..flow import (
     Parallel,
     Preconditions,
     Record,
+    ResumeStep,
+    RetryStep,
     Stage,
     StartStep,
     Step,
@@ -42,9 +44,11 @@ from ..model import (
     ACCEPTED,
     AWAITING_HUMAN,
     BUILD,
+    ESCALATED,
     FAILED,
     H_CHANGE,
     HUMAN,
+    MERGING,
     PENDING,
     RETRO,
     ChangeStatus,
@@ -339,6 +343,17 @@ class FlowRuntime:
                 node = self.c.nodes.get(e.step)
                 if node is not None and node.status != PENDING:
                     self.runner.reset(node)
+            elif isinstance(e, ResumeStep):
+                node = self.c.nodes.get(e.step)
+                if node is not None and node.status == ESCALATED:
+                    if e.override:                 # it finishes its work without its checks
+                        self.runner.resume(node, MERGING)
+                    else:
+                        self.runner.resume_escalation(node)
+            elif isinstance(e, RetryStep):
+                node = self.c.nodes.get(e.step)
+                if node is not None and node.status == ESCALATED:
+                    self.runner.retry(node)
             elif isinstance(e, Evaluate):
                 if base_id(e.gate) == H_CHANGE:      # the ship gates read git: in the background
                     self.c.spawn(self.evaluate(e.gate))
@@ -377,9 +392,24 @@ class FlowRuntime:
                                         esc.reason if esc else ""))
 
     def resumed(self, node: Node) -> None:
-        """The node's escalation was resolved within its step: the core's step goes on."""
+        """The node's escalation was resolved (the core already knows when it decided it): the
+        core's step goes on."""
         if self.status(node.id) == StepStatus.ESCALATED:
-            self._input("act", node.id, "retry", "human", "", None)
+            self._input("act", node.id, "retry", "controller", "", None)
+
+    # ------------------------------------------------------------------ a human's decision
+    async def decide(self, node: Node, action: str, by: str, text: str = "") -> None:
+        """A human's answer, retry or override on an escalated step goes to the core, whose
+        effects resume the step (``ResumeStep``, ``RetryStep``). A node outside the tree (the
+        retrospective) has no step there: its runner is told directly."""
+        if node.id in self.flow.nodes:
+            await self.act(node.id, action, by, text)
+        elif action == "retry":
+            self.runner.retry(node)
+        elif action == "override":
+            self.runner.resume(node, MERGING)
+        else:
+            self.runner.resume_escalation(node)
 
     def redo(self, step: str, feedback: Feedback) -> None:
         """A later step found ``step`` wanting: it and everything after it in its stage start

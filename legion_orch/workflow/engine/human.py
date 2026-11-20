@@ -16,16 +16,8 @@ from ..model import (
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
-    LIVE_RUN,
-    MERGING,
     PROVISION,
-    R_REPORTED,
-    R_SUPERSEDED,
-    READY,
     RETRO,
-    REVIEWING,
-    REWORK,
-    VERIFYING,
     Approval,
     ApprovalState,
     ChangeEnd,
@@ -34,7 +26,6 @@ from ..model import (
     FixRound,
     Node,
     Override,
-    Resume,
     TierOverride,
 )
 from ..results import ActionResult
@@ -342,23 +333,21 @@ class HumanGates:
     # ------------------------------------------------------------------ escalations
     async def _resolve_escalation(self, node: Node, action: str, approver: str,
                                   payload: dict) -> ActionResult:
+        """What a decision owner decides at an escalation: recorded here, carried out by the
+        workflow (the core resumes the step; the step runner takes it up where it stopped)."""
         if action == "abandon":
             res = self._end_change(node, approver, payload, "abandon")
             await self.flow.act(CHANGE, "abandon", approver)
             return res
         if action in ("override_accept", "override"):
-            return self._override_accept(node, approver, payload)
+            reason = self._override_accept(node, approver, payload)
+            await self.flow.decide(node, "override", approver, reason)
+            return ActionResult(status=node.status)
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
         if node.escalation and node.escalation.retrying:
             raise WorkflowError("a retry is already in progress (removing the old sandbox)")
-        resume = node.escalation.resume if node.escalation else Resume.READY
-        if action == "retry":
-            old = self._sandbox_to_remove(node)
-            if old:
-                node.escalation.retrying = True
-                self.c.spawn(self._retry_after_removing(node.id, old))
-                return ActionResult(note=f"removing sandbox {old}, then retrying")
+        text = ""
         if action == "answer":
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
@@ -375,8 +364,11 @@ class HumanGates:
                 head=self.c.change.integration_head,
                 text=f"human decision on \"{question[:300]}\": {text}" if question
                 else f"human decision: {text}"))
-        node.escalation = None
-        self._resume(node, resume)
+        await self.flow.decide(node, action, approver, text)
+        if node.escalation and node.escalation.retrying:
+            run = self.c.runs.get(node.escalation.run) if node.escalation.run else None
+            return ActionResult(note=f"removing sandbox {run.sandbox if run else ''}, "
+                                     "then retrying")
         return ActionResult(status=node.status)
 
     async def _fix_round(self, node: Node, stage: str, approver: str,
@@ -408,43 +400,7 @@ class HumanGates:
                      f"{(ch.integration_head or '')[:12]}", node.id)
         return ActionResult(note=f"fix round {n}: the planner plans it on top of the integration head")
 
-    def _sandbox_to_remove(self, node: Node) -> str | None:
-        """The escalated run's sandbox, if it still exists and no live run uses it."""
-        run = self.c.runs.get(node.escalation.run) if node.escalation and node.escalation.run else None
-        if not run or not run.sandbox or run.sandbox_deleted:
-            return None
-        if any(r.sandbox == run.sandbox and r.status in LIVE_RUN for r in self.c.runs.values()):
-            return None
-        return run.sandbox
-
-    async def _retry_after_removing(self, node_id: str, sandbox: str) -> None:
-        """Retry: delete the failed run's sandbox first (a failed delete is reported and the
-        retry goes ahead in a new sandbox), then resume where the escalation said."""
-        ok = await self.lifecycle.sandboxes.delete(sandbox) if sandbox else True
-        async with self.c.lock:
-            node = self.c.nodes.get(node_id)
-            esc = node.escalation if node else None
-            if node is None or node.status != ESCALATED or esc is None or not esc.retrying:
-                return                  # abandoned or otherwise resolved meanwhile
-            if not ok:
-                self.c.event("sandbox", f"could not remove {sandbox}; retrying in a new sandbox",
-                             node_id)
-            if node.sandbox == sandbox:
-                node.sandbox = None     # the next run gets a fresh sandbox
-            node.escalation = None
-            self._resume(node, esc.resume)
-            self.c.event("human_action", f"retry: resumed {esc.resume}", node_id)
-            self.c.save()
-
-    def resume_retries(self) -> None:
-        """After a restart: finish retries that were removing their old sandbox."""
-        for node in self.c.nodes.values():
-            esc = node.escalation
-            if node.status == ESCALATED and esc and esc.retrying:
-                run = self.c.runs.get(esc.run) if esc.run else None
-                self.c.spawn(self._retry_after_removing(node.id, run.sandbox if run else ""))
-
-    def _override_accept(self, node: Node, approver: str, payload: dict) -> ActionResult:
+    def _override_accept(self, node: Node, approver: str, payload: dict) -> str:
         """Accept a build task without a full panel PASS. Deterministic verification at the
         candidate is still required (it is not waivable); the gate reports human judgement."""
         if "override" not in self.flow.actions(node.id):     # the step allows it: build tasks
@@ -456,38 +412,7 @@ class HumanGates:
             raise WorkflowError("override requires passing deterministic verification at the "
                                 "candidate (deterministic_verification is not waivable)")
         node.override = Override(approver=approver, reason=payload["reason"], sha=node.candidate_sha)
-        self.flow.runner.resume(node, MERGING)
-        self.c.spawn(self.acceptance.merge_node(node.id))
-        return ActionResult()
-
-    def _resume(self, node: Node, resume: Resume) -> None:
-        """Continue the workflow where the resolved escalation said it should."""
-        resume_in = self.flow.runner.resume
-        if resume == Resume.CRITIQUE_BUDGET:          # one more critique cycle: rework the plan
-            node.extra_cycles += 1
-            node.cycle += 1
-            resume_in(node, REWORK)
-        elif resume == Resume.REWORK_CYCLE:           # one more review cycle
-            node.extra_cycles += 1
-            cur = self.c.runs.get(node.current_run) if node.current_run else None
-            if cur and cur.status == R_REPORTED:
-                cur.status = R_SUPERSEDED
-            node.cycle += 1
-            node.candidate_sha = None
-            resume_in(node, REWORK)
-        elif resume == Resume.VERIFYING:
-            resume_in(node, VERIFYING)
-            self.c.spawn(self.acceptance.verify_node(node.id))
-        elif resume == Resume.REVIEWING:              # re-dispatch the missing panel member(s)
-            resume_in(node, REVIEWING)
-        elif resume == Resume.MERGING:                # merge the accepted candidate again
-            resume_in(node, MERGING)
-            self.c.spawn(self.acceptance.merge_node(node.id))
-        elif resume == Resume.REWORK:
-            resume_in(node, REWORK)
-        else:                                         # a new run, in a new sandbox
-            self.lifecycle.retire_runs(node)
-            resume_in(node, READY)
+        return payload["reason"]
 
     def _promote(self, approver: str, payload: dict) -> str:
         """Copy a proposal of the H-E1-approved spec version into the library."""

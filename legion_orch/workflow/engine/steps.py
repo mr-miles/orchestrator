@@ -22,12 +22,14 @@ from typing import TYPE_CHECKING, Any
 from ..model import (
     BASELINE,
     BUILD,
+    ESCALATED,
     H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
     INTAKE,
     INTEGRATION,
+    LIVE_RUN,
     ORACLE,
     PENDING,
     PLAN,
@@ -328,9 +330,80 @@ class StepRunner:
         self.states.reset(node)
 
     def resume(self, node: Node, to: NodeStatus) -> None:
-        """The node's escalation is resolved: its step goes on in the phase ``to``."""
+        """The node's escalation is resolved: its step goes on in the phase ``to``, which takes
+        up its work again (a verification, a merge)."""
         self.states.resume(node, to)
         self.runtime.resumed(node)
+        phase = self.step(node).current(node)
+        if phase is not None and (work := phase.resume(self, node)):
+            self.c.spawn(work)
+
+    def resume_escalation(self, node: Node) -> None:
+        """A human answered (the decision is on the node): the step goes on where its
+        escalation said – one more cycle where a budget ran out, the phase it stopped in, or a
+        new run in a new sandbox."""
+        point = node.escalation.resume if node.escalation else Resume.READY
+        if point == Resume.CRITIQUE_BUDGET:            # one more critique cycle: rework the plan
+            node.extra_cycles += 1
+            node.cycle += 1
+            self.resume(node, REWORK)
+        elif point == Resume.REWORK_CYCLE:             # one more review cycle
+            node.extra_cycles += 1
+            cur = self.c.runs.get(node.current_run) if node.current_run else None
+            if cur and cur.status == R_REPORTED:
+                cur.status = R_SUPERSEDED
+            node.cycle += 1
+            node.candidate_sha = None
+            self.resume(node, REWORK)
+        elif point in (Resume.VERIFYING, Resume.REVIEWING, Resume.MERGING, Resume.REWORK):
+            self.resume(node, NodeStatus(point.value))
+        else:                                          # a new run, in a new sandbox
+            self.lifecycle.retire_runs(node)
+            self.resume(node, READY)
+
+    def retry(self, node: Node) -> None:
+        """Retry: the failed run's sandbox goes first (a failed delete is reported and the
+        retry goes ahead in a new sandbox), then the step goes on where its escalation said."""
+        old = self._sandbox_to_remove(node)
+        if old is None:
+            self.resume_escalation(node)
+            return
+        node.escalation.retrying = True
+        self.c.spawn(self._retry_after_removing(node.id, old))
+
+    def _sandbox_to_remove(self, node: Node) -> str | None:
+        """The escalated run's sandbox, if it still exists and no live run uses it."""
+        esc = node.escalation
+        run = self.c.runs.get(esc.run) if esc and esc.run else None
+        if not run or not run.sandbox or run.sandbox_deleted:
+            return None
+        if any(r.sandbox == run.sandbox and r.status in LIVE_RUN for r in self.c.runs.values()):
+            return None
+        return run.sandbox
+
+    async def _retry_after_removing(self, node_id: str, sandbox: str) -> None:
+        ok = await self.lifecycle.sandboxes.delete(sandbox) if sandbox else True
+        async with self.c.lock:
+            node = self.c.nodes.get(node_id)
+            esc = node.escalation if node else None
+            if node is None or node.status != ESCALATED or esc is None or not esc.retrying:
+                return                  # abandoned or otherwise resolved meanwhile
+            if not ok:
+                self.c.event("sandbox", f"could not remove {sandbox}; retrying in a new sandbox",
+                             node_id)
+            if node.sandbox == sandbox:
+                node.sandbox = None     # the next run gets a fresh sandbox
+            self.resume_escalation(node)
+            self.c.event("human_action", f"retry: resumed {esc.resume}", node_id)
+            self.c.save()
+
+    def resume_retries(self) -> None:
+        """After a restart: finish retries that were removing their old sandbox."""
+        for node in self.c.nodes.values():
+            esc = node.escalation
+            if node.status == ESCALATED and esc and esc.retrying:
+                run = self.c.runs.get(esc.run) if esc.run else None
+                self.c.spawn(self._retry_after_removing(node.id, run.sandbox if run else ""))
 
     def end(self, node: Node) -> None:
         """The change ended at this node (abandoned at its escalation)."""

@@ -79,6 +79,7 @@ class StartStep:
 class ResumeStep:
     step: str
     decision: str
+    override: bool = False            # accepted without its own checks: it finishes its work
 
 
 @dataclass(frozen=True)
@@ -276,8 +277,11 @@ class FlowState:
             self.step(target).resume()
             self._effects.append(RetryStep(target))
         elif action == "override":
-            self.step(target).override()
-            self._effects.append(Record("override", target, by, text))
+            # the step goes on to finish its work without its own checks (a build is merged);
+            # it is done when that finishes
+            self.step(target).resume()
+            self._effects += [Record("override", target, by, text),
+                              ResumeStep(target, text, override=True)]
         self._advance()
         return self._take()
 

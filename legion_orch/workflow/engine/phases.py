@@ -390,6 +390,10 @@ class Verify(Phase):
         rt.phase(node, VERIFYING)
         rt.c.spawn(rt.acceptance.verify_node(node.id))
 
+    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
+        """Verify again (resumed, or after a restart)."""
+        return rt.acceptance.verify_node(node.id) if node.status == VERIFYING else None
+
     async def verification(self, ctx: PhaseContext, label: str, sha: str,
                            commands: tuple[str, ...] | None = None) -> Verification:
         """Run it. Never raises. A name the gateway already has (another controller) is
@@ -480,6 +484,10 @@ class Merge(Phase):
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
         rt.phase(node, MERGING)
         rt.c.spawn(rt.acceptance.merge_node(node.id))
+
+    def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
+        """Merge again (resumed, overridden, or after a restart)."""
+        return rt.acceptance.merge_node(node.id)
 
     async def run(self, ctx: PhaseContext, node: Node) -> PhaseResult:
         c = ctx.c

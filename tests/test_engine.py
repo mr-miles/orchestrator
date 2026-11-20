@@ -917,7 +917,7 @@ async def test_retry_interrupted_by_a_restart_completes(f: Flow):
     await f.exit_agent(r, rc=1)
     f.ce.nodes["intake"].escalation.retrying = True        # as if the controller stopped here
     f.ce.save()
-    f.ce._gates.resume_retries()
+    f.ce._runner.resume_retries()
     await f.settle()
     assert r.sandbox in f.runner.deleted and f.run("intake").id != r.id
 
