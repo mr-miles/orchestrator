@@ -313,6 +313,8 @@ class StepRunner:
         self.states = NodeStates()
         self.runtime: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
         self._steps: dict[str, StepDispatcher] = {}   # node -> its step's dispatcher
+        # (node, cycle) -> role -> a judge's escalation, held until the panel's others finish
+        self._held: dict[tuple[str, int], dict[str, Escalate]] = {}
         self.waiting = 0                     # phase tasks waiting on the change's state
 
     @staticmethod
@@ -485,6 +487,12 @@ class StepRunner:
                                                          self.ctx.dispatcher.reserve())
         return work
 
+    def held(self, node: Node, clear: bool = False) -> dict[str, Escalate]:
+        """The escalations a phase holds for the node's cycle (the panel: until every judge has
+        finished); ``clear``: given up."""
+        key = (node.id, node.cycle)
+        return self._held.pop(key, {}) if clear else self._held.setdefault(key, {})
+
     def release(self, node: Node) -> None:
         """The step is over (done, sent back, escalated, ended): its reservation goes back, its
         work still waiting is withdrawn, and its sandboxes are stopped once nothing live uses
@@ -492,6 +500,8 @@ class StepRunner:
         work = self._steps.pop(node.id, None)
         if work is not None:
             work.reservation.release()
+        for key in [k for k in self._held if k[0] == node.id]:
+            del self._held[key]
         self.lifecycle.sandboxes.suspend_when_idle(self._sandboxes(node))
 
     def _sandboxes(self, node: Node) -> set[str]:

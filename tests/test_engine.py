@@ -1184,3 +1184,26 @@ async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restar
         if ce2.runs[run.id].concluded:
             break
     assert ce2.runs[run.id].concluded and ce2.nodes["intake"].status == ACCEPTED
+
+
+@scenario()
+async def test_the_panel_waits_for_every_judge_before_escalating(f: Flow):
+    """A judge that fails does not escalate the step while another judge still works: the panel
+    escalates once every judge has finished, and a retry dispatches only the judges without a
+    review."""
+    await f.to_build()
+    f.ce.change.panel = ["reviewer", "security"]
+    await f.implement()
+    assert f.status("build:T1") == REVIEWING
+    security = f.run("build:T1", "security")
+    await f.exit_agent(security, rc=1)                      # fails while the reviewer works
+    assert f.status("build:T1") == REVIEWING and f.run("build:T1", "reviewer")
+    await f.review(role="reviewer")                         # the last judge finishes
+    node = f.ce.nodes["build:T1"]
+    assert node.status == ESCALATED and node.escalation.kind == "run_failed"
+    assert node.escalation.run == security.id and node.review(node.cycle, "reviewer")
+    await f.human("build:T1", "retry")
+    assert f.run("build:T1", "security").id != security.id      # a new security run only
+    assert not [r for r in f.runs("build:T1", "reviewer") if r.status in ("STARTING", "ACTIVE")]
+    await f.review(role="security")
+    assert f.status("build:T1") == ACCEPTED

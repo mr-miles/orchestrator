@@ -342,6 +342,16 @@ class Produce(Phase):
         self.conclude(rt, node, ended.result)
 
 
+def combined(held: dict[str, Escalate]) -> Escalate:
+    """The judges' escalations as one: the first's, asking about each."""
+    first = next(iter(held.values()))
+    if len(held) == 1:
+        return first
+    import dataclasses
+    return dataclasses.replace(first, question="; ".join(
+        f"{role}: {e.question}" for role, e in held.items()))
+
+
 async def conclude_later(rt: StepRunner, phase: Produce | Panel, node: Node, run: Run,
                          work: StepDispatcher) -> None:
     """After a restart: what an agent's accepted report means, to its phase."""
@@ -379,9 +389,24 @@ class Panel(Phase):
             rt.c.event("review", f"verification passed; panel {list(roles)}", node.id)
         self.start(rt, node)
 
+    def _latest(self, c: ChangeCore, node: Node, role: str) -> Run | None:
+        """The role's latest run at the node's cycle."""
+        runs = [r for r in c.runs.values()
+                if r.node_id == node.id and r.role == role and r.cycle == node.cycle]
+        return runs[-1] if runs else None
+
     def _busy(self, c: ChangeCore, node: Node, role: str) -> bool:
-        return any(r.node_id == node.id and r.role == role and r.cycle == node.cycle
-                   and r.status in LIVE_RUN | {R_REPORTED} for r in c.runs.values())
+        """The judge works, or its turn ended and what it reported is still to be read."""
+        run = self._latest(c, node, role)
+        return run is not None and (run.status in LIVE_RUN
+                                    or (run.status == R_REPORTED and not run.concluded))
+
+    def outstanding(self, c: ChangeCore, node: Node, held: dict) -> list[str]:
+        """The judges still to finish this cycle: no review, no escalation held, and their
+        work under way or still to start."""
+        return [role for role in self.roles(c)
+                if node.review(node.cycle, role) is None and role not in held
+                and (self._latest(c, node, role) is None or self._busy(c, node, role))]
 
     def start(self, rt: StepRunner, node: Node) -> None:
         """The missing judges' runs at the candidate (one per role and cycle), in parallel."""
@@ -410,22 +435,33 @@ class Panel(Phase):
         while await rt.wait_until(node, work, wanted):
             if await RoleWork(role).dispatch(
                     rt, node, work, self, wanted=wanted, judged_sha=node.candidate_sha,
-                    ended=lambda e: self.ended(rt, node, e) if node.cycle == cycle else None):
+                    ended=lambda e: self.ended(rt, node, e, role) if node.cycle == cycle
+                    else None):
                 return
 
-    def ended(self, rt: StepRunner, node: Node, ended: Ended) -> None:
-        """A judge's turn ended: its run is done and its sandbox retired. An escalation (its
-        failure, or its handler's) stands; otherwise the panel decides once every judge has
-        reported – or, where a judge's own handler decides (the critic), its result does."""
+    def ended(self, rt: StepRunner, node: Node, ended: Ended, role: str | None = None) -> None:
+        """A judge's turn ended: its run is done and its sandbox retired. The panel waits for
+        every judge of the cycle: a judge's escalation (its failure, a BLOCKED report, a refused
+        dispatch) is held until the others have finished too, then the panel escalates with all
+        of them; otherwise it decides once every judge has reported – or, where a judge's own
+        handler decides (the critic), its result does."""
         run, result = ended.run, ended.result
+        role = role or (run.role if run else "")
         if run is not None:
             run.concluded = True
-            if run.status == R_REPORTED:
+            if run.status == R_REPORTED and not isinstance(result, Escalate):
                 run.status = R_ACCEPTED
                 rt.lifecycle.sandboxes.delete_later(run.sandbox)
-        if self.decides and not isinstance(result, Escalate):
-            result = self.decide(node, rt.c)
-        self.conclude(rt, node, result)
+        if not self.decides:
+            self.conclude(rt, node, result)
+            return
+        held = rt.held(node)
+        if isinstance(result, Escalate):
+            held[role] = result
+        if self.outstanding(rt.c, node, held):
+            return                               # the other judges first
+        rt.held(node, clear=True)
+        self.conclude(rt, node, combined(held) if held else self.decide(node, rt.c))
 
     def decide(self, node: Node, c: ChangeCore | None = None) -> PhaseResult | None:
         """None until every judge has reported (records the cycle's finding fingerprints)."""
