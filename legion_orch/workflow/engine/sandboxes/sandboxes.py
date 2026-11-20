@@ -11,7 +11,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from ...sandbox import (
+from ....sandbox import (
     AGENT_PREFIX,
     VERIFIER_PREFIX,
     SandboxEnv,
@@ -20,16 +20,16 @@ from ...sandbox import (
     is_name_clash,
     payload_scripts,
 )
-from .. import governance
-from ..assets import GitMode
-from ..environment import VERIFIER
-from ..model import LIVE_RUN, Change, Node, Run, RunStage
-from ..setup import SETUP_COMMAND
-from .auth import VerifierGrant
-from .core import ChangeCore
+from ... import governance
+from ...assets import GitMode
+from ...environment import VERIFIER
+from ...model import LIVE_RUN, Change, Node, Run, RunStage
+from ...setup import SETUP_COMMAND
+from ..base.auth import VerifierGrant
+from ..base.core import ChangeCore
+from ..base.work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
+from .plan import Plans
 from .reflect import Reflector
-from .sandbox_plan import Plans
-from .work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
 
 
 def sandbox_env(change: Change, role: str) -> SandboxEnv | None:

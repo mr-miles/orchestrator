@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ..model import CommandResult
+from ...model import CommandResult
 
 PREPARE, SETUP, COMMAND, AGENT = "prepare", "setup", "command", "agent"
 OUTPUT_TAIL = 4000

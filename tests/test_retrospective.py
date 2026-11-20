@@ -15,7 +15,7 @@ from legion_orch.sandbox import agentlog
 from legion_orch.sandbox.runner import spawn_logged, stamp
 from legion_orch.workflow.assets import Assets
 from legion_orch.workflow.engine import WorkflowError
-from legion_orch.workflow.engine.runs import RunLifecycle, split_lines
+from legion_orch.workflow.engine.services.runs import RunLifecycle, split_lines
 from legion_orch.workflow.model import ACCEPTED, ChangeStatus, Run
 
 

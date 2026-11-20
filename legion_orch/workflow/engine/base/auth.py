@@ -16,9 +16,9 @@ from dataclasses import dataclass
 
 import httpx
 
-from ...config import Config
-from ...git import GitGrant
-from ...identity import (
+from ....config import Config
+from ....git import GitGrant
+from ....identity import (
     JWT_SPIFFE,
     AccessTokens,
     DevSpire,
@@ -26,7 +26,7 @@ from ...identity import (
     SvidVerifier,
     WorkloadBinding,
 )
-from ..model import LIVE_RUN, Run
+from ...model import LIVE_RUN, Run
 from .common import log
 
 # Every run of every change, as (change id, run).

@@ -29,7 +29,6 @@ from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
 from ..workflow import attest
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
-from ..workflow.engine.steps import sandbox_plan
 from ..workflow.model import Run
 from ..workflow.results import ReportOutcome
 
@@ -129,7 +128,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                   "report_schema": ctl.assets.roles[r.role].report_schema,
                   "git": {"url": ctl.git_url, "branch": r.branch, "base_sha": r.base_sha,
                           "checkout_sha": r.judged_sha or r.base_sha,
-                          "can_push": sandbox_plan(r.role).pushes},
+                          "can_push": r.branch is not None},   # only roles that push get one
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
         return a
 

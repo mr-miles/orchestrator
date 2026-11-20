@@ -290,7 +290,7 @@ listed in the readiness result.
 
 A change's workflow is a tree of **stages**, most ending in a **gate** – the stage's last step;
 the steps inside a stage run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
-environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/workflow_tree.py`):
+environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/runtime/workflow_tree.py`):
 
 ```
 Requirements   intake ─────────────────────────────────────────────── ◆ H-1 accept requirements & tier
@@ -315,7 +315,7 @@ Delivery       tasks (DAG of build:<id>) ─ [integration] ─ [release] ── 
 no I/O): which step starts when, send-backs, fix rounds and the end – a gate is a step to it.
 Within a step the engine decides: its phases (§5.6–5.9), rework cycles, escalations and their
 answers, what a gate checks. The step runner reports to the core – done, escalated, resumed – and
-the core's effects start, stop, resume and retry steps (`engine/runtime.py`).
+the core's effects start, stop, resume and retry steps (`engine/runtime/flow_runtime.py`).
 
 **Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a) – the
 answer to its step's escalation, **send back**, **reject** (H-3) and **recheck** (a retry: its

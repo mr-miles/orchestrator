@@ -6,9 +6,9 @@ import shutil
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ...sandbox import agentlog
-from ...util import now_iso
-from ..model import (
+from ....sandbox import agentlog
+from ....util import now_iso
+from ...model import (
     LIVE_RUN,
     R_ACCEPTED,
     R_FAILED,
@@ -19,13 +19,13 @@ from ..model import (
     Run,
     RunFailure,
 )
-from ..results import Escalate
-from ..roles import handler_for
-from .common import _parse_ts
-from .core import ChangeCore
+from ...results import Escalate
+from ...roles import handler_for
+from ..base.common import _parse_ts
+from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
-    from .sandboxes import Sandboxes
+    from ..sandboxes.sandboxes import Sandboxes
 
 
 def log_part(run_id: str, n: int) -> str:

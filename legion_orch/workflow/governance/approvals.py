@@ -21,6 +21,7 @@ from .common import GovernanceError
 from .surfaces import pin_surfaces
 
 ENV_SPEC = "plan/environment.json"
+PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]   # the plan's documents
 
 
 def h2_subjects(e: ChangeView) -> dict[str, dict[str, int | None]]:

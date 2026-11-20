@@ -5,11 +5,11 @@ import asyncio
 import contextlib
 from dataclasses import dataclass, field
 
-from ...store import DocCheck, DocVersion
-from ...util import now_iso
-from .. import attest, guards, report_data
-from ..assets import GitMode
-from ..model import (
+from ....store import DocCheck, DocVersion
+from ....util import now_iso
+from ... import attest, guards, report_data
+from ...assets import GitMode
+from ...model import (
     LIVE_RUN,
     R_ACTIVE,
     R_REPORTED,
@@ -22,11 +22,11 @@ from ..model import (
     RunReport,
     RunStage,
 )
-from ..results import Escalate, PhaseResult, ReportOutcome
-from ..roles import Report, handler_for
-from ..view import RoleContext
-from .common import WorkflowError, log
-from .core import ChangeCore
+from ...results import Escalate, PhaseResult, ReportOutcome
+from ...roles import Report, handler_for
+from ...view import RoleContext
+from ..base.common import WorkflowError, log
+from ..base.core import ChangeCore
 from .runs import RunLifecycle
 
 

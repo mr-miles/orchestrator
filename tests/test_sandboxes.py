@@ -11,7 +11,7 @@ import pytest
 from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import SandboxError
-from legion_orch.workflow.engine.sandboxes import Sandboxes
+from legion_orch.workflow.engine.sandboxes.sandboxes import Sandboxes
 from legion_orch.workflow.model import (
     ACCEPTED,
     BUILD,
@@ -129,8 +129,8 @@ async def test_a_role_without_the_repository_is_not_prepared(f: Flow):
 async def prepare(f: Flow, run: Run, fresh: bool = True):
     """The run's session and its preparation commands (no agent turn), as its work executes
     them, logged to its agent log."""
-    from legion_orch.workflow.engine.sandboxes import AgentSession
-    from legion_orch.workflow.engine.work import Work
+    from legion_orch.workflow.engine.base.work import Work
+    from legion_orch.workflow.engine.sandboxes.sandboxes import AgentSession
 
     async def stage(*_):
         pass

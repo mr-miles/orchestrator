@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from .. import governance, guards
 from ..assets import GitMode
-from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
+from ..governance.approvals import ENV_SPEC
 from ..model import Node
 from ..results import Ok, PhaseResult
 from ..view import RoleContext

@@ -12,17 +12,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ...config import agent_command
-from ...sandbox import (
+from ....config import agent_command
+from ....sandbox import (
     AGENT_PREFIX,
     agentlog,
     payload_scripts,
 )
-from ...store import DocStoreError
-from ...util import now_iso
-from .. import attest, governance
-from ..assets import AssetError
-from ..model import (
+from ....store import DocStoreError
+from ....util import now_iso
+from ... import attest, governance
+from ...assets import AssetError
+from ...model import (
     ACCEPTED,
     H_ENV,
     H_REQUIREMENTS,
@@ -37,14 +37,14 @@ from ..model import (
     Run,
     RunStage,
 )
-from ..results import Escalate, PhaseResult
-from ..roles import handler_for
-from ..view import RoleContext
-from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
-from .core import ChangeCore
+from ...results import Escalate, PhaseResult
+from ...roles import handler_for
+from ...view import RoleContext
+from ..base.common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
+from ..base.core import ChangeCore
+from ..base.work import AGENT, Command, Outcome, Session, Work
+from ..sandboxes.sandboxes import AgentSession, Sandboxes, sandbox_env
 from .runs import RunLifecycle
-from .sandboxes import AgentSession, Sandboxes, sandbox_env
-from .work import AGENT, Command, Outcome, Session, Work
 
 if TYPE_CHECKING:
     from .reports import Reports

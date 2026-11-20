@@ -8,12 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from ...config import Config
-from ...git import GitRemote
-from ...sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
-from ...store import DocStore
-from ..assets import Assets
-from ..attention import AttentionItem
+from ....config import Config
+from ....git import GitRemote
+from ....sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
+from ....store import DocStore
+from ...assets import Assets
+from ...attention import AttentionItem
 from .auth import WorkloadAuth
 from .dispatch import Dispatcher
 

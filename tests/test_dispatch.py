@@ -8,7 +8,7 @@ import functools
 
 import pytest
 
-from legion_orch.workflow.engine.dispatch import Dispatcher, Withdrawn
+from legion_orch.workflow.engine.base.dispatch import Dispatcher, Withdrawn
 
 
 class Job:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from engine_harness import Flow, scenario
 
-from legion_orch.workflow.engine.phases import Ok, Panel, Verify
-from legion_orch.workflow.engine.sandbox_plan import JUDGE
-from legion_orch.workflow.engine.steps import (
+from legion_orch.workflow.engine.sandboxes.plan import JUDGE
+from legion_orch.workflow.engine.steps.phases import Ok, Panel, Verify
+from legion_orch.workflow.engine.steps.step_types import (
     STEP_TYPES,
     EnvironmentQuiescent,
     NoOverlap,
@@ -149,7 +149,7 @@ def node(f: Flow, kind: NodeKind, **kw) -> Node:
 def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     """An agent's turn ended after an accepted report in the node's current phase, with its
     handler's result (what the agent's work returns to its phase)."""
-    from legion_orch.workflow.engine.agent_runs import Ended
+    from legion_orch.workflow.engine.services.agent_runs import Ended
     from legion_orch.workflow.model import R_REPORTED, Run
     run = Run(id=f"r{9100 + len(f.ce.runs)}", node_id=n.id, role=role, soul="s", cycle=n.cycle,
               sandbox=f"sb-{len(f.ce.runs)}", status=R_REPORTED)
@@ -207,7 +207,7 @@ async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
 
 @scenario()
 async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
-    from legion_orch.workflow.engine.phases import Escalate, Rework
+    from legion_orch.workflow.engine.steps.phases import Escalate, Rework
     from legion_orch.workflow.model import Feedback, Resume
     capture_work(f)
     n = node(f, NodeKind.INTEGRATION)
@@ -333,7 +333,7 @@ async def test_a_baseline_and_a_preflight_pass_with_expected_failures_and_note_p
 async def test_a_preflight_setup_failure_redoes_its_rounds_oracle(f: Flow):
     """The policy's result: the round's oracle again, with the output, within its budget; a
     human decides after. (The core's redo itself: test_workflow_tree, test_preflight.)"""
-    from legion_orch.workflow.engine.phases import Escalate, OracleReworks
+    from legion_orch.workflow.engine.steps.phases import Escalate, OracleReworks
     from legion_orch.workflow.results import Redo
     oracle = node(f, ORACLE, id=ORACLE, status=ACCEPTED)
     n = node(f, PREFLIGHT, status=VERIFYING)
@@ -404,7 +404,7 @@ async def test_a_gate_step_asks_a_human_and_passes_once_answered(f: Flow):
 
 @scenario()
 async def test_an_approved_gate_with_unmet_checks_stays_approved_when_rechecked(f: Flow):
-    from legion_orch.workflow.engine.phases import ShipGates
+    from legion_orch.workflow.engine.steps.phases import ShipGates
     rt = f.ce._runner
     rt.runtime.completed = rt.runtime.escalated = rt.runtime.resumed = lambda node: None
     n = node(f, HUMAN, id="H-3", status=PENDING, title="Accept the change")

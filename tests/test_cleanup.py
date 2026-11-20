@@ -7,7 +7,8 @@ from __future__ import annotations
 import pytest
 from engine_harness import Flow, scenario
 
-from legion_orch.workflow.engine import WorkflowError, cleanup
+from legion_orch.workflow.engine import WorkflowError
+from legion_orch.workflow.engine.services import cleanup
 from legion_orch.workflow.model import ChangeStatus, Node
 
 

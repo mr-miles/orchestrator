@@ -1,18 +1,18 @@
-"""ChangeEngine: one change's workflow, composed of collaborators that each own one concern.
+"""ChangeEngine: one change's facade – the one public surface of its layers (compose.py).
 
-* :class:`ChangeCore` – the state, documents and events (the :class:`ChangeView`)
-* :class:`FlowRuntime` – the workflow core's runtime: the stage rules, the nodes' existence and
-  order, the gate nodes (docs/architecture.md §2)
-* :class:`StepRunner` – the step layer: each node through its phases, its state, its results
-* :class:`AgentRuns`, :class:`Reports`, :class:`Provisioner`, :class:`RunLifecycle`,
-  :class:`Sandboxes` – the services the phases use; the shared :class:`Dispatcher` runs their
-  work within the sandbox limit
+It is the change's :class:`ChangeCore` (state, documents, events: the :class:`ChangeView`)
+and fronts four parts:
+
+* :class:`FlowRuntime` – the workflow: everything that changes it goes through here
 * :class:`HumanGates` – what decision owners decide (recorded, then handed to the runtime)
+* :class:`Reports` – what agents write and report over MCP (recorded on their runs)
+* :class:`RunLifecycle` – run logs, and failing live runs after a restart
 
-Control passes only between neighbouring layers; each is given only the parts it uses, so the
-dependencies are explicit and acyclic.
+It never sees the step layer: control passes only between neighbouring layers.
 """
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ..model import (
@@ -24,17 +24,15 @@ from ..model import (
     SetupPin,
 )
 from ..results import ActionResult, ReportOutcome
-from .agent_runs import AgentRuns
-from .core import ChangeCore
-from .human import HumanGates
-from .phases import PhaseContext
-from .provision import Provisioner
-from .reports import Reports
-from .runs import RunLifecycle
-from .runtime import FlowRuntime
-from .sandboxes import Sandboxes
-from .services import EngineHost, Services
-from .steps import StepPlans, StepRunner
+from .base.core import ChangeCore
+from .base.shared import EngineHost, Services
+from .compose import compose
+
+if TYPE_CHECKING:
+    from .runtime.flow_runtime import FlowRuntime
+    from .runtime.human import HumanGates
+    from .services.reports import Reports
+    from .services.runs import RunLifecycle
 
 
 class ChangeEngine(ChangeCore):
@@ -48,18 +46,11 @@ class ChangeEngine(ChangeCore):
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
-        self._sandboxes = Sandboxes(self, StepPlans())
-        self._lifecycle = RunLifecycle(self, self._sandboxes)
-        self._agents = AgentRuns(self, self._lifecycle, self._sandboxes, roles=self)
-        self._phases = PhaseContext(self, self._sandboxes, svc.dispatcher, self._agents)
-        self._provisioner = Provisioner(self, self._lifecycle, self._sandboxes, svc.dispatcher)
-        self._reports = Reports(self, self._lifecycle, roles=self)
-        self._agents.reports = self._reports
-        self._gates = HumanGates(self, self._lifecycle)
-        self._runner = StepRunner(self, self._phases, self._lifecycle, self._provisioner)
-        self._flow = FlowRuntime(self, self._runner, self._lifecycle)
-        self._runner.runtime = self._flow
-        self._gates.flow = self._flow
+        self._flow: FlowRuntime
+        self._gates: HumanGates
+        self._reports: Reports
+        self._lifecycle: RunLifecycle
+        compose(self)                # its layers (compose.py); it fronts only these four
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:

@@ -29,11 +29,11 @@ from ..model import (
     Run,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
-from .auth import WorkloadAuth
+from .base.auth import WorkloadAuth
+from .base.common import WorkflowError, log
+from .base.dispatch import Dispatcher
+from .base.shared import Services
 from .change import ChangeEngine
-from .common import WorkflowError, log
-from .dispatch import Dispatcher
-from .services import Services
 
 
 class Controller:

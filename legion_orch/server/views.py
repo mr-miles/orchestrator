@@ -7,8 +7,8 @@ from ..git import GitError
 from ..store import DocStore
 from ..workflow import governance, ship, traceability
 from ..workflow.engine import ChangeEngine, Controller
-from ..workflow.engine.common import ENV_SPEC
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
+from ..workflow.governance.approvals import ENV_SPEC
 from ..workflow.model import ACCEPTED, H_ENV, H_SPEC, LIVE_RUN, RETRO
 
 

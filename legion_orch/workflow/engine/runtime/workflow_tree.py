@@ -16,8 +16,8 @@ approval (engine/steps.py). Step ids are the engine's node ids; a fix round's ar
 group, before the oracle)."""
 from __future__ import annotations
 
-from ..flow import AppendRound, Parallel, Stage, StartOver, Step, Workflow
-from ..model import (
+from ...flow import AppendRound, Parallel, Stage, StartOver, Step, Workflow
+from ...model import (
     BASELINE,
     H_CHANGE,
     H_ENV,
@@ -33,7 +33,7 @@ from ..model import (
     RELEASE,
     NodeKind,
 )
-from .ids import base_id, in_round, round_of, stage_id, stage_title  # noqa: F401  (re-exported)
+from ..base.ids import base_id, in_round, round_of, stage_id, stage_title  # noqa: F401  (re-exported)
 
 TASKS, SCAFFOLD = "tasks", "scaffold"          # the parallel groups of build steps
 

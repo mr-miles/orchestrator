@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from ..model import ACCEPTED, Node
-from .core import ChangeCore
-from .ids import in_round
+from ...model import ACCEPTED, Node
+from ..base.core import ChangeCore
+from ..base.ids import in_round
 
 
 class Checkout(StrEnum):

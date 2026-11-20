@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from legion_orch.workflow.engine.workflow_tree import (
+from legion_orch.workflow.engine.runtime.workflow_tree import (
     SCAFFOLD,
     TASKS,
     base_id,
@@ -214,7 +214,7 @@ def test_a_task_defined_again_after_a_send_back_continues_its_attempts():
 
 
 def test_stage_titles():
-    from legion_orch.workflow.engine.workflow_tree import stage_title
+    from legion_orch.workflow.engine.runtime.workflow_tree import stage_title
     assert stage_title("stage:design") == "Design"
     assert stage_title("stage:oracle@2") == "Oracle (round 2)"
     assert stage_title("stage:round@3") == "Round 3"

@@ -9,8 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ...store import DocStore
-from ..model import Change, Node, Run
+from ....store import DocStore
+from ...model import Change, Node, Run
 
 CONTROL = "control/"
 

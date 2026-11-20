@@ -1153,7 +1153,7 @@ async def test_an_accepted_report_is_taken_when_the_agents_turn_ends(f: Flow):
 
 @scenario()
 async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
-    from legion_orch.workflow.engine.runs import RunLifecycle
+    from legion_orch.workflow.engine.services.runs import RunLifecycle
     run = f.run("intake")
     atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
             await f.write(run, "intake/risk.json", signals())]

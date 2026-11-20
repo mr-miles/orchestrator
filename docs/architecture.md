@@ -22,30 +22,30 @@ flowchart TB
         direction TB
         subgraph wf["Workflow: the stage rules"]
             core["Workflow core – pure<br/>flow/core.py, states.py<br/><i>stages, gates, send-back, rounds</i>"]
-            tree["Stage tree per tier<br/>workflow_tree.py"]
-            rt["FlowRuntime<br/>runtime.py<br/><i>events in, effects out, persistence,<br/>housekeeping on saves</i>"]
+            tree["Stage tree per tier<br/>runtime/workflow_tree.py"]
+            rt["FlowRuntime<br/>runtime/flow_runtime.py<br/><i>events in, effects out, persistence,<br/>housekeeping on saves</i>"]
         end
         subgraph steps["Steps: what each kind of node is made of"]
-            runner["StepRunner<br/><i>moves a node through its phases,<br/>owns its state and its reservation</i>"]
-            types["STEP_TYPES<br/>steps.py<br/><i>the only per-kind table</i>"]
+            runner["StepRunner<br/>steps/runner.py<br/><i>moves a node through its phases,<br/>owns its state and its reservation</i>"]
+            types["STEP_TYPES, GATE_TYPES<br/>steps/step_types.py<br/><i>the only per-kind table</i>"]
         end
         subgraph layers["The three layers of a step"]
             agent["Agent layer<br/>roles/*.py – RoleHandler<br/><i>prompt, guards, judging a report</i>"]
-            phases["Orchestrator layer<br/>phases.py – Produce(RoleWork), Verify,<br/>Panel, Merge, BuildImages, Approval (gates)"]
-            sbx["Sandbox layer<br/>sandbox_plan.py – SandboxPlan<br/>sandboxes.py – Sandboxes, sessions"]
+            phases["Orchestrator layer<br/>steps/phases.py – Produce(RoleWork), Verify,<br/>Panel, Merge, BuildImages, Approval (gates)"]
+            sbx["Sandbox layer<br/>sandboxes/plan.py – SandboxPlan<br/>sandboxes/sandboxes.py – Sandboxes, sessions"]
         end
-        subgraph svc["Services the layers call"]
+        subgraph svc["Services the phases call (services/), HumanGates (runtime/human.py)"]
             agents["AgentRuns<br/><i>an agent's Work: run record, payload,<br/>commands; what the run did</i>"]
             reports["Reports<br/><i>agent writes and reports, shared guards</i>"]
             prov["Provisioner<br/><i>environment images, is it quiet,<br/>who waits for it</i>"]
             life["RunLifecycle<br/><i>failure, timers, logs, retiring</i>"]
             gates["HumanGates<br/><i>what approving each gate decides</i>"]
         end
-        state["ChangeCore + StateStore<br/><i>change, nodes, runs, events;<br/>the 'saved' signal</i>"]
+        state["ChangeCore + StateStore<br/>base/core.py, base/state.py<br/><i>change, nodes, runs, events;<br/>the 'saved' signal</i>"]
     end
 
-    disp["Dispatcher – shared by every change<br/>dispatch.py<br/><i>runs Work within limits.max_parallel;<br/>step reservations</i>"]
-    work["Work<br/>work.py<br/><i>a sandbox session + its commands,<br/>executed in order</i>"]
+    disp["Dispatcher – shared by every change<br/>base/dispatch.py<br/><i>runs Work within limits.max_parallel;<br/>step reservations</i>"]
+    work["Work<br/>base/work.py<br/><i>a sandbox session + its commands,<br/>executed in order</i>"]
 
     subgraph gov["Rules read by everyone (ChangeView only)"]
         governance["governance/*<br/>approvals, attestations, overrides"]
@@ -87,12 +87,28 @@ flowchart TB
 | --- | --- | --- |
 | **Workflow core** (`flow/`) | Between steps: what starts when (a stage's gate is its last step), send-backs and their rework policies, fix rounds, the end | Agents, sandboxes, git, the store, node kinds, what a gate checks or who approves it |
 | **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persistence by replay | What a step does inside |
-| **Steps** (`steps.py`) | What each kind of node is made of | How a phase does its work |
+| **Steps** (`steps/`) | What each kind of node is made of | How a phase does its work |
 | **Phases** | Their own work and its result: ok, rework or escalate | Which kind of node they serve (policies are passed in) |
 | **Agent layer** (role handlers) | A role's guards, context, prompt variables, what its report records | Sandboxes, the next phase |
 | **Dispatcher** | When work runs: a slot within the limit, a step's reservation | What the work is |
 | **Sandbox layer** | Sessions (creating or waking, pausing, deleting), the commands that prepare a working copy, holding, suspending and retiring sandboxes | Why a sandbox is needed |
 | **Infrastructure** | Running, storing, versioning | The workflow |
+
+In the code each engine layer is a package of `legion_orch/workflow/engine/`, imported only from
+the layers above it (the import contracts in `pyproject.toml`, checked by `lint-imports`):
+
+| Package | Holds |
+| --- | --- |
+| `runtime/` | `FlowRuntime`, the stage tree, `HumanGates` (decisions in) |
+| `steps/` | `StepRunner` and `StepEvents`, the step and gate types, the phases, the node states |
+| `services/` | `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the end-of-change cleanup |
+| `sandboxes/` | `Sandboxes` and their sessions, sandbox plans (given as `Plans`), reflections |
+| `base/` | `ChangeCore`, `StateStore`, `Services`, node ids, the `Dispatcher` and `Work` |
+
+`compose.py` builds a change's layers; `change.py` (the `ChangeEngine` facade) and
+`controller.py` sit on top. The step layer tells the runtime what happened through a protocol it
+defines (`StepEvents`), and the sandbox layer learns which plan applies through one it defines
+(`Plans`): neither imports the layer above.
 
 ## 2. Who decides what: control cascades through the layers
 
@@ -120,11 +136,11 @@ The participants, left to right:
 | Participant | Layer (§1) | Code | Responsible for (and owns) |
 | --- | --- | --- | --- |
 | **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, what a send-back or a redo resets, what a human may do at an escalated step. Knows only steps – a gate is the step that ends its stage. Owns the steps' and stages' states. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
-| **StepRunner** | Steps | `engine/steps.py`, `engine/node_states.py` | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
-| **Phases** | Orchestrator layer of a step | `engine/phases.py` (their services: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
-| **Dispatcher** | Dispatcher (one for every change) | `engine/dispatch.py` (the work it runs: `engine/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
-| **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime/flow_runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
+| **StepRunner** | Steps | `engine/steps/` (`runner.py`, `node_states.py`, `step_types.py`) | Moving a node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
+| **Phases** | Orchestrator layer of a step | `engine/steps/phases.py` (their services, `engine/services/`: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
+| **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
+| **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/services/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
 
 A build task, end to end:
 
@@ -198,7 +214,7 @@ sequenceDiagram
 
 The core's step and the engine's node are two levels of one state: the core's is coarse (is the
 step underway?), the node's says where inside it the work is. A node leaves `PENDING` exactly when
-its step starts in the core. The node's states are a declared machine (`engine/node_states.py`):
+its step starts in the core. The node's states are a declared machine (`engine/steps/node_states.py`):
 an illegal move raises, only resuming leaves an escalation, and nothing but the step runner
 writes a status.
 
@@ -231,7 +247,7 @@ core**: the step and what follows it start again.
 
 ### 2.2 Work, the dispatcher and reservations
 
-**Work** (`engine/work.py`) is a sandbox session and the commands executed in it, in order.
+**Work** (`engine/base/work.py`) is a sandbox session and the commands executed in it, in order.
 An agent's run and a verification differ only in their commands:
 
 | Work | Session | Commands |
@@ -245,7 +261,7 @@ above it – `Verify` judges a verification's results, `AgentRuns` concludes an 
 through its role handler. An agent's work is prepared in its slot: its run record is made
 then (or a guard refuses it), so a run never waits for a slot.
 
-**The dispatcher** (`engine/dispatch.py`, one for every change) runs work within
+**The dispatcher** (`engine/base/dispatch.py`, one for every change) runs work within
 `limits.max_parallel` – agent runs and verifier sandboxes – first come, first served. It calls
 only `execute()`.
 
@@ -373,7 +389,7 @@ classDiagram
     Merge ..> PhaseResult
 ```
 
-The table (`engine/steps.py`) – each kind is a list of phases:
+The table (`engine/steps/step_types.py`) – each kind is a list of phases:
 
 | Kind | Sandbox plan | Phases |
 | --- | --- | --- |
@@ -461,10 +477,10 @@ stateDiagram-v2
 | --- | --- | --- |
 | Workflow core | Pure: no I/O, no engine imports; state only through its machines' transitions | `tests/test_flow.py` (invariants after every event, hypothesis), `test_flow_states.py` |
 | FlowRuntime ↔ core | The core's state is its inputs; replaying them rebuilds it exactly | `tests/test_runtime.py` |
-| Engine collaborators | Each gets only the parts it uses; imports form a DAG; nothing imports the `ChangeEngine` facade | `test_units.py::test_engine_collaborators_are_acyclic` |
+| Engine layers | One package per layer – `runtime/` > `steps/` > `services/` > `sandboxes/` > `base/` – importing only downward; `compose.py` alone builds them; the facade (`change.py`) never sees the step layer; nothing outside the engine imports more than `legion_orch.workflow.engine`'s own names | the import contracts in `pyproject.toml` (`lint-imports`; `test_units.py::test_the_engine_keeps_its_layers`), `test_units.py::test_the_facade_names_none_of_the_step_layer` |
 | Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
-| The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner to the runtime, the runtime to the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
-| Node states | A declared machine nested in the core's step states; only the step runner changes a status | `tests/test_node_states.py` (including a scan for any other write) |
+| The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner tells the runtime (through `StepEvents`, its only view of the layer above), the runtime the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
+| Node states | A declared machine nested in the core's step states; only the step runner changes a status or an escalation, only the runtime the change's status | `tests/test_node_states.py` (scans for any other write) |
 | Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
 | Per-kind knowledge | Only `STEP_TYPES` and `GATE_TYPES` (and what approving each gate records, in `HumanGates`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
 | Dispatcher | Runs opaque work (`execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |

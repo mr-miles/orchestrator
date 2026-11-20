@@ -6,7 +6,7 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import ImageRecipe, Tool
-from legion_orch.workflow.engine.phases import (
+from legion_orch.workflow.engine.steps.phases import (
     Escalate,
     Merge,
     Ok,
@@ -270,7 +270,7 @@ async def test_a_failed_build_escalates_with_the_log(f: Flow):
 # ---------------------------------------------------------------------------- gates, Produce
 @scenario()
 async def test_the_ship_gates_are_recorded_and_only_their_approval_gates_wait_for_it(f: Flow):
-    from legion_orch.workflow.engine.phases import ShipGates
+    from legion_orch.workflow.engine.steps.phases import ShipGates
     from legion_orch.workflow.model import GateResult
     gates = {g: GateResult(status="unsatisfied", detail="x")
              for g in ("explicit_human_approval", "protected_oracle")}

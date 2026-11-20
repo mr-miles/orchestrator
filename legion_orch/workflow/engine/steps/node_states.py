@@ -16,7 +16,7 @@ else writes a status.
 """
 from __future__ import annotations
 
-from ..model import (
+from ...model import (
     ACCEPTED,
     AWAITING_HUMAN,
     ESCALATED,

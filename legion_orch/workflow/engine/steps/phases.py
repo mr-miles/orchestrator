@@ -21,10 +21,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from ...sandbox import VERIFIER_PREFIX
-from .. import governance
-from ..environment import VERIFIER
-from ..model import (
+from ....sandbox import VERIFIER_PREFIX
+from ... import governance
+from ...environment import VERIFIER
+from ...model import (
     LIVE_RUN,
     MERGING,
     ORACLE,
@@ -46,18 +46,18 @@ from ..model import (
     Verdict,
     Verification,
 )
-from ..results import Escalate, Ok, PhaseResult, Redo, Rework
-from ..ship import evaluate
-from .common import _slug
-from .core import ChangeCore
-from .ids import in_round
-from .work import COMMAND, PREPARE, SETUP, Outcome
+from ...results import Escalate, Ok, PhaseResult, Redo, Rework
+from ...ship import evaluate
+from ..base.common import _slug
+from ..base.core import ChangeCore
+from ..base.ids import in_round
+from ..base.work import COMMAND, PREPARE, SETUP, Outcome
 
 if TYPE_CHECKING:
-    from .agent_runs import AgentRuns, Ended
-    from .dispatch import Dispatcher, StepDispatcher
-    from .sandboxes import Sandboxes
-    from .steps import StepRunner
+    from ..base.dispatch import Dispatcher, StepDispatcher
+    from ..sandboxes.sandboxes import Sandboxes
+    from ..services.agent_runs import AgentRuns, Ended
+    from .runner import StepRunner
 
 EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
 
@@ -260,7 +260,7 @@ class RoleWork:
         """Dispatch the agent's work and give ``ended`` (under the lock, while ``phase`` is
         still the step's) what it did. False: when its slot came the step no longer
         ``wanted`` it (its waits stopped holding), so it waits again."""
-        from .agent_runs import Ended
+        from ..services.agent_runs import Ended
         c, agents = rt.c, rt.ctx.agents
         async with c.lock:
             if rt.stale(node, work, phase):
@@ -360,7 +360,7 @@ def combined(held: dict[str, Escalate]) -> Escalate:
 async def conclude_later(rt: StepRunner, phase: Produce | Panel, node: Node, run: Run,
                          work: StepDispatcher) -> None:
     """After a restart: what an agent's accepted report means, to its phase."""
-    from .agent_runs import Ended
+    from ..services.agent_runs import Ended
     async with rt.c.lock:
         if rt.stale(node, work, phase) or run.concluded or run.status != R_REPORTED:
             return
@@ -668,7 +668,7 @@ class Merge(Phase):
             rt.run(node, lambda work: self._work(rt, node, work))
 
     async def _work(self, rt: StepRunner, node: Node, work: StepDispatcher) -> None:
-        from . import cleanup
+        from ..services import cleanup
         c = rt.c
         async with c.lock:
             if rt.stale(node, work, self):
@@ -760,8 +760,8 @@ class SubjectsApproved(Subjects):
     baseline_from: int = 99                      # the tier rank from which the baseline counts
 
     def pending(self, c: ChangeCore) -> list[str]:
-        from .. import risk
-        from ..model import ApprovalState
+        from ... import risk
+        from ...model import ApprovalState
         subjects = (governance.plan_subjects(c) if self.which == "plan"
                     else governance.oracle_subjects(c))
         status = {x.subject: x.status for x in governance.subject_status(c)}
@@ -793,7 +793,7 @@ class ShipGates(GateChecks):
         return await evaluate(c)
 
     def unmet(self, c: ChangeCore, node: Node, evaluated: object) -> tuple[str, ...]:
-        from ..model import H_CHANGE
+        from ...model import H_CHANGE
         result: Readiness = evaluated                # type: ignore[assignment]
         result.attestation = c.write_record("control/ship/readiness.json", result).attestation
         c.change.ship = result
@@ -811,7 +811,7 @@ class AutomaticBelow:
     rank: int
 
     def __call__(self, c: ChangeCore) -> bool:
-        from .. import risk
+        from ... import risk
         return not c.change.tier or risk.rank(c.change.tier) < self.rank
 
 

@@ -249,8 +249,8 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     import types
 
     from legion_orch.workflow.engine import WorkflowError
-    from legion_orch.workflow.engine.core import ChangeCore
-    from legion_orch.workflow.engine.reports import Reports
+    from legion_orch.workflow.engine.base.core import ChangeCore
+    from legion_orch.workflow.engine.services.reports import Reports
     from legion_orch.workflow.model import Run
     docs = _store()
     limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
@@ -551,23 +551,22 @@ def test_engine_boundaries():
         assert not bad, f"{f.name} uses engine internals {bad}"
 
 
-def test_engine_collaborators_are_acyclic():
-    """Each collaborator gets the parts it uses; only change.py composes them, nothing imports
-    the facade, and the imports between the parts form a DAG."""
-    eng = ROOT / "legion_orch/workflow/engine"
-    parts = {"core", "runs", "dispatch", "agent_runs", "reports", "human", "provision",
-             "sandboxes", "sandbox_plan", "phases", "steps", "runtime", "node_states",
-             "workflow_tree"}
-    deps = {}
-    for name in parts:
-        src = (eng / f"{name}.py").read_text()
-        assert "ChangeEngine" not in src and "from .change" not in src, f"{name}.py knows the facade"
-        deps[name] = set(re.findall(r"^from \.(\w+) import", src, re.M)) & parts
-    done: set[str] = set()
-    while len(done) < len(parts):
-        ready = {n for n in parts - done if deps[n] <= done}
-        assert ready, f"import cycle among {sorted(parts - done)}"
-        done |= ready
+def test_the_engine_keeps_its_layers():
+    """The import contracts in pyproject.toml (import-linter): the engine's layers import only
+    downward (runtime > steps > services > sandboxes > base), nothing outside the engine imports
+    more than the engine package's names, the facade never sees the step layer, and the
+    workflow core is pure."""
+    from importlinter.cli import EXIT_STATUS_SUCCESS, lint_imports
+    assert lint_imports(config_filename=str(ROOT / "pyproject.toml"), no_cache=True,
+                        no_logo=True) == EXIT_STATUS_SUCCESS     # its output says which broke
+
+
+def test_the_facade_names_none_of_the_step_layer():
+    """change.py fronts the runtime, decisions, reports and logs; the parts composed for the
+    step layer (compose.py) are never used through it."""
+    src = (ROOT / "legion_orch/workflow/engine/change.py").read_text()
+    used = set(re.findall(r"self\._(runner|phases|agents|provisioner|sandboxes)\b", src))
+    assert used == set(), used
 
 
 def test_governance_and_ship_use_only_the_change_view():
@@ -598,8 +597,8 @@ def test_every_role_has_exactly_one_handler():
 def test_role_dispatch_policy():
     """The dispatch policy each handler declares, and where each role's agent works (its step's
     sandbox plan; judges get a fresh one) – formerly hard-coded role sets in the engine."""
-    from legion_orch.workflow.engine.sandbox_plan import Checkout, UntilAccepted, UntilGate
-    from legion_orch.workflow.engine.steps import sandbox_plan
+    from legion_orch.workflow.engine.sandboxes.plan import Checkout, UntilAccepted, UntilGate
+    from legion_orch.workflow.engine.steps.step_types import sandbox_plan
     from legion_orch.workflow.roles import roles_where
     panel = {"reviewer", "security", "architecture"}
     everyone = set(Assets(ROOT / "assets").roles)
@@ -722,7 +721,7 @@ def test_report_limits():
 def test_transition_rollback_keeps_identity():
     import types
 
-    from legion_orch.workflow.engine.core import ChangeCore
+    from legion_orch.workflow.engine.base.core import ChangeCore
     from legion_orch.workflow.model import Change, Node, Run
     svc = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None,
                                 lock=None, procs={})
@@ -768,7 +767,7 @@ def test_cgi_head_parsing():
 
 
 def test_every_human_gate_action_has_a_handler():
-    from legion_orch.workflow.engine.human import HumanGates
+    from legion_orch.workflow.engine.runtime.human import HumanGates
     from legion_orch.workflow.model import H_CHANGE, H_ENV, H_REQUIREMENTS, H_SPEC
     assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
     assert all(callable(getattr(HumanGates, m)) for m in HumanGates.GATE_ACTIONS.values())

@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .. import guards, risk
-from ..flow import (
+from ... import guards, risk
+from ...flow import (
     CHANGE,
     ActionError,
     Completed,
@@ -36,8 +36,8 @@ from ..flow import (
     StopStep,
     walk,
 )
-from ..flow.states import StepStatus
-from ..model import (
+from ...flow.states import StepStatus
+from ...model import (
     BUILD,
     MERGING,
     PENDING,
@@ -48,9 +48,9 @@ from ..model import (
     Node,
     Run,
 )
-from . import cleanup
-from .core import ChangeCore
-from .node_states import WAITING
+from ..base.core import ChangeCore
+from ..services import cleanup
+from ..steps.node_states import WAITING
 from .workflow_tree import (
     NODES,
     SCAFFOLD,
@@ -65,8 +65,8 @@ from .workflow_tree import (
 )
 
 if TYPE_CHECKING:
-    from .runs import RunLifecycle
-    from .steps import StepRunner
+    from ..services.runs import RunLifecycle
+    from ..steps import StepRunner
 
 RECORD = "control/workflow.json"
 
@@ -300,7 +300,7 @@ class FlowRuntime:
 
     def _reset(self, reset: list[str]) -> list:
         """Reset the steps' nodes; returns the step types' reset policies still to run."""
-        from .steps import step_for
+        from ..steps import step_for
         done: set[type] = set()
         todo = []
         for nid in reset:

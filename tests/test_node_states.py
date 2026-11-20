@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from legion_orch.workflow.engine.node_states import (
+from legion_orch.workflow.engine.steps.node_states import (
     IN_STEP,
     TRANSITIONS,
     IllegalNodeTransition,
@@ -99,3 +99,17 @@ def test_only_node_states_writes_a_nodes_status():
              if p.name != "node_states.py" and "flow" not in p.parts
              for i, line in enumerate(p.read_text().splitlines(), 1) if write.search(line)]
     assert found == []
+
+
+def test_only_the_step_layer_clears_an_escalation_and_only_the_runtime_ends_a_change():
+    """A node's escalation is written by NodeStates alone; the change's status by the runtime
+    (the core's end) and the ship readiness of an ended change."""
+    wf = ROOT / "legion_orch/workflow"
+    esc = re.compile(r"\bnode\.escalation\s*=[^=]")
+    status = re.compile(r"\b(?:c\.change|ch|self\.c\.change)\.status\s*=[^=]")
+    found = [f"{p.relative_to(ROOT)}:{i}" for p in wf.rglob("*.py")
+             if "flow" not in p.parts
+             for i, line in enumerate(p.read_text().splitlines(), 1)
+             if (esc.search(line) and p.name != "node_states.py")
+             or (status.search(line) and p.name != "flow_runtime.py")]
+    assert found == [], found

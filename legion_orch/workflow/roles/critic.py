@@ -3,7 +3,7 @@ the plan node while it is REVIEWING; the node is accepted when it passes."""
 from __future__ import annotations
 
 from .. import guards
-from ..engine.common import ENV_SPEC, PLAN_DOCS
+from ..governance.approvals import ENV_SPEC, PLAN_DOCS
 from ..model import (
     Feedback,
     Node,

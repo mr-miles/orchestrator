@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from ...store import DocVersion
-from ...util import now_iso
-from .. import attention, attest, governance
-from ..attention import AttentionItem
-from ..model import (
+from ....store import DocVersion
+from ....util import now_iso
+from ... import attention, attest, governance
+from ...attention import AttentionItem
+from ...model import (
     ACCEPTED,
     BUILD,
     Change,
@@ -27,7 +27,7 @@ from ..model import (
 )
 from .common import log
 from .ids import base_id
-from .services import EngineHost, Services
+from .shared import EngineHost, Services
 from .state import StateStore
 
 if TYPE_CHECKING:

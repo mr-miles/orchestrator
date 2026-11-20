@@ -13,11 +13,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
-from .. import guards
-from ..assets import GitMode
-from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
-from ..model import (
+from ....sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
+from ... import guards
+from ...assets import GitMode
+from ...environment import VERIFIER, EnvironmentSpec, Library, LibraryError
+from ...model import (
     ACCEPTED,
     H_ENV,
     LIVE_RUN,
@@ -27,14 +27,14 @@ from ..model import (
     Resume,
     RoleEnvironment,
 )
-from ..model import PROVISION as PROVISION_KIND
-from ..results import Escalate, Ok, PhaseResult
-from .common import ENV_SPEC
-from .core import ChangeCore
-from .dispatch import Dispatcher
+from ...model import PROVISION as PROVISION_KIND
+from ...results import Escalate, Ok, PhaseResult
+from ..base.common import ENV_SPEC
+from ..base.core import ChangeCore
+from ..base.dispatch import Dispatcher
+from ..base.work import PREPARE, SETUP
+from ..sandboxes.sandboxes import Sandboxes, sandbox_env  # noqa: F401  (sandbox_env: re-exported)
 from .runs import RunLifecycle
-from .sandboxes import Sandboxes, sandbox_env  # noqa: F401  (sandbox_env: re-exported)
-from .work import PREPARE, SETUP
 
 
 @dataclass
