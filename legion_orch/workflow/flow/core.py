@@ -302,6 +302,26 @@ class FlowState:
         self._advance()
         return self._take()
 
+    def redo(self, step: str, feedback: str = "", by: str = "controller") -> list[Effect]:
+        """A step done or under way must do its work again (a later step in its stage found it
+        wanting: preflight's failed setup sends the oracle back). The step and everything after
+        it in its stage – its gate included – go back to pending, and the step starts again
+        with the feedback. Only while its stage runs, and only for a step directly in a stage."""
+        node = self.nodes.get(step)
+        parent = self.parent.get(step)
+        if not isinstance(node, Step) or not isinstance(parent, Stage):
+            raise ActionError(f"{step!r} is not a step directly in a stage")
+        if self.status(parent.id) != StageStatus.RUNNING:
+            raise ActionError(f"{parent.id} is not running")
+        order = [n.id for n in walk(parent)]
+        for nid in order[order.index(step):]:
+            self._reset_one(nid)
+        if feedback:
+            self.step(step).feedback.append(feedback)
+        self._effects.append(Record("redo", step, by, feedback))
+        self._advance()
+        return self._take()
+
     def actions(self, target: str) -> list[str]:
         """What a human may do on ``target`` now – derived from the structure."""
         if self.ended:

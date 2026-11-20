@@ -216,3 +216,29 @@ def test_stage_titles():
     assert stage_title("stage:design") == "Design"
     assert stage_title("stage:oracle@2") == "Oracle (round 2)"
     assert stage_title("stage:round@3") == "Round 3"
+
+
+def test_a_step_redone_restarts_it_and_everything_after_it_in_its_stage():
+    """Preflight finds the oracle wanting: the oracle, preflight and baseline run again, and
+    H-2 waits for them; the design before it stands."""
+    rt = run(3, hold=("plan", "preflight"))
+    rt.act("H-1", "approve")
+    plan_accepted(rt, graph={"tasks": GRAPH["tasks"][1:]})
+    rt.act("H-E1", "approve")
+    assert rt.status("oracle") == "done" and rt.status("preflight") == "running"
+    attempt = rt.attempt("oracle")
+    rt.redo("oracle", "the setup fails in a fresh clone")
+    assert rt.attempt("oracle") == attempt + 1
+    assert rt.starts_of("oracle")[-1].feedback == ("the setup fails in a fresh clone",)
+    assert rt.status("plan") == "done" and rt.status("H-E1") == "done"
+    assert rt.status("provision") == "done"
+    assert rt.status("preflight") in ("pending", "running") and rt.attempt("preflight") >= 1
+    assert rt.status("H-2") != "done"
+
+
+def test_a_step_can_be_redone_only_while_its_stage_runs():
+    rt = run(2, environment=False)
+    with pytest.raises(ActionError, match="is not running"):
+        rt.redo("oracle")                       # its stage has not started
+    with pytest.raises(ActionError, match="not a step directly in a stage"):
+        rt.redo("H-1")
