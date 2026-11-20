@@ -5,7 +5,7 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.workflow.engine.sandboxes.plan import JUDGE
-from legion_orch.workflow.engine.steps.phases import ActivePhase, Ok, Panel, Phase, Verify
+from legion_orch.workflow.engine.steps.phases import Ok, Panel, Phase, Verify
 from legion_orch.workflow.engine.steps.step_types import (
     STEP_TYPES,
     EnvironmentQuiescent,
@@ -111,7 +111,7 @@ async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Fl
 async def test_each_verification_resolves_its_commands(f: Flow):
     f.ce.change.oracle = ORACLE_DOC
     n = Node(id="x", kind=BASELINE, title="x")
-    cmds = {k: f.ce._runner.of(n).at(STEP_TYPES[k].phase(Verify)).commands()
+    cmds = {k: f.ce._runner.of(n).at(STEP_TYPES[k].phase(Verify)).to_run()
             for k in (BASELINE, PREFLIGHT, INTEGRATION)}
     assert cmds[BASELINE] == ("bun test acc", "bun install")
     assert cmds[PREFLIGHT] == ("bun test acc",)
@@ -133,22 +133,20 @@ async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
         assert key == str(kind) and path.startswith("control/verification/")
 
 
-def test_every_declared_phase_has_an_active_class_and_says_every_hook():
-    """A step type's phases run as their kind's active class, which implements every hook (none
-    has a default) but ready, the same for all from what the phase declares; a phase no active
-    class runs is refused."""
+def test_every_phase_says_every_hook_and_what_its_readiness_needs():
+    """A phase kind implements every hook (none has a default) but ready, the same for all from
+    the waits_in and uses it declares; a kind that leaves a hook out cannot be made."""
     import pytest
 
     from legion_orch.workflow.engine.steps import GATE_TYPES
     for p in {p for t in (*STEP_TYPES.values(), *GATE_TYPES.values()) for p in t.phases}:
-        active = ActivePhase._kinds[type(p)]
-        assert not active.__abstractmethods__, (active.__name__, active.__abstractmethods__)
+        assert not type(p).__abstractmethods__, type(p).__name__
         assert hasattr(p, "waits_in") and hasattr(p, "uses"), type(p).__name__   # for ready()
 
-    class Unrun(Phase):
+    class Unfinished(Phase):
         statuses, waits_in, uses = frozenset(), frozenset(), None
-    with pytest.raises(TypeError, match="no active class runs Unrun"):
-        ActivePhase.of(None, Unrun())                       # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="abstract"):
+        Unfinished()
 
 
 def test_the_current_phase_follows_the_node_status():
@@ -181,7 +179,7 @@ async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     rt = f.ce._runner
     phase = rt.of(n).current()
     ended = Ended(run, Ok() if result is None else result)
-    if isinstance(phase.phase, Panel):                   # a judge's: collated by the panel
+    if isinstance(phase, Panel):                         # a judge's: collated by the panel
         phase.judged(ended)
         phase.conclude(await phase.result({role: ended}))
     else:
@@ -197,7 +195,7 @@ def capture_work(f: Flow) -> list[str]:
 
     def capturing(node):
         step = of(node)
-        step.run = lambda phase, work=None: started.append(type(phase.phase).__name__)
+        step.run = lambda phase, work=None: started.append(type(phase).__name__)
         return step
     rt.of = capturing
     return started
@@ -281,7 +279,7 @@ async def test_a_waiting_step_goes_on_at_a_save_once_its_waits_hold(f: Flow):
     rt = f.ce._runner
     n = node(f, NodeKind.RELEASE, status=READY)
     step, holds = rt.of(n), [False]
-    phase = ActivePhase.of(step, step_for(n).phases[0], step.dispatch)
+    phase = step_for(n).phases[0].at(step, step.dispatch)
     waiting = asyncio.ensure_future(step.wait_until(phase, lambda: holds[0]))
     await asyncio.sleep(0)
     assert rt.waiting == 1 and not waiting.done()
@@ -423,7 +421,7 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
     if answered:
         n.approved = True                                # what resuming answered does
     step = rt.of(n)
-    await ActivePhase.of(step, phase, step.dispatch).task()
+    await phase.at(step, step.dispatch).task()
 
 
 @scenario()

@@ -100,7 +100,7 @@ the layers above it (the import contracts in `pyproject.toml`, checked by `lint-
 | Package | Holds |
 | --- | --- |
 | `runtime/` | `FlowRuntime`, the stage tree, `HumanGates` (decisions in) |
-| `steps/` | `StepRunner` and `StepEvents`, `ActiveStep`, the step and gate types, the phases (declared, and as they run), the node states |
+| `steps/` | `StepRunner` and `StepEvents`, `ActiveStep`, the step and gate types, the phases, the node states |
 | `services/` | `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the end-of-change cleanup |
 | `sandboxes/` | `Sandboxes` and their sessions, sandbox plans (given as `Plans`), reflections |
 | `base/` | `ChangeCore`, `StateStore`, `Services`, node ids, the `Dispatcher` and `Work` |
@@ -170,7 +170,7 @@ sequenceDiagram
     D-->>Ph: the commands' results → Verify judges them
     Ph->>SR: result Ok
     SR->>Ph: advance → Panel (REVIEWING): one judge's Work each, in parallel
-    D-->>Ph: each judge's turn ends – the panel waits for every one → Reviewing.decide
+    D-->>Ph: each judge's turn ends – the panel waits for every one → Panel.decide
     Ph->>SR: result Ok
     SR->>Ph: advance → Merge (MERGING): G-A1, G-H1, G-A2
     Ph->>SR: result Ok: the last phase passed
@@ -287,36 +287,32 @@ plan, an ordered list of phases configured by **policy objects**, the waits it r
 a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
 `GATE_TYPES`, which configures each gate's `Approval`).
 
-A step and a phase each exist twice: **declared** – a `StepType` and its `Phase`s in the table,
-holding only policies, shared by every node of its kind – and **as they run** for one node. The
-step runner makes each node's `ActiveStep` (from the node, its step type and the runner's
-services; it owns the node's reservation), and the active step makes its phase's `ActivePhase`
-(`ActivePhase.of(step, phase)`, with the step's dispatcher while it works): the active class
-that runs the phase's kind – `Producing`, `Reviewing`, `Verifying`, `Merging`, `Provisioning`,
-`Approving` – each saying which declaration it `runs`. A declaration knows nothing of its
-active class, as a step type knows nothing of its active step. Nothing is handed the node, the
-change or the runner again: their methods take only what varies – a result, an escalation, an
-answer. Everything that lasts is on the node, so both are made again after a restart.
+A step type is declared – shared by every node of its kind – and **runs** for one node as an
+`ActiveStep`: the step runner makes it from the node, its step type and the runner's services,
+and it owns the node's reservation. A **phase** is one class per kind – `Produce`, `Panel`,
+`Verify`, `Merge`, `BuildImages`, `Approval`, implementing the abstract `Phase` – holding its
+policies and its work together. In the table it is declared, unbound; as it runs for a node it
+is a copy bound to the node's active step (`phase.at(step)`, with the step's dispatcher while it
+works), so nothing is handed the node, the change or the runner again: the methods take only
+what varies – a result, an escalation, an answer. Everything that lasts is on the node, so the
+active step and the bound phases are made again after a restart.
 
-The rule that splits them: **a declaration holds policies and only functions of what it is
-given** (`StepType.phase_in(status)`, `after(phase)`; `Verify.interpret(result)`); **what reads
-a node or the change is the active side's** (`ActiveStep.judges()`; `Reviewing.roles()`,
-`missing()`, `decide()`; `Verifying.commands()`, `record()`; `Merging.merge()`). The policy
-objects stay functions of what they are given (a wait: the active step; a command source: the
-change and the node).
+A step type holds only declarations and lookups (`phase_in(status)`, `after(phase)`); what reads
+a node or the change is the active step's (`ActiveStep.judges()`). The policy objects stay
+functions of what they are given (a wait: the active step; a command source: the change and
+the node).
 
-Every phase's work has one shape (`ActivePhase.task`): once it is **ready** (at once, or at a later
+Every phase's work has one shape (`Phase.task`): once it is **ready** (at once, or at a later
 save – the step's slot given back meanwhile) it **begins** (its status, under the lock),
 **performs** its work outside the lock (through the step's dispatcher, or a check), and then,
 under the lock and unless its step or phase ended meanwhile, its **result** says what the work
 means – the one method each phase answers with a `PhaseResult`.
 
-`ActivePhase` holds only what is the same for every kind – the work's shape (`task`),
-concluding a result, whether its work still counts, and whether it may begin (`ready`) – and
-**every other hook is abstract**: each kind's active class says, in one place, how it is
-entered, started, recovered and resumed, where it resumes after a service's escalation, and its
-work's `begin`, `perform` and `result` (a test checks that every declared phase has an active
-class implementing them all).
+`Phase` holds only what is the same for every kind – the work's shape (`task`), concluding a
+result, whether its work still counts, and whether it may begin (`ready`) – and **every other
+hook is abstract**: each kind says, in one place, how it is entered, started, recovered and
+resumed, where it resumes after a service's escalation, and its work's `begin`, `perform` and
+`result` (a kind that leaves one out cannot be made).
 
 **Ready** is the same for every phase, from two facts each declaration states: in the statuses
 where its work is the step's first (`waits_in`) the step's waits hold (`dispatch_when`: no
@@ -324,14 +320,14 @@ file overlap, a quiet environment, the reflections done), and the environment of
 its work uses (`uses`) is built. While a phase is not ready the step's reservation holds no
 slot; an agent's work whose slot comes once it is no longer ready is skipped, and waits again.
 
-| Phase (as it runs) | waits_in · uses | perform | result |
+| Phase | waits_in · uses | perform | result |
 | --- | --- | --- | --- |
-| Produce (Producing) | READY, REWORK · its role | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
-| Panel (Reviewing) | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or `decide()` |
-| Verify (Verifying) | READY (at the head) · the verifier | the verification (`verification`) | recorded, then `interpret` and its policies |
-| Merge (Merging) | – · – | – | the guards and the merge, at once under the lock (`merge()`) |
-| BuildImages (Provisioning) | READY · – | the provisioner's build and setup check | the provisioner's |
-| Approval (Approving) | – · – | its checks evaluated | approved, still pending, or preconditions unmet |
+| Produce | READY, REWORK · its role | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
+| Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or `decide()` |
+| Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then `interpret` and its policies |
+| Merge | – · – | – | the guards and the merge, at once under the lock (`merge()`) |
+| BuildImages | READY · – | the provisioner's build and setup check | the provisioner's |
+| Approval | – · – | its checks evaluated | approved, still pending, or preconditions unmet |
 
 `enter` is the move into a phase (its first status, then `start`); `start` begins its work for
 the status the node is in – on entering, resuming and after a restart.
@@ -382,8 +378,8 @@ classDiagram
         again() None
         recover(failed) None
         release() None
-        at(phase) ActivePhase
-        current() ActivePhase
+        at(phase) Phase
+        current() Phase
         judges() tuple~str~
         run(phase, work) None
         may_work() bool
@@ -398,18 +394,14 @@ classDiagram
         accept() None
     }
     class Phase {
-        <<declared>>
+        <<abstract>>
         statuses: frozenset~NodeStatus~
         waits_in: frozenset~NodeStatus~
         uses: str
-    }
-    class ActivePhase {
-        <<abstract>>
         step: ActiveStep
-        phase: Phase
         dispatch: StepDispatcher
         node: Node
-        of(step, phase, dispatch)$ ActivePhase
+        at(step, dispatch) Phase
         task() None
         conclude(result) None
         stale() bool
@@ -427,6 +419,8 @@ classDiagram
     class Produce {
         source: RoleWork
         role: str
+        conclude_later(run) None
+        ended(ended) PhaseResult
     }
     class RoleWork {
         role: str
@@ -440,37 +434,26 @@ classDiagram
         on_setup_failed: SetupFailurePolicy
         notes: Notes
         interpret(result, cycle, att) PhaseResult
+        to_run() tuple~str~
+        record() tuple~str~
     }
     class Panel {
         judges: JudgeSource
         decides: bool
+        roles() tuple~str~
+        missing() list~str~
+        decide() PhaseResult
+        judged(ended) None
     }
-    class Merge
+    class Merge {
+        merge() PhaseResult
+    }
     class BuildImages
     class Approval {
         subjects: Subjects
         checks: GateChecks
         automatic: AutomaticBelow
     }
-    class Producing {
-        conclude_later(run) None
-        ended(ended) PhaseResult
-    }
-    class Reviewing {
-        roles() tuple~str~
-        missing() list~str~
-        decide() PhaseResult
-        judged(ended) None
-    }
-    class Verifying {
-        commands() tuple~str~
-        record() tuple~str~
-    }
-    class Merging {
-        merge() PhaseResult
-    }
-    class Provisioning
-    class Approving
     class SandboxPlan {
         checkout: Checkout
         keep: Keep
@@ -480,39 +463,24 @@ classDiagram
         held(change, node) bool
     }
     class Wait {
-        <<abstract>>
         holds(step) bool
     }
     class Reset {
-        <<abstract>>
         applies(change, node) bool
         undo(change, lifecycle, node) None
     }
 
     StepRunner *-- ActiveStep : one per node
     ActiveStep --> StepType : runs
-    ActiveStep *-- ActivePhase : its current phase
-    ActivePhase --> Phase : runs
-    ActivePhase <|-- Producing
-    ActivePhase <|-- Reviewing
-    ActivePhase <|-- Verifying
-    ActivePhase <|-- Merging
-    ActivePhase <|-- Provisioning
-    ActivePhase <|-- Approving
-    Producing --> Produce : runs
-    Reviewing --> Panel : runs
-    Verifying --> Verify : runs
-    Merging --> Merge : runs
-    Provisioning --> BuildImages : runs
-    Approving --> Approval : runs
+    ActiveStep *-- Phase : its current phase, bound
     StepType *-- Phase
     StepType *-- SandboxPlan
     StepType *-- Wait
     StepType *-- Reset
     Phase <|-- Produce
     Produce *-- RoleWork
-    Reviewing ..> RoleWork : a judge each
-    Merging ..> Reviewing : requires its judges' PASS
+    Panel ..> RoleWork : a judge each
+    Merge ..> Panel : requires its judges' PASS
     Phase <|-- Verify
     Phase <|-- Panel
     Phase <|-- Merge

@@ -2,20 +2,20 @@
 small objects that each end in one result – ok, rework (with feedback for the producer) or
 escalate (a human decides).
 
-Each phase exists twice: **declared** (:class:`Phase` – its policies, in a step type, shared by
-every node of its kind, with only functions of what they are given) and **as it runs** for a
-node (:class:`ActivePhase` – the kind's active class, which reads the node and the change). As
-it runs a phase knows three things, and nothing about which kind of node it serves:
+A :class:`Phase` holds its kind's policies and its work. In a step type it is declared –
+unbound, shared by every node of its kind; as it runs for a node it is a copy bound to the
+node's step (:meth:`Phase.at`). A phase knows three things, and nothing about which kind of
+node it serves:
 
 * **how it is entered** (``enter``): the node's status while the phase runs;
-* **its work** (:meth:`ActivePhase.task`, the same shape for every phase): once it is
-  ``ready`` it ``begin``s (its status), ``perform``s its work (through the step's dispatcher, a
-  check) and then – under the lock – its ``result`` says what that means. ``ready`` is the
-  same for every kind (from the ``waits_in`` and ``uses`` its declaration states); every other
-  hook is abstract – each kind's active class says them all itself;
+* **its work** (:meth:`Phase.task`, the same shape for every phase): once it is ``ready`` it
+  ``begin``s (its status), ``perform``s its work (through the step's dispatcher, a check) and
+  then – under the lock – its ``result`` says what that means. ``ready`` is the same for every
+  kind (from the ``waits_in`` and ``uses`` it declares); every other hook is abstract – each
+  kind says them all itself;
 * **its result**: always ``result`` – from the work's record where it says it all
-  (``Verify.interpret``, ``Reviewing.decide``), the role handler's for an agent, and for a
-  merge the guarded merge itself (the guards and the merge hold at once).
+  (``Verify.interpret``, ``Panel.decide``), the role handler's for an agent, and for a merge
+  the guarded merge itself (the guards and the merge hold at once).
 
 What varies between nodes is passed in as small policy objects – which commands to verify
 (:class:`CommandSource`), which judges sit on a panel (:class:`JudgeSource`), what a failed
@@ -29,7 +29,7 @@ import asyncio
 import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
 from ....sandbox import VERIFIER_PREFIX
@@ -96,47 +96,36 @@ AGAIN = _Again()
 
 
 @dataclass(frozen=True, eq=False)
-class Phase:
-    """A phase as a step type declares it: its policies, shared by every node of its kind, and
-    only functions of what they are given. As it runs for a node it is an :class:`ActivePhase`
-    (:meth:`ActivePhase.of`), which reads the node and the change and does its work."""
+class Phase(ABC):
+    """A phase of a step: its kind's policies (which commands, which judges, what a failure
+    means) and its work. In a step type it is declared – unbound, shared by every node of its
+    kind; as it runs for a node it is a copy bound to the node's step (:meth:`at`: the
+    :class:`.ActiveStep`, and the step's dispatcher while it works), so its methods read the
+    node and the change themselves and take only what varies.
+
+    Here only what is the same for every kind: its work's shape (:meth:`task`), concluding a
+    result, whether its work still counts, and whether it may begin (:meth:`ready`, from the
+    ``waits_in`` and ``uses`` each kind declares). Every other hook is abstract: each kind says
+    how it is entered, started, recovered and resumed, and its work's ``begin``, ``perform``
+    and ``result``."""
     #: the node statuses while this phase is the node's current one
     statuses: ClassVar[frozenset[NodeStatus]]
     #: the statuses in which its work is the step's first, so the step's waits must hold
     waits_in: ClassVar[frozenset[NodeStatus]]
     #: whose environment its work's sandbox uses (a role, the verifier; None: no sandbox)
     uses: ClassVar[str | None]
+    # bound (:meth:`at`): the node's step as it runs; its dispatcher while the phase works; the
+    # declared phase it is a copy of
+    step: ActiveStep = field(default=None, kw_only=True, repr=False)     # type: ignore[assignment]
+    dispatch: StepDispatcher = field(default=None, kw_only=True,         # type: ignore[assignment]
+                                     repr=False)
+    declared: Phase = field(default=None, kw_only=True, repr=False)     # type: ignore[assignment]
 
-
-class ActivePhase(ABC):
-    """A declared phase as it runs for a node: the node's step (:class:`.ActiveStep`), the
-    phase, and – while it works – the step's dispatcher. Here only what is the same for every
-    kind: its work's shape (:meth:`task`), concluding a result, and whether its work still
-    counts, and whether its work may begin (:meth:`ready`, from what the phase declares). Each
-    kind's active class says everything else itself – no hook has a default: how it is
-    entered, started, recovered and resumed, and its work's ``begin``, ``perform`` and
-    ``result``."""
-    phase: Phase
-    #: the declared phase it runs (each kind's active class says which)
-    runs: ClassVar[type[Phase]]
-    _kinds: ClassVar[dict[type[Phase], type[ActivePhase]]] = {}
-
-    def __init_subclass__(cls, **kw) -> None:
-        super().__init_subclass__(**kw)
-        if "runs" in cls.__dict__:
-            ActivePhase._kinds[cls.runs] = cls
-
-    @staticmethod
-    def of(step: ActiveStep, phase: Phase, dispatch: StepDispatcher | None = None) -> ActivePhase:
-        """The declared ``phase`` as it runs for a node's ``step`` (with its dispatcher while it
-        works): the active class that runs its kind."""
-        kind = ActivePhase._kinds.get(type(phase))
-        if kind is None:
-            raise TypeError(f"no active class runs {type(phase).__name__}")
-        return kind(step, phase, dispatch)
-
-    def __init__(self, step: ActiveStep, phase: Phase, dispatch: StepDispatcher | None = None):
-        self.step, self.phase, self.dispatch = step, phase, dispatch
+    def at(self, step: ActiveStep, dispatch: StepDispatcher | None = None) -> Phase:
+        """This phase (as declared) bound to a node's ``step``, with its dispatcher while it
+        works."""
+        decl = self.declared or self
+        return dataclasses.replace(decl, step=step, dispatch=dispatch, declared=decl)
 
     @property
     def node(self) -> Node:
@@ -181,14 +170,13 @@ class ActivePhase(ABC):
         run, a BLOCKED report)."""
 
     def ready(self) -> bool:
-        """Its work may begin – the same for every kind, from what its phase declares: as the
+        """Its work may begin – the same for every kind, from what it declares: as the
         step's first work (``waits_in``) the step's waits hold, and the environment its sandbox
         uses (``uses``) is built – none while it is built again. Checked now and at each save;
         while it does not hold, the step holds no slot."""
-        phase = self.phase
-        if self.node.status in phase.waits_in and not self.step.waits_hold():
+        if self.node.status in self.waits_in and not self.step.waits_hold():
             return False
-        return phase.uses is None or not self.step.provisioner.waits_for_environment(phase.uses)
+        return self.uses is None or not self.step.provisioner.waits_for_environment(self.uses)
 
     @abstractmethod
     def begin(self) -> bool:
@@ -377,7 +365,7 @@ class RoleWork:
     handler's result after an accepted report, or the failure's escalation."""
     role: str
 
-    async def perform(self, phase: ActivePhase, *, wanted: Callable[[], bool],
+    async def perform(self, phase: Phase, *, wanted: Callable[[], bool],
                       judged_sha: str | None = None,
                       started: Callable[[Run], None] | None = None) -> Ended | _Again | None:
         """Dispatch the agent's work: what it did (the role handler's result after an accepted
@@ -426,12 +414,6 @@ class Produce(Phase):
     def role(self) -> str:
         return self.source.role
 
-
-class Producing(ActivePhase):
-    """A producer as it runs: its agent's work, and what it did."""
-    phase: Produce
-    runs: ClassVar = Produce
-
     def enter(self) -> None:
         if self.node.status != REWORK:                # a rework continues in REWORK
             self.step.move(READY)
@@ -468,7 +450,7 @@ class Producing(ActivePhase):
             async with c.lock:
                 if moved := c.head_moved(head):
                     return Escalate("head_moved", moved, Resume.READY)
-        return await self.phase.source.perform(
+        return await self.source.perform(
             self, wanted=self.ready,
             started=lambda run: self.step.move(RUNNING))        # its agent works
 
@@ -516,12 +498,6 @@ class Panel(Phase):
     waits_in: ClassVar = frozenset()
     uses: ClassVar = None                                   # each judge: its own role's
 
-
-class Reviewing(ActivePhase):
-    """A panel as it runs: every judge still to review, in parallel, their results collated."""
-    phase: Panel
-    runs: ClassVar = Panel
-
     def enter(self) -> None:
         roles = self.roles()
         if not roles:                        # an empty panel: nothing to wait for
@@ -563,7 +539,7 @@ class Reviewing(ActivePhase):
         ended: dict[str, Ended | None] = done                    # type: ignore[assignment]
         if any(e is None for e in ended.values()):
             return None
-        if not self.phase.decides:
+        if not self.decides:
             return next((e.result for e in ended.values() if e is not None), None)
         held = {role: e.result for role, e in ended.items()
                 if e is not None and isinstance(e.result, Escalate)}
@@ -571,7 +547,7 @@ class Reviewing(ActivePhase):
 
     def roles(self) -> tuple[str, ...]:
         """Its judges, for this change."""
-        return _judges(self.phase.judges, self.c)
+        return _judges(self.judges, self.c)
 
     def missing(self) -> list[str]:
         """Its judges without a review at the node's cycle yet."""
@@ -700,16 +676,10 @@ class Verify(Phase):
                          for r in fails], "verification")
         return self.on_rework(res) if self.on_rework else result
 
-
-class Verifying(ActivePhase):
-    """A verification as it runs: recorded, then interpreted."""
-    phase: Verify
-    runs: ClassVar = Verify
-
     def enter(self) -> None:
         """After a producer, its candidate is verified at once (in the step's slot); at the head
         (nothing produced it) the step starts READY, like any step's first work."""
-        self.step.move(READY if self.phase.at_head else VERIFYING)
+        self.step.move(READY if self.at_head else VERIFYING)
         self.start()
 
     def start(self) -> None:
@@ -735,7 +705,7 @@ class Verifying(ActivePhase):
     async def perform(self) -> Verification:
         node = self.node
         c = self.c
-        commands = self.commands()
+        commands = self.to_run()
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                 f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
                 node.id)
@@ -756,18 +726,18 @@ class Verifying(ActivePhase):
         node.verification[key] = res.model_copy(update={
             "attestation": att,
             "results": [r.model_copy(update={"output": ""}) for r in res.results]})
-        result = self.phase.interpret(res, node.cycle, att)
+        result = self.interpret(res, node.cycle, att)
         if isinstance(result, Ok):
-            for kind, text in self.phase.notes(c, node, res) if self.phase.notes else []:
+            for kind, text in self.notes(c, node, res) if self.notes else []:
                 c.event(kind, text, node.id)
         elif isinstance(result, Escalate) and result.kind == "setup_failed" \
-                and self.phase.on_setup_failed:
-            result = self.phase.on_setup_failed(c, node, setup_failure(res), att, result)
+                and self.on_setup_failed:
+            result = self.on_setup_failed(c, node, setup_failure(res), att, result)
         return result
 
-    def commands(self) -> tuple[str, ...]:
+    def to_run(self) -> tuple[str, ...]:
         """The commands it runs, for this change and node."""
-        commands = self.phase.commands
+        commands = self.commands
         return commands if isinstance(commands, tuple) else tuple(commands(self.c, self.node))
 
     def record(self) -> tuple[str, str]:
@@ -829,12 +799,6 @@ class Merge(Phase):
     statuses: ClassVar = frozenset({MERGING})
     waits_in: ClassVar = frozenset()
     uses: ClassVar = None
-
-
-class Merging(ActivePhase):
-    """A merge as it runs: its guards and the merge at once, under the lock."""
-    phase: Merge
-    runs: ClassVar = Merge
 
     def enter(self) -> None:
         self.step.move(MERGING)
@@ -914,12 +878,6 @@ class BuildImages(Phase):
     statuses: ClassVar = frozenset({READY, RUNNING})
     waits_in: ClassVar = frozenset({READY})                 # the environment is quiet
     uses: ClassVar = None
-
-
-class Provisioning(ActivePhase):
-    """Provisioning as it runs: the provisioner's build and setup check."""
-    phase: BuildImages
-    runs: ClassVar = BuildImages
 
     def enter(self) -> None:
         self.step.move(READY)
@@ -1043,12 +1001,6 @@ class Approval(Phase):
     waits_in: ClassVar = frozenset()
     uses: ClassVar = None
 
-
-class Approving(ActivePhase):
-    """A gate as it runs: its checks, then approved, pending or unmet."""
-    phase: Approval
-    runs: ClassVar = Approval
-
     def enter(self) -> None:
         self.step.move(READY)
         self.start()
@@ -1073,14 +1025,14 @@ class Approving(ActivePhase):
         return True
 
     async def perform(self) -> object:
-        return await self.phase.checks.evaluate(self.c) if self.phase.checks else None
+        return await self.checks.evaluate(self.c) if self.checks else None
 
     async def result(self, done: object) -> PhaseResult:
         node = self.node
         c = self.c
-        unmet = self.phase.checks.unmet(c, node, done) if self.phase.checks else ()
-        approved = node.approved or bool(self.phase.automatic and self.phase.automatic(c))
-        pending = self.phase.subjects.pending(c) if self.phase.subjects and approved else []
+        unmet = self.checks.unmet(c, node, done) if self.checks else ()
+        approved = node.approved or bool(self.automatic and self.automatic(c))
+        pending = self.subjects.pending(c) if self.subjects and approved else []
         if not approved:
             ask = f"{node.title}" + (f" (not met yet: {', '.join(unmet)})" if unmet else "")
             return Escalate("awaiting_approval", ask, Resume.READY, expected=True)
@@ -1090,5 +1042,4 @@ class Approving(ActivePhase):
         if unmet:
             return Escalate("preconditions_unmet", ", ".join(unmet), Resume.READY, expected=True)
         return Ok()
-
 

@@ -7,11 +7,11 @@ from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import ImageRecipe, Tool
 from legion_orch.workflow.engine.steps.phases import (
-    ActivePhase,
     Escalate,
     Merge,
     Ok,
     Panel,
+    Phase,
     PhaseContext,
     Rework,
     Verify,
@@ -153,7 +153,7 @@ def judged(node: Node, role: str, verdict: Verdict, *, sha: str = CAND, findings
         verdict=verdict, sha=sha, run=f"r-{role}", findings=list(findings), doc=f"file:{role}@1")
 
 
-def reviewing(f: Flow, node: Node, *roles: str) -> ActivePhase:
+def reviewing(f: Flow, node: Node, *roles: str) -> Phase:
     """A panel of ``roles`` as it runs for ``node``."""
     return f.ce._runner.of(node).at(Panel(roles))
 
@@ -223,7 +223,7 @@ async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
 
 
 # ---------------------------------------------------------------------------- Merge
-def merging(f: Flow, node: Node) -> ActivePhase:
+def merging(f: Flow, node: Node) -> Phase:
     return f.ce._runner.of(node).at(Merge())
 
 
