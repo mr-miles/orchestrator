@@ -311,12 +311,18 @@ save – the step's slot given back meanwhile) it **begins** (its status, under 
 under the lock and unless its step or phase ended meanwhile, its **result** says what the work
 means – the one method each phase answers with a `PhaseResult`.
 
-**Ready** is the same for every phase, from two facts each declares: the node is in a status
-its work begins in; in the statuses where its work is the step's first (`waits_in`) the step's
-waits hold (`dispatch_when`: no file overlap, a quiet environment, the reflections done); and
-the environment of the sandbox its work uses (`uses`) is built. While it is not ready the
-step's reservation holds no slot; an agent's work whose slot comes once it is no longer ready
-is skipped, and waits again.
+`ActivePhase` holds only what is the same for every kind – the work's shape (`task`),
+concluding a result, whether its work still counts, and whether it may begin (`ready`) – and
+**every other hook is abstract**: each kind's active class says, in one place, how it is
+entered, started, recovered and resumed, where it resumes after a service's escalation, and its
+work's `begin`, `perform` and `result` (a test checks that every declared phase has an active
+class implementing them all).
+
+**Ready** is the same for every phase, from two facts each declaration states: in the statuses
+where its work is the step's first (`waits_in`) the step's waits hold (`dispatch_when`: no
+file overlap, a quiet environment, the reflections done), and the environment of the sandbox
+its work uses (`uses`) is built. While a phase is not ready the step's reservation holds no
+slot; an agent's work whose slot comes once it is no longer ready is skipped, and waits again.
 
 | Phase (as it runs) | waits_in · uses | perform | result |
 | --- | --- | --- | --- |
@@ -338,85 +344,106 @@ classDiagram
         sandbox: SandboxPlan
         dispatch_when: Wait[]
         on_reset: Reset[]
-        rework_resume
-        runs_after_end
-        role()
+        stands: Stands
+        rework_resume: Resume
+        runs_after_end: bool
+        role: str
+        judges_head: bool
+        phase(cls) Phase
         phase_in(status) Phase
         after(phase) Phase
     }
     class StepRunner {
         of(node) ActiveStep
-        start(node, feedback)
-        send_back(nodes) undo
-        resume(node, answered)
-        override(node)
-        retry(node)
-        recover(node)
-        housekeeping()
+        start(node, feedback, rerun) None
+        enter(node) None
+        send_back(nodes) Awaitable
+        reset(node) None
+        resume(node, answered) None
+        override(node) None
+        retry(node) None
+        end(node) None
+        again(node) None
+        recover(node, failed) None
+        resume_retries() None
+        housekeeping(active) None
     }
     class ActiveStep {
-        node
+        node: Node
         type: StepType
         dispatch: StepDispatcher
-        start(feedback)
-        reset()
-        resume(answered)
-        override()
-        retry()
+        start(feedback, rerun) None
+        enter() None
+        reset() None
+        resume(answered) None
+        override() None
+        retry() None
+        end() None
+        again() None
+        recover(failed) None
+        release() None
         at(phase) ActivePhase
         current() ActivePhase
-        judges()
-        run(phase)
-        wait_until(phase, ready)
-        move(status)
-        advance(phase)
-        apply(result)
-        escalate(...)
-        accept()
+        judges() tuple~str~
+        run(phase, work) None
+        may_work() bool
+        stale(phase) bool
+        waits_hold() bool
+        wait_until(phase, ready) bool
+        move(status) None
+        advance(phase) None
+        apply(result) None
+        rework(feedback, source) None
+        escalate(kind, reason, resume) None
+        accept() None
     }
     class Phase {
         <<declared>>
-        statuses
-        starts_in
-        waits_in
-        uses
+        statuses: frozenset~NodeStatus~
+        waits_in: frozenset~NodeStatus~
+        uses: str
     }
     class ActivePhase {
-        step
-        phase
-        dispatch
-        of(step, phase)$ ActivePhase
-        enter()
-        start()
-        resume(answered)
-        recover()
-        task()
+        <<abstract>>
+        step: ActiveStep
+        phase: Phase
+        dispatch: StepDispatcher
+        node: Node
+        of(step, phase, dispatch)$ ActivePhase
+        task() None
+        conclude(result) None
+        stale() bool
+        wait_until(ready) bool
         ready() bool
-        begin()
-        perform()
-        result(done) PhaseResult
-        resume_after(escalation)
-        conclude(result)
+        enter()* None
+        start()* None
+        recover()* None
+        resume(answered)* None
+        resume_after(escalation)* Resume
+        begin()* bool
+        perform()* object
+        result(done)* PhaseResult
     }
     class Produce {
         source: RoleWork
+        role: str
     }
     class RoleWork {
-        role
-        perform(phase) Ended
+        role: str
+        perform(phase, wanted) Ended
     }
     class Verify {
         commands: CommandSource
-        expect_failures
-        at_head
+        expect_failures: bool
+        at_head: bool
         on_rework: EscalateFailures
         on_setup_failed: SetupFailurePolicy
         notes: Notes
-        interpret(result) PhaseResult
+        interpret(result, cycle, att) PhaseResult
     }
     class Panel {
         judges: JudgeSource
-        decides
+        decides: bool
     }
     class Merge
     class BuildImages
@@ -425,15 +452,19 @@ classDiagram
         checks: GateChecks
         automatic: AutomaticBelow
     }
-    class Producing
+    class Producing {
+        conclude_later(run) None
+        ended(ended) PhaseResult
+    }
     class Reviewing {
-        roles()
-        missing()
+        roles() tuple~str~
+        missing() list~str~
         decide() PhaseResult
+        judged(ended) None
     }
     class Verifying {
-        commands()
-        record()
+        commands() tuple~str~
+        record() tuple~str~
     }
     class Merging {
         merge() PhaseResult
@@ -443,19 +474,19 @@ classDiagram
     class SandboxPlan {
         checkout: Checkout
         keep: Keep
-        pushes()
-        rebase
-        held(node)
-    }
-    class PhaseResult {
-        <<Ok, Rework, Escalate or Redo>>
+        rebase: bool
+        pushes: bool
+        at_head: bool
+        held(change, node) bool
     }
     class Wait {
-        holds(step)
+        <<abstract>>
+        holds(step) bool
     }
     class Reset {
-        applies(node)
-        undo(node)
+        <<abstract>>
+        applies(change, node) bool
+        undo(change, lifecycle, node) None
     }
 
     StepRunner *-- ActiveStep : one per node
@@ -487,7 +518,6 @@ classDiagram
     Phase <|-- Merge
     Phase <|-- BuildImages
     Phase <|-- Approval
-    ActivePhase ..> PhaseResult
 ```
 
 The table (`engine/steps/step_types.py`) – each kind is a list of phases:

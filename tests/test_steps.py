@@ -5,7 +5,7 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.workflow.engine.sandboxes.plan import JUDGE
-from legion_orch.workflow.engine.steps.phases import ActivePhase, Ok, Panel, Verify
+from legion_orch.workflow.engine.steps.phases import ActivePhase, Ok, Panel, Phase, Verify
 from legion_orch.workflow.engine.steps.step_types import (
     STEP_TYPES,
     EnvironmentQuiescent,
@@ -131,6 +131,24 @@ async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
     for kind in (BASELINE, PREFLIGHT, INTEGRATION):
         path, key = record(Node(id=f"{kind}-node", kind=kind, title="x"))
         assert key == str(kind) and path.startswith("control/verification/")
+
+
+def test_every_declared_phase_has_an_active_class_and_says_every_hook():
+    """A step type's phases run as their kind's active class, which implements every hook (none
+    has a default) but ready, the same for all from what the phase declares; a phase no active
+    class runs is refused."""
+    import pytest
+
+    from legion_orch.workflow.engine.steps import GATE_TYPES
+    for p in {p for t in (*STEP_TYPES.values(), *GATE_TYPES.values()) for p in t.phases}:
+        active = ActivePhase._kinds[type(p)]
+        assert not active.__abstractmethods__, (active.__name__, active.__abstractmethods__)
+        assert hasattr(p, "waits_in") and hasattr(p, "uses"), type(p).__name__   # for ready()
+
+    class Unrun(Phase):
+        statuses, waits_in, uses = frozenset(), frozenset(), None
+    with pytest.raises(TypeError, match="no active class runs Unrun"):
+        ActivePhase.of(None, Unrun())                       # type: ignore[arg-type]
 
 
 def test_the_current_phase_follows_the_node_status():
