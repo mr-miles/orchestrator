@@ -93,57 +93,78 @@ flowchart TB
 
 ## 2. Who decides what: a build task, end to end
 
-Between steps the core decides; within a step the engine does. They meet in two places: the
-core's **effects** (`StartStep`, `StopStep`, `Evaluate`, `EndChange`, …), which `FlowRuntime`
-carries out, and the engine's **saves**, on which `FlowRuntime.sync` tells the core what the
-nodes did (accepted → `Completed`, escalated → `Escalated`, resolved → resumed).
+Between steps the core decides; within a step the engine does. The core is a pure object: it
+never calls anything. **FlowRuntime calls it** – with an event (`on(Completed(...))`) or a human's
+action (`act(...)`) – and the core **returns its effects** (`StartStep`, `StopStep`, `Evaluate`,
+`EndChange`), which the runtime carries out. The way back is the **change's state**: a phase sets
+its node's status, the change is saved, and every save first runs `FlowRuntime.sync`, which
+compares the nodes with the core's steps and tells the core what changed (accepted →
+`Completed`, escalated → `Escalated`, resolved → resumed). Every state change, wherever it is
+made, passes through that one save.
 
 The participants, left to right:
 
 | Participant | Layer (§1) | Code | Responsible for |
 | --- | --- | --- | --- |
+| **Agent** | outside the controller | its sandbox, over MCP (`server/mcp.py` → `engine/reports.py`) | Doing the work and reporting it; its report is checked by the shared guards and judged by its role handler, which returns what it means to its phase. |
 | **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, when a gate waits or completes, and what a send-back resets – between steps. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Carrying out the core's effects on the change's nodes, telling the core what the nodes did on every save, and persisting the core as its inputs. |
-| **Scheduler** | Services | `engine/schedule.py` | The tick: promoting the nodes the core has started, dispatching what has capacity, failing timed-out runs and releasing sandboxes. |
-| **StepRunner** | Steps | `engine/steps.py` | Moving one node through its step type's phases: entering the first, advancing to the next when one passes, accepting the node after the last. |
-| **Phases** | Orchestrator layer of a step | `engine/phases.py` (with `Dispatcher`, `Acceptance`, `Provisioner`) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging – each ending in ok, rework or escalate. |
-| **Agent (role handler)** | Agent layer of a step | `roles/*.py` (reports via `engine/reports.py`) | One role's own part: its prompt variables and context, its guards on a report, and what an accepted report records before it calls `step_done()`. |
-| **Sandboxes** | Sandbox layer of a step | `engine/sandboxes.py`, `engine/sandbox_plan.py` | Creating, preparing, pausing, holding and retiring the sandboxes a step's plan asks for, and the verifier sandboxes. |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime.py` | Calling the core with what happened, carrying out the effects it returns on the change's nodes, and persisting the core as its inputs. |
+| **Change state** | Engine | `engine/core.py` (`ChangeCore`), `engine/state.py` | The change, its nodes and runs; `save()` persists them, after letting the workflow see what changed. |
+| **Scheduler** | Services | `engine/schedule.py` | The tick: starting the work that current phases may start now, within the parallel-run limit; failing timed-out runs; releasing sandboxes. |
+| **StepRunner** | Steps | `engine/steps.py` | Moving one node through its step type's phases: entering the first, checking the step's waits, passing results to the phase, advancing, accepting after the last. |
+| **Phases** | Orchestrator layer of a step | `engine/phases.py` (with `Dispatcher`, `Acceptance`, `Provisioner`, and `Sandboxes` below them) | The controller's work around the agent's – dispatching it, verifying, the judges' panel, merging – each ending in ok, rework or escalate. |
 
 ```mermaid
 sequenceDiagram
     autonumber
+    actor Agent
     participant Core as Workflow core
     participant RT as FlowRuntime
+    participant St as Change state
     participant Sch as Scheduler
     participant SR as StepRunner
     participant Ph as Phases
-    participant Ag as Agent (role handler)
-    participant Sb as Sandboxes
 
-    Core->>RT: StartStep(build:T1, attempt)
-    RT->>RT: node PENDING (a new cycle if it ran before)
-    Sch->>SR: promote(node) – the core started it
-    SR->>Ph: AgentRun.enter → READY
-    Sch->>SR: dispatch(node)
-    SR->>Ph: AgentRun.dispatch (waits, G-H1)
-    Ph->>Sb: create, prepare (clone, branch, setup), start agent
-    Ag-->>Ph: report accepted → step_done(node)
-    Ph->>Ph: Verify.enter → VERIFYING
-    Ph->>Sb: verifier sandbox: setup, commands
-    Ph->>Ph: Verify.conclude: ok → Panel.enter → REVIEWING
-    Note over Ph,Ag: judges' runs, each in a fresh sandbox
-    Ph->>Ph: Panel.decide: ok → Merge.enter → MERGING
-    Ph->>Ph: Merge.run (G-A1, G-H1, G-A2) → ACCEPTED
-    Ph->>Sb: retire the implementer's sandbox (reflect, delete)
-    RT->>Core: on save: Completed(build:T1)
-    Core-->>RT: StartStep(next) … or Evaluate(H-3)
+    Note over Core,RT: H-2 was approved: the runtime gave the core act(H-2, approve)
+    Core-->>RT: effects: StartStep(build:T1, attempt)
+    RT->>SR: enter(build:T1)
+    SR->>Ph: AgentRun.enter
+    Ph->>St: build:T1 READY (core: running)
+    Sch->>SR: tick: dispatch(build:T1), within capacity
+    SR->>Ph: the step's waits hold (no overlapping task) → AgentRun.dispatch
+    Note over Ph: a run is prepared and launched in its sandbox (Dispatcher → Sandboxes)
+    Ph->>St: build:T1 RUNNING
+    Agent->>Ph: report over MCP, checked by the guards, the implementer's handler returns Ok
+    Ph->>Ph: AgentRun.reported(Ok) → advance → Verify.enter
+    Ph->>St: VERIFYING
+    Note over Ph: the commands run in a fresh verifier sandbox
+    Ph->>Ph: Verify.conclude: Ok → Panel.enter
+    Ph->>St: REVIEWING
+    Sch->>SR: tick: dispatch → Panel.dispatch (one judge run each, fresh sandboxes)
+    Agent->>Ph: each judge's report → Panel.reported → Panel.decide
+    Ph->>Ph: Ok → Merge.enter → Merge.run (G-A1, G-H1, G-A2)
+    Ph->>St: build:T1 ACCEPTED (its runs accepted, its sandbox retired)
+    St->>RT: save() → sync()
+    RT->>Core: on(Completed(build:T1))
+    Core-->>RT: effects: StartStep(next) … or Evaluate(H-3)
 ```
+
+The core's step and the engine's node are two levels of one state: the core's is coarse (is the
+step underway?), the node's says where inside it the work is. A node leaves `PENDING` exactly when
+its step starts in the core:
+
+| Core step | Engine node |
+| --- | --- |
+| `pending` | `PENDING` |
+| `running` | `READY` (its first work not started yet) · `RUNNING` (its agent works) · `VERIFYING` · `REVIEWING` · `MERGING` · `REWORK` (its own loop) |
+| `escalated` | `ESCALATED` |
+| `done` | `ACCEPTED` |
 
 A rework (`Verify` fails, the panel finds a blocker) stays inside the step: the engine runs the
 agent again in the same branch and sandbox, and the core only sees the step still running. An
 escalation is the only within-step event the core is told about, because a human may answer it
-by sending a stage back.
+by sending a stage back. The node statuses inside `running` are set by the phases; unlike the
+core's, they are not yet a declared state machine.
 
 ## 3. A step is a composition
 
@@ -157,7 +178,6 @@ classDiagram
     class StepType {
         phases: Phase[]
         sandbox: SandboxPlan
-        promote_when: Wait[]
         dispatch_when: Wait[]
         on_reset: Reset[]
         rework_resume
@@ -168,16 +188,17 @@ classDiagram
         after(phase) Phase
     }
     class StepRunner {
-        promote(node)
+        enter(node)
         dispatch(node)
+        reported(node, run, result)
         advance(node, phase)
-        step_done(node)
         resume(node)
     }
     class Phase {
         statuses
         enter(runner, node, after)
         dispatch(runner, node)
+        reported(runner, node, run, result)
         resume(runner, node)
     }
     class AgentRun {
@@ -244,7 +265,7 @@ The table (`engine/steps.py`) – each kind is a list of phases:
 | --- | --- | --- |
 | intake | base, kept until H-1 | AgentRun |
 | plan | base, kept until H-E1 | AgentRun → Panel(critic, decided by its handler) |
-| provision | – | BuildImages (waits for a quiet environment) |
+| provision | – | BuildImages (its dispatch waits for a quiet environment) |
 | oracle | branch (re-based each run), kept until H-2 | AgentRun (merges itself) |
 | preflight | – | Verify(acceptance commands, expect failures, at head, a failed setup → oracle rework) |
 | baseline | head | AgentRun → Verify(baseline commands, expect failures, G-BL2 notes) |
@@ -322,7 +343,7 @@ stateDiagram-v2
 | Workflow core | Pure: no I/O, no engine imports; state only through its machines' transitions | `tests/test_flow.py` (invariants after every event, hypothesis), `test_flow_states.py` |
 | FlowRuntime ↔ core | The core's state is its inputs; replaying them rebuilds it exactly | `tests/test_runtime.py` |
 | Engine collaborators | Each gets only the parts it uses; imports form a DAG; nothing imports the `ChangeEngine` facade | `test_units.py::test_engine_collaborators_are_acyclic` |
-| Role handlers | See the change only through `RoleContext`; finish their phase with `step_done()` | `test_units.py::test_role_handlers_use_only_the_role_context` |
+| Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
 | Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
 | Per-kind knowledge | Only `STEP_TYPES` (and gate approvals in `HumanGates`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
 | Sandboxes | One owner (`Sandboxes`): locks, creation, preparation, pause, hold, retirement | `tests/test_sandboxes.py` |
