@@ -57,6 +57,7 @@ from .phases import (
     Panel,
     Phase,
     PhaseContext,
+    PhaseResult,
     TaskCommands,
     TierPanel,
     Verify,
@@ -234,7 +235,7 @@ def sandbox_plan(role: str) -> SandboxPlan:
 # ---------------------------------------------------------------------------- the runner
 class StepRunner:
     """Moves nodes through their step's phases. Phases call back into it (``advance``) when they
-    pass; role handlers do through ``RoleContext.step_done``."""
+    pass; an agent's accepted report reaches its phase through :meth:`reported`."""
 
     def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
                  acceptance: Acceptance, provisioner: Provisioner, scheduler: Scheduler):
@@ -263,11 +264,12 @@ class StepRunner:
         else:
             nxt.enter(self, node, phase)
 
-    def step_done(self, node: Node) -> None:
-        """The node's current phase passed (an agent's report was accepted)."""
+    def reported(self, node: Node, run: Run, result: PhaseResult | None) -> None:
+        """An agent's report was accepted (under the lock): its role handler's result goes to
+        the node's current phase, which applies it."""
         phase = self.step(node).current(node)
         assert phase is not None, f"{node.id} is not in a phase ({node.status})"
-        self.advance(node, phase)
+        phase.reported(self, node, run, result)
 
     def resume(self, node: Node) -> Coroutine[Any, Any, None] | None:
         """After a restart: the controller work of a RUNNING node to start again."""

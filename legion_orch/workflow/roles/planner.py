@@ -7,6 +7,7 @@ from ..assets import GitMode
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..model import Node
+from ..results import Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, fix_round_note, register, scaffold_note
 
@@ -86,7 +87,7 @@ class Planner(RoleHandler):
                                   {n for n, r in e.assets.roles.items() if r.git != GitMode.NONE})
         return v
 
-    async def on_done(self, e: RoleContext, r: Report) -> None:
-        """The plan is critiqued next (the critic is dispatched while it is REVIEWING); it is
-        accepted when the critic passes it."""
-        e.step_done(r.node)                 # the critic next
+    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
+        """The plan is critiqued next (its step's panel phase: the critic); it is accepted when
+        the critic passes it."""
+        return Ok()

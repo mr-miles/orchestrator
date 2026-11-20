@@ -68,7 +68,7 @@ class ChangeEngine(ChangeCore):
                                     self._acceptance, self._provisioner)
         self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
                                   self._provisioner, self._scheduler)
-        self._acceptance.runner = self._scheduler.runner = self._runner
+        self._acceptance.runner = self._scheduler.runner = self._reports.runner = self._runner
         self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
         self._gates.flow = self._scheduler.flow = self._flow
 
@@ -152,12 +152,6 @@ class ChangeEngine(ChangeCore):
 
     def delete_sandbox_later(self, name: str) -> None:
         self._sandboxes.delete_later(name)
-
-    def step_done(self, node: Node) -> None:
-        self._runner.step_done(node)
-
-    def panel_complete(self, node: Node) -> None:
-        self._acceptance.panel_complete(node)
 
     def define_tasks(self, plan: Node) -> list[str]:
         return self._flow.define_tasks(plan)

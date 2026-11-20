@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from .. import guards
-from ..model import R_ACCEPTED, ReviewResult
+from ..model import ReviewResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, brief_findings, build_context, evidence_of, register
 
@@ -26,11 +26,10 @@ class Panel(RoleHandler):
             r.data, cycle=r.run.cycle, require_checked=True)
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
+        """Records the review; the panel decides once every judge has reported."""
         run, node, data = r.run, r.node, r.data
         node.reviews[node.review_key(run.cycle, run.role)] = ReviewResult(
             verdict=data.verdict, sha=run.judged_sha, run=run.id,
             findings=brief_findings(data.findings), checked=data.checked,
             doc=str(r.docs[run.required_docs[0]]))
-        run.status = R_ACCEPTED
-        e.delete_sandbox_later(run.sandbox)
-        e.panel_complete(node)
+        return None

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .. import governance, guards
+from ..results import Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, build_context, register
 
@@ -26,7 +27,7 @@ class Implementer(RoleHandler):
         ev = e.docs.read(run.required_docs[0], r.docs[run.required_docs[0]].version).content
         return v + guards.evidence_mentions(ev, t.verification)
 
-    async def on_done(self, e: RoleContext, r: Report) -> None:
+    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
         r.node.candidate_sha = r.sha
         await e.git.pin(r.run.id, r.sha)
-        e.step_done(r.node)                 # verification next
+        return Ok()                         # verification next
