@@ -169,7 +169,7 @@ async def test_a_revised_oracle_runs_again_from_the_integration_head(f: Flow):
     node = f.ce.nodes["oracle@2"]                      # changed: the round's oracle runs
     assert node.status == RUNNING
     run = f.run("oracle")
-    assert run.base_sha == head and run.branch.endswith("-r2")
+    assert run.base_sha == head and run.branch.endswith("/oracle-2")
     await f.oracle({"tests/acceptance/test_greet.sh":
                     "grep -q hello src/greet.txt\ngrep -c '' src/greet.txt\n"})
     assert node.status == ACCEPTED and f.ce.change.oracle_sha == node.accepted_sha

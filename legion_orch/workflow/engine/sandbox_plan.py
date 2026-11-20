@@ -43,10 +43,17 @@ Keep = Fresh | UntilAccepted | UntilGate
 class SandboxPlan:
     checkout: Checkout
     keep: Keep = Fresh()
+    # a branch's base: the integration head at every run (the oracle: each cycle re-bases), or
+    # only at the first (a build task keeps its base across its rework cycles)
+    rebase: bool = False
 
     @property
     def pushes(self) -> bool:
         return self.checkout == Checkout.BRANCH
+
+    def base_at_head(self, has_base: bool) -> bool:
+        """Whether a run's branch starts from the current integration head."""
+        return self.pushes and (self.rebase or not has_base)
 
     @property
     def at_head(self) -> bool:

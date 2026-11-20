@@ -200,7 +200,7 @@ STEP_TYPES: dict[NodeKind, StepType] = {
                 on_reset=(RestartPlan(),)),
     PROVISION: StepType((BuildImages(),), promote_when=(EnvironmentQuiescent(),),
                         on_reset=(DropEnvironment(),)),
-    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC))),   # merges itself
+    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC), rebase=True)),  # merges itself
     PREFLIGHT: StepType((Verify(AcceptanceCommands(), expect_failures=True, at_head=True,
                                 on_setup_failed=OracleReworks(), notes=AlreadyPassing()),),
                         promote_when=(OracleAccepted(),)),
