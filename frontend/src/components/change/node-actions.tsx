@@ -31,7 +31,78 @@ import { AttestationRow, GateAttestationRow } from './attestation-row'
 import { useNav } from './nav'
 import { AcceptancePreview, TraceSummary } from './traceability'
 
-function Escalated({ node }: { node: Node }) {
+/** What the workflow core offers on a node now (its generic actions). */
+function offered(state: ChangeState, nodeId: string): string[] {
+  return state.workflow?.actions[nodeId] ?? []
+}
+
+const SEND_BACK = 'send_back:'
+// sending these back starts over everything built on them: confirm first
+const SWEEPING = ['stage:requirements', 'stage:plan']
+
+/** Send back each stage the node's work was built on, nearest first, as the workflow core
+ * offers it. A stage sent back starts over with the feedback; Delivery's appends a fix round. */
+function SendBack({
+  state,
+  nodeId,
+  feedback,
+}: {
+  state: ChangeState
+  nodeId: string
+  feedback: string
+}) {
+  const act = useAct(useNav().cid)
+  const titles = new Map((state.workflow?.stages ?? []).map((st) => [st.id, st.title]))
+  const targets = offered(state, nodeId)
+    .filter((a) => a.startsWith(SEND_BACK))
+    .map((a) => a.slice(SEND_BACK.length))
+  return (
+    <>
+      {targets.map((stage, i) => {
+        const base = stage.split('@')[0] ?? stage
+        const title = titles.get(stage) ?? stage
+        const send = () => act.node(nodeId, 'send_back', { stage, feedback }, `${title} sent back`)
+        if (base === 'stage:delivery')
+          return (
+            <Button
+              key={stage}
+              variant="secondary"
+              title="A fix round plans new tasks on top of the integration head (critique, H-E1, the oracle if it changes, H-2), builds them and runs integration again. Accepted tasks are not reopened."
+              onClick={send}
+            >
+              Plan a fix round
+            </Button>
+          )
+        if (SWEEPING.includes(base))
+          return (
+            <ConfirmButton
+              key={stage}
+              title={`Send ${title} back?`}
+              description="It starts over with your feedback, and everything built on it with it: every build task of every round, the integration branch, the oracle and the surface pins."
+              confirm={`Send ${title} back`}
+              disabled={!feedback.trim()}
+              onConfirm={send}
+            >
+              Send back: {title}
+            </ConfirmButton>
+          )
+        return (
+          <Button
+            key={stage}
+            variant={i === 0 ? 'outline' : 'ghost'}
+            disabled={!feedback.trim()}
+            title={`${title} starts over with this feedback, and everything after it`}
+            onClick={send}
+          >
+            Send back: {title}
+          </Button>
+        )
+      })}
+    </>
+  )
+}
+
+function Escalated({ node, state }: { node: Node; state: ChangeState }) {
   const nav = useNav()
   const act = useAct(nav.cid)
   const [answer, setAnswer] = useState('')
@@ -39,10 +110,8 @@ function Escalated({ node }: { node: Node }) {
   const [why, setWhy] = useState('')
   const e = node.escalation
   if (!e) return null
-  // a late integration failure is fixed by a fix round: new tasks on top of the head (§5.10a)
-  const planFix = node.kind === 'integration' && e.kind === 'integration_failed'
-  // an oracle, preflight or baseline the plan cannot satisfy sends the design back
-  const revisePlan = ['oracle', 'preflight', 'baseline'].includes(node.kind)
+  const actions = offered(state, node.id)
+  const override = actions.includes('override')
   if (e.retrying)
     return (
       <Alert>
@@ -85,15 +154,9 @@ function Escalated({ node }: { node: Node }) {
             value={answer}
             onChange={setAnswer}
             multiline
-            description={
-              planFix
-                ? 'Attested as feedback for the next run; for Plan a fix, the comment the planner is given.'
-                : revisePlan
-                  ? 'Attested as feedback for the next run; for Revise the plan, what the planner is told to change.'
-                  : 'Attested as feedback for the next run.'
-            }
+            description="Attested as feedback for the next run – or, sending a stage back, what it is told to change (for a fix round, the comment the planner is given)."
           />
-          {node.kind === 'build' && (
+          {override && (
             <TextField
               label="Override reason"
               value={reason}
@@ -114,7 +177,7 @@ function Escalated({ node }: { node: Node }) {
         >
           Retry
         </Button>
-        {node.kind === 'build' && (
+        {override && (
           <Button
             variant="outline"
             onClick={() => act.node(node.id, 'override_accept', { reason })}
@@ -122,32 +185,7 @@ function Escalated({ node }: { node: Node }) {
             Override accept
           </Button>
         )}
-        {revisePlan && (
-          <Button
-            variant="secondary"
-            disabled={!answer.trim()}
-            title="Sends the design back to the planner with this feedback: the plan is critiqued and approved again (H-E1), then the oracle and baseline start over"
-            onClick={() =>
-              act.node(
-                node.id,
-                'revise_plan',
-                { feedback: answer },
-                'Plan sent back to the planner',
-              )
-            }
-          >
-            Revise the plan
-          </Button>
-        )}
-        {planFix && (
-          <Button
-            variant="secondary"
-            title="Sends Delivery back: a fix round plans new tasks on top of the integration head (critique, H-E1, the oracle if it changes, H-2), builds them and runs integration again. Accepted tasks are not reopened."
-            onClick={() => act.node(node.id, 'plan_fix', { comment: answer }, 'Fix round planned')}
-          >
-            Plan a fix
-          </Button>
-        )}
+        <SendBack state={state} nodeId={node.id} feedback={answer} />
         <ConfirmButton
           title="Abandon the change?"
           description="The change ends here; nothing more is dispatched for it. A retrospective then runs on what it produced so far."
@@ -237,12 +275,7 @@ function AcceptRequirements({ state }: { state: ChangeState }) {
         >
           Accept
         </Button>
-        <Button
-          variant="outline"
-          onClick={() => act.node('H-1', 'revise', { feedback }, 'Revision requested')}
-        >
-          Request revision
-        </Button>
+        <SendBack state={state} nodeId="H-1" feedback={feedback} />
       </CardFooter>
     </Card>
   )
@@ -278,7 +311,6 @@ function BaselineSummary({ row }: { row: H2Subject }) {
 function ApproveSubjects({ state, nodeId }: { state: ChangeState; nodeId: string }) {
   const gate = baseId(nodeId)
   const oracle = gate === 'H-2'
-  const round = state.change?.round ?? 1
   const nav = useNav()
   const act = useAct(nav.cid)
   const [feedback, setFeedback] = useState('')
@@ -394,31 +426,7 @@ function ApproveSubjects({ state, nodeId }: { state: ChangeState; nodeId: string
           Approve all pending
         </Button>
         {attestsToo && <Muted>Also attests: {GATE_TITLE.independent_baseline}</Muted>}
-        <Button
-          variant="outline"
-          title={
-            oracle
-              ? 'Sends the oracle stage back: the oracle is written again with this feedback'
-              : round > 1
-                ? `Sends fix round ${round}'s plan back to the planner; earlier rounds stand`
-                : 'Sends the plan back to the planner with this feedback'
-          }
-          onClick={() => act.node(nodeId, 'revise', { feedback }, 'Revision requested')}
-        >
-          {oracle ? 'Revise the oracle' : round > 1 ? `Revise round ${round}` : 'Request revision'}
-        </Button>
-        {(oracle || round > 1) && (
-          <ConfirmButton
-            title="Restart the whole plan?"
-            description="Every build task of every round, the integration branch, the oracle and the surface pins start over."
-            confirm="Restart plan"
-            onConfirm={() =>
-              act.node(nodeId, 'send_back', { stage: 'plan', feedback }, 'Plan restarted')
-            }
-          >
-            Restart plan
-          </ConfirmButton>
-        )}
+        <SendBack state={state} nodeId={nodeId} feedback={feedback} />
       </CardFooter>
     </Card>
   )
@@ -569,7 +577,7 @@ function baseId(id: string): string {
 
 /** The decision a node waits for, if any. */
 export function NodeActions({ node, state }: { node: Node; state: ChangeState }) {
-  if (node.status === 'ESCALATED') return <Escalated node={node} />
+  if (node.status === 'ESCALATED') return <Escalated node={node} state={state} />
   if (node.status !== 'AWAITING_HUMAN') return null
   const gate = baseId(node.id)
   if (gate === 'H-1') return <AcceptRequirements state={state} />

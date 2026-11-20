@@ -311,6 +311,18 @@ export interface EnvironmentSpec {
   problems: string[]
 }
 
+/** A stage of the change's workflow, with the nodes shown in it (nested stages too). */
+export interface Stage {
+  id: string
+  title: string
+  depth: number
+  /** how many stage levels it contains (0: none) */
+  level: number
+  gate: string
+  nodes: string[]
+  status: string
+}
+
 export interface ChangeState {
   project: string
   repo: string
@@ -324,7 +336,11 @@ export interface ChangeState {
   h3?: GateAttestation[]
   /** from the workflow core: what a human may do on each node now; waiting gates' unmet
    * preconditions */
-  workflow?: { actions: Record<string, string[]>; unmet: Record<string, string[]> }
+  workflow?: {
+    actions: Record<string, string[]>
+    unmet: Record<string, string[]>
+    stages: Stage[]
+  }
   surfaces: Surface[]
   environment: EnvironmentSpec | null
   attestation_kinds: string[]

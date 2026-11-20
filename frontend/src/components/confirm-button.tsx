@@ -20,6 +20,7 @@ export function ConfirmButton({
   confirm,
   onConfirm,
   body,
+  disabled,
 }: {
   children: ReactNode
   title: string
@@ -27,11 +28,14 @@ export function ConfirmButton({
   confirm: string
   onConfirm: () => Promise<unknown>
   body?: ReactNode
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger render={<Button variant="destructive" />}>{children}</AlertDialogTrigger>
+      <AlertDialogTrigger render={<Button variant="destructive" disabled={disabled} />}>
+        {children}
+      </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
