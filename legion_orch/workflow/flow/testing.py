@@ -68,6 +68,10 @@ class ScriptedRuntime:
         self._run(self._outcome(step, outcome, attempt=attempt or self.attempt(step)))
         return self
 
+    def define(self, group: str, steps) -> ScriptedRuntime:
+        self._run(self.flow.define(group, steps))
+        return self
+
     def send(self, event) -> ScriptedRuntime:
         self._run(self.flow.on(event))
         return self

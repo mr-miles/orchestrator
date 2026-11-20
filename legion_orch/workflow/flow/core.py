@@ -279,6 +279,27 @@ class FlowState:
         self._advance()
         return self._take()
 
+    def define(self, group: str, steps: list[Step]) -> list[Effect]:
+        """The steps of a :class:`Parallel` group, once they are known (a task graph accepted):
+        they replace the group's earlier ones. Only before the group has started – after that
+        its work is redone by sending a stage back, which resets it first. A step defined again
+        with an earlier id continues from its attempts."""
+        node = self.nodes.get(group)
+        if not isinstance(node, Parallel):
+            raise ActionError(f"{group!r} is not a parallel group")
+        if self.status(group) != StageStatus.PENDING:
+            raise ActionError(f"{group} has already started")
+        for st in node.steps:
+            self._forget(st.id)
+        node.steps = list(steps)
+        ids = {s.id for s in steps}
+        for st in steps:
+            if unknown := set(st.depends_on) - ids:
+                raise ValueError(f"{st.id} depends on {sorted(unknown)} outside {group}")
+            self._register(st, node)
+        self._advance()
+        return self._take()
+
     def actions(self, target: str) -> list[str]:
         """What a human may do on ``target`` now – derived from the structure."""
         if self.ended:
@@ -449,7 +470,8 @@ class FlowState:
         assert isinstance(policy, AppendRound)
         rounds = self.rounds.setdefault(stage.id, [])
         rnd = policy.template(len(rounds) + 2)            # round 1 is the original work
-        at = next(i for i, c in enumerate(stage.children) if c.id == policy.before)
+        at = (len(stage.children) if policy.before is None
+              else next(i for i, c in enumerate(stage.children) if c.id == policy.before))
         stage.children.insert(at, rnd)
         self._register(rnd, stage)
         rounds.append(rnd.id)
