@@ -82,7 +82,7 @@ Status `ERROR` (description is an identifier only) is set on: a change with outc
 
 ## 6. Send-backs, rework, waits, and endings
 
-A send-back closes the phase `sent_back`; rework closes spans with outcome `rework`, and the step reopens as a new span on rerun. A wait on a human closes the phase with `escalate` (ERROR only for an escalated step, not for a gate) and adds the `awaiting_human`/`escalated` event on the step.
+A `reset` ends a step or stage span that is still open with outcome `rework` (and its open phase span with result `sent_back`). A step that already finished stays `accepted`, and a send-back at a gate starts a new `step <node id>` span (a different span id) for the redone step. A step that already finished stays accepted after a send-back; the redo is a second span. A wait on a human closes the phase with `escalate` (ERROR only for an escalated step, not for a gate) and adds the `awaiting_human`/`escalated` event on the step.
 
 A change ends by *reject at H-3* or *abandon at an escalated step*. The waiting step ends `failed` (ERROR), other open steps `abandoned`, and the root `rejected` or `abandoned` (ERROR). E.g. reject at H-3: `step H-3` failed, `phase Approval` result `escalate` (no ERROR), root `rejected`. A completed change closes the root `completed`.
 
