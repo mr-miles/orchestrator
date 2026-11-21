@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -69,7 +69,11 @@ if TYPE_CHECKING:
     from ..base.dispatch import Dispatcher, StepDispatcher
     from ..sandboxes.sandboxes import Sandboxes
     from ..services.agent_runs import AgentRuns, Ended
+    from ..services.provision import Provisioner
+    from ..services.runs import RunLifecycle
     from .active import ActiveStep
+    from .runner import StepEvents
+    from .step_types import StepType
 
 EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
 
@@ -147,26 +151,65 @@ class Phase(ABC):
 
 
 class ActivePhase:
-    """A phase as it runs for one node: made from the node's step (:class:`.ActiveStep`), the
-    declared phase and – while it works – the step's dispatcher. It is what the active step
-    works with: each of the phase's hooks is called with it, and the work's shape is here, the
-    same for every kind (:meth:`task`), with whether it may begin (:meth:`ready`), concluding
-    a result, and whether its work still counts."""
+    """A phase as it runs for one node: made by the node's running step (:class:`.ActiveStep`)
+    from itself, the declared phase and – while it works – the step's dispatcher. It is a
+    phase's whole view of its node: the declarations it runs (``step``: the step type,
+    ``phase``: the phase), the node, the change, and what its hooks may do – move the node
+    within the step, pass the phase, apply a result, start its work. The work's shape is here,
+    the same for every kind (:meth:`task`), with whether it may begin (:meth:`ready`),
+    concluding a result, and whether its work still counts."""
 
-    def __init__(self, step: ActiveStep, phase: Phase, dispatch: StepDispatcher | None = None):
-        self.step, self.phase, self.dispatch = step, phase, dispatch
+    def __init__(self, running: ActiveStep, phase: Phase,
+                 dispatch: StepDispatcher | None = None):
+        self._running = running
+        self.step: StepType = running.type
+        self.phase, self.dispatch = phase, dispatch
 
     @property
     def node(self) -> Node:
-        return self.step.node
+        return self._running.node
 
     @property
     def c(self) -> ChangeCore:
-        return self.step.c
+        return self._running.c
 
     @property
     def ctx(self) -> PhaseContext:
-        return self.step.ctx
+        return self._running.ctx
+
+    @property
+    def events(self) -> StepEvents:
+        """What the layer above is told (the workflow defines an accepted plan's tasks)."""
+        return self._running.events
+
+    @property
+    def lifecycle(self) -> RunLifecycle:
+        return self._running.lifecycle
+
+    @property
+    def provisioner(self) -> Provisioner:
+        return self._running.provisioner
+
+    # ------------------------------------------------------------ what its hooks may do
+    def move(self, to: NodeStatus) -> None:
+        """The node's status within the step."""
+        self._running.move(to)
+
+    def advance(self) -> None:
+        """The phase passed: the node goes on to the step's next phase, or is accepted."""
+        self._running.advance(self)
+
+    def apply(self, result: PhaseResult) -> None:
+        """A result that does not pass the phase: rework, an escalation, an earlier step redone."""
+        self._running.apply(result)
+
+    def run(self, work: Callable[[ActivePhase], Awaitable[None]] | None = None) -> None:
+        """Start the phase's work as a task, with the step's dispatcher (its :meth:`task`, or
+        ``work``)."""
+        self._running.run(self, work)
+
+    def waits_hold(self) -> bool:
+        return self._running.waits_hold()
 
     # ------------------------------------------------------------ the phase's hooks, for it
     def enter(self) -> None:
@@ -199,7 +242,7 @@ class ActivePhase:
         step's first work (``waits_in``) the step's waits hold. Checked now and at each save;
         while it does not hold, the step holds no slot. (Whether its sandbox's environment is
         built is its work's own: the dispatcher starts work only once it can.)"""
-        return self.node.status not in self.phase.waits_in or self.step.waits_hold()
+        return self.node.status not in self.phase.waits_in or self.waits_hold()
 
 
     async def task(self) -> None:
@@ -230,16 +273,16 @@ class ActivePhase:
         """The phase's result goes to the step: ok passes the phase, anything else is applied
         (rework, escalate, an earlier step redone); None waits for more."""
         if isinstance(result, Ok):
-            self.step.advance(self)
+            self.advance()
         elif result is not None:
-            self.step.apply(result)
+            self.apply(result)
 
     def stale(self) -> bool:
         """Its step or this phase is over: its work's result counts no more."""
-        return self.step.stale(self)
+        return self._running.stale(self)
 
     async def wait_until(self, ready: Callable[[], bool]) -> bool:
-        return await self.step.wait_until(self, ready)
+        return await self._running.wait_until(self, ready)
 
 
 # ---------------------------------------------------------------------------- policies
@@ -421,12 +464,12 @@ class Produce(Phase):
 
     def enter(self, active: ActivePhase) -> None:
         if active.node.status != REWORK:                # a rework continues in REWORK
-            active.step.move(READY)
+            active.move(READY)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status in (READY, REWORK):          # RUNNING: its agent works
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         """After a restart: a run whose agent ended its turn after an accepted report while the
@@ -434,7 +477,7 @@ class Produce(Phase):
         run = active.c.runs.get(active.node.current_run) if active.node.current_run else None
         if active.node.status == RUNNING and run is not None and run.status == R_REPORTED \
                 and not run.concluded:
-            active.step.run(active, lambda a: self._conclude_later(a, run))
+            active.run(lambda a: self._conclude_later(a, run))
         else:
             self.start(active)
 
@@ -443,21 +486,21 @@ class Produce(Phase):
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
         """A failed run or a BLOCKED report: where its step reworks."""
-        return active.step.type.rework_resume
+        return active.step.rework_resume
 
     def begin(self, active: ActivePhase) -> bool:
         return False                                     # its agent's start moves it RUNNING
 
     async def perform(self, active: ActivePhase) -> object:
         c = active.c
-        if active.step.type.judges_head:            # G-H1: the head is where the controller left it
+        if active.step.judges_head:            # G-H1: the head is where the controller left it
             head = await c.git.integration_head(c.change.id)
             async with c.lock:
                 if moved := c.head_moved(head):
                     return Escalate("head_moved", moved, Resume.READY)
         return await agent_work(
-            active, self.role, active.step.type.sandbox, wanted=active.ready,
-            started=lambda run: active.step.move(RUNNING))        # its agent works
+            active, self.role, active.step.sandbox, wanted=active.ready,
+            started=lambda run: active.move(RUNNING))        # its agent works
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None | _Again:
         if done is None or done is AGAIN or isinstance(done, Escalate):
@@ -533,13 +576,13 @@ def judged(active: ActivePhase, ended: Ended) -> None:
         run.concluded = True
         if run.status == R_REPORTED and not isinstance(ended.result, Escalate):
             run.status = R_ACCEPTED
-            active.step.lifecycle.sandboxes.delete_later(run.sandbox)
+            active.lifecycle.sandboxes.delete_later(run.sandbox)
 
 
 def judge_resume(active: ActivePhase, escalation: Escalate) -> Resume:
     """Where a judging phase resumes: a judge's failed run – judged again (the other judges'
     reviews stand); a judge's BLOCKED report – where the step reworks."""
-    return Resume.REVIEWING if escalation.kind == "run_failed" else active.step.type.rework_resume
+    return Resume.REVIEWING if escalation.kind == "run_failed" else active.step.rework_resume
 
 
 @dataclass(frozen=True, eq=False)
@@ -556,15 +599,15 @@ class Panel(Phase):
         roles = self._roles(active)
         if not roles:                        # an empty panel: nothing to wait for
             self._record_pass(active, ())
-            active.step.advance(active)
+            active.advance()
             return
-        active.step.move(REVIEWING)
+        active.move(REVIEWING)
         active.c.event("review", f"panel {list(roles)}", active.node.id)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status == REVIEWING:
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)                                     # a judge that reported is concluded
@@ -655,12 +698,12 @@ class Critique(Phase):
     waits_in: ClassVar = frozenset()
 
     def enter(self, active: ActivePhase) -> None:
-        active.step.move(REVIEWING)
+        active.move(REVIEWING)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status == REVIEWING:
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)                                     # a critic that reported is concluded
@@ -714,12 +757,12 @@ class DefineTasks(Phase):
     waits_in: ClassVar = frozenset()
 
     def enter(self, active: ActivePhase) -> None:
-        active.step.move(DEFINING)
+        active.move(DEFINING)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status == DEFINING:
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)
@@ -728,7 +771,7 @@ class DefineTasks(Phase):
         self.start(active)
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
-        return active.step.type.rework_resume
+        return active.step.rework_resume
 
     def begin(self, active: ActivePhase) -> bool:
         return False
@@ -738,7 +781,7 @@ class DefineTasks(Phase):
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult:
         node = active.node
-        ids = active.step.events.define_tasks(node)
+        ids = active.events.define_tasks(node)
         what = f"fix round {node.round}" if node.round > 1 else "plan"
         active.c.event("plan", f"{what} accepted by critic; {len(ids)} build task(s)"
                        + (f": {', '.join(ids)}" if node.round > 1 else ""), node.id)
@@ -800,12 +843,12 @@ class Verify(Phase):
     def enter(self, active: ActivePhase) -> None:
         """After a producer, its candidate is verified at once (in the step's slot); at the head
         (nothing produced it) the step starts READY, like any step's first work."""
-        active.step.move(READY if self.at_head else VERIFYING)
+        active.move(READY if self.at_head else VERIFYING)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status in (READY, VERIFYING):
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)                                     # verified again
@@ -814,13 +857,13 @@ class Verify(Phase):
         self.start(active)                                     # verified again
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
-        return active.step.type.rework_resume
+        return active.step.rework_resume
 
     def begin(self, active: ActivePhase) -> bool:
         if active.node.status != READY:
             return False
         active.node.candidate_sha = active.c.change.integration_head      # at the head: what it verifies
-        active.step.move(VERIFYING)
+        active.move(VERIFYING)
         return True
 
     async def perform(self, active: ActivePhase) -> Verification:
@@ -921,12 +964,12 @@ class Merge(Phase):
     waits_in: ClassVar = frozenset()
 
     def enter(self, active: ActivePhase) -> None:
-        active.step.move(MERGING)
+        active.move(MERGING)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status == MERGING:                  # entered, resumed, overridden, restarted
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)
@@ -935,7 +978,7 @@ class Merge(Phase):
         self.start(active)
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
-        return active.step.type.rework_resume
+        return active.step.rework_resume
 
     def begin(self, active: ActivePhase) -> bool:
         return False
@@ -997,12 +1040,12 @@ class BuildImages(Phase):
     waits_in: ClassVar = frozenset({READY})                 # the environment is quiet
 
     def enter(self, active: ActivePhase) -> None:
-        active.step.move(READY)
+        active.move(READY)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status in (READY, RUNNING):
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)                                     # built again
@@ -1011,18 +1054,18 @@ class BuildImages(Phase):
         self.start(active)                                     # built again
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
-        return active.step.type.rework_resume
+        return active.step.rework_resume
 
     def begin(self, active: ActivePhase) -> bool:
         if active.node.status != READY:
             return False
-        active.step.move(RUNNING)
+        active.move(RUNNING)
         active.c.event("provision", "provisioning the approved environment", active.node.id)
         return True
 
     async def perform(self, active: ActivePhase) -> object:
         """The provisioner's work: the images built and the setup checked (G-PV1, G-PV3)."""
-        return await active.step.provisioner.provision(active.node, dispatch=active.dispatch)
+        return await active.provisioner.provision(active.node, dispatch=active.dispatch)
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None:
         """What the provisioner found is the phase's result."""
@@ -1118,12 +1161,12 @@ class Approval(Phase):
     waits_in: ClassVar = frozenset()
 
     def enter(self, active: ActivePhase) -> None:
-        active.step.move(READY)
+        active.move(READY)
         self.start(active)
 
     def start(self, active: ActivePhase) -> None:
         if active.node.status in (READY, RUNNING):         # RUNNING: checking (after a restart)
-            active.step.run(active)
+            active.run()
 
     def recover(self, active: ActivePhase) -> None:
         self.start(active)
@@ -1134,10 +1177,10 @@ class Approval(Phase):
         self.start(active)
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
-        return active.step.type.rework_resume
+        return active.step.rework_resume
 
     def begin(self, active: ActivePhase) -> bool:
-        active.step.move(RUNNING)               # checking
+        active.move(RUNNING)               # checking
         return True
 
     async def perform(self, active: ActivePhase) -> object:

@@ -303,7 +303,10 @@ and it owns the node's reservation. A **phase** is one class per kind – `Produ
 `Verify`, `Merge`, `BuildImages`, `Approval`, implementing the abstract `Phase` – holding its
 policies and its work together, declared in the table and shared by every node of its kind. As
 it runs for a node it is an **`ActivePhase`**: one concrete class, made by the active step from
-itself, the phase and – while it works – the step's dispatcher (`ActiveStep.at(phase)`). The
+itself, the phase and – while it works – the step's dispatcher (`ActiveStep.at(phase)`). It is
+a phase's whole view of its node: the declarations it runs (`step`, the step type; `phase`), the
+node, the change, and what a hook may do (`move`, `advance`, `apply`, `run`) – the running step
+itself stays behind it. The
 active step works only with active phases (`enter()`, `start()`, `resume(answered)`,
 `task()`), and each of the phase's hooks is given the active phase as its one argument for the
 node, the change and the step (`perform(active)`, `result(active, done)`) – the phase itself
@@ -426,10 +429,16 @@ classDiagram
         result(active, done)* PhaseResult
     }
     class ActivePhase {
-        step: ActiveStep
+        step: StepType
         phase: Phase
         dispatch: StepDispatcher
         node: Node
+        events: StepEvents
+        move(status) None
+        advance() None
+        apply(result) None
+        run(work) None
+        waits_hold() bool
         enter() None
         start() None
         recover() None
@@ -486,6 +495,7 @@ classDiagram
     ActiveStep --> StepType : runs
     ActiveStep *-- ActivePhase : its current phase
     ActivePhase --> Phase : runs
+    ActivePhase --> StepType : its step
     StepType *-- Phase
     StepType *-- SandboxPlan
     StepType *-- Wait
