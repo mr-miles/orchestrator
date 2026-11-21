@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from ....store import DocVersion
+from ....telemetry import Telemetry
 from ....util import now_iso
 from ... import attention, attest, governance
 from ...attention import AttentionItem
@@ -55,6 +56,8 @@ class ChangeCore:
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
+        # unit tests build the core with a bare namespace for ``svc``: no telemetry means off
+        self.trace = (getattr(svc, "telemetry", None) or Telemetry.off()).change(cid)
         self._timeline: list[str] = []                 # events not yet written to the store
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
