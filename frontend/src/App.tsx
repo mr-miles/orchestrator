@@ -14,7 +14,9 @@ import { useAttentionTitle } from '@/lib/attention'
 import { formatHash, parseHash, samePage, type Route } from '@/lib/route'
 import { useChangeStream, useOverviewStream } from '@/lib/streams'
 import type { AttentionItem, ChangeSummary, Meta, Workspace } from '@/lib/types'
+import { cn } from '@/lib/utils'
 
+const MENU_KEY = 'menu'
 const GROUP_LABEL = { skills: 'Skills', workflows: 'Workflows', agents: 'Agents' } as const
 
 export default function App() {
@@ -24,6 +26,13 @@ export default function App() {
   const [initial, setInitial] = useState<ChangeSummary[] | null>(null)
   const [creating, setCreating] = useState(false)
   const [menu, setMenu] = useState(false)
+  // the left-hand menu collapsed to its icons (remembered in this browser)
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(MENU_KEY) === 'collapsed')
+  const toggleMenu = () =>
+    setCollapsed((c) => {
+      localStorage.setItem(MENU_KEY, c ? 'expanded' : 'collapsed')
+      return !c
+    })
   useEffect(() => {
     getMeta().then(setMeta, () => undefined)
     getWorkspaces().then(setWorkspaces, () => undefined)
@@ -45,7 +54,7 @@ export default function App() {
   const streamed = live.changes
   const changes = useMemo(() => streamed ?? initial ?? [], [streamed, initial])
   const attention = live.attention
-  const defaultWs = workspaces[0]?.id ?? meta?.repo ?? ''
+  const defaultWs = workspaces[0]?.id ?? meta?.workspaces?.[0] ?? ''
   const wsOf = useCallback(
     (cid: string) => changes.find((c) => c.id === cid)?.workspace ?? defaultWs,
     [changes, defaultWs],
@@ -102,7 +111,10 @@ export default function App() {
             : [{ label: 'Configuration' }, { label: GROUP_LABEL[resolved.group] }]
   const current = resolved.page === 'change' ? changes.find((c) => c.id === resolved.cid) : null
 
-  const sidebar = (onNavigate?: () => void) => (
+  const sidebar = (
+    onNavigate?: () => void,
+    rail?: { collapsed: boolean; onToggle: () => void },
+  ) => (
     <AppSidebar
       route={resolved}
       project={meta?.project ?? ''}
@@ -110,12 +122,19 @@ export default function App() {
       changes={changes}
       attention={attention}
       onNavigate={onNavigate}
+      collapsed={rail?.collapsed}
+      onToggle={rail?.onToggle}
     />
   )
   return (
     <div className="flex min-h-svh">
-      <aside className="sticky top-0 hidden h-svh w-60 shrink-0 overflow-y-auto border-r md:block">
-        {sidebar()}
+      <aside
+        className={cn(
+          'sticky top-0 hidden h-svh shrink-0 overflow-y-auto border-r transition-[width] md:block',
+          collapsed ? 'w-14' : 'w-60',
+        )}
+      >
+        {sidebar(undefined, { collapsed, onToggle: toggleMenu })}
       </aside>
       <Sheet open={menu} onOpenChange={setMenu}>
         <SheetContent side="left" className="w-64 p-0">
@@ -170,11 +189,17 @@ export default function App() {
       <NewChangeDialog
         open={creating}
         onOpenChange={setCreating}
-        onStarted={(c) => {
+        workspaces={workspaces}
+        defaultWorkspace={
+          resolved.page === 'workspace' || resolved.page === 'change' ? resolved.ws : defaultWs
+        }
+        onStarted={(c, ws) => {
           setInitial((xs) =>
-            xs?.some((x) => x.id === c) ? xs : [{ id: c } as ChangeSummary, ...(xs ?? [])],
+            xs?.some((x) => x.id === c)
+              ? xs
+              : [{ id: c, workspace: ws } as ChangeSummary, ...(xs ?? [])],
           )
-          go({ page: 'change', ws: defaultWs, cid: c, tab: 'overview', focus: null })
+          go({ page: 'change', ws, cid: c, tab: 'overview', focus: null })
         }}
       />
     </div>

@@ -34,6 +34,7 @@ const WORKSPACE = {
   repo: 'app',
   base_branch: 'main',
   source: null,
+  publish_prefix: 'agent/',
   changes: { ACTIVE: 1, READY: 1 },
   documents: 3,
 }
@@ -57,7 +58,7 @@ let calls: Call[]
 
 function routes(extra: Record<string, unknown> = {}) {
   calls = fakeFetch({
-    '/api/meta': { project: 'demo', repo: 'app', decision_owners: ['miles'] },
+    '/api/meta': { project: 'demo', workspaces: ['app'], decision_owners: ['miles'] },
     '/api/workspaces': [WORKSPACE],
     '/api/changes': MORE,
     ...extra,
@@ -107,6 +108,35 @@ describe('the shell', () => {
     await userEvent.click(screen.getByRole('button', { name: 'All changes' }))
     expect(screen.getByRole('columnheader', { name: 'Workspace' })).toBeTruthy()
     expect(localStorage.getItem('work-view')).toBe('all')
+  })
+
+  test('the menu collapses to its icons, keeps every link, and is remembered', async () => {
+    location.hash = '#/inbox'
+    const { unmount } = renderApp()
+    await overview()
+    const menu = () => screen.getAllByRole('navigation', { name: 'Main' })[0]!
+    await userEvent.click(within(menu()).getByRole('button', { name: 'Collapse the menu' }))
+    expect(localStorage.getItem('menu')).toBe('collapsed')
+    const inbox = within(menu()).getByRole('link', { name: /^Inbox/ })
+    expect(inbox.getAttribute('title')).toBe('Inbox') // named by its tooltip
+    expect(inbox.querySelector('.bg-destructive')).toBeTruthy() // what needs you, as a dot
+    expect(
+      within(menu())
+        .getByRole('link', { name: /^Skills/ })
+        .getAttribute('href'),
+    ).toBe('#/config/skills')
+    unmount()
+    renderApp()
+    await overview()
+    const again = within(menu()).getByRole('button', { name: 'Expand the menu' })
+    expect(again.getAttribute('aria-expanded')).toBe('false')
+    await userEvent.click(again)
+    expect(localStorage.getItem('menu')).toBe('expanded')
+    expect(
+      within(menu())
+        .getByRole('link', { name: /^Inbox/ })
+        .getAttribute('title'),
+    ).toBeNull()
   })
 
   test('the menu has workloads and configuration; the inbox shows what needs you', async () => {
