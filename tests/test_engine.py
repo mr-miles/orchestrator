@@ -291,6 +291,9 @@ async def test_h1_decision_rules(f: Flow):
         await f.human("H-1", "accept", tier="R0", reason="no")
     with pytest.raises(WorkflowError, match="not valid for H-1"):
         await f.human("H-1", "restart")
+    with pytest.raises(WorkflowError, match="H-1 cannot be rejected"):
+        await f.human("H-1", "reject")                # only H-3's step can be
+    assert f.ce.change.ended is None                  # nothing recorded for a refused reject
     with pytest.raises(WorkflowError, match="unknown node"):
         await f.human("H-9", "accept")
     with pytest.raises(WorkflowError, match="not available for intake in ACCEPTED"):

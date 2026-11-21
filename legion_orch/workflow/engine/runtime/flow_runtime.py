@@ -142,18 +142,23 @@ class FlowRuntime:
         self._carry_out(self._input("start"))
 
     def build_tree(self) -> None:
-        """H-1 is being approved: the tier, environment and repository decide the rest of the
-        tree. The core is rebuilt for it and replays every input so far (so attempts, answers
-        and send-backs are as they were; what the new tree lacks is skipped)."""
-        ch = self.c.change
-        self.tree = {"rank": risk.rank(ch.tier), "environment": self.c.cfg.environment is not None,
-                     "blank_repo": ch.blank_repo}
+        """The tier is decided (H-1 approved): the tier, environment and repository decide the
+        rest of the tree. The core is rebuilt for it and replays every input so far (so
+        attempts, answers and send-backs are as they were; what the new tree lacks is
+        skipped)."""
+        self.tree = self._tree()
         inputs, self.inputs = self.inputs, []
         self.flow = self._new_flow()
         for inp in inputs:
             self._apply(inp, replay=True)
         self.inputs = inputs
         self._materialize()
+
+    def _tree(self) -> dict[str, Any]:
+        """What the change's tree is built from: its tier, environment and repository."""
+        ch = self.c.change
+        return {"rank": risk.rank(ch.tier) if ch.tier else None,
+                "environment": self.c.cfg.environment is not None, "blank_repo": ch.blank_repo}
 
     # ------------------------------------------------------------------ queries
     def has(self, nid: str) -> bool:
@@ -356,6 +361,8 @@ class FlowRuntime:
         effects resume the step (``ResumeStep``, ``RetryStep``). A node outside the tree (the
         retrospective) has no step there: its runner is told directly."""
         if node.id in self.flow.nodes:
+            if self.c.change.tier and self._tree() != self.tree:
+                self.build_tree()      # the tier was decided (H-1): the tree it answers into
             await self.act(node.id, action, by, text)
         elif action == "retry":
             self.runner.retry(node)

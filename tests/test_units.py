@@ -778,11 +778,23 @@ def test_cgi_head_parsing():
     assert _parse_cgi_head(b"Content-Type: text/plain\r\n") is None        # incomplete header block
 
 
-def test_every_human_gate_action_has_a_handler():
-    from legion_orch.workflow.engine.runtime.human import HumanGates
+def test_every_gate_says_what_approves_it_and_the_runtime_names_no_gate():
+    """What approving a gate records is its step type's (its Approval phase's ``approves``);
+    the human actions in the runtime hold no table of gates."""
+    import inspect
+
+    from legion_orch.workflow.engine.runtime import human
+    from legion_orch.workflow.engine.steps import GATE_TYPES
+    from legion_orch.workflow.engine.steps.phases import Approval
     from legion_orch.workflow.model import H_CHANGE, H_ENV, H_REQUIREMENTS, H_SPEC
-    assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
-    assert all(callable(getattr(HumanGates, m)) for m in HumanGates.GATE_ACTIONS.values())
+    assert set(GATE_TYPES) == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
+    assert {g: sorted(t.phase(Approval).approves.actions) for g, t in GATE_TYPES.items()} == {
+        H_REQUIREMENTS: ["accept", "approve"], H_ENV: ["approve"], H_SPEC: ["approve"],
+        H_CHANGE: ["accept", "approve"]}
+    assert not hasattr(human.HumanGates, "GATE_ACTIONS")
+    code = inspect.getsource(human.HumanGates.human_action) + inspect.getsource(
+        human.HumanGates._human_gate)
+    assert not any(g in code for g in ("H_REQUIREMENTS", "H_ENV", "H_SPEC", "H_CHANGE"))
 
 
 def test_plan_guard_branches():

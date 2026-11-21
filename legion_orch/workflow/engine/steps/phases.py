@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     from ..services.provision import Provisioner
     from ..services.runs import RunLifecycle
     from .active import ActiveStep
+    from .approvals import Approves
     from .runner import StepEvents
     from .step_types import StepType
 
@@ -1073,35 +1074,6 @@ class BuildImages(Phase):
 
 
 # ---------------------------------------------------------------------------- gates
-class Subjects:
-    """What approving a gate means beyond the answer itself: subjects approved separately (and
-    still fresh); the gate passes once none is pending."""
-
-    def pending(self, c: ChangeCore) -> list[str]:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class SubjectsApproved(Subjects):
-    """H-E1's (the plan's subjects) or H-2's (the oracle's, and at R3 the independent baseline's
-    attestation)."""
-    which: str                                   # "plan" | "oracle"
-    baseline_from: int = 99                      # the tier rank from which the baseline counts
-
-    def pending(self, c: ChangeCore) -> list[str]:
-        from ... import risk
-        from ...model import ApprovalState
-        subjects = (governance.plan_subjects(c) if self.which == "plan"
-                    else governance.oracle_subjects(c))
-        status = {x.subject: x.status for x in governance.subject_status(c)}
-        out = [s for s in subjects if status.get(s) != ApprovalState.APPROVED]
-        if c.change.tier and risk.rank(c.change.tier) >= self.baseline_from:
-            base = governance.baseline_subject(c)
-            if base is not None and base.status != ApprovalState.APPROVED:
-                out.append(governance.BASELINE_SUBJECT)
-        return out
-
-
 class GateChecks:
     """What a gate checks before it passes (its preconditions): evaluated without the lock,
     then read under it – the unmet ones by name."""
@@ -1151,10 +1123,10 @@ class Approval(Phase):
     """A gate: the stage's end, a human's decision. Its work checks what the gate needs
     (``checks``, e.g. the ship gates) and then – unless it passes by itself (``automatic``) –
     waits for a human: an *expected* escalation (``AWAITING_HUMAN``), which approving answers.
-    Answered, it checks again: its subjects all approved (``subjects``) and its checks met, it
+    Answered, it checks again: nothing still to approve (``approves``) and its checks met, it
     passes; unmet checks escalate again (a re-check is a retry). A new attempt (the stage sent
-    back) asks again."""
-    subjects: Subjects | None = None
+    back) asks again. What approving records, and what is still to approve, is ``approves``."""
+    approves: Approves
     checks: GateChecks | None = None
     automatic: AutomaticBelow | None = None
     statuses: ClassVar = frozenset({READY, RUNNING})
@@ -1191,7 +1163,7 @@ class Approval(Phase):
         c = active.c
         unmet = self.checks.unmet(c, node, done) if self.checks else ()
         approved = node.approved or bool(self.automatic and self.automatic(c))
-        pending = self.subjects.pending(c) if self.subjects and approved else []
+        pending = self.approves.pending(c) if approved else []
         if not approved:
             ask = f"{node.title}" + (f" (not met yet: {', '.join(unmet)})" if unmet else "")
             return Escalate("awaiting_approval", ask, Resume.READY, expected=True)

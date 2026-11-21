@@ -1,9 +1,10 @@
-"""Human actions: the H-1/H-E1/H-2/H-3 gates, escalation resolution, change-level governance."""
+"""Human actions: decisions at gates and escalations (what approving a gate records is the
+gate step's: :mod:`..steps.approvals`), and change-level governance."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ... import governance, guards, risk, setup
+from ... import governance, risk
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ...flow import CHANGE
 from ...model import (
@@ -11,22 +12,17 @@ from ...model import (
     AWAITING_HUMAN,
     ESCALATED,
     FAILED,
-    H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
-    HUMAN,
     PROVISION,
     RETRO,
-    Approval,
-    ApprovalState,
     ChangeEnd,
     ChangeStatus,
     Feedback,
     FixRound,
     Node,
     Override,
-    TierOverride,
 )
 from ...results import ActionResult
 from ..base.common import ENV_SPEC, WorkflowError, _slug
@@ -36,14 +32,15 @@ from ..services import cleanup
 from ..services.runs import RunLifecycle
 
 if TYPE_CHECKING:
+    from ..steps.runner import StepRunner
     from .flow_runtime import FlowRuntime
 
 
 class HumanGates:
     """What a decision owner may do to a change, checked and applied under the lock."""
 
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
-        self.c, self.lifecycle = core, lifecycle
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, runner: StepRunner):
+        self.c, self.lifecycle, self.runner = core, lifecycle, runner
         self.flow: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
 
     def _check_approver(self, approver: str) -> None:
@@ -64,7 +61,7 @@ class HumanGates:
                 res = await self._send_back(node, payload.get("stage") or "", approver, payload)
             elif node.status == ESCALATED:
                 res = await self._resolve_escalation(node, action, approver, payload)
-            elif node.kind == HUMAN and node.status == AWAITING_HUMAN:
+            elif node.status == AWAITING_HUMAN:
                 res = await self._human_gate(node, action, approver, payload)
             else:
                 raise WorkflowError(f"action {action!r} not available for {node_id} in {node.status}")
@@ -103,27 +100,20 @@ class HumanGates:
 
     # ------------------------------------------------------------------ human gates
     async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
-        handler = self.GATE_ACTIONS.get((base_id(node.id), action))
-        if handler is None:
-            valid = [a for g, a in self.GATE_ACTIONS if g == base_id(node.id)] + ["send_back"]
-            raise WorkflowError(f"action {action!r} not valid for {node.id} (one of {valid})")
-        return await getattr(self, handler)(node, approver, payload)
-
-    # (gate, action) -> method(node, approver, payload): what approving each gate decides (its
-    # subjects, the tier, the attestations) – recorded here, then the answer to its step's
-    # escalation – and H-3's reject and recheck (a retry). Sending work back is the workflow's
-    # generic send_back.
-    GATE_ACTIONS = {
-        (H_REQUIREMENTS, "accept"): "_accept_requirements",
-        (H_REQUIREMENTS, "approve"): "_accept_requirements",
-        (H_ENV, "approve"): "_approve_plan",
-        (H_SPEC, "approve"): "_approve_oracle",
-        (H_CHANGE, "accept"): "_accept_change",
-        (H_CHANGE, "approve"): "_accept_change",
-        (H_CHANGE, "reject"): "_reject_change",
-        (H_CHANGE, "recheck"): "_recheck",
-        (H_CHANGE, "evaluate"): "_recheck",
-    }
+        """A gate waiting for a decision: re-checked (a retry), rejected (H-3: the step says
+        whether it can be), or approved – what approving records is the gate step's
+        (:meth:`.StepRunner.approve`); once the gate is approved, its escalation is answered
+        and its step goes on. Sending work back is the workflow's generic send_back."""
+        if action in ("recheck", "evaluate"):
+            return await self._recheck(node, approver, payload)
+        if action == "reject":
+            if "reject" not in self.flow.actions(node.id):
+                raise WorkflowError(f"{node.id} cannot be rejected")
+            return await self._end_change(node, approver, payload, "reject")
+        approved = await self.runner.approve(node, action, approver, payload)
+        if approved.answered:
+            await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
+        return approved.result
 
     def _stage(self, node: Node, name: str) -> str:
         """The stage ``name`` (requirements, plan, design, oracle, delivery) ``node``'s work was
@@ -153,150 +143,9 @@ class HumanGates:
         self.c.event("send_back", f"{approver}: {stage} sent back from {node.id}", node.id)
         return ActionResult()
 
-    async def _accept_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-1: accept requirements and the risk tier (raising it is free; lowering needs a
-        reason). Fixes the change's requirements and review panel; the tier decides the rest of
-        the workflow's stages."""
-        ch = self.c.change
-        pins = {self.c.p(p): self.c.latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
-        derived = ch.risk.tier
-        tier = payload.get("tier") or derived
-        if tier not in risk.TIERS:
-            raise WorkflowError(f"unknown tier {tier}")
-        if risk.rank(tier) < risk.rank(derived) and not risk.valid_reason(payload.get("reason")):
-            raise WorkflowError("lowering the tier needs a reason of ≥24 chars and more than one word")
-        if tier != derived:
-            ch.tier_override = TierOverride(from_tier=derived, to_tier=tier,
-                                            reason=payload.get("reason"), approver=approver)
-        ch.tier = tier
-        ch.requirements = guards.requirements_ids(self.c.doc("intake/requirements.md").content)
-        ch.panel = risk.review_panel(tier, ch.risk.scores)
-        rec = Approval(gate=H_REQUIREMENTS, approver=approver, pins=pins, tier=tier)
-        rec.attestation = self.c.write_record("control/approvals/requirements.json", rec).attestation
-        ch.approvals[H_REQUIREMENTS] = rec
-        self.flow.build_tree()
-        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
-        return ActionResult(tier=tier, panel=ch.panel)
-
-    async def _approve_subjects(self, node: Node, approver: str, payload: dict,
-                                gate_subjects: list[str], baseline: bool) -> ActionResult:
-        """Approve some (or "all") of the gate's subjects – separate decisions, possibly by
-        different approvers; the gate is approved once every one is approved and fresh."""
-        subjects = payload.get("subjects") or "all"
-        everything = subjects == "all" or subjects == ["all"]
-        wanted = gate_subjects if everything else [s for s in subjects if s in gate_subjects]
-        if not everything and (unknown := [s for s in subjects if s not in gate_subjects
-                                          and s != governance.BASELINE_SUBJECT]):
-            raise WorkflowError(f"unknown approval subject(s) {unknown}; choose from "
-                                f"{gate_subjects}")
-        base = governance.baseline_subject(self.c) if baseline else None
-        attest = base is not None and base.status != ApprovalState.APPROVED and (
-            everything or governance.BASELINE_SUBJECT in subjects)
-        if attest and (base.note or not base.sources):
-            raise WorkflowError(f"independent-baseline: {base.note or 'no baseline evidence'}")
-        env = governance.ENVIRONMENT_SUBJECT in wanted
-        wanted = [s for s in wanted if s != governance.ENVIRONMENT_SUBJECT]
-        try:
-            done = await governance.approve_subjects(self.c, wanted, approver) if wanted else []
-            if env:
-                await self._approve_environment(node, approver, payload)
-                done.append(governance.ENVIRONMENT_SUBJECT)
-            if attest:
-                # R3: the baseline attestation is decided here with the other subjects, citing
-                # the baseline report and the controller's own run of its commands (G-AT1)
-                await governance.record_attestation(self.c, approver, {
-                    "kind": governance.BASELINE_SUBJECT, "verdict": "pass",
-                    "sources": base.sources})
-                done.append(governance.BASELINE_SUBJECT)
-        except governance.GovernanceError as e:
-            raise WorkflowError(str(e)) from None
-        status = {x.subject: x.status for x in governance.subject_status(self.c)}
-        pending = [s for s in gate_subjects if status.get(s) != ApprovalState.APPROVED]
-        base = governance.baseline_subject(self.c) if baseline else None
-        if base is not None and base.status != ApprovalState.APPROVED:
-            pending.append(governance.BASELINE_SUBJECT)
-        if pending:
-            return ActionResult(approved=done, pending=pending)
-        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
-        return ActionResult(approved=done, pending=[])
-
-    async def _approve_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-E1 "approve the plan": the spec and task graph, each delta spec and the sandbox
-        environment (if the controller has one)."""
-        return await self._approve_subjects(node, approver, payload,
-                                            governance.plan_subjects(self.c), baseline=False)
-
-    async def _approve_oracle(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2 "approve the oracle" (and, at R3, attest the independent baseline, which is the
-        gate's precondition)."""
-        return await self._approve_subjects(node, approver, payload,
-                                            governance.oracle_subjects(self.c), baseline=True)
-
-    async def _approve_environment(self, node: Node, approver: str, payload: dict) -> None:
-        """The sandbox environment at its current version (with the plan, at H-E1);
-        provisioning follows."""
-        version = self.c.latest(ENV_SPEC)
-        if version is None:
-            raise WorkflowError(f"no {ENV_SPEC} to approve")
-        note = (payload.get("feedback") or "").strip() or None
-        rec = Approval(gate=H_ENV, approver=approver, pins={self.c.p(ENV_SPEC): version}, note=note)
-        rec.attestation = self.c.write_record("control/approvals/environment.json", rec).attestation
-        self.c.change.approvals[H_ENV] = rec
-        await self._adopt_mise(EnvironmentSpec.model_validate(self.c.json_doc(ENV_SPEC, version)))
-
-    async def _adopt_mise(self, spec: EnvironmentSpec) -> None:
-        """§5.3c: the approved spec's mise.toml goes onto the integration branch (a controller
-        commit, before any build) and is pinned as the setup that runs (G-MS1)."""
-        ch = self.c.change
-        if spec.mise is None:
-            return
-        head = await self.c.git.commit_file(ch.id, setup.MISE_TOML, spec.mise.content,
-                                            f"legion {ch.id}: mise.toml approved at H-E1")
-        if head != ch.integration_head:
-            self.c.event("environment", f"committed the approved mise.toml -> {head[:12]}", H_ENV)
-        ch.integration_head = head
-        ch.setup_pin = setup.pin_for(spec.mise.content, H_ENV)
-
-    async def _accept_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-3: accept the whole change at the current integration head. The gate completes once
-        its preconditions – the tier's ship gates – hold (evaluated now, again on recheck)."""
-        ch = self.c.change
-        head = await self.c.git.integration_head(ch.id)
-        if head != ch.integration_head:
-            raise WorkflowError("integration head moved; refresh")
-        note = (payload.get("feedback") or "").strip() or None
-        # the gates only a human attestation satisfies, attested with the acceptance (one step)
-        rows = {r.gate: r for r in governance.h3_attestations(self.c)}
-        wanted = payload.get("attestations") or []
-        allowed = {k for r in rows.values() if r.status != "attested" for k in r.kinds}
-        bad = [a.get("kind") for a in wanted if not isinstance(a, dict) or a.get("kind") not in allowed]
-        if bad:
-            raise WorkflowError(f"H-3: attestation kind(s) {bad} not needed; choose from "
-                                f"{sorted(allowed)}")
-        waivable = {k for r in rows.values() if r.waivable for k in r.kinds}
-        for a in wanted:
-            if a.get("verdict", "pass") not in ("pass", "not_applicable") or (
-                    a.get("verdict") == "not_applicable" and a["kind"] not in waivable):
-                raise WorkflowError(f"H-3: {a['kind']} can only be attested pass here")
-        try:
-            for a in wanted:
-                await governance.record_attestation(self.c, approver, {
-                    "kind": a["kind"], "verdict": a.get("verdict", "pass"),
-                    "sources": a.get("sources") or [],
-                    **({"waiver_reason": a.get("waiver_reason")}
-                       if a.get("verdict") == "not_applicable" else {})})
-        except governance.GovernanceError as e:
-            raise WorkflowError(str(e)) from None
-        missing = [r.gate for r in governance.h3_attestations(self.c) if r.status != "attested"]
-        rec = Approval(gate=H_CHANGE, approver=approver, head=head, note=note)
-        rec.attestation = self.c.write_record("control/approvals/change.json", rec).attestation
-        ch.approvals[H_CHANGE] = rec
-        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
-        return ActionResult(warnings=[f"{g} has no passing attestation: H-3 waits for it"
-                                      for g in missing])
-
     async def _recheck(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """Evaluate H-3's preconditions (the ship gates) again, after attesting or waiving."""
+        """Check a gate's preconditions (H-3: the ship gates) again, after attesting or
+        waiving: its step retries."""
         if self.c.change.pruned_at:
             raise WorkflowError("the change was pruned")
         await self.flow.decide(node, "retry", approver)     # its gate step checks again

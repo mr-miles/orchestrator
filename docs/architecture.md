@@ -39,7 +39,7 @@ flowchart TB
             reports["Reports<br/><i>agent writes and reports, shared guards</i>"]
             prov["Provisioner<br/><i>environment images, is it quiet,<br/>who waits for it</i>"]
             life["RunLifecycle<br/><i>failure, timers, logs, retiring</i>"]
-            gates["HumanGates<br/><i>what approving each gate decides</i>"]
+            gates["HumanGates<br/><i>decisions in: gates, escalations,<br/>change governance</i>"]
         end
         state["ChangeCore + StateStore<br/>base/core.py, base/state.py<br/><i>change, nodes, runs, events;<br/>the 'saved' signal</i>"]
     end
@@ -295,7 +295,8 @@ one.
 A step type is a declaration, not code: an agent (the role of its producer, `Produce(role)`), a sandbox
 plan, an ordered list of phases configured by **policy objects**, the waits it respects and what
 a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
-`GATE_TYPES`, which configures each gate's `Approval`).
+`GATE_TYPES`, which configures each gate's `Approval`: its checks, and what approving it
+records, `approves`).
 
 A step type is declared – shared by every node of its kind – and **runs** for one node as an
 `ActiveStep`: the step runner makes it from the node, its step type and the runner's services,
@@ -380,6 +381,7 @@ classDiagram
         reset(node) None
         resume(node, answered) None
         override(node) None
+        approve(node, action, approver, payload) Approved
         retry(node) None
         end(node) None
         again(node) None
@@ -396,6 +398,7 @@ classDiagram
         reset() None
         resume(answered) None
         override() None
+        approve(action, approver, payload) Approved
         retry() None
         end() None
         again() None
@@ -471,9 +474,25 @@ classDiagram
     class Merge
     class BuildImages
     class Approval {
-        subjects: Subjects
+        approves: Approves
         checks: GateChecks
         automatic: AutomaticBelow
+    }
+    class Approves {
+        <<abstract>>
+        actions: frozenset~str~
+        pending(change) list~str~
+        approve(active, approver, payload) Approved
+    }
+    class RequirementsAccepted
+    class SubjectsApproved {
+        which: str
+        baseline_from: int
+    }
+    class ChangeAccepted
+    class Approved {
+        result: ActionResult
+        answered: bool
     }
     class SandboxPlan {
         checkout: Checkout
@@ -508,6 +527,11 @@ classDiagram
     Phase <|-- Merge
     Phase <|-- BuildImages
     Phase <|-- Approval
+    Approval *-- Approves
+    Approves <|-- RequirementsAccepted
+    Approves <|-- SubjectsApproved
+    Approves <|-- ChangeAccepted
+    Approves ..> Approved : approve returns
 ```
 
 The table (`engine/steps/step_types.py`) – each kind is a list of phases:
@@ -558,8 +582,11 @@ flowchart LR
 
 A **gate** (◆) is the step that ends its stage – the core knows nothing more of it. Its work
 (the `Approval` phase) checks what the gate needs and then waits for a human: an expected
-escalation (`awaiting_approval`, shown `AWAITING_HUMAN`). Approving it is the *answer* to that
-escalation (recorded by `HumanGates`), after which it checks again and passes; unmet checks
+escalation (`awaiting_approval`, shown `AWAITING_HUMAN`). Approving it records what the gate's
+`approves` says (`steps/approvals.py`: H-1 the tier and panel, H-E1 and H-2 each subject, H-3
+the acceptance and the attestations given with it) – `HumanGates` only hands the decision to
+`StepRunner.approve` – and once nothing is still to approve it is the *answer* to that
+escalation, after which it checks again and passes; unmet checks
 escalate again (`preconditions_unmet`) and a re-check is a *retry*. Stages without a human
 decision at the tier have no gate: Plan's own, a round's, the oracle's below R2.
 
@@ -604,7 +631,7 @@ stateDiagram-v2
 | The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner tells the runtime (through `StepEvents`, its only view of the layer above), the runtime the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
 | Node states | A declared machine nested in the core's step states; only the step runner changes a status or an escalation, only the runtime the change's status | `tests/test_node_states.py` (scans for any other write) |
 | Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
-| Per-kind knowledge | Only `STEP_TYPES` and `GATE_TYPES` (and what approving each gate records, in `HumanGates`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
+| Per-kind knowledge | Only `STEP_TYPES` and `GATE_TYPES` (what approving each gate records is its `Approval`'s `approves`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
 | Dispatcher | Runs opaque work (`can_start()`, `execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |
 | Sandboxes | One owner (`Sandboxes`): locks, sessions, the preparation's commands, pause, hold, suspension, retirement | `tests/test_sandboxes.py` |
 | UI | Renders the actions the core offers and the stages it lists; knows no node kinds for actions | `frontend/src/App.test.tsx` |

@@ -34,8 +34,8 @@ def compose(ce: ChangeEngine) -> None:
     sandboxes.environments = provisioner          # whether a role's environment is built
     reports = Reports(ce, lifecycle, roles=ce)
     agents.reports = reports
-    gates = HumanGates(ce, lifecycle)
     runner = StepRunner(ce, phases, lifecycle, provisioner)
+    gates = HumanGates(ce, lifecycle, runner)
     flow = FlowRuntime(ce, runner, lifecycle)
     runner.runtime = flow
     gates.flow = flow

@@ -45,6 +45,7 @@ from ...model import (
 from ..base.core import ChangeCore
 from ..base.ids import base_id
 from ..sandboxes.plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
+from .approvals import ChangeAccepted, RequirementsAccepted, SubjectsApproved
 from .phases import (
     AcceptanceCommands,
     AlreadyPassing,
@@ -63,7 +64,6 @@ from .phases import (
     Phase,
     Produce,
     ShipGates,
-    SubjectsApproved,
     TaskCommands,
     TierPanel,
     Verify,
@@ -251,15 +251,15 @@ STEP_TYPES: dict[NodeKind, StepType] = {
                            "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
     RELEASE: agent("release", HEAD),
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
-    HUMAN: StepType((Approval(),)),                # a gate (its policies: GATE_TYPES)
 }
 
 #: each gate's step: what approves it, what it checks, when it passes by itself
 GATE_TYPES: dict[str, StepType] = {
-    H_REQUIREMENTS: StepType((Approval(),)),                        # H-1: the tier with it
-    H_ENV: StepType((Approval(subjects=SubjectsApproved("plan")),)),
-    H_SPEC: StepType((Approval(subjects=SubjectsApproved("oracle", baseline_from=3)),)),
-    H_CHANGE: StepType((Approval(checks=ShipGates(), automatic=AutomaticBelow(2)),)),
+    H_REQUIREMENTS: StepType((Approval(RequirementsAccepted()),)),     # H-1: the tier with it
+    H_ENV: StepType((Approval(SubjectsApproved("plan")),)),
+    H_SPEC: StepType((Approval(SubjectsApproved("oracle", baseline_from=3)),)),
+    H_CHANGE: StepType((Approval(ChangeAccepted(), checks=ShipGates(),
+                                 automatic=AutomaticBelow(2)),)),
 }
 
 

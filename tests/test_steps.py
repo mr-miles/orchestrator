@@ -5,7 +5,7 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.workflow.engine.sandboxes.plan import JUDGE
-from legion_orch.workflow.engine.steps.phases import ActivePhase, Ok, Panel, Phase, Verify
+from legion_orch.workflow.engine.steps.phases import ActivePhase, Approval, Ok, Panel, Phase, Verify
 from legion_orch.workflow.engine.steps.step_types import (
     STEP_TYPES,
     EnvironmentQuiescent,
@@ -52,7 +52,8 @@ def shape(kind: NodeKind) -> list[str]:
 
 
 def test_every_kind_is_a_list_of_phases():
-    assert set(STEP_TYPES) == set(NodeKind)
+    from legion_orch.workflow.engine.steps import GATE_TYPES
+    assert set(STEP_TYPES) == set(NodeKind) - {HUMAN}       # a gate's type is its gate's
     assert {k: shape(k) for k in STEP_TYPES} == {
         NodeKind.INTAKE: ["Produce"],
         PLAN: ["Produce", "Critique", "DefineTasks"],
@@ -64,7 +65,13 @@ def test_every_kind_is_a_list_of_phases():
         INTEGRATION: ["Produce", "Verify"],
         NodeKind.RELEASE: ["Produce"],
         NodeKind.RETROSPECTIVE: ["Produce"],
-        HUMAN: ["Approval"],
+    }
+    assert {g: ([type(p).__name__ for p in t.phases], type(t.phase(Approval).approves).__name__)
+            for g, t in GATE_TYPES.items()} == {
+        "H-1": (["Approval"], "RequirementsAccepted"),
+        "H-E1": (["Approval"], "SubjectsApproved"),
+        "H-2": (["Approval"], "SubjectsApproved"),
+        "H-3": (["Approval"], "ChangeAccepted"),
     }
 
 

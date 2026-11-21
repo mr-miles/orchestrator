@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from ...model import (
+    AWAITING_HUMAN,
     ESCALATED,
     LIVE_RUN,
     MERGING,
@@ -28,10 +29,11 @@ from ...results import Escalate, Redo, Rework
 from ..base.common import WorkflowError
 from ..base.dispatch import StepDispatcher, Withdrawn
 from .node_states import WAITING, IllegalNodeTransition
-from .phases import ActivePhase, Merge, Phase, PhaseResult
+from .phases import ActivePhase, Approval, Merge, Phase, PhaseResult
 from .step_types import StepType, step_for
 
 if TYPE_CHECKING:
+    from .approvals import Approved
     from .runner import StepRunner
 
 
@@ -137,6 +139,18 @@ class ActiveStep:
         if self.type.phase(Merge) is None:
             raise WorkflowError(f"{self.node.id}: its step cannot be overridden")
         self._go_on(MERGING, answered=True)
+
+    async def approve(self, action: str, approver: str, payload: dict) -> Approved:
+        """A human approved its gate (a step with an :class:`.Approval` phase, waiting for the
+        decision): what approving records, as the gate's ``approves`` says. Answering its
+        escalation, once it is approved, is the core's (the caller's)."""
+        approval = self.type.phase(Approval)
+        if approval is None or self.node.status != AWAITING_HUMAN:
+            raise WorkflowError(f"{self.node.id} is not a gate waiting for a decision")
+        if action not in approval.approves.actions:
+            raise WorkflowError(f"action {action!r} not valid for {self.node.id} (one of "
+                                f"{sorted(approval.approves.actions)})")
+        return await approval.approves.approve(self.at(approval), approver, payload)
 
     def _go_on(self, to: NodeStatus, answered: bool) -> None:
         """Out of the escalation into the phase ``to``, which takes up its work again (a
