@@ -27,6 +27,7 @@ from ..environment import Library
 from ..model import (
     LIVE_RUN,
     Run,
+    Verification,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
 from .base.auth import WorkloadAuth
@@ -269,6 +270,18 @@ class Controller:
             if r.id == run_id:
                 return ce, r
         raise WorkflowError(f"unknown run {run_id}")
+
+    def find_verification_log(self, log_id: str) -> tuple[ChangeEngine, Verification | None]:
+        """The change whose verification has the log ``log_id``, and the verification (None:
+        it is still running)."""
+        for ce in self.changes.values():
+            if log_id in ce.verifying.values():
+                return ce, None
+            for node in ce.nodes.values():
+                for v in node.verification.values():
+                    if v.log == log_id:
+                        return ce, v
+        raise WorkflowError(f"unknown run {log_id}")
 
     def _runs_by_change(self):
         for ce in self.changes.values():

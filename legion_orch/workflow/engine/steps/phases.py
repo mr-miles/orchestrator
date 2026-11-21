@@ -60,7 +60,7 @@ from ...model import (
 )
 from ...results import Escalate, Ok, PhaseResult, Redo, Rework
 from ...ship import evaluate
-from ..base.common import _slug
+from ..base.common import WorkflowError, _slug
 from ..base.core import ChangeCore
 from ..base.ids import in_round
 from ..base.work import COMMAND, PREPARE, SETUP, Outcome
@@ -269,6 +269,8 @@ class ActivePhase:
                 if result is AGAIN:
                     c.save()
                     continue
+                if result is None:          # nothing else will take its work up
+                    raise WorkflowError(f"{type(self.phase).__name__} concluded nothing")
                 self.conclude(result)       # type: ignore[arg-type]
                 c.save()
             return
@@ -930,7 +932,33 @@ async def verification(ctx: PhaseContext, label: str, sha: str, commands: tuple[
     if not commands and not c.change.setup_pin:
         return Verification(sha=sha, sandbox=name, infra_error="no commands to verify")
     work = ctx.sandboxes.verifier_work(name, label, sha, commands)
-    return verification_of(sha, await dispatch.run(work))
+    log = c.run_dir(name) / "agent.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+
+    def write(text: str) -> None:
+        with open(log, "a") as f:
+            f.write(text)
+        c.host.touch()                                  # a live log's viewers read it again
+    def ran(cmd, r) -> None:
+        out = r.output if not r.output or r.output.endswith("\n") else r.output + "\n"
+        write(f"{out}[legion] {cmd.label}: exit {r.exit_code}\n")
+    work.begun, work.log = (lambda cmd: write(f"[legion] {cmd.label} …\n")), ran
+    write(f"[legion] verifying {sha[:12]} for {label} in {name}: "
+          f"{len(work.commands)} step(s)\n")
+    c.verifying[label] = name                           # its log, live (the UI shows it)
+    try:
+        res = verification_of(sha, await dispatch.run(work))
+        if res.infra_error:
+            write(f"[legion] {res.infra_error}\n")
+        write(f"[legion] verification {'passed' if res.ok else 'failed'}\n")
+    finally:
+        async with c.lock:
+            if c.verifying.get(label) == name:
+                del c.verifying[label]
+            stored = ctx.agents.lifecycle.store_log(name) is not None
+            c.save()
+    res.log = name if stored else None
+    return res
 
 
 def verification_of(sha: str, outcome: Outcome) -> Verification:

@@ -60,6 +60,8 @@ export interface Verification {
   results: CommandResult[]
   infra_error?: string | null
   attestation?: string | null
+  /** its log's id (the verifier sandbox's name), served as a run's: /api/runs/<log>/log */
+  log?: string | null
 }
 
 export interface Escalation {
@@ -358,6 +360,8 @@ export interface ChangeState {
   environment: EnvironmentSpec | null
   attestation_kinds: string[]
   pull_request?: PullRequestRecord | null
+  /** node -> the log of its verification running now */
+  verifying?: Record<string, string>
 }
 
 export interface ChangeSummary {

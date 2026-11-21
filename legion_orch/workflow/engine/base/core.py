@@ -59,6 +59,7 @@ class ChangeCore:
         # unit tests build the core with a bare namespace for ``svc``: no telemetry means off
         self.trace = (getattr(svc, "telemetry", None) or Telemetry.off()).change(cid)
         self._timeline: list[str] = []                 # events not yet written to the store
+        self.verifying: dict[str, str] = {}            # node -> its live verification's log
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
