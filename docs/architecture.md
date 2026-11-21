@@ -31,7 +31,7 @@ flowchart TB
         end
         subgraph layers["The three layers of a step"]
             agent["Agent layer<br/>roles/*.py – RoleHandler<br/><i>prompt, guards, judging a report</i>"]
-            phases["Orchestrator layer<br/>steps/phases.py – Produce(RoleWork), Verify,<br/>Panel, Merge, BuildImages, Approval (gates)"]
+            phases["Orchestrator layer<br/>steps/phases.py – Produce, Verify,<br/>Panel, Merge, BuildImages, Approval (gates)"]
             sbx["Sandbox layer<br/>sandboxes/plan.py – SandboxPlan<br/>sandboxes/sandboxes.py – Sandboxes, sessions"]
         end
         subgraph svc["Services the phases call (services/), HumanGates (runtime/human.py)"]
@@ -282,7 +282,7 @@ one.
 
 ## 3. A step is a composition
 
-A step type is a declaration, not code: an agent (the role of its producer, `Produce(RoleWork)`), a sandbox
+A step type is a declaration, not code: an agent (the role of its producer, `Produce(role)`), a sandbox
 plan, an ordered list of phases configured by **policy objects**, the waits it respects and what
 a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
 `GATE_TYPES`, which configures each gate's `Approval`).
@@ -325,7 +325,7 @@ slot; an agent's work whose slot comes once it is no longer ready is skipped, an
 
 | Phase | waits_in · uses | perform | result |
 | --- | --- | --- | --- |
-| Produce | READY, REWORK · its role | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
+| Produce | READY, REWORK · its role | its agent's work (`agent_work`) | the role handler's, or the failure's escalation |
 | Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews |
 | Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then interpreted with its policies |
 | Merge | – · – | – | the guards and the merge, at once under the lock |
@@ -427,12 +427,7 @@ classDiagram
         wait_until(ready) bool
     }
     class Produce {
-        source: RoleWork
         role: str
-    }
-    class RoleWork {
-        role: str
-        perform(phase, wanted) Ended
     }
     class Verify {
         commands: CommandSource
@@ -478,8 +473,6 @@ classDiagram
     StepType *-- Wait
     StepType *-- Reset
     Phase <|-- Produce
-    Produce *-- RoleWork
-    Panel ..> RoleWork : a judge each
     Merge ..> Panel : requires its judges' PASS
     Phase <|-- Verify
     Phase <|-- Panel

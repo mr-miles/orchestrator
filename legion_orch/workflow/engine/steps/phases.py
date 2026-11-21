@@ -375,62 +375,52 @@ class BaselineWarnings(Notes):
 
 
 # ---------------------------------------------------------------------------- agent work
-@dataclass(frozen=True)
-class RoleWork:
-    """An agent of ``role`` as a phase's work (its ``perform``): whether the step may start it
-    (G-B1, the environment), its :class:`.Work` (made by the change's agent runs: the run
-    record, the working copy's preparation, the agent's turn), and what it did – the role
-    handler's result after an accepted report, or the failure's escalation."""
-    role: str
-
-    async def perform(self, phase: ActivePhase, *, wanted: Callable[[], bool],
-                      judged_sha: str | None = None,
-                      started: Callable[[Run], None] | None = None) -> Ended | _Again | None:
-        """Dispatch the agent's work: what it did (the role handler's result after an accepted
-        report – read under the lock that ends the run – or the failure's or refusal's
-        escalation). AGAIN: when its slot came the step no longer ``wanted`` it (its waits
-        stopped holding); None: the step or ``phase`` (bound to its node) is over."""
-        from ..services.agent_runs import Ended
-        c, agents, node = phase.c, phase.ctx.agents, phase.node
-        async with c.lock:
-            if phase.stale():
-                return None
-            if refused := agents.preconditions(node, self.role):
-                return Ended(None, refused)
-        work, prepared = agents.work(
-            node, self.role, judged_sha,
-            wanted=lambda: not phase.stale() and wanted(),
-            started=started or (lambda run: None))
-        outcome = await phase.dispatch.run(work)
-        async with c.lock:
-            if prepared.run is not None:
-                agents.finish(prepared.run, outcome)       # however the work ended
-            if outcome.skipped and prepared.refused is None:
-                c.save()
-                return AGAIN
-            if phase.stale():
-                c.save()
-                return None
-            return Ended(prepared.run, prepared.refused or await agents.conclude(prepared.run))
-
+async def agent_work(active: ActivePhase, role: str, *, wanted: Callable[[], bool],
+                     judged_sha: str | None = None,
+                     started: Callable[[Run], None] | None = None) -> Ended | _Again | None:
+    """An agent of ``role`` as a phase's work (a producer's, a judge's): whether the step may
+    start it (G-B1, the environment), its :class:`.Work` (made by the change's agent runs: the
+    run record, the working copy's preparation, the agent's turn) dispatched on the step's
+    dispatcher, and what it did – the role handler's result after an accepted report (read
+    under the lock that ends the run), or the failure's or refusal's escalation. AGAIN: when
+    its slot came the step no longer ``wanted`` it (its waits stopped holding); None: the step
+    or the phase is over."""
+    from ..services.agent_runs import Ended
+    c, agents, node = active.c, active.ctx.agents, active.node
+    async with c.lock:
+        if active.stale():
+            return None
+        if refused := agents.preconditions(node, role):
+            return Ended(None, refused)
+    work, prepared = agents.work(
+        node, role, judged_sha,
+        wanted=lambda: not active.stale() and wanted(),
+        started=started or (lambda run: None))
+    outcome = await active.dispatch.run(work)
+    async with c.lock:
+        if prepared.run is not None:
+            agents.finish(prepared.run, outcome)       # however the work ended
+        if outcome.skipped and prepared.refused is None:
+            c.save()
+            return AGAIN
+        if active.stale():
+            c.save()
+            return None
+        return Ended(prepared.run, prepared.refused or await agents.conclude(prepared.run))
 
 
 @dataclass(frozen=True, eq=False)
 class Produce(Phase):
-    """The step's producer: its work (an agent of a role: ``RoleWork``) dispatched once the
+    """The step's producer: an agent of ``role`` (:func:`agent_work`) dispatched once the
     step's waits hold (and G-H1 for work at the head). Its result – the role handler's, or a
     failure's or refusal's escalation – is the phase's."""
-    source: RoleWork
+    role: str
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
     waits_in: ClassVar = frozenset({READY, REWORK})        # each run of its agent
 
     @property
     def uses(self) -> str:                                  # type: ignore[override]
-        return self.source.role
-
-    @property
-    def role(self) -> str:
-        return self.source.role
+        return self.role
 
     def enter(self, active: ActivePhase) -> None:
         if active.node.status != REWORK:                # a rework continues in REWORK
@@ -468,8 +458,8 @@ class Produce(Phase):
             async with c.lock:
                 if moved := c.head_moved(head):
                     return Escalate("head_moved", moved, Resume.READY)
-        return await self.source.perform(
-            active, wanted=active.ready,
+        return await agent_work(
+            active, self.role, wanted=active.ready,
             started=lambda run: active.step.move(RUNNING))        # its agent works
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None | _Again:
@@ -622,7 +612,7 @@ class Panel(Phase):
             return active.node.review(active.node.cycle, role) is None \
                 and not active.step.provisioner.waits_for_environment(role)
         while await active.wait_until(wanted):
-            done = await RoleWork(role).perform(active, wanted=wanted,
+            done = await agent_work(active, role, wanted=wanted,
                                                 judged_sha=active.node.candidate_sha)
             if done is AGAIN:
                 continue

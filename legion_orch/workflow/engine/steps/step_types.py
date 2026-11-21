@@ -61,7 +61,6 @@ from .phases import (
     Panel,
     Phase,
     Produce,
-    RoleWork,
     ShipGates,
     SubjectsApproved,
     TaskCommands,
@@ -224,7 +223,7 @@ class StepType:
 
 def agent(role: str, sandbox: SandboxPlan, *after: Phase, **kw) -> StepType:
     """A step whose agent works first, then the controller's ``after`` phases."""
-    return StepType((Produce(RoleWork(role)), *after), sandbox=sandbox, **kw)
+    return StepType((Produce(role), *after), sandbox=sandbox, **kw)
 
 
 BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
