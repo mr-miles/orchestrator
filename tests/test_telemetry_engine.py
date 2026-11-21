@@ -135,7 +135,7 @@ def test_gate_wait_events(tmp_path):
     run(go())
 
 
-def test_send_back_reruns_the_step(tmp_path):
+def test_send_back_ends_the_gate_and_stages_with_rework(tmp_path):
     async def go():
         exp = InMemorySpanExporter()
         f = await traced(tmp_path, exp)
@@ -147,7 +147,12 @@ def test_send_back_reruns_the_step(tmp_path):
         await f.settle()
         plans = named(exp.get_finished_spans(), "step plan")
         assert len(plans) == 1
-        assert attr(plans[0], "legion.outcome") == "rework"
+        # the earlier step was accepted; the gate step and the containing stages carry the rework
+        assert attr(plans[0], "legion.outcome") == "accepted"
+        gate = one(exp.get_finished_spans(), "step H-E1")
+        assert attr(gate, "legion.outcome") == "rework"
+        for stage in ("stage Plan", "stage Design"):
+            assert attr(one(exp.get_finished_spans(), stage), "legion.outcome") == "rework"
         await f.ctl.stop()
         plans = named(exp.get_finished_spans(), "step plan")
         assert len(plans) == 2
