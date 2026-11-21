@@ -13,23 +13,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ...sandbox import ImageRecipe, SandboxEnv, driver_config, policy_entry
-from .. import guards
-from ..assets import GitMode
-from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
-from ..model import (
+from ....sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
+from ... import guards
+from ...assets import GitMode
+from ...environment import VERIFIER, EnvironmentSpec, Library, LibraryError
+from ...model import (
     ACCEPTED,
     H_ENV,
+    LIVE_RUN,
     RUNNING,
-    Change,
     EnvironmentBuild,
     Node,
     Resume,
     RoleEnvironment,
 )
-from .common import ENV_SPEC
-from .core import ChangeCore
-from .phases import BuildImages, Ok, PhaseContext, Verify
+from ...model import PROVISION as PROVISION_KIND
+from ...results import Escalate, Ok, PhaseResult
+from ..base.common import ENV_SPEC
+from ..base.core import ChangeCore
+from ..base.dispatch import Dispatcher
+from ..base.work import PREPARE, SETUP
+from ..sandboxes.sandboxes import Sandboxes, sandbox_env  # noqa: F401  (sandbox_env: re-exported)
 from .runs import RunLifecycle
 
 
@@ -41,46 +45,36 @@ class ProvisionPlan:
     roles: dict[str, RoleEnvironment] = field(default_factory=dict)      # role -> (image unset)
 
 
-def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
-    """The provisioned environment of a sandbox serving ``role`` ("verifier" for verifiers)."""
-    env = change.environment.roles.get(role) if change.environment else None
-    if env is None:
-        return None
-    # once the ended change was cleaned up its images are gone: a later run (a retrospective
-    # asked for again) uses the default image; the record still says what was built
-    return SandboxEnv(image=None if change.cleaned_at else env.image, network=dict(env.network),
-                      cpu=env.cpu, memory=env.memory, driver_config=env.driver_config)
-
-
 class Provisioner:
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
-        self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes,
+                 dispatcher: Dispatcher):
+        self.c, self.lifecycle = core, lifecycle
+        self.sandboxes, self.dispatcher = sandboxes, dispatcher
 
-    def _fail(self, node: Node, reason: str, log: str = "") -> None:
+    def _fail(self, node: Node, reason: str, log: str = "") -> Escalate:
+        """G-PV1: the result that stops provisioning (the log is kept)."""
         if log:
             self.c.write_record("control/logs/provision.log", log)
-        self.c.escalate(node, "provision_failed", f"G-PV1: {reason}"[:2000],
-                        resume=Resume.READY, log_tail=log[-4000:] or None)
+        return Escalate("provision_failed", f"G-PV1: {reason}"[:2000], Resume.READY,
+                        log_tail=log[-4000:] or None)
 
-    def _plan(self, node: Node) -> ProvisionPlan | None:
-        """Under the lock: the approved spec resolved into what to build, or None (escalated)."""
+    def _plan(self, node: Node) -> ProvisionPlan | Escalate:
+        """Under the lock: the approved spec resolved into what to build, or why it cannot be."""
         c = self.c
         appr = c.change.approvals.get(H_ENV)
         version = appr.pins.get(c.p(ENV_SPEC)) if appr else None
         if version is None:
-            self._fail(node, "no approved environment spec")
-            return None
+            return self._fail(node, "no approved environment spec")
         spec = EnvironmentSpec.model_validate(c.json_doc(ENV_SPEC, version))
         try:
             lib = Library.for_config(c.cfg, c.assets.schemas)
         except LibraryError as e:
-            self._fail(node, f"the environment library is invalid: {e}")
-            return None
+            return self._fail(node, f"the environment library is invalid: {e}")
         profiles, v = guards.environment(spec, lib, c.cfg, set(c.assets.roles),
                                          {n for n, r in c.assets.roles.items() if r.git != GitMode.NONE})
         if v:
-            self._fail(node, "the approved spec no longer resolves against the library: " + "; ".join(v))
-            return None
+            return self._fail(node, "the approved spec no longer resolves against the library: "
+                              + "; ".join(v))
         env, sc = c.cfg.environment, c.cfg.sandbox
         plan = ProvisionPlan(spec=f"file:{c.p(ENV_SPEC)}@{version}")
         for role, pname in spec.roles.items():
@@ -95,17 +89,21 @@ class Provisioner:
                 driver_config=driver_config(c.cfg, prof.resources))
         return plan
 
-    async def provision(self, node_id: str) -> None:
-        """Provision for the node ``node_id`` (the plan's, or a fix round's)."""
+    async def provision(self, node: Node, *, dispatch=None) -> PhaseResult | None:
+        """Build the approved environment for ``node`` (the plan's, a fix round's, or the same
+        again – an escalation answered by running the step again), then check the setup
+        (G-PV3). The result goes back to the BuildImages phase; None: the node was stopped
+        meanwhile. ``dispatch``: the step's dispatcher, for the setup's verification."""
         c = self.c
+
+        def current() -> bool:
+            return c.nodes.get(node.id) is node and node.status == RUNNING
         async with c.lock:
-            node = c.nodes.get(node_id)
-            if node is None or node.status != RUNNING:
-                return
+            if not current():
+                return None
             plan = self._plan(node)
-            if plan is None:
-                c.save()
-                return
+            if isinstance(plan, Escalate):
+                return plan
             recipes = {r.tag: r for r in plan.recipes.values()}
             c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}", node.id)
         log: list[str] = []
@@ -113,21 +111,16 @@ class Provisioner:
             for key, entry in env.network.items():
                 log.append(f"## {role}: network policy {key} (sandbox policy): "
                            f"binaries {[b['path'] for b in entry['binaries']]}")
-        build_images = BuildImages(recipes, log)
-        built = await build_images.run(self.ctx)
+        built = await self.build_images(recipes, log)
         if not isinstance(built, Ok):
             async with c.lock:
-                if node.status == RUNNING:
-                    if log:
-                        c.write_record("control/logs/provision.log", "\n".join(log))
-                    c.escalate(node, built.kind, built.question,
-                               resume=built.resume, log_tail=built.log_tail)
-                    c.save()
-            return
+                if log:
+                    c.write_record("control/logs/provision.log", "\n".join(log))
+            return built
         images: dict[str, str | None] = built.value          # recipe tag -> image reference
         async with c.lock:
-            if c.nodes.get(node_id) is not node or node.status != RUNNING:
-                return
+            if not current():
+                return None
             roles = {role: env.model_copy(update={"image": images[plan.recipes[role].tag]})
                      for role, env in plan.roles.items()}
             build = EnvironmentBuild(spec=plan.spec, roles=roles,
@@ -155,28 +148,62 @@ class Provisioner:
                 c.event("provision", "the repository is blank: its setup is checked at the "
                         "scaffold's verification (what it needs comes with the scaffold)", node.id)
             if not check:
-                node.status = ACCEPTED
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                         node.id)
-            c.save()
-        if check:
-            await self._check_setup(node, sorted(roles))
+                return Ok()
+        return await self._check_setup(node, sorted(roles), current, dispatch)
 
-    async def _check_setup(self, node: Node, roles: list[str]) -> None:
+    async def _check_setup(self, node: Node, roles: list[str], current,
+                           dispatch=None) -> PhaseResult | None:
         """G-PV3: the approved mise.toml's setup task succeeds at the integration head in a fresh
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
-        res = await Verify(()).verification(self.ctx, "provision", c.change.integration_head)
+        work = self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
+                                            c.change.integration_head, (), in_new_build=True)
+        outcome = await (dispatch or self.dispatcher).run(work)
         async with c.lock:
-            if c.nodes.get(node.id) is not node or node.status != RUNNING:
-                return
-            r = res.results[0] if res.results else None
-            if res.infra_error or r is None or r.exit_code != 0:
-                why = res.infra_error or (f"`{r.command}` exited {r.exit_code}" if r else "did not run")
-                self._fail(node, f"G-PV3: the repository's setup failed in the verifier: {why}",
-                           r.output if r else "")
-            else:
-                node.status = ACCEPTED
-                c.event("provision", "environment ready; the repository's setup ran in the "
-                        f"verifier ({', '.join(roles) or 'no roles'})", node.id)
-            c.save()
+            if not current():
+                return None
+            stop = outcome.stopped
+            infra = outcome.error or (f"{stop.command.label} failed ({stop.result.exit_code})"
+                                      if stop and stop.command.kind == PREPARE else None)
+            setup = outcome.results(SETUP)
+            r = setup[0] if setup else None
+            if infra or r is None or r.exit_code != 0:
+                why = infra or (f"`{r.command}` exited {r.exit_code}" if r else "did not run")
+                return self._fail(node, f"G-PV3: the repository's setup failed in the verifier: {why}",
+                                  r.output if r else "")
+            c.event("provision", "environment ready; the repository's setup ran in the "
+                    f"verifier ({', '.join(roles) or 'no roles'})", node.id)
+            return Ok()
+
+    async def build_images(self, recipes: dict[str, ImageRecipe],
+                           log: list[str]) -> Ok | Escalate:
+        """Build (or find) the image of each recipe (G-PV1). Ok: recipe tag -> image reference;
+        ``log`` keeps what was built, for the provisioning record."""
+        images: dict[str, str | None] = {}
+        try:
+            for tag, recipe in recipes.items():
+                log.append(f"## image {tag}\n\n{recipe.files['Dockerfile']}")
+                images[tag], out = await self.c.svc.builder.ensure_image(recipe)
+                log.append(out)
+        except (BuildError, OSError) as e:
+            return Escalate("provision_failed", f"G-PV1: {e}"[:2000], Resume.READY,
+                            log_tail="\n".join(log)[-4000:] or None)
+        return Ok(images)
+
+    def environment_quiescent(self) -> bool:
+        """Provisioning may start: no run of a role the current build maps is live and no
+        verifier sandbox is in use (a verification waiting for the build uses none)."""
+        c = self.c
+        mapped = set(c.change.environment.roles) if c.change.environment else set()
+        return not any(r.status in LIVE_RUN and r.role in mapped for r in c.runs.values()) \
+            and not self.lifecycle.sandboxes.verifiers
+
+    def waits_for_environment(self, role: str) -> bool:
+        """A role the provisioned environment maps waits while it is being built again (its
+        provision step running again, or a fix round's not done), so no sandbox starts from the
+        old build."""
+        c = self.c
+        prov, env = c.current(PROVISION_KIND), c.change.environment
+        return bool(prov and env and role in env.roles and prov.status != ACCEPTED)

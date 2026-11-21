@@ -121,7 +121,8 @@ async def _full_workflow(tmp_path):
         assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
         assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
-        assert ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
+        assert ctl2.docs.latest_version(f"changes/{old.cid}/control/workflow.json")
+        assert not ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
     assert ctl2.auth.identity.tokens.verify(old_token) is None     # signing key never persisted
     assert all(r.sandbox_ref for _, r in ctl2.all_runs())
     assert not ctl2.docs.list("changes/" + a.cid + "/control/prompts/")
@@ -142,12 +143,14 @@ async def _drive(ce):
     r = await ce.human_action("H-E1", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
     assert r.pending == ["REQ-2"] and n["H-E1"].status == "AWAITING_HUMAN"
     r = await ce.human_action("H-E1", "approve", "ana", {"subjects": ["REQ-2"]})
-    assert r.pending == [] and n["H-E1"].status == "ACCEPTED"
+    assert r.pending == []
+    await _wait(ce, lambda: n["H-E1"].status == "ACCEPTED", "H-E1")   # its gate step passes
 
     await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
     assert ce.change.oracle_sha
     r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["oracle"]})
-    assert r.pending == [] and n["H-2"].status == "ACCEPTED"
+    assert r.pending == []
+    await _wait(ce, lambda: n["H-2"].status == "ACCEPTED", "H-2")
     assert ce.change.surface_pins["files"].pins["README.md"]
 
     await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
@@ -211,7 +214,7 @@ async def _r3_workflow(tmp_path):
                                                        "verdict": "pass", "sources": []})
         r = await ce.human_action("H-2", "approve", "miles")    # R3: attests the baseline too
         assert r.pending == [] and "independent-baseline" in r.approved
-        assert n["H-2"].status == "ACCEPTED"
+        await _wait(ce, lambda: n["H-2"].status == "ACCEPTED", "H-2")
         assert ce.change.attestations["independent-baseline"].attested_by == "miles"
 
         await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
@@ -492,7 +495,7 @@ def test_document_listing_hides_controller_records_unless_asked(tmp_path):
             every = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}&all=1")).json()]
         assert default == [prefix + "intake/requirements.md", prefix + "intake/risk.json"]
         control = set(every) - set(default)
-        assert {prefix + p for p in ("control/change.json", "control/graph.json",
+        assert {prefix + p for p in ("control/change.json", "control/workflow.json",
                                      "control/goal.md")} <= control
         assert any("/control/runs/" in p for p in control) and any("/control/logs/" in p for p in control)
     asyncio.run(go())

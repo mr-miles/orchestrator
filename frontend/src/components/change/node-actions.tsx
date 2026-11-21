@@ -40,6 +40,35 @@ const SEND_BACK = 'send_back:'
 // sending these back starts over everything built on them: confirm first
 const SWEEPING = ['stage:requirements', 'stage:plan']
 
+const RERUN = 'rerun:'
+
+/** Run an earlier step again in place, as the workflow core offers it at an escalation
+ * (provisioning: the approved spec built again against the current library); the escalated
+ * step is then retried in its result. The answer is the reason (at least 24 characters). */
+function Rerun({ state, nodeId, reason }: { state: ChangeState; nodeId: string; reason: string }) {
+  const act = useAct(useNav().cid)
+  const titles = new Map(state.nodes.map((n) => [n.id, n.title]))
+  return (
+    <>
+      {offered(state, nodeId)
+        .filter((a) => a.startsWith(RERUN))
+        .map((a) => {
+          const step = a.slice(RERUN.length)
+          return (
+            <Button
+              key={a}
+              variant="secondary"
+              title="Builds the approved environment again against the current library (e.g. after a library entry was fixed), then retries this step in the new build. The answer is the reason."
+              onClick={() => act.node(nodeId, a, { reason }, `${titles.get(step) ?? step} again`)}
+            >
+              {step.split('@')[0] === 'provision' ? 'Provision again' : `Run ${step} again`}
+            </Button>
+          )
+        })}
+    </>
+  )
+}
+
 /** Send back each stage the node's work was built on, nearest first, as the workflow core
  * offers it. A stage sent back starts over with the feedback; Delivery's appends a fix round. */
 function SendBack({
@@ -185,6 +214,7 @@ function Escalated({ node, state }: { node: Node; state: ChangeState }) {
             Override accept
           </Button>
         )}
+        <Rerun state={state} nodeId={node.id} reason={answer} />
         <SendBack state={state} nodeId={node.id} feedback={answer} />
         <ConfirmButton
           title="Abandon the change?"

@@ -39,3 +39,66 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "I", "UP"]
 ignore = ["E731", "B008"]
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.17",
+]
+
+# The engine's layering (docs/architecture.md §1, §5), checked by `lint-imports` (and by
+# tests/test_units.py): control and imports go down the layers only, and nothing outside the
+# engine – nor its facade – reaches into them.
+[tool.importlinter]
+root_package = "legion_orch"
+
+[[tool.importlinter.contracts]]
+name = "The engine's layers: runtime > steps > services > sandboxes > base"
+type = "layers"
+layers = [
+    "legion_orch.workflow.engine.runtime",
+    "legion_orch.workflow.engine.steps",
+    "legion_orch.workflow.engine.services",
+    "legion_orch.workflow.engine.sandboxes",
+    "legion_orch.workflow.engine.base",
+]
+
+[[tool.importlinter.contracts]]
+name = "Outside the engine, only the engine package's own names"
+type = "forbidden"
+source_modules = [
+    "legion_orch.server",
+    "legion_orch.cli",
+    "legion_orch.workflow.roles",
+    "legion_orch.workflow.governance",
+    "legion_orch.workflow.guards",
+    "legion_orch.workflow.ship",
+    "legion_orch.workflow.attention",
+    "legion_orch.workflow.view",
+]
+forbidden_modules = [
+    "legion_orch.workflow.engine.runtime",
+    "legion_orch.workflow.engine.steps",
+    "legion_orch.workflow.engine.services",
+    "legion_orch.workflow.engine.sandboxes",
+    "legion_orch.workflow.engine.base",
+    "legion_orch.workflow.engine.compose",
+    "legion_orch.workflow.engine.change",
+    "legion_orch.workflow.engine.controller",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "The facade never sees the step layer: it fronts the runtime"
+type = "forbidden"
+source_modules = ["legion_orch.workflow.engine.change", "legion_orch.workflow.engine.controller"]
+forbidden_modules = [
+    "legion_orch.workflow.engine.steps",
+    "legion_orch.workflow.engine.sandboxes",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "The workflow core is pure: no engine"
+type = "forbidden"
+source_modules = ["legion_orch.workflow.flow"]
+forbidden_modules = ["legion_orch.workflow.engine"]

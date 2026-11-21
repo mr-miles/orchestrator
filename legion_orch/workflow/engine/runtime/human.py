@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .. import governance, guards, risk, setup
-from ..environment import EnvironmentSpec, Kind, Library, LibraryError, promote
-from ..flow import CHANGE
-from ..model import (
+from ... import governance, guards, risk, setup
+from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
+from ...flow import CHANGE
+from ...model import (
     ACCEPTED,
     AWAITING_HUMAN,
     ESCALATED,
@@ -16,16 +16,8 @@ from ..model import (
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
-    LIVE_RUN,
-    MERGING,
     PROVISION,
-    R_REPORTED,
-    R_SUPERSEDED,
-    READY,
     RETRO,
-    REVIEWING,
-    REWORK,
-    VERIFYING,
     Approval,
     ApprovalState,
     ChangeEnd,
@@ -34,28 +26,24 @@ from ..model import (
     FixRound,
     Node,
     Override,
-    Resume,
     TierOverride,
 )
-from ..results import ActionResult
-from . import cleanup
-from .acceptance import Acceptance
-from .common import ENV_SPEC, WorkflowError, _slug
-from .core import ChangeCore
-from .graph import StageGraph
-from .runs import RunLifecycle
-from .workflow_tree import base_id
+from ...results import ActionResult
+from ..base.common import ENV_SPEC, WorkflowError, _slug
+from ..base.core import ChangeCore
+from ..base.ids import base_id
+from ..services import cleanup
+from ..services.runs import RunLifecycle
 
 if TYPE_CHECKING:
-    from .runtime import FlowRuntime
+    from .flow_runtime import FlowRuntime
 
 
 class HumanGates:
     """What a decision owner may do to a change, checked and applied under the lock."""
 
-    def __init__(self, core: ChangeCore, graph: StageGraph, acceptance: Acceptance,
-                 lifecycle: RunLifecycle):
-        self.c, self.graph, self.acceptance, self.lifecycle = core, graph, acceptance, lifecycle
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
+        self.c, self.lifecycle = core, lifecycle
         self.flow: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
 
     def _check_approver(self, approver: str) -> None:
@@ -122,8 +110,9 @@ class HumanGates:
         return await getattr(self, handler)(node, approver, payload)
 
     # (gate, action) -> method(node, approver, payload): what approving each gate decides (its
-    # subjects, the tier, the attestations), and H-3's reject and recheck. Sending work back is
-    # the workflow's generic send_back.
+    # subjects, the tier, the attestations) – recorded here, then the answer to its step's
+    # escalation – and H-3's reject and recheck (a retry). Sending work back is the workflow's
+    # generic send_back.
     GATE_ACTIONS = {
         (H_REQUIREMENTS, "accept"): "_accept_requirements",
         (H_REQUIREMENTS, "approve"): "_accept_requirements",
@@ -160,7 +149,6 @@ class HumanGates:
         if not text:
             raise WorkflowError("feedback is required")
         att = self._feedback_doc(node, approver, text, "feedback")
-        node.escalation = None
         await self.flow.act(node.id, f"send_back:{stage}", approver, text, feedback_doc=att)
         self.c.event("send_back", f"{approver}: {stage} sent back from {node.id}", node.id)
         return ActionResult()
@@ -187,7 +175,7 @@ class HumanGates:
         rec.attestation = self.c.write_record("control/approvals/requirements.json", rec).attestation
         ch.approvals[H_REQUIREMENTS] = rec
         self.flow.build_tree()
-        await self.flow.act(node.id, "approve", approver)
+        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
         return ActionResult(tier=tier, panel=ch.panel)
 
     async def _approve_subjects(self, node: Node, approver: str, payload: dict,
@@ -229,7 +217,7 @@ class HumanGates:
             pending.append(governance.BASELINE_SUBJECT)
         if pending:
             return ActionResult(approved=done, pending=pending)
-        await self.flow.act(node.id, "approve", approver)
+        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
         return ActionResult(approved=done, pending=[])
 
     async def _approve_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
@@ -303,7 +291,7 @@ class HumanGates:
         rec = Approval(gate=H_CHANGE, approver=approver, head=head, note=note)
         rec.attestation = self.c.write_record("control/approvals/change.json", rec).attestation
         ch.approvals[H_CHANGE] = rec
-        await self.flow.act(node.id, "approve", approver)
+        await self.flow.decide(node, "answer", approver, "approved")   # its gate step goes on
         return ActionResult(warnings=[f"{g} has no passing attestation: H-3 waits for it"
                                       for g in missing])
 
@@ -311,54 +299,59 @@ class HumanGates:
         """Evaluate H-3's preconditions (the ship gates) again, after attesting or waiving."""
         if self.c.change.pruned_at:
             raise WorkflowError("the change was pruned")
-        await self.flow.act(node.id, "evaluate", approver)
+        await self.flow.decide(node, "retry", approver)     # its gate step checks again
         return ActionResult()
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        res = self._end_change(node, approver, payload, "reject")
-        await self.flow.act(node.id, "reject", approver,
-                            (payload.get("reason") or payload.get("feedback") or "").strip())
-        return res
+        return await self._end_change(node, approver, payload, "reject")
 
-    def _end_change(self, node: Node, approver: str, payload: dict, action: str) -> ActionResult:
+    async def _end_change(self, node: Node, approver: str, payload: dict,
+                          action: str) -> ActionResult:
         """Abandon the change (at an escalation, or rejected at H-3): record who, where and
-        the operator's reason, and run the retrospective on what the change produced so far
-        (unless ``retrospective`` is false), whether or not retrospectives run automatically."""
+        the operator's reason, end it through the workflow (the core ends it; the runtime marks
+        the change abandoned and the node it ended at), and run the retrospective on what the
+        change produced so far (unless ``retrospective`` is false), whether or not
+        retrospectives run automatically."""
         c = self.c
         reason = (payload.get("reason") or payload.get("feedback") or "").strip() or None
         rec = ChangeEnd(by=approver, node=node.id, action=action, reason=reason)
         rec.attestation = c.write_record("control/ended.json", rec).attestation
         c.change.ended = rec
-        c.change.status = ChangeStatus.ABANDONED
-        node.status = FAILED
+        if action == "reject":
+            await self.flow.act(node.id, "reject", approver, reason or "")
+        else:
+            await self.flow.act(CHANGE, "abandon", approver)
+        self.flow.end_at(node)
         verb = "abandoned the change" if action == "abandon" else "rejected the change"
         c.event("abandoned", f"{approver} {verb} at {node.id}: {reason or '(no reason given)'}",
                 node.id)
         if payload.get("retrospective", True) is not False and RETRO not in c.nodes:
-            self.graph.add_retrospective()
+            self.flow.add_retrospective()
             c.event("retrospective", "the change was abandoned: retrospective queued", RETRO)
         return ActionResult(attestation=rec.attestation)
 
     # ------------------------------------------------------------------ escalations
     async def _resolve_escalation(self, node: Node, action: str, approver: str,
                                   payload: dict) -> ActionResult:
+        """What a decision owner decides at an escalation: recorded here, carried out by the
+        workflow (the core resumes the step; the step runner takes it up where it stopped)."""
         if action == "abandon":
-            res = self._end_change(node, approver, payload, "abandon")
-            await self.flow.act(CHANGE, "abandon", approver)
-            return res
+            return await self._end_change(node, approver, payload, "abandon")
         if action in ("override_accept", "override"):
-            return self._override_accept(node, approver, payload)
+            reason = self._override_accept(node, approver, payload)
+            await self.flow.decide(node, "override", approver, reason)
+            return ActionResult(status=node.status)
+        if action.startswith("rerun:"):
+            reason = self._rerun(action.split(":", 1)[1], payload)
+            await self.flow.decide(node, action, approver, reason)
+            return ActionResult(status=node.status, note=(
+                "provisioning again from the approved spec and the current library once running "
+                "agents of mapped roles finish; this step is retried in the new build"))
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
         if node.escalation and node.escalation.retrying:
             raise WorkflowError("a retry is already in progress (removing the old sandbox)")
-        resume = node.escalation.resume if node.escalation else Resume.READY
-        if action == "retry":
-            old = self._sandbox_to_remove(node)
-            if old:
-                node.escalation.retrying = True
-                self.c.spawn(self._retry_after_removing(node.id, old))
-                return ActionResult(note=f"removing sandbox {old}, then retrying")
+        text = ""
         if action == "answer":
             text = (payload.get("answer") or payload.get("feedback") or "").strip()
             if not text:
@@ -375,8 +368,11 @@ class HumanGates:
                 head=self.c.change.integration_head,
                 text=f"human decision on \"{question[:300]}\": {text}" if question
                 else f"human decision: {text}"))
-        node.escalation = None
-        self._resume(node, resume)
+        await self.flow.decide(node, action, approver, text)
+        if node.escalation and node.escalation.retrying:
+            run = self.c.runs.get(node.escalation.run) if node.escalation.run else None
+            return ActionResult(note=f"removing sandbox {run.sandbox if run else ''}, "
+                                     "then retrying")
         return ActionResult(status=node.status)
 
     async def _fix_round(self, node: Node, stage: str, approver: str,
@@ -402,49 +398,12 @@ class HumanGates:
         rec.attestation = self.c.write_record(f"control/rounds/{n}.json", rec).attestation
         ch.round = n
         ch.rounds.append(rec)
-        node.escalation = None
         await self.flow.act(node.id, f"send_back:{stage}", approver)
         self.c.event("fix_round", f"{approver}: fix round {n} planned on top of "
                      f"{(ch.integration_head or '')[:12]}", node.id)
         return ActionResult(note=f"fix round {n}: the planner plans it on top of the integration head")
 
-    def _sandbox_to_remove(self, node: Node) -> str | None:
-        """The escalated run's sandbox, if it still exists and no live run uses it."""
-        run = self.c.runs.get(node.escalation.run) if node.escalation and node.escalation.run else None
-        if not run or not run.sandbox or run.sandbox_deleted:
-            return None
-        if any(r.sandbox == run.sandbox and r.status in LIVE_RUN for r in self.c.runs.values()):
-            return None
-        return run.sandbox
-
-    async def _retry_after_removing(self, node_id: str, sandbox: str) -> None:
-        """Retry: delete the failed run's sandbox first (a failed delete is reported and the
-        retry goes ahead in a new sandbox), then resume where the escalation said."""
-        ok = await self.lifecycle.sandboxes.delete(sandbox) if sandbox else True
-        async with self.c.lock:
-            node = self.c.nodes.get(node_id)
-            esc = node.escalation if node else None
-            if node is None or node.status != ESCALATED or esc is None or not esc.retrying:
-                return                  # abandoned or otherwise resolved meanwhile
-            if not ok:
-                self.c.event("sandbox", f"could not remove {sandbox}; retrying in a new sandbox",
-                             node_id)
-            if node.sandbox == sandbox:
-                node.sandbox = None     # the next run gets a fresh sandbox
-            node.escalation = None
-            self._resume(node, esc.resume)
-            self.c.event("human_action", f"retry: resumed {esc.resume}", node_id)
-            self.c.save()
-
-    def resume_retries(self) -> None:
-        """After a restart: finish retries that were removing their old sandbox."""
-        for node in self.c.nodes.values():
-            esc = node.escalation
-            if node.status == ESCALATED and esc and esc.retrying:
-                run = self.c.runs.get(esc.run) if esc.run else None
-                self.c.spawn(self._retry_after_removing(node.id, run.sandbox if run else ""))
-
-    def _override_accept(self, node: Node, approver: str, payload: dict) -> ActionResult:
+    def _override_accept(self, node: Node, approver: str, payload: dict) -> str:
         """Accept a build task without a full panel PASS. Deterministic verification at the
         candidate is still required (it is not waivable); the gate reports human judgement."""
         if "override" not in self.flow.actions(node.id):     # the step allows it: build tasks
@@ -456,38 +415,7 @@ class HumanGates:
             raise WorkflowError("override requires passing deterministic verification at the "
                                 "candidate (deterministic_verification is not waivable)")
         node.override = Override(approver=approver, reason=payload["reason"], sha=node.candidate_sha)
-        node.escalation = None
-        node.status = MERGING
-        self.c.spawn(self.acceptance.merge_node(node.id))
-        return ActionResult()
-
-    def _resume(self, node: Node, resume: Resume) -> None:
-        """Continue the workflow where the resolved escalation said it should."""
-        if resume == Resume.CRITIQUE_BUDGET:          # one more critique cycle: rework the plan
-            node.extra_cycles += 1
-            node.cycle += 1
-            node.status = REWORK
-        elif resume == Resume.REWORK_CYCLE:           # one more review cycle
-            node.extra_cycles += 1
-            cur = self.c.runs.get(node.current_run) if node.current_run else None
-            if cur and cur.status == R_REPORTED:
-                cur.status = R_SUPERSEDED
-            node.cycle += 1
-            node.candidate_sha = None
-            node.status = REWORK
-        elif resume == Resume.VERIFYING:
-            node.status = VERIFYING
-            self.c.spawn(self.acceptance.verify_node(node.id))
-        elif resume == Resume.REVIEWING:              # re-dispatch the missing panel member(s)
-            node.status = REVIEWING
-        elif resume == Resume.MERGING:                # merge the accepted candidate again
-            node.status = MERGING
-            self.c.spawn(self.acceptance.merge_node(node.id))
-        elif resume == Resume.REWORK:
-            node.status = REWORK
-        else:                                         # a new run, in a new sandbox
-            self.lifecycle.retire_runs(node)
-            node.status = READY
+        return payload["reason"]
 
     def _promote(self, approver: str, payload: dict) -> str:
         """Copy a proposal of the H-E1-approved spec version into the library."""
@@ -521,7 +449,7 @@ class HumanGates:
         node = c.nodes.get(RETRO)
         if node is not None and node.status not in (ACCEPTED, FAILED, ESCALATED):
             raise WorkflowError(f"a retrospective is already {node.status}")
-        node = self.graph.add_retrospective()
+        node = self.flow.add_retrospective()
         focus = (payload.get("focus") or payload.get("feedback") or "").strip()
         if focus:
             att = self._feedback_doc(node, approver, focus, "focus")
@@ -530,30 +458,26 @@ class HumanGates:
         c.event("retrospective", f"{approver} asked for a retrospective (cycle {node.cycle})", RETRO)
         return f"retrospective queued (cycle {node.cycle})"
 
-    def _reprovision(self, approver: str, payload: dict) -> str:
-        """Build the provisioned environment again from the approved spec against the current
-        library (G-PV1), e.g. after a library entry was fixed. The spec and its H-E1 approval
-        stay; to change what the spec asks for, revise the plan instead. New runs of mapped roles
-        wait from now on; provisioning starts once their live runs end and nothing is verifying
-        or merging (the old build stays in place until the new one is accepted)."""
+    def _rerun(self, step: str, payload: dict) -> str:
+        """An escalation answered by running an earlier step again in place – provisioning:
+        the H-E1-approved spec built again against the current library (G-PV1), e.g. after a
+        library entry was fixed. The spec and its approval stay; to change what the spec asks
+        for, revise the plan instead. Returns the reason (≥24 chars, more than one word)."""
         c = self.c
-        prov = c.current(PROVISION)
-        if prov is None or c.change.environment is None or prov.status != ACCEPTED:
+        prov = c.nodes.get(step)
+        if prov is None or prov.kind != PROVISION or c.change.environment is None \
+                or prov.status != ACCEPTED:
             raise WorkflowError("there is no provisioned environment to rebuild")
         if stale := governance.stale_environment(c):
             raise WorkflowError(f"{stale}; approve the new spec at H-E1 instead")
-        reason = payload.get("reason")
+        reason = (payload.get("reason") or "").strip()
         if not risk.valid_reason(reason):
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
-        self.flow.runner.enter(prov)       # its wait: no run or verification uses the build
-        c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
-        return ("provisioning again from the approved spec and the current library once running "
-                "agents of mapped roles finish; their new runs wait until then")
+        return reason
 
     async def change_action(self, action: str, approver: str, payload: dict | None = None) -> ActionResult:
         """Change-level governance: attest, override, approve_protected_paths, approve_surface,
-        promote_proposal (an approved environment proposal into the library), reprovision
-        (rebuild the environment against the current library), retrospective (of an ended
+        promote_proposal (an approved environment proposal into the library), retrospective (of an ended
         change), prune (an ended change's integration branch and evidence refs, §5.14)."""
         payload = payload or {}
         async with self.c.lock:
@@ -571,8 +495,6 @@ class HumanGates:
                                        note="applies only to runs of this task that start after now")
                 elif action == "promote_proposal":
                     res = ActionResult(note=self._promote(approver, payload))
-                elif action == "reprovision":
-                    res = ActionResult(note=self._reprovision(approver, payload))
                 elif action == "retrospective":
                     res = ActionResult(note=self._start_retrospective(approver, payload))
                 elif action == "prune":

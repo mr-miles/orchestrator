@@ -61,7 +61,8 @@ legion-orch -c orchestrator.yaml act <change-id> H-E1 approve --approver miles -
 legion-orch -c orchestrator.yaml act <change-id> H-E1 send_back --approver miles --payload '{"stage": "design", "feedback": "split T1"}'
 legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
   --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
-legion-orch -c orchestrator.yaml govern <change-id> reprovision --approver miles \
+# an escalation caused by the environment, answered by provisioning again (§5.3a)
+legion-orch -c orchestrator.yaml act <change-id> build:T1 rerun:provision --approver miles \
   --payload '{"reason": "rebuild against the updated environment library"}'
 ```
 

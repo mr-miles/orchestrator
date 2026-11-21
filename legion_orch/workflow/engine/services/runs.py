@@ -1,4 +1,4 @@
-"""Run lifecycle: failure, timeouts, logs, sandbox deletion, acceptance of reported runs."""
+"""Run lifecycle: failure, timers, logs, sandbox deletion, acceptance of reported runs."""
 from __future__ import annotations
 
 import itertools
@@ -6,9 +6,9 @@ import shutil
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ...sandbox import agentlog
-from ...util import now_iso
-from ..model import (
+from ....sandbox import agentlog
+from ....util import now_iso
+from ...model import (
     LIVE_RUN,
     R_ACCEPTED,
     R_FAILED,
@@ -16,17 +16,16 @@ from ..model import (
     R_SUPERSEDED,
     FailureSource,
     Node,
-    Resume,
     Run,
     RunFailure,
 )
-from ..roles import handler_for
-from .common import _parse_ts
-from .core import ChangeCore
-from .steps import step_for
+from ...results import Escalate
+from ...roles import handler_for
+from ..base.common import _parse_ts
+from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
-    from .sandboxes import Sandboxes
+    from ..sandboxes.sandboxes import Sandboxes
 
 
 def log_part(run_id: str, n: int) -> str:
@@ -73,23 +72,33 @@ class RunLifecycle:
     # an agent still in its turn this long after its report was accepted is stopped
     END_TURN_GRACE_S = 300
 
-    def check_timeouts(self) -> None:
-        c, limit = self.c, self.c.cfg.limits.run_timeout_s
+    def deadline(self, run: Run) -> float | None:
+        """Seconds until the run's agent is stopped (its timer): the run timeout while it is
+        live, the end-of-turn grace once its report was accepted; None: no limit applies."""
         now = datetime.now(UTC)
-        for run in self.live_runs():
-            if (now - _parse_ts(run.created_at)).total_seconds() > limit:
-                proc = c.procs.get(run.id)
-                if proc and proc.returncode is None:
-                    proc.kill()
-                self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
-        for run in c.runs.values():
-            proc = c.procs.get(run.id)
-            if run.status == R_REPORTED and not run.concluded and proc and proc.returncode is None \
-                    and run.ended_at \
-                    and (now - _parse_ts(run.ended_at)).total_seconds() > self.END_TURN_GRACE_S:
-                c.event("agent", f"the agent did not end its turn {self.END_TURN_GRACE_S}s after "
-                        "its accepted report: stopped", run.node_id, run.id)
-                proc.kill()                  # its exit concludes the run
+        if run.status in LIVE_RUN:
+            due = self.c.cfg.limits.run_timeout_s - (now - _parse_ts(run.created_at)).total_seconds()
+        elif run.status == R_REPORTED and run.ended_at:
+            due = self.END_TURN_GRACE_S - (now - _parse_ts(run.ended_at)).total_seconds()
+        else:
+            return 0.0                       # failed or superseded: its agent stops now
+        return max(due, 0.0)
+
+    def stop_if_due(self, run: Run) -> bool:
+        """The run's timer is up (under the lock): a live run times out (and fails); an agent
+        that has not ended its turn after its accepted report is stopped (its exit concludes the
+        run); any other is stopped. Returns whether it stopped it."""
+        proc = self.c.procs.get(run.id)
+        if proc is None or proc.returncode is not None or (self.deadline(run) or 0) > 0:
+            return False
+        if run.status in LIVE_RUN:
+            limit = self.c.cfg.limits.run_timeout_s
+            self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
+        elif run.status == R_REPORTED:
+            self.c.event("agent", f"the agent did not end its turn {self.END_TURN_GRACE_S}s after "
+                         "its accepted report: stopped", run.node_id, run.id)
+        proc.kill()
+        return True
 
     def release_sandboxes(self) -> bool:
         """Delete kept sandboxes whose hold has ended (their gate passed, or the change ended)
@@ -139,28 +148,36 @@ class RunLifecycle:
 
     def fail_run(self, run: Run, reason: str, source: FailureSource,
                  exit_code: int | None = None) -> None:
-        """No automatic retries (principle 5): a failed run escalates to a human. ``source``
-        says whether the agent failed or what it runs on (see :class:`FailureSource`)."""
+        """No automatic retries (principle 5): a failed run escalates to a human – its agent is
+        stopped, and the run's work returns :meth:`escalation` to its phase. ``source`` says
+        whether the agent failed or what it runs on (see :class:`FailureSource`)."""
         run.status = R_FAILED
         run.ended_at = now_iso()
         run.failure = RunFailure(source=source, stage=run.stage, reason=reason, exit_code=exit_code)
         node = self.c.nodes.get(run.node_id)
         where = f" while {run.stage.lower()}" if run.stage and run.stage != "EXITED" else ""
-        label = f"{source.lower()} error{where}"
-        self.c.event("run_failed", f"{label}: {reason}", run.node_id, run.id)
+        self.c.event("run_failed", f"{source.lower()} error{where}: {reason}", run.node_id, run.id)
+        proc = self.c.procs.get(run.id)
+        if proc is not None and proc.returncode is None:
+            proc.kill()                      # its exit ends the run's work (AgentRuns.launch)
         if node is None:
             return
-        tail = self.log_tail(run.id, 40)
-        who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
-        resume = (Resume.REVIEWING if handler_for(run.role).panel
-                  else step_for(node).rework_resume)
-        self.c.escalate(node, "run_failed", f"{who} ({label}): {reason}", resume=resume,
-                        run=run.id, log_tail=tail, source=source)
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             # a failed run's sandbox is not kept for rework either: the retry starts afresh
             if node.sandbox == run.sandbox:
                 node.sandbox, node.sandbox_stopped = None, False
             self.c.spawn(self.sandboxes.delete(run.sandbox))
+
+    def escalation(self, run: Run) -> Escalate:
+        """What a failed run means: a human decides (no automatic retries); where the step
+        resumes is the step's to say."""
+        f = run.failure
+        source = f.source if f else FailureSource.SYSTEM
+        where = f" while {f.stage.lower()}" if f and f.stage and f.stage != "EXITED" else ""
+        who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
+        return Escalate("run_failed", f"{who} ({source.lower()} error{where}): "
+                        f"{f.reason if f else 'failed'}", None, log_tail=self.log_tail(run.id, 40),
+                        run=run.id, source=source)     # where it resumes: its step's decision
 
     def archive_log(self, run: Run) -> None:
         """Move the whole agent log into the store (agents cannot read control/logs/), in parts

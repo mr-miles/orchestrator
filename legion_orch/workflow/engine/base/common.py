@@ -6,10 +6,9 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..governance.approvals import ENV_SPEC  # noqa: F401  (re-exported: the environment spec)
+from ...governance.approvals import ENV_SPEC, PLAN_DOCS  # noqa: F401  (re-exported)
 
 log = logging.getLogger("legion")
-PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
 SKILLS_DIR = "skills"      # payload/skills/<name>/SKILL.md, installed by run-agent.sh
 
 

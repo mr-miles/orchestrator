@@ -1,4 +1,4 @@
-"""Controller: shared resources, scheduler loop, sandbox identity binding."""
+"""Controller: shared resources (the dispatcher among them), sandbox identity binding."""
 from __future__ import annotations
 
 import asyncio
@@ -29,15 +29,17 @@ from ..model import (
     Run,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
-from .auth import WorkloadAuth
+from .base.auth import WorkloadAuth
+from .base.common import WorkflowError, log
+from .base.dispatch import Dispatcher
+from .base.shared import Services
 from .change import ChangeEngine
-from .common import WorkflowError, log
-from .services import Services
 
 
 class Controller:
-    """Owns the shared :class:`Services`, one :class:`ChangeEngine` per change, and the scheduler
-    loop. Implements :class:`EngineHost` for the engines.
+    """Owns the shared :class:`Services`, one :class:`ChangeEngine` per change, and the timer
+    of the attention reminders. Implements :class:`EngineHost` for the engines. There is no
+    clock: each change's work runs as tasks that await what they need.
 
     Durable state lives only in the document store (``state.db``) and the git remote; ``tmp/``
     holds transient sandbox payloads and live agent logs and is wiped on start.
@@ -60,7 +62,7 @@ class Controller:
             git=GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path, cfg.repo.base_branch,
                           max_push_bytes=cfg.limits.git_max_push_bytes),
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
-            builder=builder or make_builder(cfg))
+            builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel))
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI streams)
@@ -68,7 +70,6 @@ class Controller:
         self._reserved_names: set[str] = set()   # sandbox names handed out this process
         self.stopping = asyncio.Event()   # set on shutdown: long-lived responses end
         self._tasks: set[asyncio.Task] = set()
-        self._wake = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
         self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
                                  self._notified)
@@ -93,7 +94,6 @@ class Controller:
     # ------------------------------------------------------------------ EngineHost
     def changed(self) -> None:
         self._bump()
-        self._wake.set()
 
     def touch(self) -> None:
         self._bump()
@@ -163,12 +163,12 @@ class Controller:
         async with self.svc.lock:
             for ce in self.changes.values():
                 ce.recover()
-        self._loop_task = asyncio.create_task(self._loop())
+        self._loop_task = asyncio.create_task(self._remind())
 
     STOP_WAIT_S = 10
 
     async def stop(self) -> None:
-        """Stop scheduling, kill the agents and cancel background work (reflections, deletions,
+        """Stop the reminders, kill the agents and cancel background work (reflections, deletions,
         provisioning), then wait for all of it, so no child process outlives the controller."""
         if self._loop_task:
             self._loop_task.cancel()
@@ -185,20 +185,13 @@ class Controller:
         for ce in self.changes.values():
             ce.flush_timeline(force=True)
 
-    async def _loop(self) -> None:
+    REMIND_S = 60
+
+    async def _remind(self) -> None:
+        """The attention reminders' timer (the notifier decides what is due)."""
         while True:
-            for ce in list(self.changes.values()):
-                try:
-                    await ce.tick()
-                except Exception as e:
-                    log.exception("tick failed")
-                    ce.event("error", f"scheduler error: {e}")
             self.notifier.remind(self.attention_items())
-            self._wake.clear()
-            try:
-                await asyncio.wait_for(self._wake.wait(), 1.0)
-            except TimeoutError:
-                pass
+            await asyncio.sleep(self.REMIND_S)
 
     # ------------------------------------------------------------------ changes
     async def start_change(self, goal: str) -> ChangeEngine:

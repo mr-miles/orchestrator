@@ -9,8 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ...store import DocStore
-from ..model import Change, Node, Run
+from ....store import DocStore
+from ...model import Change, Node, Run
 
 CONTROL = "control/"
 
@@ -19,8 +19,11 @@ class StateStore:
     """Per-change state persisted as versioned documents in the store (no other durable state).
 
     changes/<cid>/control/change.json          change record
-    changes/<cid>/control/graph.json           task graph structure (node order, kinds, deps, waves)
-    changes/<cid>/control/nodes/<node>.json    node state (one version per transition)
+    changes/<cid>/control/nodes/<node>.json    a node's detail (one version per transition)
+
+The change's structure – which nodes exist, their order and dependencies – is not stored here:
+it is the workflow's tree (control/workflow.json, :class:`.FlowRuntime`), which orders the nodes
+once it is rebuilt.
     changes/<cid>/control/runs/<run>.json      run record (no credentials exist to persist)
     """
 
@@ -53,14 +56,11 @@ class StateStore:
 
     def load(self) -> None:
         self.change = Change.model_validate(self._read(self.root + "change.json"))
-        graph = self._read(self.root + "graph.json") if self.docs.latest_version(
-            self.root + "graph.json") else {"order": []}
-        for nid in graph["order"]:
-            data = self._read(f"{self.root}nodes/{nid}.json")
+        for m in self.docs.list(self.root + "nodes/"):
+            data = self._read(m.path)
+            self._known_nodes.add(data["id"])
             if not data.get("removed"):
-                self.nodes[nid] = Node.model_validate(data)
-        self._known_nodes = set(graph["order"]) | {
-            m.path[len(self.root + "nodes/"):-5] for m in self.docs.list(self.root + "nodes/")}
+                self.nodes[data["id"]] = Node.model_validate(data)
         for m in self.docs.list(self.root + "runs/"):
             run = Run.model_validate(self._read(m.path))
             self.runs[run.id] = run
@@ -69,9 +69,6 @@ class StateStore:
         if self.change is None:
             return
         self._write("change.json", self.change)
-        self._write("graph.json", {"order": list(self.nodes), "nodes": {
-            n.id: {"kind": n.kind, "title": n.title, "depends_on": n.depends_on, "wave": n.wave,
-                   "task": n.task.id if n.task else None} for n in self.nodes.values()}})
         for nid in self._known_nodes - set(self.nodes):
             self._write(f"nodes/{nid}.json", {"id": nid, "removed": True})
         self._known_nodes |= set(self.nodes)

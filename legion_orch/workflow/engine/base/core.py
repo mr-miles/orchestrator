@@ -4,34 +4,34 @@ It implements :class:`~legion_orch.workflow.view.ChangeView` (what governance an
 is handed to each engine collaborator; it knows nothing of dispatch, reports or verification."""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from ...store import DocVersion
-from ...util import now_iso
-from .. import attention, attest, governance
-from ..attention import AttentionItem
-from ..model import (
+from ....store import DocVersion
+from ....util import now_iso
+from ... import attention, attest, governance
+from ...attention import AttentionItem
+from ...model import (
     ACCEPTED,
     BUILD,
-    ESCALATED,
     Change,
-    Escalation,
-    FailureSource,
     Node,
     Oracle,
-    Resume,
     Run,
 )
 from .common import log
-from .services import EngineHost, Services
+from .ids import base_id
+from .shared import EngineHost, Services
 from .state import StateStore
-from .workflow_tree import base_id
+
+if TYPE_CHECKING:
+    pass
 
 
 def _waited(since: str) -> str:
@@ -59,6 +59,7 @@ class ChangeCore:
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
+        self._saved = asyncio.Event()                  # set (and replaced) on every save
 
     # ------------------------------------------------------------------ state
     @property
@@ -100,19 +101,29 @@ class ChangeCore:
         return next((n for n in self.build_nodes() if n.task and n.task.scaffold), None)
 
     def save(self) -> None:
-        """Persist the state (the caller holds the lock) and wake the scheduler and UI. Every
+        """Persist the state (the caller holds the lock) and wake what waits on it and the UI. Every
         state change passes through here, so this is where status changes are stamped and
         attention items are raised and resolved (§2.2) – and where the workflow (the stage
         rules) sees what changed (:meth:`sync`)."""
-        self.sync()
+        self.before_save()
         self._stamp_statuses()
         self._update_attention()
         self.st.save()
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
+        self.notify()
         self.host.changed()
 
-    def sync(self) -> None:
-        """Hook: let the workflow see the nodes' changes before they are saved."""
+    def notify(self) -> None:
+        """Wake what waits on the change's state (:meth:`next_save`)."""
+        saved, self._saved = self._saved, asyncio.Event()
+        saved.set()
+
+    async def next_save(self) -> None:
+        """Return at the change's next save: what a phase waits for may hold now."""
+        await self._saved.wait()
+
+    def before_save(self) -> None:
+        """Hook: the workflow's own record, saved with the change."""
 
     # ------------------------------------------------------------------ attention (§2.2)
     @property
@@ -146,16 +157,6 @@ class ChangeCore:
                        item.node)
             self.host.attention(item, raised=False)
         self._attention = cur
-
-    def escalate(self, node: Node, kind: str, reason: str, resume: Resume, *,
-                 run: str | None = None, missing_decision: str | None = None,
-                 log_tail: str | None = None, source: FailureSource | None = None) -> None:
-        """Stop the node for a human; ``resume`` says where it continues once resolved."""
-        node.status = ESCALATED
-        node.escalation = Escalation(kind=kind, reason=reason, resume=resume, run=run,
-                                     missing_decision=missing_decision, log_tail=log_tail,
-                                     source=source)
-        self.event("escalation", f"{kind}: {reason}", node.id, run)
 
     def head_moved(self, branch_head: str) -> str | None:
         """G-H1: the integration branch is written only by the controller. If it is not at the

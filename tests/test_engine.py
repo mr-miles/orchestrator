@@ -154,7 +154,7 @@ async def test_h3_reject_abandons_the_change(f: Flow):
     await f.human("H-3", "reject")
     assert f.status("H-3") == FAILED and f.ce.change.status == ChangeStatus.ABANDONED
     runs_before = len(f.ce.runs)
-    await f.ce.tick()                                   # nothing is scheduled any more
+    await f.settle()                                    # nothing is scheduled any more
     assert len(f.ce.runs) == runs_before
 
 
@@ -412,14 +412,20 @@ async def test_revising_the_plan_restarts_everything_derived_from_it(f: Flow):
 
 @scenario()
 async def test_stale_approval_blocks_the_build(f: Flow):
-    """G-B1: an approved plan document changed after approval -> the implementer is not dispatched."""
+    """G-B1: an approved plan document changed after approval. Before its gate passed, the
+    gate asks again; after, the implementer is not dispatched."""
     await _planned(f)
-    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, not yet dispatched
+    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, its gate not passed
     f.ce.write_record("plan/spec.md", "# Spec changed after approval\n")
     await f.settle()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "approval", node.escalation
+    gate = f.ce.nodes["H-E1"]
+    assert gate.status == AWAITING_HUMAN and "still to approve: plan" in gate.escalation.reason
     assert not f.runs("build:T1")
+    await f.human("H-E1", "approve")                             # approved again: it passes
+    assert f.status("build:T1") == RUNNING
+    f.ce.write_record("plan/spec.md", "# Spec changed again\n")     # after the gate passed
+    refused = f.ce._agents.preconditions(f.ce.nodes["build:T1"], "implementer")
+    assert refused is not None and refused.kind == "approval" and "plan" in refused.question
 
 
 # ====================================================================== build: verification
@@ -687,6 +693,7 @@ async def test_agent_exit_without_report_fails_the_run(f: Flow):
 async def test_runs_time_out(f: Flow):
     r = f.run("intake")
     r.created_at = "2020-01-01T00:00:00.000Z"
+    f.ce.notify()                                   # its timer reads the state again
     await f.settle()
     assert r.status == R_FAILED and "timed out" in f.ce.nodes["intake"].escalation.reason
 
@@ -797,6 +804,7 @@ async def test_rejected_reports_are_an_agent_error(f: Flow):
 async def test_timeout_is_its_own_source(f: Flow):
     r = f.run("intake")
     r.created_at = "2020-01-01T00:00:00.000Z"
+    f.ce.notify()                                   # its timer reads the state again
     await f.settle()
     assert r.failure.source == FailureSource.TIMEOUT
 
@@ -816,7 +824,7 @@ async def test_sandboxes_get_readable_names_never_reused(f: Flow):
     assert len(set(agents)) == len(agents) and not set(agents) & set(verifiers)
     assert set(agents) <= f.ctl.used_sandbox_names()
     other = await f.ctl.start_change("Another goal")       # names stay unique across changes
-    await other.tick()
+
     await f.settle()
     assert [r.sandbox for r in other.runs.values()] and not (
         {r.sandbox for r in other.runs.values()} & set(agents + verifiers))
@@ -917,7 +925,7 @@ async def test_retry_interrupted_by_a_restart_completes(f: Flow):
     await f.exit_agent(r, rc=1)
     f.ce.nodes["intake"].escalation.retrying = True        # as if the controller stopped here
     f.ce.save()
-    f.ce._gates.resume_retries()
+    f.ce._runner.resume_retries()
     await f.settle()
     assert r.sandbox in f.runner.deleted and f.run("intake").id != r.id
 
@@ -948,12 +956,15 @@ async def test_failed_sandbox_deletion_is_reported_not_fatal(f: Flow):
 async def test_parallel_limit_and_file_overlap(f: Flow):
     tasks = [TASKS[0], TASKS[0] | {"id": "T2", "files_modified": ["src/bye.txt"]}]
     await f.to_build(tasks=tasks)
-    assert [n.status for n in f.ce.build_nodes()] == [RUNNING, READY]   # one slot
-    await f.implement("T1")                             # T1 verified; T2 takes the free slot
-    assert f.status("build:T1") == REVIEWING and f.status("build:T2") == RUNNING
-    assert not f.runs("build:T1", "reviewer")
-    await f.implement("T2")
+    assert [n.status for n in f.ce.build_nodes()] == [RUNNING, READY]   # one sandbox
+    # T1's agent ends: its verifier takes the sandbox first (work in flight goes first), then
+    # its reviewer; T2 waits until T1 is merged
+    await f.implement("T1")
+    assert f.status("build:T1") == REVIEWING and f.status("build:T2") == READY
+    assert f.runs("build:T1", "reviewer")
     await f.review("T1")
+    assert f.status("build:T1") == ACCEPTED and f.status("build:T2") == RUNNING
+    await f.implement("T2")
     await f.review("T2")
     assert f.ce.change.status == ChangeStatus.READY
 
@@ -1142,12 +1153,13 @@ async def test_an_accepted_report_is_taken_when_the_agents_turn_ends(f: Flow):
 
 @scenario()
 async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
-    from legion_orch.workflow.engine.runs import RunLifecycle
+    from legion_orch.workflow.engine.services.runs import RunLifecycle
     run = f.run("intake")
     atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
             await f.write(run, "intake/risk.json", signals())]
     await f.report(run, atts, exit_agent=False)
     grace, RunLifecycle.END_TURN_GRACE_S = RunLifecycle.END_TURN_GRACE_S, 0
+    f.ce.notify()                                       # its timer reads the state again
     try:
         await f.settle()
     finally:
@@ -1172,3 +1184,26 @@ async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restar
         if ce2.runs[run.id].concluded:
             break
     assert ce2.runs[run.id].concluded and ce2.nodes["intake"].status == ACCEPTED
+
+
+@scenario()
+async def test_the_panel_waits_for_every_judge_before_escalating(f: Flow):
+    """A judge that fails does not escalate the step while another judge still works: the panel
+    escalates once every judge has finished, and a retry dispatches only the judges without a
+    review."""
+    await f.to_build()
+    f.ce.change.panel = ["reviewer", "security"]
+    await f.implement()
+    assert f.status("build:T1") == REVIEWING
+    security = f.run("build:T1", "security")
+    await f.exit_agent(security, rc=1)                      # fails while the reviewer works
+    assert f.status("build:T1") == REVIEWING and f.run("build:T1", "reviewer")
+    await f.review(role="reviewer")                         # the last judge finishes
+    node = f.ce.nodes["build:T1"]
+    assert node.status == ESCALATED and node.escalation.kind == "run_failed"
+    assert node.escalation.run == security.id and node.review(node.cycle, "reviewer")
+    await f.human("build:T1", "retry")
+    assert f.run("build:T1", "security").id != security.id      # a new security run only
+    assert not [r for r in f.runs("build:T1", "reviewer") if r.status in ("STARTING", "ACTIVE")]
+    await f.review(role="security")
+    assert f.status("build:T1") == ACCEPTED

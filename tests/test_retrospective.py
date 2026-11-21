@@ -15,7 +15,7 @@ from legion_orch.sandbox import agentlog
 from legion_orch.sandbox.runner import spawn_logged, stamp
 from legion_orch.workflow.assets import Assets
 from legion_orch.workflow.engine import WorkflowError
-from legion_orch.workflow.engine.runs import RunLifecycle, split_lines
+from legion_orch.workflow.engine.services.runs import RunLifecycle, split_lines
 from legion_orch.workflow.model import ACCEPTED, ChangeStatus, Run
 
 
@@ -349,6 +349,7 @@ async def test_the_retrospective_starts_by_itself_once_reflections_are_done(f: F
     assert f.ce.change.status == ChangeStatus.READY
     assert f.status("retrospective") == "READY" and not f.runs("retrospective")   # waits
     f.ce._sandboxes.reflector.pending.clear()
+    f.ce.notify()                                            # as a finished reflection does
     await f.settle()
     run = f.run("retrospective")
     doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")

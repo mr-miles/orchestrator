@@ -32,18 +32,29 @@ class Rework:
 
 @dataclass(frozen=True)
 class Escalate:
-    """A human decides; ``resume`` says where the node continues once they have. ``feedback``
-    is kept on the node for the producer's next cycle; ``run``: the run it is about."""
+    """A human decides; ``resume`` says where the node continues once they have (None: its step
+    decides – a service reporting a failure does not know the step). ``feedback`` is kept on
+    the node for the producer's next cycle; ``run``: the run it is about."""
     kind: str
     question: str
-    resume: Resume
+    resume: Resume | None
     log_tail: str | None = None
     feedback: list[Feedback] = field(default_factory=list)
     run: str | None = None
     missing_decision: str | None = None
+    source: Any = None                       # a failed run's FailureSource
+    expected: bool = False                   # a decision that is due (a gate), not a failure
 
 
-PhaseResult = Ok | Rework | Escalate
+@dataclass(frozen=True)
+class Redo:
+    """An earlier step of the same stage must do its work again (preflight finds the oracle's
+    setup failing): it starts again with this feedback, and everything after it with it."""
+    step: str
+    feedback: Feedback
+
+
+PhaseResult = Ok | Rework | Escalate | Redo
 
 
 class ActionResult(Record):

@@ -3,20 +3,21 @@ environment and repository:
 
 ```
 Requirements   intake ───────────────────────────────────────────────── ◆ H-1
-Plan                                                                  ◆ plan-approved (automatic)
+Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ──────────────────────────────── ◆ H-E1 "approve the plan"
   Oracle       [provision] [scaffold] [oracle preflight] [baseline] ──── ◆ H-2 "approve the oracle"
 Delivery       tasks (DAG) ─ [integration] ─ [release] ───────────────── ◆ H-3 "accept the change"
 ```
 
-Step ids are the engine's node ids; a fix round's are suffixed ``@n`` (``plan@2``, ``H-2@2``).
-The build tasks are known once the plan is accepted: :func:`task_steps` gives the steps of the
-``tasks`` group (and a blank repository's ``scaffold`` group, before the oracle).
-"""
+A gate (◆) is a step that ends its stage: its work checks what it needs and waits for a human's
+approval (engine/steps.py). Step ids are the engine's node ids; a fix round's are suffixed
+``@n`` (``plan@2``, ``H-2@2``). The build tasks are known once the plan is accepted:
+:func:`task_steps` gives the steps of the ``tasks`` group (and a blank repository's ``scaffold``
+group, before the oracle)."""
 from __future__ import annotations
 
-from ..flow import AppendRound, Gate, Parallel, Stage, StartOver, Step, Workflow
-from ..model import (
+from ...flow import AppendRound, Parallel, Stage, StartOver, Step, Workflow
+from ...model import (
     BASELINE,
     H_CHANGE,
     H_ENV,
@@ -32,6 +33,7 @@ from ..model import (
     RELEASE,
     NodeKind,
 )
+from ..base.ids import base_id, in_round, round_of, stage_id, stage_title  # noqa: F401  (re-exported)
 
 TASKS, SCAFFOLD = "tasks", "scaffold"          # the parallel groups of build steps
 
@@ -50,45 +52,17 @@ NODES: dict[str, tuple[NodeKind, str]] = {
     RELEASE: (NodeKind.RELEASE, "Release & rollback plan"),
     H_CHANGE: (HUMAN, "Accept the change"),
 }
-PLAN_GATE = "plan-approved"
-
-
-def stage_id(name: str, n: int = 1) -> str:
-    return f"stage:{name}" if n == 1 else f"stage:{name}@{n}"
-
-
-def in_round(nid: str, n: int) -> str:
-    """A node's id in fix round ``n`` (round 1 is the original work)."""
-    return nid if n == 1 else f"{nid}@{n}"
-
-
-def stage_title(sid: str) -> str:
-    """``stage:design@2`` -> ``Design (round 2)``; ``stage:round@2`` -> ``Round 2``."""
-    name, n = base_id(sid).removeprefix("stage:"), round_of(sid)
-    if name == "round":
-        return f"Round {n}"
-    return name.capitalize() + (f" (round {n})" if n > 1 else "")
-
-
-def round_of(nid: str) -> int:
-    base, _, n = nid.rpartition("@")
-    return int(n) if base and n.isdigit() else 1
-
-
-def base_id(nid: str) -> str:
-    """The id without its round suffix."""
-    return nid.rpartition("@")[0] if round_of(nid) > 1 else nid
 
 
 def _design(n: int) -> Stage:
-    return Stage(stage_id("design", n), [Step(in_round(PLAN, n))], Gate(in_round(H_ENV, n)))
+    return Stage(stage_id("design", n), [Step(in_round(PLAN, n))], Step(in_round(H_ENV, n)))
 
 
 def _oracle(rank: int, environment: bool, blank_repo: bool, n: int) -> Stage | None:
     """Everything that makes the oracle and the sandboxes ready, before any task is built."""
     children: list[Stage | Step | Parallel] = []
     if environment:
-        children.append(Step(in_round(PROVISION, n)))
+        children.append(Step(in_round(PROVISION, n), rerunnable=True))   # an answer: build again
     if blank_repo and n == 1:                     # the scaffold is built once (§5.3b)
         children.append(Parallel(SCAFFOLD, []))
     if rank >= 2:
@@ -97,9 +71,8 @@ def _oracle(rank: int, environment: bool, blank_repo: bool, n: int) -> Stage | N
         children.append(Step(in_round(BASELINE, n)))
     if not children:
         return None
-    # R3: the independent baseline's attestation is a precondition of approving the oracle
-    gate = Gate(in_round(H_SPEC, n), preconditions=rank >= 3, automatic=rank < 2)
-    return Stage(stage_id("oracle", n), children, gate)
+    # below R2 nobody approves the oracle (its gate step's policies: engine/steps.py)
+    return Stage(stage_id("oracle", n), children, Step(in_round(H_SPEC, n)) if rank >= 2 else None)
 
 
 def round_template(rank: int, environment: bool):
@@ -110,32 +83,31 @@ def round_template(rank: int, environment: bool):
         if oracle := _oracle(rank, environment, False, n):
             children.append(oracle)
         children.append(Parallel(in_round(TASKS, n), []))
-        return Stage(stage_id("round", n), children, Gate(f"round-{n}-approved", automatic=True))
+        return Stage(stage_id("round", n), children)           # approved with its gates
     return template
 
 
 def requirements_workflow() -> Workflow:
     """Before H-1: only the requirements are known (the tier decides the rest)."""
-    return Workflow([Stage(stage_id("requirements"), [Step(INTAKE)], Gate(H_REQUIREMENTS))])
+    return Workflow([Stage(stage_id("requirements"), [Step(INTAKE)], Step(H_REQUIREMENTS))])
 
 
 def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflow:
     """The change's tree. ``rank``: the tier's (risk.rank); stages without content are left out,
-    and gates without a human decision at the tier are automatic."""
+    and gates without a human decision at the tier left out (H-3 stays: its checks, the ship
+    gates, hold at every tier – below R2 it passes by itself once they do)."""
     requirements = requirements_workflow().stages[0]
     plan_children: list[Stage | Step | Parallel] = [_design(1)]
     if oracle := _oracle(rank, environment, blank_repo, 1):
         plan_children.append(oracle)
-    plan = Stage(stage_id("plan"), plan_children, Gate(PLAN_GATE, automatic=True),
-                 rework=StartOver(), feedback_to=PLAN)
+    plan = Stage(stage_id("plan"), plan_children, rework=StartOver(), feedback_to=PLAN)
     delivery_children: list[Stage | Step | Parallel] = [Parallel(TASKS, [])]
     if rank >= 2:
         delivery_children.append(Step(INTEGRATION))
     if rank >= 3:
         delivery_children.append(Step(RELEASE))
     delivery = Stage(stage_id("delivery"), delivery_children,
-                     # the ship gates are its preconditions; nobody accepts R0/R1 by hand
-                     Gate(H_CHANGE, preconditions=True, automatic=rank < 2, rejectable=True),
+                     Step(H_CHANGE, rejectable=True),
                      rework=AppendRound(round_template(rank, environment),
                                         before=INTEGRATION if rank >= 2 else None))
     return Workflow([requirements, plan, delivery])

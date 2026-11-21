@@ -1,7 +1,7 @@
 """Step types (plan: stages-and-steps.md §2): what each kind of node is made of, declared as a
 composition of small objects instead of per-kind code:
 
-* **agent work** – the role of its first :class:`.AgentRun` (the handler in workflow/roles/ is
+* **agent work** – the role of its producer, :class:`.Produce` (the handler in workflow/roles/ is
   the agent layer: prompt, guards, how its report is judged);
 * **a sandbox plan** (:mod:`.sandbox_plan`) – where that agent works and how long it is kept;
 * **phases** (:mod:`.phases`) – the orchestrator's work, in order, each configured by policies
@@ -9,20 +9,21 @@ composition of small objects instead of per-kind code:
 * **waits** – what must hold before it is promoted or dispatched;
 * where a failed or blocked run of it resumes.
 
-:class:`StepRunner` is the one place that moves a node through its phases: a phase that passes
-hands over to the next, and after the last the node is accepted. Nothing here switches on a
+:class:`.ActiveStep` (:mod:`.active`) is the one place that moves a node through its phases: a
+phase that passes hands over to the next, and after the last the node is accepted. Nothing here switches on a
 node's kind; the table at the bottom is the only per-kind knowledge.
 """
 from __future__ import annotations
 
-from collections.abc import Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from ..model import (
-    ACCEPTED,
+from ....git import paths_overlap
+from ...model import (
+    ACTIVE_NODE,
     BASELINE,
     BUILD,
+    H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
     H_SPEC,
@@ -33,88 +34,123 @@ from ..model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
-    READY,
     RELEASE,
     RETRO,
     REWORK,
     Node,
     NodeKind,
+    NodeStatus,
     Resume,
-    Run,
 )
-from .core import ChangeCore
+from ..base.core import ChangeCore
+from ..base.ids import base_id
+from ..sandboxes.plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
 from .phases import (
     AcceptanceCommands,
-    AgentRun,
     AlreadyPassing,
     Approval,
+    AutomaticBelow,
     BaselineCommands,
     BaselineWarnings,
     BuildImages,
+    Critique,
+    DefineTasks,
     EscalateFailures,
-    Judges,
     Merge,
     OracleCommands,
     OracleReworks,
     Panel,
     Phase,
-    PhaseContext,
-    PhaseResult,
+    Produce,
+    ShipGates,
+    SubjectsApproved,
     TaskCommands,
     TierPanel,
     Verify,
 )
-from .sandbox_plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
-from .workflow_tree import in_round
 
 if TYPE_CHECKING:
-    from .acceptance import Acceptance
-    from .provision import Provisioner
-    from .runs import RunLifecycle
-    from .schedule import Scheduler
+    from ..services.runs import RunLifecycle
+    from .active import ActiveStep
 
 
 # ---------------------------------------------------------------------------- waits
 class Wait:
     """A condition a step waits for (it is not an error while it does not hold)."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
+    def holds(self, step: ActiveStep) -> bool:
         raise NotImplementedError
 
 
 class NoOverlap(Wait):
     """No running task touches the same files."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        return not s.graph.overlaps_running(node)
+    def holds(self, step: ActiveStep) -> bool:
+        """Guard G-D3 (its file-overlap part)."""
+        node = step.node
+        mine = node.task.files_modified
+        for other in step.c.build_nodes():
+            if other.id == node.id or other.status not in ACTIVE_NODE | {REWORK}:
+                continue
+            if any(paths_overlap(a, b) for a in mine for b in other.task.files_modified):
+                return False
+        return True
 
 
 class ReflectionsDone(Wait):
     """The last agents' reflections are recorded (they are its material)."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        return not s.lifecycle.sandboxes.reflector.pending
-
-
-class OracleAccepted(Wait):
-    """Its round's oracle is accepted (again, after a preflight sent it back to its author)."""
-
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        oracle = s.c.nodes.get(in_round(ORACLE, node.round))
-        return oracle is None or oracle.status == ACCEPTED
+    def holds(self, step: ActiveStep) -> bool:
+        return not step.lifecycle.sandboxes.reflector.pending
 
 
 class EnvironmentQuiescent(Wait):
     """No run or verification uses the current build (it is about to be replaced)."""
 
-    def holds(self, s: Scheduler, node: Node) -> bool:
-        return s.environment_quiescent()
+    def holds(self, step: ActiveStep) -> bool:
+        return step.provisioner.environment_quiescent()
+
+
+# ---------------------------------------------------------------------------- standing
+class Stands:
+    """When a fix round's step has nothing to redo: it passes at once, its work standing."""
+    kind = "step"
+    why = ""
+
+    def holds(self, c: ChangeCore, node: Node) -> bool:
+        raise NotImplementedError
+
+    def keep(self, c: ChangeCore, node: Node) -> None:
+        """What the step's node keeps of the work that stands."""
+
+
+class OracleUnchanged(Stands):
+    """A round that left ``plan/oracle.json`` as approved keeps the oracle commit."""
+    kind, why = "oracle", "plan/oracle.json is unchanged: the oracle stands"
+
+    def holds(self, c: ChangeCore, node: Node) -> bool:
+        orc = c.change.approvals.get("oracle")
+        return node.round > 1 and orc is not None and \
+            orc.pins.get(c.p("plan/oracle.json")) == c.latest("plan/oracle.json")
+
+    def keep(self, c: ChangeCore, node: Node) -> None:
+        node.accepted_sha = c.change.oracle_sha
+
+
+class EnvironmentUnchanged(Stands):
+    """A round that left the environment spec as approved keeps the build."""
+    kind, why = "provision", "the environment spec is unchanged: the build stands"
+
+    def holds(self, c: ChangeCore, node: Node) -> bool:
+        env = c.change.approvals.get(H_ENV)
+        return node.round > 1 and c.change.environment is not None and env is not None and \
+            env.pins.get(c.p("plan/environment.json")) == c.latest("plan/environment.json")
 
 
 # ---------------------------------------------------------------------------- resets
 class Reset:
     """What a send-back undoes when it resets a step (the node starting over is generic:
-    :meth:`.FlowRuntime._reset_node`). Once per send-back, whichever of its steps it is on."""
+    the step runner's). Once per send-back, whichever of its steps it is on."""
 
     def applies(self, c: ChangeCore, node: Node) -> bool:
         return True
@@ -132,8 +168,8 @@ class RestartPlan(Reset):
         return node.round == 1
 
     async def __call__(self, c: ChangeCore, lifecycle: RunLifecycle, node: Node) -> None:
-        from .. import setup
-        from . import cleanup
+        from ... import setup
+        from ..services import cleanup
         ch = c.change
         await c.git.init_integration(ch.id, ch.base_sha)
         ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
@@ -160,12 +196,13 @@ class StepType:
     dispatch_when: tuple[Wait, ...] = ()         # before its work starts (each run, each try)
     runs_after_end: bool = False                 # dispatched once the change has ended
     rework_resume: Resume = Resume.READY         # where a failed or blocked run resumes
+    stands: Stands | None = None                 # a round's step with nothing to redo passes
     on_reset: tuple[Reset, ...] = ()             # what a send-back resetting it undoes
 
     @property
     def role(self) -> str | None:
         first = self.phases[0]
-        return first.role if isinstance(first, AgentRun) else None
+        return first.role if isinstance(first, Produce) else None
 
     @property
     def judges_head(self) -> bool:
@@ -175,22 +212,19 @@ class StepType:
     def phase(self, cls: type[Phase]) -> Phase | None:
         return next((p for p in self.phases if isinstance(p, cls)), None)
 
-    def judges(self, c: ChangeCore) -> tuple[str, ...]:
-        panel = self.phase(Panel)
-        return panel.roles(c) if isinstance(panel, Panel) else ()
-
-    def current(self, node: Node) -> Phase | None:
-        """The phase the node's status says it is in (None: pending, accepted or escalated)."""
-        return next((p for p in self.phases if node.status in p.statuses), None)
+    def phase_in(self, status: NodeStatus) -> Phase | None:
+        """The phase a node is in while it has ``status`` (None: pending, accepted, waiting)."""
+        return next((p for p in self.phases if status in p.statuses), None)
 
     def after(self, phase: Phase) -> Phase | None:
+        """The phase that follows ``phase`` (None: it is the last)."""
         i = next(i for i, p in enumerate(self.phases) if p is phase)
         return self.phases[i + 1] if i + 1 < len(self.phases) else None
 
 
 def agent(role: str, sandbox: SandboxPlan, *after: Phase, **kw) -> StepType:
     """A step whose agent works first, then the controller's ``after`` phases."""
-    return StepType((AgentRun(role), *after), sandbox=sandbox, **kw)
+    return StepType((Produce(role), *after), sandbox=sandbox, **kw)
 
 
 BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
@@ -198,29 +232,40 @@ BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
 STEP_TYPES: dict[NodeKind, StepType] = {
     INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
     PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
-                Panel(Judges(("critic",)), decides=False),          # the critic decides (G-C2)
+                Critique(), DefineTasks(),                         # the critic judges (G-C2)
                 on_reset=(RestartPlan(),)),
     PROVISION: StepType((BuildImages(),), dispatch_when=(EnvironmentQuiescent(),),
+                        stands=EnvironmentUnchanged(),
                         on_reset=(DropEnvironment(),)),
-    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC), rebase=True)),  # merges itself
+    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC), rebase=True),
+                  stands=OracleUnchanged()),                     # merges itself
     PREFLIGHT: StepType((Verify(AcceptanceCommands(), expect_failures=True, at_head=True,
-                                on_setup_failed=OracleReworks(), notes=AlreadyPassing()),),
-                        dispatch_when=(OracleAccepted(),)),
+                                on_setup_failed=OracleReworks(), notes=AlreadyPassing()),)),
     BASELINE: agent("baseline", HEAD,
                     Verify(BaselineCommands(), expect_failures=True, notes=BaselineWarnings())),
     BUILD: agent("implementer", SandboxPlan(Checkout.BRANCH, UntilAccepted()),
-                 Verify(TaskCommands()), Panel(TierPanel()), Merge(TierPanel()),
+                 Verify(TaskCommands()), Panel(TierPanel()), Merge(),
                  dispatch_when=(NoOverlap(),), rework_resume=Resume.REWORK),
     INTEGRATION: agent("integration", HEAD,
                        Verify(OracleCommands(), on_rework=EscalateFailures(
                            "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
     RELEASE: agent("release", HEAD),
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
-    HUMAN: StepType((Approval(),)),
+    HUMAN: StepType((Approval(),)),                # a gate (its policies: GATE_TYPES)
+}
+
+#: each gate's step: what approves it, what it checks, when it passes by itself
+GATE_TYPES: dict[str, StepType] = {
+    H_REQUIREMENTS: StepType((Approval(),)),                        # H-1: the tier with it
+    H_ENV: StepType((Approval(subjects=SubjectsApproved("plan")),)),
+    H_SPEC: StepType((Approval(subjects=SubjectsApproved("oracle", baseline_from=3)),)),
+    H_CHANGE: StepType((Approval(checks=ShipGates(), automatic=AutomaticBelow(2)),)),
 }
 
 
 def step_for(node: Node) -> StepType:
+    if node.kind == HUMAN:
+        return GATE_TYPES[base_id(node.id)]
     return STEP_TYPES[node.kind]
 
 
@@ -233,54 +278,13 @@ def sandbox_plan(role: str) -> SandboxPlan:
     return _PRODUCERS.get(role, JUDGE)
 
 
-# ---------------------------------------------------------------------------- the runner
-class StepRunner:
-    """Moves nodes through their step's phases. Phases call back into it (``advance``) when they
-    pass; an agent's accepted report reaches its phase through :meth:`reported`."""
+class StepHolds:
+    """Whether a node still holds its kept sandbox, as its step type's sandbox plan says – for
+    the sandbox layer (:class:`.Holds`)."""
 
-    def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
-                 acceptance: Acceptance, provisioner: Provisioner, scheduler: Scheduler):
-        self.c, self.ctx, self.lifecycle = core, ctx, lifecycle
-        self.acceptance, self.provisioner, self.scheduler = acceptance, provisioner, scheduler
+    def __init__(self, core: ChangeCore):
+        self.c = core
 
-    @staticmethod
-    def step(node: Node) -> StepType:
-        return step_for(node)
-
-    def enter(self, node: Node) -> None:
-        """The workflow started the node's step (or the engine runs it again): its first
-        phase."""
-        self.step(node).phases[0].enter(self, node, None)
-
-    def dispatch(self, node: Node, capacity: int) -> list[Run]:
-        """The runs (or controller work) its current phase may start now: a step's first
-        work waits until its step type's ``dispatch_when`` hold."""
-        step = self.step(node)
-        phase = step.current(node)
-        if phase is None:
-            return []
-        if phase is step.phases[0] and node.status in (READY, REWORK) \
-                and not all(w.holds(self.scheduler, node) for w in step.dispatch_when):
-            return []
-        return phase.dispatch(self, node, capacity)
-
-    def advance(self, node: Node, phase: Phase) -> None:
-        """``phase`` passed: enter the next one, or accept the node after the last."""
-        nxt = self.step(node).after(phase)
-        if nxt is None:
-            node.status = ACCEPTED
-            self.lifecycle.accept_runs(node)
-        else:
-            nxt.enter(self, node, phase)
-
-    def reported(self, node: Node, run: Run, result: PhaseResult | None) -> None:
-        """An agent's report was accepted (under the lock): its role handler's result goes to
-        the node's current phase, which applies it."""
-        phase = self.step(node).current(node)
-        assert phase is not None, f"{node.id} is not in a phase ({node.status})"
-        phase.reported(self, node, run, result)
-
-    def resume(self, node: Node) -> Coroutine[Any, Any, None] | None:
-        """After a restart: the controller work of a RUNNING node to start again."""
-        phase = self.step(node).current(node)
-        return phase.resume(self, node) if phase else None
+    def holds(self, node: Node) -> bool:
+        plan = step_for(node).sandbox
+        return plan is not None and plan.held(self.c, node)

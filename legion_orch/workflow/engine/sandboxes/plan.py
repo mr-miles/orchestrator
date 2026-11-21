@@ -6,10 +6,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 
-from ..model import ACCEPTED, Node
-from .core import ChangeCore
-from .workflow_tree import in_round
+from ...model import ACCEPTED, Node
+from ..base.core import ChangeCore
+from ..base.ids import in_round
 
 
 class Checkout(StrEnum):
@@ -79,3 +80,20 @@ class SandboxPlan:
 
 
 JUDGE = SandboxPlan(Checkout.CANDIDATE)
+
+
+class Environments(Protocol):
+    """Whether a role's environment is being built again – the provisioner knows; the sandbox
+    layer is given it, so no sandbox starts from the old build."""
+
+    def waits_for_environment(self, role: str) -> bool:
+        """``role``'s sandboxes wait: its environment is being built again."""
+
+
+class Holds(Protocol):
+    """Whether a node still holds its kept sandbox for rework – its step's plan says (until a
+    gate passes, or until the node is accepted), so the step layer knows
+    (:class:`.steps.StepHolds`); the sandbox layer is given it, so it never asks."""
+
+    def holds(self, node: Node) -> bool:
+        """``node`` still keeps ``node.sandbox`` for its producer's rework."""

@@ -40,8 +40,8 @@ def same_core(a, b) -> None:
 async def test_an_accepted_node_completes_its_step_and_the_next_starts(f: Flow):
     assert core(f, "intake") == "running" and core(f, "H-1") == "pending"
     await f.intake()
-    assert core(f, "intake") == "done" and core(f, "H-1") == "waiting"
-    assert f.status("H-1") == AWAITING_HUMAN                 # the gate node shows its gate
+    assert core(f, "intake") == "done" and core(f, "H-1") == "escalated"
+    assert f.status("H-1") == AWAITING_HUMAN                 # a gate step: a decision is due
 
 
 @scenario()
@@ -57,18 +57,19 @@ async def test_an_escalation_and_its_resolution_reach_the_core(f: Flow):
 
 # ---------------------------------------------------------------------------- gates
 @scenario()
-async def test_gate_nodes_follow_their_gates(f: Flow):
+async def test_a_gate_is_a_step_whose_approval_answers_its_escalation(f: Flow):
     await f.intake()
     await f.human("H-1", "accept")
     assert f.status("H-1") == ACCEPTED and core(f, "H-1") == "done"
     assert f.status("H-E1") == PENDING and core(f, "plan") == "running"
     await f.plan()
     await f.critique()
-    assert f.status("H-E1") == AWAITING_HUMAN and core(f, "H-E1") == "waiting"
-    # automatic gates have no node: the plan's own, and H-2 at R1 (no oracle stage)
-    assert "plan-approved" not in f.ce.nodes and "H-2" not in f.ce.nodes
+    assert f.status("H-E1") == AWAITING_HUMAN and core(f, "H-E1") == "escalated"
+    assert f.ce.nodes["H-E1"].escalation.kind == "awaiting_approval"
+    # stages without a human decision have no gate: the plan's own, and the oracle's at R1
+    assert "H-2" not in f.ce.nodes
     await f.human("H-E1", "approve")
-    assert core(f, "plan-approved") == "done" and core(f, "build:T1") == "running"
+    assert core(f, "stage:plan") == "done" and core(f, "build:T1") == "running"
 
 
 @scenario()
@@ -78,8 +79,9 @@ async def test_the_actions_a_node_offers_come_from_the_core(f: Flow):
     await f.plan()
     await f.critique()
     wf = views.workflow_state(f.ce)
-    assert wf["actions"]["H-E1"] == ["approve", "send_back:stage:design", "send_back:stage:plan",
-                                     "send_back:stage:requirements", "abandon"]
+    assert wf["actions"]["H-E1"] == ["answer", "retry", "send_back:stage:design",
+                                     "send_back:stage:plan", "send_back:stage:requirements",
+                                     "abandon"]
     assert set(wf["actions"]) == {"H-E1"}                 # nothing else waits for a human
     with pytest.raises(WorkflowError, match="cannot send stage:delivery back"):
         await f.human("H-E1", "send_back", stage="stage:delivery", feedback="x")
@@ -106,18 +108,6 @@ async def test_a_send_back_restarts_the_stage_with_its_feedback(f: Flow):
     assert intake.cycle == 2 and intake.feedback[-1].text == "also say goodbye"
     assert intake.feedback[-1].attestations                 # the feedback document
     assert f.status("H-1") == PENDING
-
-
-@scenario()
-async def test_a_started_step_is_in_its_first_phase_before_any_tick(f: Flow):
-    """The core starting a step enters its first phase at once (the runtime, through the step
-    runner); the scheduler only starts the work, when there is room."""
-    await f.intake()
-    await f.ce.human_action("H-1", "accept", "miles", {})     # no settle: no tick has run
-    assert core(f, "plan") == "running" and f.status("plan") == "READY"
-    assert not f.runs("plan")
-    await f.settle()
-    assert f.runs("plan") and f.status("plan") == "RUNNING"
 
 
 # ---------------------------------------------------------------------------- persistence

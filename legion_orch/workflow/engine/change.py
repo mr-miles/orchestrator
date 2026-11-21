@@ -1,48 +1,37 @@
-"""ChangeEngine: one change's workflow, composed of collaborators that each own one concern.
+"""ChangeEngine: one change's facade – the one public surface of its layers (compose.py).
 
-* :class:`ChangeCore` – the state, documents and events (the :class:`ChangeView`)
-* :class:`StageGraph` – which nodes exist and how they depend on each other
-* :class:`RunLifecycle` – failure, timeouts, logs and sandbox deletion of runs
-* :class:`Dispatcher` – turning a ready node into a run and starting its agent
-* :class:`Acceptance` – verification, the review panel's decision, rework, merge, ship
-* :class:`Provisioner` – building the approved sandbox environment
-* :class:`Reports` – agent writes, progress and reports
-* :class:`HumanGates` – decision owners' actions
-* :class:`Scheduler` – the tick that moves the graph forward
+It is the change's :class:`ChangeCore` (state, documents, events: the :class:`ChangeView`)
+and fronts four parts:
 
-Each is given only the parts it uses, so the dependencies are explicit and acyclic
-(core <- graph, lifecycle <- dispatcher, acceptance <- reports, gates <- scheduler).
+* :class:`FlowRuntime` – the workflow: everything that changes it goes through here
+* :class:`HumanGates` – what decision owners decide (recorded, then handed to the runtime)
+* :class:`Reports` – what agents write and report over MCP (recorded on their runs)
+* :class:`RunLifecycle` – run logs, and failing live runs after a restart
+
+It never sees the step layer: control passes only between neighbouring layers.
 """
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ..model import (
     LIVE_RUN,
-    MERGING,
-    R_REPORTED,
-    RUNNING,
-    VERIFYING,
     Change,
     FailureSource,
-    Node,
     Run,
     SetupPin,
 )
 from ..results import ActionResult, ReportOutcome
-from .acceptance import Acceptance
-from .core import ChangeCore
-from .dispatch import Dispatcher
-from .graph import StageGraph
-from .human import HumanGates
-from .phases import PhaseContext
-from .provision import Provisioner
-from .reports import Reports
-from .runs import RunLifecycle
-from .runtime import FlowRuntime
-from .sandboxes import Sandboxes
-from .schedule import Scheduler
-from .services import EngineHost, Services
-from .steps import StepRunner
+from .base.core import ChangeCore
+from .base.shared import EngineHost, Services
+from .compose import compose
+
+if TYPE_CHECKING:
+    from .runtime.flow_runtime import FlowRuntime
+    from .runtime.human import HumanGates
+    from .services.reports import Reports
+    from .services.runs import RunLifecycle
 
 
 class ChangeEngine(ChangeCore):
@@ -50,35 +39,23 @@ class ChangeEngine(ChangeCore):
 
     It is the change's :class:`ChangeCore` plus its collaborators, and the one public surface:
     the controller, the servers and the role handlers (as :class:`RoleContext`) use only the
-    methods below. It is given the shared :class:`Services` and an :class:`EngineHost` for the
-    few controller operations it needs (background tasks, run ids, the global parallel limit)."""
+    methods below. It is given the shared :class:`Services` (the dispatcher among them) and an
+    :class:`EngineHost` for the few controller operations it needs (background tasks, run
+    ids)."""
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
-        self._graph = StageGraph(self)
-        self._sandboxes = Sandboxes(self)
-        self._lifecycle = RunLifecycle(self, self._sandboxes)
-        self._phases = PhaseContext(self, self._sandboxes)
-        self._acceptance = Acceptance(self, self._lifecycle, self._phases)
-        self._provisioner = Provisioner(self, self._lifecycle, self._phases)
-        self._dispatcher = Dispatcher(self, self._lifecycle, self._sandboxes, roles=self)
-        self._phases.dispatcher = self._dispatcher
-        self._reports = Reports(self, self._lifecycle, roles=self)
-        self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
-        self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
-                                    self._acceptance, self._provisioner)
-        self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
-                                  self._provisioner, self._scheduler)
-        self._acceptance.runner = self._scheduler.runner = self._reports.runner = self._runner
-        self._dispatcher.reports = self._reports
-        self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
-        self._gates.flow = self._flow
+        self._flow: FlowRuntime
+        self._gates: HumanGates
+        self._reports: Reports
+        self._lifecycle: RunLifecycle
+        compose(self)                # its layers (compose.py); it fronts only these four
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
-        self._flow.load()
+        self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
         self.seed_attention()
 
     def start(self, goal: str, base: str, *, blank_repo: bool = False,
@@ -95,29 +72,18 @@ class ChangeEngine(ChangeCore):
         self.save()
 
     def recover(self) -> None:
-        """After a restart the agent processes are gone, so live runs fail (and escalate);
-        interrupted verification, merge and ship steps resume."""
+        """After a restart the agent processes are gone, so live runs fail (and their steps
+        escalate); every other step's phase takes its work up again (waiting, verifying,
+        merging, provisioning, a gate's checks, concluding a turn that ended with the
+        controller)."""
+        failed = {}
         for run in self.runs.values():
             if run.status in LIVE_RUN:
                 self._lifecycle.fail_run(run, "controller restarted while the run was live",
                                          FailureSource.CONTROLLER)
-            elif run.status == R_REPORTED and not run.concluded:
-                # its agent's turn ended (with the controller): its report goes to its phase
-                self.spawn(self._reports.conclude_later(run.id))
-        for node in self.nodes.values():
-            if node.status == VERIFYING:
-                self.spawn(self._acceptance.verify_node(node.id))
-            elif node.status == MERGING:
-                self.spawn(self._acceptance.merge_node(node.id))
-            elif node.status == RUNNING and (work := self._runner.resume(node)):
-                self.spawn(work)                    # provisioning
-        for gate in self._flow.evaluating():
-            self.spawn(self._flow.evaluate(gate))   # a gate's preconditions
-        self._gates.resume_retries()
+                failed.setdefault(run.node_id, run)
+        self._flow.recover(failed)                 # down the layers, as everything else
         self.save()
-
-    async def tick(self) -> None:
-        await self._scheduler.tick()
 
     # ------------------------------------------------------------------ agents (MCP)
     async def agent_write(self, run: Run, path: str, content: str, base_version: int | None,
@@ -152,18 +118,9 @@ class ChangeEngine(ChangeCore):
         return self._lifecycle.stored_log(run_id)
 
     # ------------------------------------------------------------------ RoleContext
-    def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
-        self._lifecycle.accept_runs(node, roles)
-
-    def delete_sandbox_later(self, name: str) -> None:
-        self._sandboxes.delete_later(name)
-
-    def define_tasks(self, plan: Node) -> list[str]:
-        return self._flow.define_tasks(plan)
-
     # ------------------------------------------------------------------ the workflow
-    def sync(self) -> None:
-        self._flow.sync()
+    def before_save(self) -> None:
+        self._flow.persist()
 
     @property
     def workflow(self) -> FlowRuntime:

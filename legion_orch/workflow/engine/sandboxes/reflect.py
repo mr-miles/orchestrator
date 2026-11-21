@@ -14,11 +14,11 @@ import shlex
 import shutil
 from typing import TYPE_CHECKING
 
-from ...config import agent_command
-from ...sandbox import RUN_AGENT_SH, agentlog
-from ...util import stop_process
-from ..model import Run
-from .core import ChangeCore
+from ....config import agent_command
+from ....sandbox import RUN_AGENT_SH, agentlog
+from ....util import stop_process
+from ...model import Run
+from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
     from .sandboxes import Sandboxes

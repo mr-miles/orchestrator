@@ -41,6 +41,7 @@ class NodeStatus(StrEnum):
     ESCALATED = "ESCALATED"
     FAILED = "FAILED"
     AWAITING_HUMAN = "AWAITING_HUMAN"
+    DEFINING = "DEFINING"                 # an accepted plan's tasks become the workflow's steps
 
 
 class RunStatus(StrEnum):
@@ -158,8 +159,8 @@ PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKi
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
-    AWAITING_HUMAN = tuple(NodeStatus)
-ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, MERGING}
+    AWAITING_HUMAN, DEFINING = tuple(NodeStatus)
+ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, DEFINING, MERGING}
 R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(RunStatus)
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
@@ -283,6 +284,17 @@ class Verification(Record):
     attestation: str | None = None   # the stored verification record
 
 
+class PanelDecision(Record):
+    """A panel's pass (G-RV1): every judge that sat passed the candidate ``sha`` in ``cycle``,
+    each citing its review document. What the merge checks (G-A1), with the verification."""
+    sha: str
+    cycle: int
+    judges: list[str] = []               # the roles that sat (none: an empty panel)
+    reviews: list[str] = []              # attestations of their review documents
+    at: str = Field(default_factory=now_iso)
+    attestation: str | None = None       # the stored decision record
+
+
 class Escalation(Record):
     kind: str                        # blocked | run_failed | cycle_budget | verify_unrunnable | ...
     reason: str
@@ -326,9 +338,11 @@ class Node(Record):
     finding_history: list[list[str]] = []  # HIGH finding fingerprints per review cycle
     reviews: dict[str, ReviewResult] = {}  # review_key(cycle, role) or "integration"
     verification: dict[str, Verification] = {}   # str(cycle) or "integration"
+    panel: dict[str, PanelDecision] = {}  # str(cycle): the panel's pass at that cycle
     escalation: Escalation | None = None
     extra_cycles: int = 0                 # granted by a human on escalation
     override: Override | None = None
+    approved: bool = False                # a gate step: a human approved it in this attempt
     # fix rounds (§5.10a): a build task's round; for the plan node, the round being planned and
     # the cycle it started at (the round's critique budget and feedback count from there)
     round: int = 1
@@ -344,6 +358,9 @@ class Node(Record):
 
     def current_verification(self) -> Verification | None:
         return self.verification.get(str(self.cycle))
+
+    def current_panel(self) -> PanelDecision | None:
+        return self.panel.get(str(self.cycle))
 
 
 # ---------------------------------------------------------------------------- run records
@@ -413,6 +430,8 @@ class Run(Record):
     concluded: bool = False
     exit_code: int | None = None
     sandbox_deleted: bool = False
+    # its sandbox was stopped (its step's reservation released: escalated, done, sent back)
+    sandbox_stopped: bool = False
 
 
 # ---------------------------------------------------------------------------- change records

@@ -54,7 +54,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 ```
                         +-------------------- controller (python) --------------------+
  human --- web UI ----> |  workflow engine  |  guards  |  doc store  |  git remote     |
-                        |  scheduler        |  risk/gates            |  openshell CLI  |
+                        |  dispatcher       |  risk/gates            |  openshell CLI  |
                         +-----------^-----------------------------------------|-------+
                                     | MCP + git (gateway-injected bearer)     | sandbox create / upload /
                                     |                                         | exec / delete
@@ -157,8 +157,7 @@ by side under one controller; they share `max_parallel` and the git remote but n
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
 | `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
-| `changes/<id>/control/graph.json` | controller task graph: node order, kinds, dependencies, waves, task ids |
-| `changes/<id>/control/nodes/<node>.json` | node state; one new version per transition, so the version history is the node's audit trail |
+| `changes/<id>/control/nodes/<node>.json` | a node's detail (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox); one new version per transition, so the version history is the node's audit trail. Which nodes exist and their order come from the workflow's tree |
 | `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
 | `changes/<id>/control/logs/<run>.log` (`<run>.2.log`, …) | the agent's whole output, archived when it exits, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB). Each stream-json event carries `legion_ts`, the time the controller received it. Not readable by agents |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
@@ -289,37 +288,39 @@ listed in the readiness result.
 
 ### 4.1 Stages, gates and steps
 
-A change's workflow is a tree of **stages**, each ending in a **gate**; the steps inside a stage
-run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
-environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/workflow_tree.py`):
+A change's workflow is a tree of **stages**, most ending in a **gate** – the stage's last step;
+the steps inside a stage run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
+environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/runtime/workflow_tree.py`):
 
 ```
 Requirements   intake ─────────────────────────────────────────────── ◆ H-1 accept requirements & tier
-Plan                                                                 ◆ plan-approved (automatic)
+Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ─────────────────────────────── ◆ H-E1 approve the plan
   Oracle       {provision} <scaffold> [oracle preflight] [baseline] ─── ◆ H-2 approve the oracle
 Delivery       tasks (DAG of build:<id>) ─ [integration] ─ [release] ── ◆ H-3 accept the change
 ```
 
 * **Per tier.** Stages without content are left out: R0/R1 have no oracle, preflight, baseline,
-  integration or release (an Oracle stage there holds only provision or the scaffold, and its gate
-  is automatic). `[…]` R2+, the baseline and release R3.
-* **Gates** are a human approval (or automatic) plus **preconditions** the controller evaluates:
-  H-2's at R3 is the `independent-baseline` attestation; H-3's are the tier's ship gates (§3,
-  §5.11) – at R0/R1 H-3 is automatic, so the change is accepted as soon as they hold. A gate node
-  is `AWAITING_HUMAN` while its gate waits.
+  integration or release (an Oracle stage there holds only provision or the scaffold, and has no
+  gate). `[…]` R2+, the baseline and release R3.
+* **Gates** are steps: the step's work checks the gate's **preconditions** (H-3's are the tier's
+  ship gates, §3, §5.11) and then waits for a human's approval (H-E1's and H-2's subject by subject,
+  §5.5a; at R3, H-2's subjects include the `independent-baseline` attestation). At R0/R1 nobody
+  approves H-3: it passes as soon as its ship gates hold. A gate node is `AWAITING_HUMAN` while
+  it waits for a decision – an expected escalation in the core.
 * `{…}` exists only with an `environment:` section (§5.3a); `<…>` only in a blank repository
   (§5.3b). The build tasks are added once the critic passes the plan.
 
 **Who decides what.** The stage rules run in a pure **workflow core** (`legion_orch/workflow/flow/`,
-no I/O): which step starts when, gates, send-backs, fix rounds and the end. Within a step the
-engine decides: its phases (§5.6–5.9), rework cycles, escalations and their answers. The engine's
-nodes report to the core on every save – accepted completes the step, escalated escalates it,
-resolved resumes it – and the core's effects start, stop and evaluate (`engine/runtime.py`).
+no I/O): which step starts when, send-backs, fix rounds and the end – a gate is a step to it.
+Within a step the engine decides: its phases (§5.6–5.9), rework cycles, escalations and their
+answers, what a gate checks. The step runner reports to the core – done, escalated, resumed – and
+the core's effects start, stop, resume and retry steps (`engine/runtime/flow_runtime.py`).
 
-**Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a), **send
-back**, **reject** (H-3) and, with preconditions, **recheck**. On an escalated step: **answer**,
-**retry**, **override** (build tasks) and **send back**. **Send back** (`send_back`, with a stage
+**Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a) – the
+answer to its step's escalation, **send back**, **reject** (H-3) and **recheck** (a retry: its
+checks again). On an escalated step: **answer**, **retry**, **override** (build tasks), **run again
+in place** (provisioning, §5.3a) and **send back**. **Send back** (`send_back`, with a stage
 and feedback) is offered for every stage the node's work was built on – the stages enclosing it
 and, at each level, the stages before them – nearest first; the UI's names map onto it:
 
@@ -353,7 +354,8 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
                        +-- REWORK -+-------------+-----------+   (evidence-driven, cycle budget)
               any -> ESCALATED (human) -> READY | ACCEPTED (override) | FAILED
               human nodes: PENDING -> AWAITING_HUMAN -> ACCEPTED (they show their gate)
-              plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> ACCEPTED, REWORK on REWORK
+              plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> DEFINING (its tasks) -> ACCEPTED,
+                    REWORK on REWORK
 ```
 
 ### 4.3 Run status
@@ -406,7 +408,7 @@ Universal guards apply to every task and are listed once.
 | --- | --- | --- |
 | G-D1 | dispatch | Every dependency node is `ACCEPTED`. |
 | G-D2 | dispatch | Assets resolve: soul, skills and prompt exist; every `{{var}}` is bound; the prompt pin is recorded on the run. |
-| G-D3 | dispatch | `running runs < max_parallel`, and no `RUNNING` build node shares a `files_modified` entry with the candidate. |
+| G-D3 | dispatch | `live agent runs + verifier sandboxes in use < max_parallel` (across every change; the dispatcher runs a step's work in a slot, and a step's reservation keeps its slot for the work that follows straight on – its verification, its judges), and no `RUNNING` build node shares a `files_modified` entry with the candidate. |
 | G-D4 | dispatch | Independence: judge roles (critic, reviewer, security, integration, verifier) get a fresh sandbox and a run id distinct from the run being judged. |
 | G-R1 | report | `status ∈ {DONE, BLOCKED}`. |
 | G-R2 | report | `BLOCKED` requires non-empty `blocked_reason` and `missing_decision`. |
@@ -531,16 +533,19 @@ change record; the build log in `control/logs/provision.log`.
 From then on every sandbox of a mapped role is created from its profile's image, with its
 network policies in the sandbox policy and its resources; unmapped roles keep the defaults.
 
-The build is fixed at provisioning: later library edits do not reach it. A decision owner can
-rebuild it with the change-level action `reprovision` (a reason of ≥24 chars), which resolves the
-H-E1-approved spec against the current library again, e.g. after a library entry was fixed. It
-does not change the spec: a tool or policy the spec does not name needs a plan revision and a
-new H-E1. New runs of mapped roles wait from the request on; provisioning starts once their live
-runs have ended and nothing is verifying or merging, and the old build stays in place until the
-new one is accepted. Sandboxes kept across cycles by mapped roles (implementers) are then
-released, after their agent reflects, so each node's next run starts fresh in the new build and
-continues from its pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps
-its session to H-2 through H-E1 and provisioning.
+The build is fixed at provisioning: later library edits do not reach it. When a step escalates
+because of its environment (an agent BLOCKED for a missing tool, a verifier command not found,
+a failed setup), a decision owner may answer by **provisioning again** (`rerun:provision`, a
+reason of ≥24 chars): the provision step runs again in place – the H-E1-approved spec resolved
+against the current library again, e.g. after a library entry was fixed – while what was built
+on it stands, and the escalated step is retried in the new build. It does not change the spec:
+a tool or policy the spec does not name needs a plan revision and a new H-E1. It is offered
+only as an escalation's answer. Provisioning starts once no run of a mapped role is live and no
+verifier sandbox is in use; meanwhile new runs of mapped roles and verifications wait for it.
+Sandboxes kept across cycles by mapped roles (implementers) are then released, after their
+agent reflects, so each node's next run starts fresh in the new build and continues from its
+pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps its session to H-2
+through H-E1 and provisioning. A failure escalates the provision step like any other.
 
 ### 5.3c Repository setup: `mise.toml`
 
@@ -718,6 +723,11 @@ The architecture reviewer uses skill `architecture-checklist` and writes
 | G-RV4 | A `PASS` on cycle 1 must list what was checked in `data.checked` (skeptical by default). |
 | G-RV5 | Loop control: after `review_max_cycles` FAIL cycles, or 2 consecutive cycles with an identical set of HIGH findings (stale loop), the node is `ESCALATED`. |
 
+The panel's members run in parallel and the panel decides once **every** member has finished its
+turn. A member that fails, reports BLOCKED or cannot be dispatched does not escalate the node
+while the others still work: the panel's one task runs every member and collates their results
+once all have finished, then the node escalates with each escalation (a retry dispatches only the members without a review at the cycle).
+
 FAIL ⇒ node `REWORK`: the implementer run is re-dispatched **in the same sandbox** with all
 HIGH findings attested as feedback (cycle + 1).
 
@@ -725,7 +735,7 @@ HIGH findings attested as feedback (cycle + 1).
 
 | ID | Rule |
 | --- | --- |
-| G-A1 | Verification passed and every panel member returned PASS at the same candidate sha. |
+| G-A1 | Verification passed and every panel member returned PASS at the same candidate sha – checked from the evidence: the verification record and the panel's recorded pass (which judges sat, citing their reviews; `tasks/<id>/panel.json`). An override waives the panel, not verification. |
 | G-A2 | `git merge --no-ff` of the candidate into `legion/<change>/integration` is clean. A conflict ⇒ `REWORK` with reason `rebase onto <head>` (counts as a cycle). |
 | G-H1 | Before a merge, and before dispatching a run at the integration head (integration, baseline, release), the integration branch is at the head the controller recorded. Otherwise commits were added outside the workflow: they are **not adopted** (they bypass verification and review); the node escalates `head_moved`, naming both shas, and a retry after the branch is reset to the recorded head resumes it (the merge, or a fresh run). |
 

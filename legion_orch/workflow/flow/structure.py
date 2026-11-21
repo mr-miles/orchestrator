@@ -1,6 +1,7 @@
-"""The shape of a change's workflow (plan: stages-and-steps.md §1): stages nest, every stage ends
-with a gate, a stage holds steps, smaller stages and parallel groups of steps. Plain data – what
-it means to run them is :mod:`.core`."""
+"""The shape of a change's workflow (plan: stages-and-steps.md §1): stages nest, a stage holds
+steps, smaller stages and parallel groups of steps, and may end with a gate – an ordinary step
+that runs once the rest of the stage is done (a human approving: its work escalates until they
+do). Plain data – what it means to run them is :mod:`.core`."""
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
@@ -12,6 +13,10 @@ class Step:
     """One unit of work. The core only knows its id and what humans may do with it."""
     id: str
     overridable: bool = False          # a human may accept it without its own checks (builds)
+    # done, it may run again in place – as a later escalated step's answer – while what was
+    # built on it stands (provisioning: the same approved spec, built again)
+    rerunnable: bool = False
+    rejectable: bool = False           # escalated, a human may reject it: the change ends (H-3)
     depends_on: list[str] = field(default_factory=list)   # within its Parallel group
 
 
@@ -21,17 +26,6 @@ class Parallel:
     may be known only later (:meth:`.FlowState.define`); empty, it is done at once."""
     id: str
     steps: list[Step]
-
-
-@dataclass
-class Gate:
-    """A stage's end: an approval (by people, or automatic) plus deterministic preconditions the
-    runtime evaluates. The stage completes when both hold."""
-    id: str
-    subjects: list[str] = field(default_factory=list)   # approved separately (none: the gate)
-    preconditions: bool = False        # the runtime evaluates checks before the gate completes
-    automatic: bool = False            # approved by the controller once the stage's work is done
-    rejectable: bool = False           # rejecting it ends the change (the last gate)
 
 
 @dataclass
@@ -51,7 +45,7 @@ class AppendRound:
 class Stage:
     id: str
     children: list[Stage | Step | Parallel]
-    gate: Gate
+    gate: Step | None = None           # runs last, once the children are done
     rework: StartOver | AppendRound = field(default_factory=StartOver)
     feedback_to: str | None = None     # the step a send-back's feedback goes to (default: the first)
 
@@ -62,7 +56,7 @@ class Workflow:
     stages: list[Stage]
 
 
-Node = Stage | Step | Parallel | Gate
+Node = Stage | Step | Parallel
 
 
 def walk(node: Stage | Step | Parallel) -> Iterator[Node]:
@@ -71,6 +65,7 @@ def walk(node: Stage | Step | Parallel) -> Iterator[Node]:
     if isinstance(node, Stage):
         for child in node.children:
             yield from walk(child)
-        yield node.gate
+        if node.gate is not None:
+            yield node.gate
     elif isinstance(node, Parallel):
         yield from node.steps

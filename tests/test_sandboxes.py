@@ -11,7 +11,7 @@ import pytest
 from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import SandboxError
-from legion_orch.workflow.engine.sandboxes import Sandboxes
+from legion_orch.workflow.engine.sandboxes.sandboxes import Sandboxes
 from legion_orch.workflow.model import (
     ACCEPTED,
     BUILD,
@@ -49,8 +49,8 @@ def events(f: Flow) -> list[str]:
     return [json.loads(e)["message"] for e in f.ce._timeline]
 
 
-def scripts(steps) -> list[list[str]]:
-    return [[argv[1].rsplit("/", 1)[-1], *argv[2:]] for _, argv, _ in steps]
+def scripts(cmds) -> list[list[str]]:
+    return [[c.script, *c.args] for c in cmds]
 
 
 # ---------------------------------------------------------------------------- holds
@@ -84,38 +84,38 @@ async def test_nothing_is_held_without_a_sandbox_or_once_the_change_ended(f: Flo
 # ---------------------------------------------------------------------------- preparation
 @scenario()
 async def test_a_fresh_sandbox_clones_then_checks_out_detached(f: Flow):
-    steps = await sb(f).prepare_steps(make_run(f, "intake"), fresh=True)
-    assert scripts(steps) == [["clone.sh"], ["checkout.sh", SHA]]
-    assert all(required for *_, required in steps)
+    cmds = await sb(f).checkout(make_run(f, "intake"), fresh=True)
+    assert scripts(cmds) == [["clone.sh"], ["checkout.sh", SHA]]
+    assert all(c.required and c.kind == "prepare" for c in cmds)
 
 
 @scenario()
 async def test_a_reused_sandbox_checks_out_the_judged_commit_without_cloning(f: Flow):
     run = make_run(f, "reviewer", judged_sha=JUDGED)
-    assert scripts(await sb(f).prepare_steps(run, fresh=False)) == [["checkout.sh", JUDGED]]
+    assert scripts(await sb(f).checkout(run, fresh=False)) == [["checkout.sh", JUDGED]]
 
 
 @scenario()
 async def test_a_pushing_role_works_on_its_branch_from_its_base_or_hub_tip(f: Flow):
     run = make_run(f, "implementer", branch="legion/t9")
-    assert scripts(await sb(f).prepare_steps(run, fresh=False)) == \
+    assert scripts(await sb(f).checkout(run, fresh=False)) == \
         [["branch.sh", "legion/t9", SHA]]
     tip = f.ce.change.integration_head
     await f.ce.git.git("update-ref", "refs/heads/legion/t9", tip)
-    assert scripts(await sb(f).prepare_steps(run, fresh=False)) == \
+    assert scripts(await sb(f).checkout(run, fresh=False)) == \
         [["branch.sh", "legion/t9", tip]]
 
 
 @scenario()
 async def test_setup_runs_only_with_a_pin_for_roles_that_use_a_commit(f: Flow):
     f.ce.change.setup_pin = SetupPin(blob="c" * 40, source="base")
-    impl = await sb(f).prepare_steps(make_run(f, "implementer", branch="legion/t9"), fresh=True)
+    impl = await sb(f).checkout(make_run(f, "implementer", branch="legion/t9"), fresh=True)
     assert scripts(impl)[-1] == ["mise-setup.sh", "c" * 40]
-    assert impl[-1][2] is False                       # a failed setup does not stop the launch
-    intake = await sb(f).prepare_steps(make_run(f, "intake"), fresh=True)   # git: none
+    assert impl[-1].kind == "setup" and not impl[-1].required   # a failure does not stop it
+    intake = await sb(f).checkout(make_run(f, "intake"), fresh=True)   # git: none
     assert "mise-setup.sh" not in [s[0] for s in scripts(intake)]
     f.ce.change.blank_repo = True                     # until the scaffold is accepted
-    impl = await sb(f).prepare_steps(make_run(f, "implementer", branch="legion/t9"), fresh=True)
+    impl = await sb(f).checkout(make_run(f, "implementer", branch="legion/t9"), fresh=True)
     assert "mise-setup.sh" not in [s[0] for s in scripts(impl)]
 
 
@@ -123,25 +123,46 @@ async def test_setup_runs_only_with_a_pin_for_roles_that_use_a_commit(f: Flow):
 async def test_a_role_without_the_repository_is_not_prepared(f: Flow):
     roles = f.ce.assets.roles
     roles["intake"] = dataclasses.replace(roles["intake"], repo=False)
-    assert await sb(f).prepare_steps(make_run(f, "intake"), fresh=True) == []
+    assert await sb(f).checkout(make_run(f, "intake"), fresh=True) == []
+
+
+async def prepare(f: Flow, run: Run, fresh: bool = True):
+    """The run's session and its preparation commands (no agent turn), as its work executes
+    them, logged to its agent log."""
+    from legion_orch.workflow.engine.base.work import Work
+    from legion_orch.workflow.engine.sandboxes.sandboxes import AgentSession
+
+    async def stage(*_):
+        pass
+    payload = f.ce.run_dir(run.id) / "payload"
+    payload.mkdir(parents=True, exist_ok=True)
+    (f.ce.run_dir(run.id) / "policy.yaml").write_text("{}\n")
+    from legion_orch.workflow.engine.steps import sandbox_plan
+    work = Work(AgentSession(sb(f), run, sandbox_plan(run.role), fresh, stage),
+                await sb(f).checkout(run, fresh),
+                log=lambda cmd, r: f.ce._agents._log(run, cmd, r))
+    return await work.execute()
 
 
 @scenario()
-async def test_a_failed_checkout_fails_the_preparation(f: Flow):
-    log = f.tmp / "agent.log"
+async def test_a_failed_checkout_stops_the_preparation(f: Flow):
+    run = make_run(f, "intake")
     f.runner.setup_rc = 1
-    with pytest.raises(SandboxError, match="clone the repository failed"):
-        await sb(f).prepare(make_run(f, "intake"), log, fresh=True)
-    assert "clone the repository: exit 1" in log.read_text()
+    outcome = await prepare(f, run)
+    assert outcome.stopped.command.label == "clone the repository"
+    assert len(outcome.steps) == 1
+    assert "clone the repository: exit 1" in (f.ce.run_dir(run.id) / "agent.log").read_text()
 
 
 @scenario()
 async def test_a_failed_setup_is_logged_and_the_preparation_goes_on(f: Flow):
     f.ce.change.setup_pin = SetupPin(blob="c" * 40, source="base")
     f.runner.commands["c" * 40] = (1, "mise: no such task\n")
-    log = f.tmp / "agent.log"
-    await sb(f).prepare(make_run(f, "implementer", branch="legion/t9"), log, fresh=True)
-    text = log.read_text()
+    run = make_run(f, "implementer", branch="legion/t9")
+    build_node(f)
+    outcome = await prepare(f, run)
+    assert outcome.stopped is None and outcome.error is None
+    text = (f.ce.run_dir(run.id) / "agent.log").read_text()
     assert "check out branch legion/t9" in text and "mise: no such task" in text
     assert "the working copy may lack its dependencies" in text
 
@@ -210,36 +231,38 @@ def grants(f: Flow) -> dict:
 
 @scenario()
 async def test_a_verifier_is_checked_out_and_removed_afterwards(f: Flow):
-    async with sb(f).verifier("v-1", "T1", JUDGED) as box:
-        assert grants(f) and box.workdir.endswith("/work")
-        assert [a[1].rsplit("/", 1)[-1] for n, a in f.runner.execs if n == "v-1"] == \
-            ["clone.sh", "checkout.sh"]
-        r = await box.run("pytest -q")
-        assert r.command == "pytest -q" and r.exit_code == 0
+    work = sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest -q",))
+    seen = {}
+    real = f.runner.exec
+
+    async def exec(name, argv, **kw):
+        seen.setdefault("grants", bool(grants(f)))
+        return await real(name, argv, **kw)
+    f.runner.exec = exec
+    outcome = await work.execute()
+    assert seen["grants"]
+    assert [a[1].rsplit("/", 1)[-1] for n, a in f.runner.execs if n == "v-1"][:2] == \
+        ["clone.sh", "checkout.sh"]
+    assert outcome.results("command")[0].command == "pytest -q"
+    assert outcome.results("command")[0].exit_code == 0
     assert f.runner.deleted == ["v-1"] and not grants(f)
     assert not (f.ctl.svc.tmp / "verify" / "v-1").exists()
 
 
 @scenario()
-async def test_a_verifier_is_removed_when_its_checkout_or_its_body_fails(f: Flow):
+async def test_a_verifier_is_removed_when_its_checkout_fails(f: Flow):
     f.runner.setup_rc = 1
-    with pytest.raises(SandboxError, match="verifier clone.sh failed"):
-        async with sb(f).verifier("v-1", "T1", JUDGED):
-            pass
-    f.runner.setup_rc = 0
-    with pytest.raises(RuntimeError):
-        async with sb(f).verifier("v-2", "T1", JUDGED):
-            raise RuntimeError("boom")
-    assert f.runner.deleted == ["v-1", "v-2"] and not grants(f)
+    outcome = await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest",)).execute()
+    assert outcome.stopped.command.label == "clone.sh" and len(outcome.steps) == 1
+    assert f.runner.deleted == ["v-1"] and not grants(f)
 
 
 @scenario()
 async def test_a_verifier_that_was_never_created_is_not_deleted(f: Flow):
     f.runner.fail_create = "verifier"
-    with pytest.raises(SandboxError):
-        async with sb(f).verifier("v-1", "T1", JUDGED):
-            pass
-    assert f.runner.deleted == [] and not (f.ctl.svc.tmp / "verify" / "v-1").exists()
+    outcome = await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest",)).execute()
+    assert outcome.error and f.runner.deleted == []
+    assert not (f.ctl.svc.tmp / "verify" / "v-1").exists()
 
 
 # ---------------------------------------------------------------------------- retiring
@@ -278,3 +301,23 @@ async def test_a_refused_delete_is_reported_and_not_recorded(f: Flow):
     assert await sb(f).delete("sb-t9") is False
     assert not run.sandbox_deleted
     assert any("delete of sb-t9 failed" in e for e in events(f))
+
+
+# ---------------------------------------------------------------------------- suspending
+@scenario()
+async def test_an_escalated_steps_sandbox_is_stopped_once_nothing_live_uses_it(f: Flow):
+    from legion_orch.workflow.model import R_ACTIVE, RUNNING, Resume
+    node = build_node(f, sandbox=None, status=RUNNING)
+    run = make_run(f, "integration", sandbox="sb-x", status=R_ACTIVE)
+    node.runs.append(run.id)
+    f.ce._runner.of(node).escalate("x", "why", Resume.READY)     # its reservation goes back
+    f.ce.save()
+    await f.settle()
+    assert f.runner.stopped == []                            # its run is still live
+    run.status = R_REPORTED
+    f.ce.save()
+    await f.settle()
+    assert f.runner.stopped == ["sb-x"] and run.sandbox_stopped
+    assert sb(f).stopped("sb-x")
+    await sb(f).wake("sb-x")                                 # its next session wakes it
+    assert not run.sandbox_stopped

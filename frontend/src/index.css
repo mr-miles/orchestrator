@@ -137,6 +137,7 @@
   --status-VERIFYING: var(--color-purple-500);
   --status-REVIEWING: var(--color-amber-500);
   --status-MERGING: var(--color-cyan-500);
+  --status-DEFINING: var(--color-teal-500);
   --status-REWORK: var(--color-orange-500);
   --status-ACCEPTED: var(--color-green-500);
   --status-ESCALATED: var(--color-red-500);
