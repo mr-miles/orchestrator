@@ -54,6 +54,7 @@ from ...model import (
     Readiness,
     Resume,
     Run,
+    SetupPin,
     Verdict,
     Verification,
 )
@@ -1030,9 +1031,86 @@ class Merge(Phase):
         return Ok(out)
 
 
+# ---------------------------------------------------------------------------- workspace
+@dataclass(frozen=True)
+class Synced:
+    """What syncing the workspace found: the base and what it holds."""
+    base: str
+    blank: bool
+    pin: SetupPin | None
+
+
+@dataclass(frozen=True, eq=False)
+class SyncWorkspace(Phase):
+    """The change's first step: its workspace's hub brought up to date with the source (cloned
+    if there is none yet; one sync of a hub at a time), and the change based on the base
+    branch's commit – its integration branch, whether the repository is blank (§5.3b) and the
+    base's setup (§5.3c). A hub that cannot follow its source escalates (what differs): the
+    decision owner fixes the hub or the source and retries. Once the change has a base, it
+    keeps it: the step run again (its stage sent back) passes at once."""
+    statuses: ClassVar = frozenset({READY, RUNNING})
+    waits_in: ClassVar = frozenset()
+
+    def enter(self, active: ActivePhase) -> None:
+        active.move(READY)
+        self.start(active)
+
+    def start(self, active: ActivePhase) -> None:
+        if active.node.status in (READY, RUNNING):         # RUNNING: syncing (after a restart)
+            active.run()
+
+    def recover(self, active: ActivePhase) -> None:
+        self.start(active)
+
+    def resume(self, active: ActivePhase, answered: bool) -> None:
+        self.start(active)                                   # synced again
+
+    def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
+        return Resume.READY
+
+    def begin(self, active: ActivePhase) -> bool:
+        active.move(RUNNING)
+        return True
+
+    async def perform(self, active: ActivePhase) -> object:
+        """The sync and what the base holds – or what keeps the hub from following its
+        source."""
+        from ....git import WorkspaceUnsynced, is_blank_tree
+        from ... import setup
+        c = active.c
+        if c.change.base_sha:
+            return None
+        try:
+            base = await c.git.sync()
+        except WorkspaceUnsynced as e:
+            return e
+        blank = is_blank_tree(await c.git.tree_paths(base))
+        # not in a blank repository, where what a setup needs does not exist yet
+        return Synced(base, blank, None if blank else await setup.pin_at_base(c.git, base))
+
+    async def result(self, active: ActivePhase, done: object) -> PhaseResult:
+        from ....git import WorkspaceUnsynced
+        c, ch = active.c, active.c.change
+        if done is None:                                     # it has its base already
+            return Ok()
+        if isinstance(done, WorkspaceUnsynced):
+            return Escalate("workspace_unsynced", f"workspace {ch.workspace}: {done}",
+                            Resume.READY)
+        synced: Synced = done                                # type: ignore[assignment]
+        await c.git.init_integration(ch.id, synced.base)
+        ch.base_sha = ch.integration_head = synced.base
+        ch.blank_repo, ch.setup_pin = synced.blank, synced.pin
+        c.write_record("control/workspace.json", {
+            "workspace": ch.workspace, "source": c.git.source, "base_branch": c.git.base_branch,
+            "base": synced.base, "blank_repo": synced.blank})
+        c.event("workspace", f"{ch.workspace} synced: the change is based on "
+                f"{synced.base[:12]}" + (" (a blank repository: the plan starts with a "
+                                          "scaffold task)" if synced.blank else ""),
+                active.node.id)
+        return Ok()
+
+
 # ---------------------------------------------------------------------------- environment
-
-
 @dataclass(frozen=True, eq=False)
 class BuildImages(Phase):
     """Provisioning, as a step's phase: once its waits hold, the provisioner builds the approved

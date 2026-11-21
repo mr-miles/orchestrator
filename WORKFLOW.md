@@ -432,6 +432,23 @@ Universal guards apply to every task and are listed once.
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
 | G-W4 | docs_write | Per-run quota: at most `limits.max_docs_per_run` document versions (default 200) and `limits.max_doc_bytes_per_run` bytes (default 50 MB). Refused writes say which limit was hit. |
 
+### 5.0a `workspace` – the change's base (controller, no agent)
+
+A change's first step. The workspace's hub is brought up to date with its `source`: cloned if
+there is no hub yet, otherwise fetched, and its base branch fast-forwarded to the source's.
+`legion/*` (every change's integration and run branches) is never touched. One sync of a hub
+runs at a time: changes started together wait for each other, and one that waited takes the
+result of the sync before it (no second fetch). The change is then based on the base branch's
+commit: its integration branch, whether the repository is blank (§5.3b) and the base's setup
+(§5.3c), recorded in `control/workspace.json`.
+
+If the hub cannot follow its source – the clone's origin is not the configured `source`, the
+source's base branch was rewritten (the hub's commit is not an ancestor of it), or the fetch
+fails – the step escalates (`workspace_unsynced`, with what differs) with the standard actions:
+the decision owner fixes the hub or the source and **retries**, or abandons the change. Once
+the change has a base it keeps it: Requirements sent back runs the step again, and it passes at
+once.
+
 ### 5.1 `intake` – start
 
 * **Soul:** `intake-analyst`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `risk-signals`, `blocked-protocol`

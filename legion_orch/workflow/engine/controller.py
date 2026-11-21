@@ -9,7 +9,7 @@ import threading
 from datetime import UTC, datetime
 
 from ...config import Config
-from ...git import GitRemote, is_blank_tree
+from ...git import GitRemote
 from ...notify import Notifier
 from ...sandbox import (
     EnvironmentBuilder,
@@ -20,7 +20,6 @@ from ...sandbox import (
 )
 from ...store import DocStore
 from ...util import stop_process
-from .. import setup
 from ..assets import Assets
 from ..attention import AttentionItem
 from ..environment import Library
@@ -161,8 +160,9 @@ class Controller:
                 self.notifier.seed(ce.attention_items)
 
     async def start(self) -> None:
-        for hub in self.hubs.values():
-            await hub.ensure()
+        for hub in self.hubs.values():   # configure the hubs there are; a change clones one
+            if hub.exists or hub.source is None:
+                await hub.ensure()
         shutil.rmtree(self.svc.tmp, ignore_errors=True)   # stale payloads may contain old tokens
         self.svc.tmp.mkdir(parents=True)
         self.load()
@@ -211,21 +211,14 @@ class Controller:
                                 "across workspaces is not supported yet)")
         if workspace not in self.hubs:
             raise WorkflowError(f"unknown workspace {workspace!r} (one of {', '.join(self.hubs)})")
-        git = self.hub(workspace)
         async with self.svc.lock:
-            base = await git.resolve_base()
-            blank = is_blank_tree(await git.tree_paths(base))
-            # §5.3c: the base's setup task – not in a blank repository, where what a setup needs
-            # does not exist yet (it comes with the scaffold, through the environment stage)
-            pin = None if blank else await setup.pin_at_base(git, base)
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:
                     break
-            await git.init_integration(cid, base)
             ce = ChangeEngine(self.svc, self, cid)
             self.changes[cid] = ce
-            ce.start(goal, workspace, base, blank_repo=blank, setup_pin=pin)
+            ce.start(goal, workspace)               # its first step syncs the workspace
             return ce
 
     def get(self, cid: str) -> ChangeEngine:

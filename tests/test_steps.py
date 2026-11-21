@@ -55,6 +55,7 @@ def test_every_kind_is_a_list_of_phases():
     from legion_orch.workflow.engine.steps import GATE_TYPES
     assert set(STEP_TYPES) == set(NodeKind) - {HUMAN}       # a gate's type is its gate's
     assert {k: shape(k) for k in STEP_TYPES} == {
+        NodeKind.WORKSPACE: ["SyncWorkspace"],
         NodeKind.INTAKE: ["Produce"],
         PLAN: ["Produce", "Critique", "DefineTasks"],
         PROVISION: ["BuildImages"],

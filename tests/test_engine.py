@@ -34,13 +34,13 @@ from legion_orch.workflow.model import (
 # ====================================================================== happy paths
 @scenario()
 async def test_r1_change_runs_to_ready(f: Flow):
-    assert f.status() == {"intake": RUNNING, "H-1": PENDING}
+    assert f.status() == {"workspace": ACCEPTED, "intake": RUNNING, "H-1": PENDING}
     await f.intake()
     assert f.ce.change.risk.tier == "R1" and f.status("H-1") == AWAITING_HUMAN
     res = await f.human("H-1", "accept")
     assert (res.tier, res.panel) == ("R1", ["reviewer"])
     # no oracle stage at R1; H-3 is automatic, held only by its preconditions (the ship gates)
-    assert list(f.ce.nodes) == ["intake", "H-1", "plan", "H-E1", "H-3"]
+    assert list(f.ce.nodes) == ["workspace", "intake", "H-1", "plan", "H-E1", "H-3"]
     await f.plan()
     await f.critique("PASS")
     assert f.status("build:T1") == PENDING and list(f.ce.nodes)[-2:] == ["build:T1", "H-3"]

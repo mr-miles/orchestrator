@@ -37,6 +37,7 @@ from ...model import (
     RELEASE,
     RETRO,
     REWORK,
+    WORKSPACE,
     Node,
     NodeKind,
     NodeStatus,
@@ -64,6 +65,7 @@ from .phases import (
     Phase,
     Produce,
     ShipGates,
+    SyncWorkspace,
     TaskCommands,
     TierPanel,
     Verify,
@@ -230,6 +232,7 @@ def agent(role: str, sandbox: SandboxPlan, *after: Phase, **kw) -> StepType:
 BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
 
 STEP_TYPES: dict[NodeKind, StepType] = {
+    WORKSPACE: StepType((SyncWorkspace(),)),       # the controller's: no agent, no sandbox
     INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
     PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
                 Critique(), DefineTasks(),                         # the critic judges (G-C2)

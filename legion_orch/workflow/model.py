@@ -16,6 +16,7 @@ from ..util import now_iso
 
 # ---------------------------------------------------------------------------- enums
 class NodeKind(StrEnum):
+    WORKSPACE = "workspace"              # the controller syncs the change's workspace (first)
     INTAKE = "intake"
     PLAN = "plan"
     PROVISION = "provision"
@@ -156,6 +157,7 @@ INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.HUMAN)
 PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKind.PREFLIGHT
+WORKSPACE = NodeKind.WORKSPACE
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \

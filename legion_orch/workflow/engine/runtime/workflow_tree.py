@@ -2,7 +2,7 @@
 environment and repository:
 
 ```
-Requirements   intake ───────────────────────────────────────────────── ◆ H-1
+Requirements   workspace ─ intake ───────────────────────────────────── ◆ H-1
 Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ──────────────────────────────── ◆ H-E1 "approve the plan"
   Oracle       [provision] [scaffold] [oracle preflight] [baseline] ──── ◆ H-2 "approve the oracle"
@@ -31,6 +31,7 @@ from ...model import (
     PREFLIGHT,
     PROVISION,
     RELEASE,
+    WORKSPACE,
     NodeKind,
 )
 from ..base.ids import base_id, in_round, round_of, stage_id, stage_title  # noqa: F401  (re-exported)
@@ -39,6 +40,7 @@ TASKS, SCAFFOLD = "tasks", "scaffold"          # the parallel groups of build st
 
 # the engine node each step or gate of the tree is (build steps come with their task)
 NODES: dict[str, tuple[NodeKind, str]] = {
+    WORKSPACE: (NodeKind.WORKSPACE, "Workspace: synced, the change's base"),
     INTAKE: (NodeKind.INTAKE, "Intake: requirements & risk"),
     H_REQUIREMENTS: (HUMAN, "Accept requirements & tier"),
     PLAN: (NodeKind.PLAN, "Plan: spec, oracle, task graph; critique"),
@@ -89,7 +91,8 @@ def round_template(rank: int, environment: bool):
 
 def requirements_workflow() -> Workflow:
     """Before H-1: only the requirements are known (the tier decides the rest)."""
-    return Workflow([Stage(stage_id("requirements"), [Step(INTAKE)], Step(H_REQUIREMENTS))])
+    return Workflow([Stage(stage_id("requirements"), [Step(WORKSPACE), Step(INTAKE)],
+                           Step(H_REQUIREMENTS), feedback_to=INTAKE)])
 
 
 def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflow:

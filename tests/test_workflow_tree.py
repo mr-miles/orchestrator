@@ -60,7 +60,7 @@ def plan_accepted(rt: ScriptedRuntime, graph=GRAPH, n: int = 1) -> ScriptedRunti
 def test_r3_with_an_environment_in_a_blank_repository():
     wf = build_workflow(3, environment=True, blank_repo=True)
     assert ids(wf) == [
-        "stage:requirements", "intake", "H-1",
+        "stage:requirements", "workspace", "intake", "H-1",
         "stage:plan",
         "stage:design", "plan", "H-E1",
         "stage:oracle", "provision", SCAFFOLD, "oracle", "preflight", "baseline", "H-2",
@@ -73,14 +73,14 @@ def test_r3_with_an_environment_in_a_blank_repository():
 
 def test_r2_has_no_baseline():
     wf = build_workflow(2, environment=False, blank_repo=False)
-    assert ids(wf)[3:] == ["stage:plan", "stage:design", "plan", "H-E1",
+    assert ids(wf)[4:] == ["stage:plan", "stage:design", "plan", "H-E1",
                            "stage:oracle", "oracle", "preflight", "H-2",
                            "stage:delivery", TASKS, "integration", "H-3"]
 
 
 def test_low_tiers_have_no_oracle_stage_and_accept_the_change_automatically():
     wf = build_workflow(1, environment=False, blank_repo=False)
-    assert ids(wf) == ["stage:requirements", "intake", "H-1", "stage:plan", "stage:design",
+    assert ids(wf) == ["stage:requirements", "workspace", "intake", "H-1", "stage:plan", "stage:design",
                        "plan", "H-E1", "stage:delivery", TASKS, "H-3"]
     assert wf.stages[-1].gate.id == "H-3"             # its step checks the ship gates
     # with an environment, provisioning still needs its own stage (without a gate)

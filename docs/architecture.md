@@ -350,6 +350,7 @@ own role's environment is.
 | DefineTasks | – | – | the accepted plan's build tasks defined by the workflow (`StepEvents.define_tasks`), under the lock |
 | Verify | READY (at the head) | the verification (`verification`) | recorded, then interpreted with its policies |
 | Merge | – | – | the guards and the merge, at once under the lock |
+| SyncWorkspace | – | the hub synced (one at a time per hub), what its base holds | based, kept, or unsynced (an escalation) |
 | BuildImages | READY | the provisioner's build and setup check | the provisioner's |
 | Approval | – | its checks evaluated | approved, still pending, or preconditions unmet |
 
@@ -472,6 +473,7 @@ classDiagram
     }
     class DefineTasks
     class Merge
+    class SyncWorkspace
     class BuildImages
     class Approval {
         approves: Approves
@@ -525,6 +527,7 @@ classDiagram
     Phase <|-- Critique
     Phase <|-- DefineTasks
     Phase <|-- Merge
+    Phase <|-- SyncWorkspace
     Phase <|-- BuildImages
     Phase <|-- Approval
     Approval *-- Approves
@@ -538,6 +541,7 @@ The table (`engine/steps/step_types.py`) – each kind is a list of phases:
 
 | Kind | Sandbox plan | Phases |
 | --- | --- | --- |
+| workspace | – | SyncWorkspace (the change's first step) |
 | intake | base, kept until H-1 | Produce |
 | plan | base, kept until H-E1 | Produce → Critique → DefineTasks |
 | provision | – | BuildImages (waits for a quiet environment) |
