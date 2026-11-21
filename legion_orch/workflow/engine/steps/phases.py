@@ -692,10 +692,12 @@ class Panel(Phase):
 
 @dataclass(frozen=True, eq=False)
 class Critique(Phase):
-    """The plan's critic (G-C2): one judge of the drafted plan. Its PASS accepts the plan; its
-    REWORK sends the plan back to the planner with the critique, within the critique budget –
-    counted from the start of the plan's fix round – else a human decides."""
-    role: str = "critic"
+    """One judge of a document its step's agent wrote: the plan's critic (G-C2), the PR
+    description's reviewer (G-PR3). Its PASS accepts the step; its REWORK sends the work back
+    to the producer with the critique, within the critique budget – counted from the start of
+    the step's fix round – else a human decides (``budget``: the guard that says so)."""
+    role: str
+    budget: str
     statuses: ClassVar = frozenset({REVIEWING})
     waits_in: ClassVar = frozenset()
 
@@ -744,7 +746,8 @@ class Critique(Phase):
         limit = active.c.cfg.limits.critique_max_cycles + node.extra_cycles
         cycles = node.cycle - node.round_start_cycle + 1      # a fix round has its own budget
         if cycles >= limit:
-            return Escalate("critique_budget", f"G-C2: {cycles} critique cycles without PASS",
+            return Escalate("critique_budget", f"{self.budget}: {cycles} {self.role} cycles "
+                            "without PASS",
                             Resume.CRITIQUE_BUDGET, feedback=feedback)
         return Rework(feedback, "critique", budget_checked=True)
 

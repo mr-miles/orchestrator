@@ -23,6 +23,7 @@ from ...model import (
     ACTIVE_NODE,
     BASELINE,
     BUILD,
+    DESCRIBE,
     H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
@@ -235,7 +236,7 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     WORKSPACE: StepType((SyncWorkspace(),)),       # the controller's: no agent, no sandbox
     INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
     PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
-                Critique(), DefineTasks(),                         # the critic judges (G-C2)
+                Critique("critic", "G-C2"), DefineTasks(),                         # the critic judges (G-C2)
                 on_reset=(RestartPlan(),)),
     PROVISION: StepType((BuildImages(),), dispatch_when=(EnvironmentQuiescent(),),
                         stands=EnvironmentUnchanged(),
@@ -252,7 +253,8 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     INTEGRATION: agent("integration", HEAD,
                        Verify(OracleCommands(), on_rework=EscalateFailures(
                            "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
-    RELEASE: agent("release", HEAD),
+    DESCRIBE: agent("describer", HEAD, Critique("pr-reviewer", "G-PR3")),
+    RELEASE: agent("release", HEAD),               # in no tier's tree (live-system workflows)
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
 }
 

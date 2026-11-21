@@ -434,7 +434,7 @@ class Flow:
         return await self.report(r, [f"git:{REPO}@{sha}", ev], **kw)
 
     async def review(self, task: str = "T1", verdict: str = "PASS", role: str = "reviewer",
-                     title: str = "missing newline handling"):
+                     title: str = "missing newline handling", *, describe: bool = True):
         node = f"build:{task}"
         r = self.run(node, role)
         cand = f"git:{REPO}@{r.judged_sha}"
@@ -443,8 +443,9 @@ class Flow:
             "title": title, "observation": "x", "impact": "y", "fix": "rewrite it",
             "attestations": [cand]}]
         doc = await self.write(r, f"tasks/{task}/reviews/{role}-cycle-{r.cycle}.md", verdict)
-        return await self.report(r, [cand, doc], {"verdict": verdict, "findings": findings,
-                                                  "checked": ["diff"]})
+        out = await self.report(r, [cand, doc], {"verdict": verdict, "findings": findings,
+                                                 "checked": ["diff"]})
+        return await self.described(out) if describe else out
 
     async def oracle(self, files: dict | None = None):
         r = self.run("oracle")
@@ -452,13 +453,47 @@ class Flow:
         doc = await self.write(r, "oracle/tests.md", "AC-1 -> tests/acceptance/test_greet.sh")
         return await self.report(r, [f"git:{REPO}@{sha}", doc])
 
-    async def integration(self, verdict: str = "PASS"):
+    async def integration(self, verdict: str = "PASS", *, describe: bool = True):
         r = self.run("integration")
         cmds = self.ce.oracle_commands()
         doc = await self.write(r, "integration/report.md", "results")
-        return await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {
+        out = await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {
             "verdict": verdict, "findings": [],
             "results": [{"command": c, "exit_code": 0} for c in cmds]})
+        return await self.described(out) if describe else out
+
+    async def described(self, out):
+        """The last work before the PR description done: if its describe step started, it is
+        described and reviewed (PASS), so the change goes on to H-3. ``out``: the report."""
+        node = next((n for n in self.ce.nodes.values() if n.kind == "describe"), None)
+        live = node is not None and any(r.node_id == node.id and r.role == "describer"
+                                        and r.status in LIVE_RUN for r in self.ce.runs.values())
+        if live:
+            await self.describe()
+        return out
+
+    PR = ("# Greet the user\n\n## Motivation\n\nREQ-1: greet.txt says hello.\n\n"
+          "## Changes\n\n- src/greet.txt\n\n## Verification\n\n- the acceptance tests\n")
+
+    async def describe(self, text: str | None = None, *, review: str | None = "PASS"):
+        """The describer writes the PR description at the integration head; then (``review``)
+        the PR reviewer judges it."""
+        r = self.run("describe", "describer")
+        doc = await self.write(r, "delivery/pr.md", text if text is not None else self.PR)
+        out = await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc])
+        if review is not None and out.accepted:
+            return await self.pr_review(review)
+        return out
+
+    async def pr_review(self, verdict: str = "PASS", title: str = "the motivation is not REQ-1"):
+        r = self.run("describe", "pr-reviewer")
+        head, pr = f"git:{REPO}@{r.judged_sha}", self.ce.latest_att("delivery/pr.md")
+        findings = [] if verdict == "PASS" else [{
+            "severity": "BLOCKER", "confidence": "HIGH", "title": title, "fix": "say why",
+            "attestations": [pr]}]
+        doc = await self.write(r, f"delivery/reviews/pr-reviewer-cycle-{r.cycle}.md", verdict)
+        return await self.report(r, [head, pr, doc], {"verdict": verdict, "findings": findings,
+                                                      "checked": ["the diff"]})
 
     # ------------------------------------------------------------------ whole stages
     async def to_h2(self, tier: str | None = None, **plan_kw) -> None:

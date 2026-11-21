@@ -64,6 +64,7 @@ def test_every_kind_is_a_list_of_phases():
         BASELINE: ["Produce", "Verify"],
         BUILD: ["Produce", "Verify", "Panel", "Merge"],
         INTEGRATION: ["Produce", "Verify"],
+        NodeKind.DESCRIBE: ["Produce", "Critique"],
         NodeKind.RELEASE: ["Produce"],
         NodeKind.RETROSPECTIVE: ["Produce"],
     }
@@ -102,6 +103,7 @@ def test_waits_and_resume_points():
     assert [k for k, s in STEP_TYPES.items() if s.runs_after_end] == [NodeKind.RETROSPECTIVE]
     assert {k for k, s in STEP_TYPES.items() if s.rework_resume == Resume.REWORK} == {BUILD}
     assert {k for k, s in STEP_TYPES.items() if s.judges_head} == {BASELINE, INTEGRATION,
+                                                                    NodeKind.DESCRIBE,
                                                                     NodeKind.RELEASE}
 
 

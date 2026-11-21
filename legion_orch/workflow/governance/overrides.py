@@ -12,7 +12,7 @@ from .common import GovernanceError, resolve_or_raise
 # Gates a human may never waive: the machine check or the human decision *is* the gate.
 NON_WAIVABLE = {"deterministic_verification", "explicit_human_approval",
                 "whole_change_acceptance_evidence"}
-ALL_GATES = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
+ALL_GATES = {g for gates in risk.GATES_BY_TIER.values() for g in gates} | set(risk.RELEASE_GATES)
 
 async def record_override(e: ChangeView, approver: str, payload: dict) -> GateOverride:
     """Guard G-OV1."""

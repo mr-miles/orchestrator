@@ -29,7 +29,8 @@
             "ACCEPTED",
             "ESCALATED",
             "FAILED",
-            "AWAITING_HUMAN"
+            "AWAITING_HUMAN",
+            "DEFINING"
           ]
         },
         "cycle": {

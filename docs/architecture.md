@@ -470,6 +470,7 @@ classDiagram
     }
     class Critique {
         role: str
+        budget: str
     }
     class DefineTasks
     class Merge
@@ -543,14 +544,15 @@ The table (`engine/steps/step_types.py`) – each kind is a list of phases:
 | --- | --- | --- |
 | workspace | – | SyncWorkspace (the change's first step) |
 | intake | base, kept until H-1 | Produce |
-| plan | base, kept until H-E1 | Produce → Critique → DefineTasks |
+| plan | base, kept until H-E1 | Produce → Critique(critic, G-C2) → DefineTasks |
 | provision | – | BuildImages (waits for a quiet environment) |
 | oracle | branch (re-based each run), kept until H-2 | Produce (merges itself) |
 | preflight | – | Verify(acceptance commands, expect failures, at head, a failed setup → oracle rework) |
 | baseline | head | Produce → Verify(baseline commands, expect failures, G-BL2 notes) |
 | build | branch, kept until accepted | Produce → Verify(task commands) → Panel(tier) → Merge |
 | integration | head | Produce → Verify(oracle commands, a failure escalates) |
-| release | head | Produce |
+| describe | head | Produce (the describer: `delivery/pr.md`) → Critique(pr-reviewer, G-PR3) |
+| release | head | Produce (kept for a live-system workflow; in no tier's tree) |
 | retrospective | head | Produce (after the change ends, after the last reflections) |
 | gate (H-1, H-E1, H-2, H-3) | – | Approval: its checks (H-3: the ship gates), then a human's approval (H-E1, H-2: each subject); below R2, H-3 passes once its checks hold |
 

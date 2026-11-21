@@ -25,7 +25,8 @@ class NodeKind(StrEnum):
     BASELINE = "baseline"
     BUILD = "build"
     INTEGRATION = "integration"
-    RELEASE = "release"
+    DESCRIBE = "describe"                # the change's pull request description, judged
+    RELEASE = "release"                  # (kept for live-system workflows; in no tier's tree)
     HUMAN = "human"
     RETROSPECTIVE = "retrospective"      # on demand, once the change has ended
 
@@ -157,7 +158,7 @@ INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.HUMAN)
 PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKind.PREFLIGHT
-WORKSPACE = NodeKind.WORKSPACE
+WORKSPACE, DESCRIBE = NodeKind.WORKSPACE, NodeKind.DESCRIBE
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
@@ -169,7 +170,7 @@ LIVE_RUN = {R_STARTING, R_ACTIVE}
 # Which agent role executes each node kind
 ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
-                 RELEASE: "release", RETRO: "retrospective"}
+                 DESCRIBE: "describer", RELEASE: "release", RETRO: "retrospective"}
 
 
 class Record(BaseModel):

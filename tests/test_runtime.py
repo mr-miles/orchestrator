@@ -143,7 +143,7 @@ async def test_each_node_depends_on_what_runs_just_before_it(f: Flow):
     assert dep["build:T1"] == ["H-2"] and dep["build:T2"] == ["build:T1"]
     assert dep["build:T3"] == ["H-2"]
     assert sorted(dep["integration"]) == ["build:T2", "build:T3"]     # the tasks' ends
-    assert dep["H-3"] == ["integration"]
+    assert dep["describe"] == ["integration"] and dep["H-3"] == ["describe"]
 
 
 @scenario()
@@ -159,5 +159,5 @@ async def test_the_stages_are_listed_with_their_nodes(f: Flow):
     assert stages["stage:design"]["title"] == "Design" and stages["stage:design"]["depth"] == 1
     assert stages["stage:plan"]["level"] == 1 and stages["stage:oracle"]["level"] == 0
     assert stages["stage:plan"]["nodes"] == ["plan", "H-E1", "oracle", "preflight", "H-2"]
-    assert stages["stage:delivery"]["nodes"] == ["build:T1", "integration", "H-3"]
+    assert stages["stage:delivery"]["nodes"] == ["build:T1", "integration", "describe", "H-3"]
     assert stages["stage:design"]["status"] == "running"

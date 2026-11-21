@@ -14,17 +14,21 @@ TIERS = ["R0", "R1", "R2", "R3"]
 
 GATES_BY_TIER: dict[str, list[str]] = {
     "R0": ["current_task_contract_or_small_change_record", "deterministic_verification",
-           "evidence_note"],
+           "evidence_note", "pr_description_verified"],
     "R1": ["task_contract", "scoped_implementer_run", "deterministic_verification",
-           "evidence_bundle_or_log", "lightweight_independent_review"],
+           "evidence_bundle_or_log", "lightweight_independent_review", "pr_description_verified"],
     "R2": ["approved_delta_spec", "protected_oracle", "task_contract",
            "deterministic_verification", "task_level_independent_review",
-           "integration_or_real_interface_checks", "whole_change_acceptance_evidence"],
+           "integration_or_real_interface_checks", "whole_change_acceptance_evidence",
+           "pr_description_verified"],
     "R3": ["independent_baseline", "approved_spec_and_oracle", "protected_oracle",
            "deterministic_verification", "architecture_or_security_review",
            "protected_acceptance_tests", "security_or_e2e_evaluator", "explicit_human_approval",
-           "release_observation_plan", "rollback_or_forward_fix_evidence"],
+           "pr_description_verified"],
 }
+# For a workflow that updates a live system (a release step: release/plan.md, rollback.md), in
+# no tier today; a change can still be given them (an add_gate override).
+RELEASE_GATES = ["release_observation_plan", "rollback_or_forward_fix_evidence"]
 WAIVABLE_GATES = {"release_observation_plan"}
 
 

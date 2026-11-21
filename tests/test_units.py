@@ -596,7 +596,7 @@ def test_every_gate_has_exactly_one_check():
     from legion_orch.workflow import risk
     from legion_orch.workflow.ship import GATE_CHECKS, GateEvaluator
     all_gates = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
-    assert set(GATE_CHECKS) == all_gates
+    assert set(GATE_CHECKS) == all_gates | set(risk.RELEASE_GATES)     # those: addable only
     assert all(callable(getattr(GateEvaluator, m)) for m in GATE_CHECKS.values())
 
 
@@ -621,13 +621,14 @@ def test_role_dispatch_policy():
     assert plans["implementer"].base_at_head(False) and not plans["implementer"].base_at_head(True)
     assert not plans["reviewer"].base_at_head(False)              # judges check out detached
     assert {r for r, p in plans.items() if p.at_head} == {"baseline", "integration", "release",
-                                                          "retrospective"}
-    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {"critic"}
+                                                          "retrospective", "describer"}
+    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {
+        "critic", "pr-reviewer"}
     assert {r: p.keep for r, p in plans.items() if p.keeps} == {
         "intake": UntilGate("H-1"), "planner": UntilGate("H-E1"), "oracle": UntilGate("H-2"),
         "implementer": UntilAccepted()}
-    assert roles_where("panel") == panel | {"critic"}         # the critic judges the plan node
-    assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
+    assert roles_where("panel") == panel | {"critic", "pr-reviewer"}   # judge a node REVIEWING
+    assert roles_where("judge") == {"critic", "baseline", "integration", "pr-reviewer"} | panel
     assert not any(plans[r].keeps for r in roles_where("judge"))   # G-D4
     assert roles_where("needs_fresh_approval") == {"implementer"}
     assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
@@ -1233,3 +1234,13 @@ def test_the_checkout_steps_clone_then_detach_or_branch(tmp_path):
     step("clone.sh")
     step("branch.sh", "legion/c1/build-t1", base)
     assert step("run-agent.sh")[-3:] == ["legion/c1/build-t1", base, "legion-implementer"]
+
+
+def test_the_stored_node_schema_knows_every_node_status():
+    """A status the schema does not list fails every save of a node in it (G-W3) – in a
+    background task, where only the log shows it."""
+    import json
+
+    from legion_orch.workflow.model import NodeStatus
+    schema = json.loads((Path(__file__).parent.parent / "assets/schemas/node.json").read_text())
+    assert set(schema["oneOf"][0]["properties"]["status"]["enum"]) == {s.value for s in NodeStatus}

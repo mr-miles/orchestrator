@@ -166,7 +166,7 @@ async def _drive(ce):
     assert set(ship.gates) == {
         "approved_delta_spec", "protected_oracle", "task_contract", "deterministic_verification",
         "task_level_independent_review", "integration_or_real_interface_checks",
-        "whole_change_acceptance_evidence"}
+        "whole_change_acceptance_evidence", "pr_description_verified"}
 
     # every accepted run's sandbox is gone; documents are namespaced, versioned & immutable
     await _wait(ce, lambda: all(r.sandbox_deleted for r in ce.runs.values()
@@ -225,23 +225,18 @@ async def _r3_workflow(tmp_path):
         gates = ce.change.ship.gates
         assert ce.change.ship.verdict == "NOT_READY" and n["H-3"].status == "AWAITING_HUMAN"
         assert gates["security_or_e2e_evaluator"].status == "unevaluable"
-        assert gates["rollback_or_forward_fix_evidence"].status == "unevaluable"
         assert gates["independent_baseline"].status == "satisfied"
         assert gates["architecture_or_security_review"].status == "satisfied"
-        assert gates["release_observation_plan"].status == "satisfied"
+        assert gates["pr_description_verified"].status == "satisfied"     # described, reviewed
+        assert "release" not in n                                         # no release step
 
-        with pytest.raises(Exception, match="G-AT1"):
-            await ce.change_action("attest", "miles", {"kind": "release-observation", "verdict": "pass",
-                                                       "sources": ["file:release/plan.md@1"]})
         with pytest.raises(Exception, match="cannot be waived"):
             await ce.change_action("override", "miles", {
                 "kind": "waive_gate", "gate": "deterministic_verification",
-                "reason": "we really want to skip the checks here", "evidence": "file:release/plan.md@1"})
+                "reason": "we really want to skip the checks here", "evidence": "file:delivery/pr.md@1"})
         sec = ce.latest_att("tasks/T1/reviews/security-cycle-2.md")
         await ce.change_action("attest", "ana", {"kind": "security-evaluation", "verdict": "pass",
                                                  "sources": [sec]})
-        await ce.change_action("attest", "ana", {"kind": "rollback-evidence", "verdict": "pass",
-                                                 "sources": ["file:release/rollback.md@1"]})
         await ce.change_action("override", "miles", {
             "kind": "add_gate", "gate": "evidence_bundle_or_log",
             "reason": "keep the per-task evidence logs for audit"})
@@ -252,8 +247,8 @@ async def _r3_workflow(tmp_path):
         unsatisfied = {k: g for k, g in ship.gates.items() if g.status != "satisfied"}
         assert ship.verdict == "READY", unsatisfied
         assert ship.gates["evidence_bundle_or_log"].added
-        assert {"independent_baseline", "security_or_e2e_evaluator",
-                "rollback_or_forward_fix_evidence"} <= set(ship.human_judgement_gates)
+        assert {"independent_baseline", "security_or_e2e_evaluator"} <= set(
+            ship.human_judgement_gates)
         await _wait(ce, lambda: ce.change.status == "READY", "the change accepted")
     finally:
         for srv in servers:

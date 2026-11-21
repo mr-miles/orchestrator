@@ -64,7 +64,7 @@ def test_r3_with_an_environment_in_a_blank_repository():
         "stage:plan",
         "stage:design", "plan", "H-E1",
         "stage:oracle", "provision", SCAFFOLD, "oracle", "preflight", "baseline", "H-2",
-        "stage:delivery", TASKS, "integration", "release", "H-3"]
+        "stage:delivery", TASKS, "integration", "describe", "H-3"]
     gates = [s.gate.id for s in walk_stages(wf) if s.gate is not None]
     assert gates == ["H-1", "H-E1", "H-2", "H-3"]         # the plan stage has none of its own
     assert [n.id for s in wf.stages for n in walk(s)
@@ -75,13 +75,13 @@ def test_r2_has_no_baseline():
     wf = build_workflow(2, environment=False, blank_repo=False)
     assert ids(wf)[4:] == ["stage:plan", "stage:design", "plan", "H-E1",
                            "stage:oracle", "oracle", "preflight", "H-2",
-                           "stage:delivery", TASKS, "integration", "H-3"]
+                           "stage:delivery", TASKS, "integration", "describe", "H-3"]
 
 
 def test_low_tiers_have_no_oracle_stage_and_accept_the_change_automatically():
     wf = build_workflow(1, environment=False, blank_repo=False)
     assert ids(wf) == ["stage:requirements", "workspace", "intake", "H-1", "stage:plan", "stage:design",
-                       "plan", "H-E1", "stage:delivery", TASKS, "H-3"]
+                       "plan", "H-E1", "stage:delivery", TASKS, "describe", "H-3"]
     assert wf.stages[-1].gate.id == "H-3"             # its step checks the ship gates
     # with an environment, provisioning still needs its own stage (without a gate)
     wf = build_workflow(0, environment=True, blank_repo=False)
@@ -123,7 +123,7 @@ def test_an_r3_change_runs_stage_by_stage():
     assert [(w.node, w.reason) for w in rt.waiting()] == [("H-2", "awaiting_approval")]
     rt.approve("H-2")
     assert rt.status("stage:plan") == "done"
-    assert rt.status("build:T2") == "done" and rt.status("release") == "done"
+    assert rt.status("build:T2") == "done" and rt.status("describe") == "done"
     assert rt.waiting()[0].node == "H-3"
     rt.approve("H-3")
     assert rt.ended == "completed"

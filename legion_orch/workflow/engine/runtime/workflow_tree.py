@@ -6,7 +6,7 @@ Requirements   workspace ─ intake ──────────────�
 Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ──────────────────────────────── ◆ H-E1 "approve the plan"
   Oracle       [provision] [scaffold] [oracle preflight] [baseline] ──── ◆ H-2 "approve the oracle"
-Delivery       tasks (DAG) ─ [integration] ─ [release] ───────────────── ◆ H-3 "accept the change"
+Delivery       tasks (DAG) ─ [integration] ─ describe ───────────────── ◆ H-3 "accept the change"
 ```
 
 A gate (◆) is a step that ends its stage: its work checks what it needs and waits for a human's
@@ -19,6 +19,7 @@ from __future__ import annotations
 from ...flow import AppendRound, Parallel, Stage, StartOver, Step, Workflow
 from ...model import (
     BASELINE,
+    DESCRIBE,
     H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
@@ -30,7 +31,6 @@ from ...model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
-    RELEASE,
     WORKSPACE,
     NodeKind,
 )
@@ -51,7 +51,7 @@ NODES: dict[str, tuple[NodeKind, str]] = {
     BASELINE: (NodeKind.BASELINE, "Independent baseline"),
     H_SPEC: (HUMAN, "Approve the oracle"),
     INTEGRATION: (NodeKind.INTEGRATION, "Integration verification"),
-    RELEASE: (NodeKind.RELEASE, "Release & rollback plan"),
+    DESCRIBE: (NodeKind.DESCRIBE, "Describe: the pull request, reviewed"),
     H_CHANGE: (HUMAN, "Accept the change"),
 }
 
@@ -107,12 +107,12 @@ def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflo
     delivery_children: list[Stage | Step | Parallel] = [Parallel(TASKS, [])]
     if rank >= 2:
         delivery_children.append(Step(INTEGRATION))
-    if rank >= 3:
-        delivery_children.append(Step(RELEASE))
+    delivery_children.append(Step(DESCRIBE))      # every tier: the PR, described and reviewed
+    # a fix round runs before integration (or, without one, the description): both again after
     delivery = Stage(stage_id("delivery"), delivery_children,
                      Step(H_CHANGE, rejectable=True),
                      rework=AppendRound(round_template(rank, environment),
-                                        before=INTEGRATION if rank >= 2 else None))
+                                        before=INTEGRATION if rank >= 2 else DESCRIBE))
     return Workflow([requirements, plan, delivery])
 
 

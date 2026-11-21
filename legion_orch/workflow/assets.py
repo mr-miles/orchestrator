@@ -34,7 +34,7 @@ TEMPLATE_VARS = {
     "task_id",
     "task_title", "task_json", "cycle", "role", "context_refs", "feedback", "candidate_sha",
     "write_scope", "required_docs", "workdir", "task_soul", "environment", "fix_round", "scaffold",
-    "sandbox_tools",
+    "sandbox_tools", "change_base_sha",
 }
 ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema"}
 

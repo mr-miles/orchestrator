@@ -323,6 +323,7 @@ class AgentRuns:
             "change_id": ch.id, "goal": ch.goal, "tier": ch.tier or "unassessed",
             "repo_name": self.c.workspace,
             "base_sha": node.base_sha or ch.base_sha, "head_sha": ch.integration_head,
+            "change_base_sha": ch.base_sha or "",             # the change's whole diff from here
             "oracle_sha": ch.oracle_sha or "",
             "branch": branch or "(none: a detached checkout of the commit you work at)",
             "task_id": task.id if task else node.id,

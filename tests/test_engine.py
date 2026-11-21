@@ -40,10 +40,11 @@ async def test_r1_change_runs_to_ready(f: Flow):
     res = await f.human("H-1", "accept")
     assert (res.tier, res.panel) == ("R1", ["reviewer"])
     # no oracle stage at R1; H-3 is automatic, held only by its preconditions (the ship gates)
-    assert list(f.ce.nodes) == ["workspace", "intake", "H-1", "plan", "H-E1", "H-3"]
+    assert list(f.ce.nodes) == ["workspace", "intake", "H-1", "plan", "H-E1", "describe", "H-3"]
     await f.plan()
     await f.critique("PASS")
-    assert f.status("build:T1") == PENDING and list(f.ce.nodes)[-2:] == ["build:T1", "H-3"]
+    assert f.status("build:T1") == PENDING and list(f.ce.nodes)[-3:] == ["build:T1", "describe",
+                                                                          "H-3"]
     res = await f.human("H-E1", "approve")
     assert res.pending == [] and f.status("H-E1") == ACCEPTED
     impl = f.run("build:T1", "implementer")
@@ -491,7 +492,9 @@ async def test_task_without_verification_commands_never_passes(f: Flow):
     await f.human("H-E1", "approve")
     # R0 has no panel: a passing verification merges straight away
     await f.implement()
-    assert f.status("build:T1") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+    assert f.status("build:T1") == ACCEPTED
+    await f.describe()                                 # then the PR description, at every tier
+    assert f.ce.change.status == ChangeStatus.READY
 
 
 # ====================================================================== build: implementer guards

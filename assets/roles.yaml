@@ -71,6 +71,22 @@ integration:
   git: head
   report_schema: report-integration
   repo: true
+describer:
+  soul: pr-writer
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
+  write: ["delivery/pr.md"]
+  required_docs: ["delivery/pr.md"]
+  git: head
+  report_schema: report-none
+  repo: true
+pr-reviewer:
+  soul: pr-reviewer
+  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
+  write: ["delivery/reviews/pr-reviewer-"]
+  required_docs: ["delivery/reviews/pr-reviewer-cycle-{{cycle}}.md"]
+  git: head
+  report_schema: report-critique
+  repo: true
 release:
   soul: release-planner
   skills: [harness-contract, docstore-protocol, attestation-format]
