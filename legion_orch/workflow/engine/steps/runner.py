@@ -35,6 +35,10 @@ class StepEvents(Protocol):
     def redo(self, step: str, feedback: Feedback) -> None:
         """An earlier step must do its work again (found wanting by this one)."""
 
+    def define_tasks(self, plan: Node) -> list[str]:
+        """The plan was accepted: its task graph's build tasks become the workflow's steps (their
+        ids)."""
+
 
 class StepRunner:
     """The step layer: each node's step as it runs is an :class:`.ActiveStep`, made here and

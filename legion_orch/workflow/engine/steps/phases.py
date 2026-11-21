@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, ClassVar
 from ....sandbox import VERIFIER_PREFIX
 from ... import governance
 from ...model import (
+    DEFINING,
     MERGING,
     ORACLE,
     R_ACCEPTED,
@@ -486,22 +487,71 @@ def combined(held: dict[str, Escalate]) -> Escalate:
 
 
 
+# ---------------------------------------------------------------------------- judges
+async def judge_work(active: ActivePhase, role: str) -> Ended | None:
+    """A judge's work at the candidate (a panel's, the critic's): its agent's work, once its
+    environment is built. A judge that reported while the controller was down is concluded
+    instead. Its run is done and, accepted, its sandbox retired as soon as it ends. None: the
+    step or the phase ended first."""
+    from ..services.agent_runs import Ended
+    c, node = active.c, active.node
+    async with c.lock:
+        runs = [r for r in c.runs.values()
+                if r.node_id == node.id and r.role == role and r.cycle == node.cycle]
+        run = runs[-1] if runs else None
+        if run is not None and run.status == R_REPORTED and not run.concluded:
+            if active.stale():
+                return None
+            ended = Ended(run, await active.ctx.agents.conclude(run))
+            judged(active, ended)
+            c.save()
+            return ended
+
+    def wanted() -> bool:                                    # no review at the cycle yet
+        return node.review(node.cycle, role) is None
+    while await active.wait_until(wanted):
+        done = await agent_work(active, role, wanted=wanted, judged_sha=node.candidate_sha)
+        if done is AGAIN:
+            continue
+        if isinstance(done, Ended):
+            async with c.lock:
+                if not active.stale():
+                    judged(active, done)
+                    c.save()
+        return done                                          # type: ignore[return-value]
+    return None
+
+
+def judged(active: ActivePhase, ended: Ended) -> None:
+    """A judge's turn ended: its run is done and, accepted, its sandbox retired (once)."""
+    run = ended.run
+    if run is not None and not run.concluded:
+        run.concluded = True
+        if run.status == R_REPORTED and not isinstance(ended.result, Escalate):
+            run.status = R_ACCEPTED
+            active.step.lifecycle.sandboxes.delete_later(run.sandbox)
+
+
+def judge_resume(active: ActivePhase, escalation: Escalate) -> Resume:
+    """Where a judging phase resumes: a judge's failed run – judged again (the other judges'
+    reviews stand); a judge's BLOCKED report – where the step reworks."""
+    return Resume.REVIEWING if escalation.kind == "run_failed" else active.step.type.rework_resume
+
+
 @dataclass(frozen=True, eq=False)
 class Panel(Phase):
-    """The judges, one run per role at the candidate. Unanimous PASS at the candidate is ok;
-    otherwise rework with the HIGH findings – or, when the same HIGH findings came back two
-    cycles running, escalate (G-RV5). ``decides``: False when a judge's own handler decides
-    (the plan's critic, G-C2)."""
+    """The judges, one run per role at the candidate, in parallel. Unanimous PASS at the
+    candidate is ok – recorded as the panel's pass, what the merge checks (G-A1); otherwise
+    rework with the HIGH findings – or, when the same HIGH findings came back two cycles
+    running, escalate (G-RV5)."""
     judges: JudgeSource | tuple[str, ...]
-    decides: bool = True
     statuses: ClassVar = frozenset({REVIEWING})
     waits_in: ClassVar = frozenset()
 
     def enter(self, active: ActivePhase) -> None:
         roles = self._roles(active)
         if not roles:                        # an empty panel: nothing to wait for
-            if self.decides:
-                self._record_pass(active, ())
+            self._record_pass(active, ())
             active.step.advance(active)
             return
         active.step.move(REVIEWING)
@@ -519,9 +569,7 @@ class Panel(Phase):
         self.start(active)                                     # the judges without a review
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
-        """A judge's failed run: the panel again (its other judges' reviews stand); a judge's
-        BLOCKED report: where the step reworks."""
-        return Resume.REVIEWING if escalation.kind == "run_failed" else active.step.type.rework_resume
+        return judge_resume(active, escalation)
 
     def begin(self, active: ActivePhase) -> bool:
         return False
@@ -530,20 +578,17 @@ class Panel(Phase):
         """Every judge still to review this cycle, in parallel under the step's reservation:
         role -> what its work did (None: the step or phase ended first)."""
         roles = self._missing(active)
-        done = await asyncio.gather(*(self._judge(active, role) for role in roles))
+        done = await asyncio.gather(*(judge_work(active, role) for role in roles))
         return dict(zip(roles, done, strict=True))
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None:
         """Every judge has finished: their escalations (a failure, a BLOCKED report, a refused
-        dispatch) as one; otherwise the panel decides – or, where a judge's own handler decides
-        (the critic), its result does."""
+        dispatch) as one; otherwise the panel decides."""
         ended: dict[str, Ended | None] = done                    # type: ignore[assignment]
         if any(e is None for e in ended.values()):
             return None
         for e in ended.values():
-            self._judged(active, e)                              # once: concluded as it ended
-        if not self.decides:
-            return next((e.result for e in ended.values() if e is not None), None)
+            judged(active, e)                                    # once: concluded as it ended
         held = {role: e.result for role, e in ended.items()
                 if e is not None and isinstance(e.result, Escalate)}
         if held:
@@ -595,52 +640,105 @@ class Panel(Phase):
                             "review cycles", Resume.REWORK_CYCLE, feedback=fb)
         return Rework(fb, "review")
 
-    def _latest(self, active: ActivePhase, role: str) -> Run | None:
-        """The role's latest run at the node's cycle."""
+
+@dataclass(frozen=True, eq=False)
+class Critique(Phase):
+    """The plan's critic (G-C2): one judge of the drafted plan. Its PASS accepts the plan; its
+    REWORK sends the plan back to the planner with the critique, within the critique budget –
+    counted from the start of the plan's fix round – else a human decides."""
+    role: str = "critic"
+    statuses: ClassVar = frozenset({REVIEWING})
+    waits_in: ClassVar = frozenset()
+
+    def enter(self, active: ActivePhase) -> None:
+        active.step.move(REVIEWING)
+        self.start(active)
+
+    def start(self, active: ActivePhase) -> None:
+        if active.node.status == REVIEWING:
+            active.step.run(active)
+
+    def recover(self, active: ActivePhase) -> None:
+        self.start(active)                                     # a critic that reported is concluded
+
+    def resume(self, active: ActivePhase, answered: bool) -> None:
+        self.start(active)
+
+    def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
+        return judge_resume(active, escalation)
+
+    def begin(self, active: ActivePhase) -> bool:
+        return False
+
+    async def perform(self, active: ActivePhase) -> object:
+        return await judge_work(active, self.role)
+
+    async def result(self, active: ActivePhase, done: object) -> PhaseResult | None:
+        """The critic's escalation (a failure, a BLOCKED report, a refused dispatch), or what
+        its review says."""
+        if done is None:
+            return None
+        ended: Ended = done                                      # type: ignore[assignment]
+        judged(active, ended)
+        if isinstance(ended.result, Escalate):
+            return ended.result
         node = active.node
-        runs = [r for r in active.c.runs.values()
-                if r.node_id == node.id and r.role == role and r.cycle == node.cycle]
-        return runs[-1] if runs else None
+        review = node.review(node.cycle, self.role)
+        if review is None:
+            return None
+        if review.verdict == Verdict.PASS:
+            return Ok()
+        feedback = [Feedback(
+            cycle=node.cycle, source="critique", text="critique requested rework: "
+            + "; ".join(f"{f.severity}: {f.title}" for f in review.findings),
+            attestations=[review.doc] if review.doc else [])]
+        limit = active.c.cfg.limits.critique_max_cycles + node.extra_cycles
+        cycles = node.cycle - node.round_start_cycle + 1      # a fix round has its own budget
+        if cycles >= limit:
+            return Escalate("critique_budget", f"G-C2: {cycles} critique cycles without PASS",
+                            Resume.CRITIQUE_BUDGET, feedback=feedback)
+        return Rework(feedback, "critique", budget_checked=True)
 
-    async def _judge(self, active: ActivePhase, role: str) -> Ended | None:
-        """A judge's work at the candidate, once its environment is built. A judge that reported
-        while the controller was down is concluded instead. Its run is done and, accepted, its
-        sandbox retired as soon as it ends."""
-        from ..services.agent_runs import Ended
-        c = active.c
-        async with c.lock:
-            run = self._latest(active, role)
-            if run is not None and run.status == R_REPORTED and not run.concluded:
-                if active.stale():
-                    return None
-                ended = Ended(run, await active.ctx.agents.conclude(run))
-                self._judged(active, ended)
-                c.save()
-                return ended
 
-        def wanted() -> bool:                                # no review at the cycle yet
-            return active.node.review(active.node.cycle, role) is None
-        while await active.wait_until(wanted):
-            done = await agent_work(active, role, wanted=wanted,
-                                                judged_sha=active.node.candidate_sha)
-            if done is AGAIN:
-                continue
-            if isinstance(done, Ended):
-                async with c.lock:
-                    if not active.stale():
-                        self._judged(active, done)
-                        c.save()
-            return done                                          # type: ignore[return-value]
-        return None
+@dataclass(frozen=True, eq=False)
+class DefineTasks(Phase):
+    """What accepting the plan means: its task graph's build tasks become the workflow's steps
+    (a blank repository's scaffold first; a fix round: its new tasks only), defined by the
+    workflow (:meth:`.StepEvents.define_tasks`) under the lock. Defined again after a restart
+    in DEFINING: the workflow replaces a round's task nodes."""
+    statuses: ClassVar = frozenset({DEFINING})
+    waits_in: ClassVar = frozenset()
 
-    def _judged(self, active: ActivePhase, ended: Ended) -> None:
-        """A judge's turn ended: its run is done and, accepted, its sandbox retired."""
-        run = ended.run
-        if run is not None and not run.concluded:
-            run.concluded = True
-            if run.status == R_REPORTED and not isinstance(ended.result, Escalate):
-                run.status = R_ACCEPTED
-                active.step.lifecycle.sandboxes.delete_later(run.sandbox)
+    def enter(self, active: ActivePhase) -> None:
+        active.step.move(DEFINING)
+        self.start(active)
+
+    def start(self, active: ActivePhase) -> None:
+        if active.node.status == DEFINING:
+            active.step.run(active)
+
+    def recover(self, active: ActivePhase) -> None:
+        self.start(active)
+
+    def resume(self, active: ActivePhase, answered: bool) -> None:
+        self.start(active)
+
+    def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
+        return active.step.type.rework_resume
+
+    def begin(self, active: ActivePhase) -> bool:
+        return False
+
+    async def perform(self, active: ActivePhase) -> object:
+        return None                                      # its work is the workflow's, under the lock
+
+    async def result(self, active: ActivePhase, done: object) -> PhaseResult:
+        node = active.node
+        ids = active.step.events.define_tasks(node)
+        what = f"fix round {node.round}" if node.round > 1 else "plan"
+        active.c.event("plan", f"{what} accepted by critic; {len(ids)} build task(s)"
+                       + (f": {', '.join(ids)}" if node.round > 1 else ""), node.id)
+        return Ok()
 
 
 # ---------------------------------------------------------------------------- verification

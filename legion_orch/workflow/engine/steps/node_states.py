@@ -5,7 +5,7 @@ machine is coarse (``pending → running → done``, ``escalated``); the node's 
 ``running`` the work is:
 
     core pending    PENDING
-    core running    READY · RUNNING · VERIFYING · REVIEWING · MERGING · REWORK
+    core running    READY · RUNNING · VERIFYING · REVIEWING · DEFINING · MERGING · REWORK
     core escalated  ESCALATED (something went wrong) · AWAITING_HUMAN (a decision is due: a gate)
     core done       ACCEPTED
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 from ...model import (
     ACCEPTED,
     AWAITING_HUMAN,
+    DEFINING,
     ESCALATED,
     FAILED,
     MERGING,
@@ -36,7 +37,7 @@ from ...model import (
 )
 
 #: the node statuses inside the core's ``running``: one per phase's work
-IN_STEP = frozenset({READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK})
+IN_STEP = frozenset({READY, RUNNING, VERIFYING, REVIEWING, DEFINING, MERGING, REWORK})
 
 #: the node statuses inside the core's ``escalated``: a human decides
 WAITING = frozenset({ESCALATED, AWAITING_HUMAN})

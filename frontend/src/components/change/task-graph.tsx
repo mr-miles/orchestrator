@@ -127,7 +127,9 @@ export function TaskGraph({
                 .filter(Boolean)
                 .join(' · ')
               const title = n.kind === 'human' ? `${n.id} · ${n.title}` : n.title
-              const busy = ['RUNNING', 'VERIFYING', 'REVIEWING', 'MERGING'].includes(n.status)
+              const busy = ['RUNNING', 'VERIFYING', 'REVIEWING', 'DEFINING', 'MERGING'].includes(
+                n.status,
+              )
               return (
                 <g
                   key={n.id}

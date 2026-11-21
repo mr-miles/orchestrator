@@ -39,7 +39,7 @@ def n(status=PENDING) -> Node:
 
 def test_every_status_has_its_transitions():
     assert set(TRANSITIONS) == set(NodeStatus)
-    assert IN_STEP == {READY, RUNNING, VERIFYING, "REVIEWING", MERGING, REWORK}
+    assert IN_STEP == {READY, RUNNING, VERIFYING, "REVIEWING", "DEFINING", MERGING, REWORK}
 
 
 def test_a_step_moves_through_its_phases_and_ends_accepted():

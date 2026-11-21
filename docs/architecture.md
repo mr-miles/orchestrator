@@ -224,7 +224,7 @@ above the step layer names a phase: the runtime resumes, overrides (the step's m
 | Core step | Engine node |
 | --- | --- |
 | `pending` | `PENDING` |
-| `running` | `READY` (its first work not started yet) · `RUNNING` (its agent works) · `VERIFYING` · `REVIEWING` · `MERGING` · `REWORK` (its own loop) |
+| `running` | `READY` (its first work not started yet) · `RUNNING` (its agent works) · `VERIFYING` · `REVIEWING` · `DEFINING` (an accepted plan's tasks defined) · `MERGING` · `REWORK` (its own loop) |
 | `escalated` | `ESCALATED` (something went wrong) · `AWAITING_HUMAN` (a decision is due: a gate) |
 | `done` | `ACCEPTED` |
 
@@ -341,7 +341,9 @@ own role's environment is.
 | Phase | waits_in | perform | result |
 | --- | --- | --- | --- |
 | Produce | READY, REWORK | its agent's work (`agent_work`) | the role handler's, or the failure's escalation |
-| Panel | – | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews |
+| Panel | – | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews (a pass recorded) |
+| Critique | – | the critic's work, as a judge's | its escalation, or its review: PASS is ok, REWORK reworks the plan within the critique budget (G-C2) |
+| DefineTasks | – | – | the accepted plan's build tasks defined by the workflow (`StepEvents.define_tasks`), under the lock |
 | Verify | READY (at the head) | the verification (`verification`) | recorded, then interpreted with its policies |
 | Merge | – | – | the guards and the merge, at once under the lock |
 | BuildImages | READY | the provisioner's build and setup check | the provisioner's |
@@ -452,8 +454,11 @@ classDiagram
     }
     class Panel {
         judges: JudgeSource
-        decides: bool
     }
+    class Critique {
+        role: str
+    }
+    class DefineTasks
     class Merge
     class BuildImages
     class Approval {
@@ -488,6 +493,8 @@ classDiagram
     Phase <|-- Produce
     Phase <|-- Verify
     Phase <|-- Panel
+    Phase <|-- Critique
+    Phase <|-- DefineTasks
     Phase <|-- Merge
     Phase <|-- BuildImages
     Phase <|-- Approval
@@ -498,7 +505,7 @@ The table (`engine/steps/step_types.py`) – each kind is a list of phases:
 | Kind | Sandbox plan | Phases |
 | --- | --- | --- |
 | intake | base, kept until H-1 | Produce |
-| plan | base, kept until H-E1 | Produce → Panel(critic, decided by its handler) |
+| plan | base, kept until H-E1 | Produce → Critique → DefineTasks |
 | provision | – | BuildImages (waits for a quiet environment) |
 | oracle | branch (re-based each run), kept until H-2 | Produce (merges itself) |
 | preflight | – | Verify(acceptance commands, expect failures, at head, a failed setup → oracle rework) |
@@ -509,8 +516,9 @@ The table (`engine/steps/step_types.py`) – each kind is a list of phases:
 | retrospective | head | Produce (after the change ends, after the last reflections) |
 | gate (H-1, H-E1, H-2, H-3) | – | Approval: its checks (H-3: the ship gates), then a human's approval (H-E1, H-2: each subject); below R2, H-3 passes once its checks hold |
 
-Judges (reviewers, the critic) are not node kinds: they are the judges of a `Panel`, and get the
-`JUDGE` sandbox plan – fresh, at the commit they judge (G-D4).
+Judges (reviewers, the critic) are not node kinds: they are the judges of a `Panel` or the
+plan's `Critique` (the same judge's work, `judge_work`), and get the `JUDGE` sandbox plan –
+fresh, at the commit they judge (G-D4).
 
 ## 4. The workflow core
 

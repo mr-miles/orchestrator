@@ -63,8 +63,6 @@ class RoleContext(ChangeView, Protocol):
     def event(self, kind: str, message: str, node: str | None = None,
               run: str | None = None) -> None: ...
 
-    def define_tasks(self, plan: Node) -> list[str]:
-        """The plan (or a fix round's) passed its critique: its task graph's build tasks."""
 
     def oracle_commands(self) -> list[str]: ...
 

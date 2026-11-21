@@ -6,6 +6,7 @@ export type NodeStatus =
   | 'RUNNING'
   | 'VERIFYING'
   | 'REVIEWING'
+  | 'DEFINING'
   | 'MERGING'
   | 'REWORK'
   | 'ACCEPTED'

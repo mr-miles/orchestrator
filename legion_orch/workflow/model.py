@@ -41,6 +41,7 @@ class NodeStatus(StrEnum):
     ESCALATED = "ESCALATED"
     FAILED = "FAILED"
     AWAITING_HUMAN = "AWAITING_HUMAN"
+    DEFINING = "DEFINING"                 # an accepted plan's tasks become the workflow's steps
 
 
 class RunStatus(StrEnum):
@@ -158,8 +159,8 @@ PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKi
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
-    AWAITING_HUMAN = tuple(NodeStatus)
-ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, MERGING}
+    AWAITING_HUMAN, DEFINING = tuple(NodeStatus)
+ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, DEFINING, MERGING}
 R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(RunStatus)
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 

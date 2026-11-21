@@ -354,7 +354,8 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
                        +-- REWORK -+-------------+-----------+   (evidence-driven, cycle budget)
               any -> ESCALATED (human) -> READY | ACCEPTED (override) | FAILED
               human nodes: PENDING -> AWAITING_HUMAN -> ACCEPTED (they show their gate)
-              plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> ACCEPTED, REWORK on REWORK
+              plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> DEFINING (its tasks) -> ACCEPTED,
+                    REWORK on REWORK
 ```
 
 ### 4.3 Run status

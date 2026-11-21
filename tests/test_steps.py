@@ -55,7 +55,7 @@ def test_every_kind_is_a_list_of_phases():
     assert set(STEP_TYPES) == set(NodeKind)
     assert {k: shape(k) for k in STEP_TYPES} == {
         NodeKind.INTAKE: ["Produce"],
-        PLAN: ["Produce", "Panel"],
+        PLAN: ["Produce", "Critique", "DefineTasks"],
         PROVISION: ["BuildImages"],
         ORACLE: ["Produce"],
         PREFLIGHT: ["Verify"],
@@ -104,8 +104,7 @@ async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Fl
         panel = STEP_TYPES[kind].phase(Panel)
         return tuple(panel.judges(f.ce)) if panel else ()
     judges = {k: judges(k) for k in STEP_TYPES if judges(k)}
-    assert judges == {PLAN: ("critic",), BUILD: ("reviewer", "security")}
-    assert not STEP_TYPES[PLAN].phase(Panel).decides        # the critic's handler decides
+    assert judges == {BUILD: ("reviewer", "security")}       # the plan's critic: its own phase
 
 
 @scenario()
@@ -243,16 +242,28 @@ async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
 
 @scenario()
 async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
-    from legion_orch.workflow.engine.steps.phases import Escalate, Rework
-    from legion_orch.workflow.model import Feedback, Resume
+    from legion_orch.workflow.engine.steps.phases import Escalate
+    from legion_orch.workflow.model import (
+        Confidence,
+        Finding,
+        Resume,
+        ReviewResult,
+        Severity,
+        Verdict,
+    )
     capture_work(f)
     n = node(f, NodeKind.INTEGRATION)
     await report(f, n, Escalate("integration_failed", "FAIL", Resume.READY, run="r1"), "integration")
     assert n.status == ESCALATED and n.escalation.run == "r1"
-    p = node(f, PLAN, status=REVIEWING)                  # the critic's verdict at the panel
-    fb = [Feedback(cycle=1, source="critique", text="thin")]
-    await report(f, p, Rework(fb, "critique", budget_checked=True), "critic")
-    assert (p.status, p.cycle, p.feedback) == (REWORK, 2, fb)
+    p = node(f, PLAN, status=REVIEWING)                  # the critic's REWORK, at the critique
+    p.reviews[p.review_key(1, "critic")] = ReviewResult(
+        verdict=Verdict.REWORK, run="r-critic", doc="file:critique@1",
+        findings=[Finding(severity=Severity.BLOCKER, confidence=Confidence.HIGH, title="thin",
+                          fix="more")])
+    await report(f, p, None, "critic")                   # its handler recorded it
+    assert (p.status, p.cycle) == (REWORK, 2)
+    assert p.feedback[-1].source == "critique" and "BLOCKER: thin" in p.feedback[-1].text
+    assert p.feedback[-1].attestations == ["file:critique@1"]
 
 
 @scenario()

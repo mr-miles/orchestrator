@@ -19,7 +19,6 @@ from ..model import (
     LIVE_RUN,
     Change,
     FailureSource,
-    Node,
     Run,
     SetupPin,
 )
@@ -119,9 +118,6 @@ class ChangeEngine(ChangeCore):
         return self._lifecycle.stored_log(run_id)
 
     # ------------------------------------------------------------------ RoleContext
-    def define_tasks(self, plan: Node) -> list[str]:
-        return self._flow.define_tasks(plan)
-
     # ------------------------------------------------------------------ the workflow
     def before_save(self) -> None:
         self._flow.persist()
