@@ -355,8 +355,8 @@ class ActiveStep:
     # ------------------------------------------------------------------ its boundaries
     def accept(self) -> None:
         """Its work is done: its runs are accepted, and the workflow is told."""
-        self.release()
-        self.states.accept(self.node)
+        self.states.accept(self.node)        # before its reservation goes back: work waiting
+        self.release()                       # for what it built is served on that release
         self.lifecycle.accept_runs(self.node)
         self.events.completed(self.node)
 

@@ -102,13 +102,19 @@ class Outcome:
 
 @dataclass
 class Work:
-    """A session and its commands, executed in order. ``prepare`` (in the work's slot, before
-    the session opens) may fill them in from the state at that moment; False: the work is no
-    longer wanted and nothing runs. ``log``: told of each command's result."""
+    """A session and its commands, executed in order. ``ready``: whether it can start now (its
+    sandbox's environment is not being built again) – the dispatcher gives it a slot only then.
+    ``prepare`` (in the work's slot, before the session opens) may fill them in from the state
+    at that moment; False: the work is no longer wanted and nothing runs. ``log``: told of
+    each command's result."""
     session: Session | None = None
     commands: list[Command] = field(default_factory=list)
     prepare: Callable[[Work], Awaitable[bool]] | None = None
     log: Callable[[Command, CommandResult], None] | None = None
+    ready: Callable[[], bool] | None = None
+
+    def can_start(self) -> bool:
+        return self.ready is None or self.ready()
 
     async def execute(self) -> Outcome:
         if self.prepare is not None and not await self.prepare(self):

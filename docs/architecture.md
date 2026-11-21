@@ -71,7 +71,7 @@ flowchart TB
     types --> agent & phases & sbx
     phases --> agents & prov & sbx
     phases -- "Work" --> disp
-    disp -- "execute()" --> work
+    disp -- "can_start(), execute()" --> work
     work --> sbx
     agents --> reports
     agent --> reports
@@ -107,8 +107,9 @@ the layers above it (the import contracts in `pyproject.toml`, checked by `lint-
 
 `compose.py` builds a change's layers; `change.py` (the `ChangeEngine` facade) and
 `controller.py` sit on top. The step layer tells the runtime what happened through a protocol it
-defines (`StepEvents`), and the sandbox layer learns which plan applies through one it defines
-(`Plans`): neither imports the layer above.
+defines (`StepEvents`), and the sandbox layer learns which plan applies, and whether a role's
+environment is being built, through ones it defines (`Plans`, `Environments`): neither imports
+the layer above.
 
 ## 2. Who decides what: control cascades through the layers
 
@@ -139,7 +140,7 @@ The participants, left to right:
 | **FlowRuntime** | Workflow: the stage rules | `engine/runtime/flow_runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
 | **StepRunner**, **ActiveStep** | Steps | `engine/steps/` (`runner.py`, `active.py`, `node_states.py`, `step_types.py`) | The runner takes the runtime's calls and does what spans steps (a send-back's undoing, retries after a restart, housekeeping); each node's step as it runs is an `ActiveStep`: moving the node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
 | **Phases** | Orchestrator layer of a step | `engine/steps/phases.py` (their services, `engine/services/`: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
-| **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
+| **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.can_start()` and `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
 | **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/services/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
 
 A build task, end to end:
@@ -264,8 +265,17 @@ through its role handler. An agent's work is prepared in its slot: its run recor
 then (or a guard refuses it), so a run never waits for a slot.
 
 **The dispatcher** (`engine/base/dispatch.py`, one for every change) runs work within
-`limits.max_parallel` – agent runs and verifier sandboxes – first come, first served. It calls
-only `execute()`.
+`limits.max_parallel` – agent runs and verifier sandboxes – first come, first served, once the
+work **can start** (`can_start()`): an agent's or a verifier's work cannot while its role's
+environment is being built again, so no sandbox starts from the old build. That is decided
+where the work is made – `AgentRuns.work` for its role, `Sandboxes.verifier_work` for the
+verifier – by the sandbox layer, which asks the provisioner through a protocol it defines
+(`Environments`), as it learns which plan applies through `Plans`. Work that cannot
+start keeps its place and holds no slot – a step's idle reserved slot goes back meanwhile – and
+the dispatcher looks again whenever a slot or a reservation changes: provisioning ends with its
+step accepted and its reservation released, so what waited for the new build starts then.
+(Provisioning's own setup check runs in the build it checks: it can always start.) It calls
+only `can_start()` and `execute()`.
 
 **A reservation** is a step's claim on one slot, held by the step runner and given to the
 step's phases with the dispatcher (a `StepDispatcher`). It binds a slot at the step's first
@@ -273,7 +283,7 @@ work and keeps it while work follows straight on – the agent's run, its verifi
 judges – so the verification of finished work never queues behind other steps' new work. Work
 dispatched in parallel under it (a panel's judges) takes free unreserved slots or the reserved
 one as the work in it completes. While the step **waits on its conditions** (a rework waiting
-for the environment or for an overlapping task) it gives the slot back, so a waiting step never
+for an overlapping task, say) it gives the slot back, so a waiting step never
 starves the work it waits for; its next work binds one again. The reservation is **released**
 when the step is done, sent back, escalated or ended: work still waiting under it is withdrawn,
 its slot goes back once the work in it completes, and the step's sandboxes are stopped once
@@ -317,20 +327,22 @@ result, whether its work still counts, and whether it may begin (`ready`) – an
 resumed, where it resumes after a service's escalation, and its work's `begin`, `perform` and
 `result` (a kind that leaves one out cannot be made).
 
-**Ready** is the same for every phase, from two facts each declaration states: in the statuses
-where its work is the step's first (`waits_in`) the step's waits hold (`dispatch_when`: no
-file overlap, a quiet environment, the reflections done), and the environment of the sandbox
-its work uses (`uses`) is built. While a phase is not ready the step's reservation holds no
-slot; an agent's work whose slot comes once it is no longer ready is skipped, and waits again.
+**Ready** is the same for every phase, from what each declaration states: in the statuses where
+its work is the step's first (`waits_in`) the step's waits hold (`dispatch_when`: no file
+overlap, a quiet environment, the reflections done). While a phase is not ready the step's
+reservation holds no slot; an agent's work whose slot comes once it is no longer ready is
+skipped, and waits again. Whether its sandbox's environment is built is its work's own (the
+dispatcher starts work only once it can, above) – so a panel's judges each start once their
+own role's environment is.
 
-| Phase | waits_in · uses | perform | result |
+| Phase | waits_in | perform | result |
 | --- | --- | --- | --- |
-| Produce | READY, REWORK · its role | its agent's work (`agent_work`) | the role handler's, or the failure's escalation |
-| Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews |
-| Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then interpreted with its policies |
-| Merge | – · – | – | the guards and the merge, at once under the lock |
-| BuildImages | READY · – | the provisioner's build and setup check | the provisioner's |
-| Approval | – · – | its checks evaluated | approved, still pending, or preconditions unmet |
+| Produce | READY, REWORK | its agent's work (`agent_work`) | the role handler's, or the failure's escalation |
+| Panel | – | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews |
+| Verify | READY (at the head) | the verification (`verification`) | recorded, then interpreted with its policies |
+| Merge | – | – | the guards and the merge, at once under the lock |
+| BuildImages | READY | the provisioner's build and setup check | the provisioner's |
+| Approval | – | its checks evaluated | approved, still pending, or preconditions unmet |
 
 `enter` is the move into a phase (its first status, then `start`); `start` begins its work for
 the status the node is in – on entering, resuming and after a restart.
@@ -400,7 +412,6 @@ classDiagram
         <<abstract>>
         statuses: frozenset~NodeStatus~
         waits_in: frozenset~NodeStatus~
-        uses: str
         enter(active)* None
         start(active)* None
         recover(active)* None
@@ -575,7 +586,7 @@ stateDiagram-v2
 | Node states | A declared machine nested in the core's step states; only the step runner changes a status or an escalation, only the runtime the change's status | `tests/test_node_states.py` (scans for any other write) |
 | Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
 | Per-kind knowledge | Only `STEP_TYPES` and `GATE_TYPES` (and what approving each gate records, in `HumanGates`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
-| Dispatcher | Runs opaque work (`execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |
+| Dispatcher | Runs opaque work (`can_start()`, `execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |
 | Sandboxes | One owner (`Sandboxes`): locks, sessions, the preparation's commands, pause, hold, suspension, retirement | `tests/test_sandboxes.py` |
 | UI | Renders the actions the core offers and the stages it lists; knows no node kinds for actions | `frontend/src/App.test.tsx` |
 

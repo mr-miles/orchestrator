@@ -82,6 +82,14 @@ class SandboxPlan:
 JUDGE = SandboxPlan(Checkout.CANDIDATE)
 
 
+class Environments(Protocol):
+    """Whether a role's environment is being built again – the provisioner knows; the sandbox
+    layer is given it, so no sandbox starts from the old build."""
+
+    def waits_for_environment(self, role: str) -> bool:
+        """``role``'s sandboxes wait: its environment is being built again."""
+
+
 class Plans(Protocol):
     """Which plan applies – the step types know (:class:`.steps.StepPlans`); the sandbox layer
     and the agent runs are given it, so they never ask the step layer."""

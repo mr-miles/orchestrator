@@ -28,7 +28,7 @@ from ...setup import SETUP_COMMAND
 from ..base.auth import VerifierGrant
 from ..base.core import ChangeCore
 from ..base.work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
-from .plan import Plans
+from .plan import Environments, Plans
 from .reflect import Reflector
 
 
@@ -151,11 +151,16 @@ class VerifierSession:
 class Sandboxes:
     def __init__(self, core: ChangeCore, plans: Plans):
         self.c, self.plans = core, plans
+        self.environments: Environments | None = None    # set once the provisioner exists
         self.reflector = Reflector(core, self)
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
         self.to_suspend: set[str] = set()    # to stop once nothing live uses them
         self.verifiers = 0                   # verifier sandboxes in use
         self._locks: dict[str, asyncio.Lock] = {}
+
+    def environment_built(self, role: str) -> bool:
+        """A sandbox of ``role`` may start: its environment is not being built again."""
+        return self.environments is None or not self.environments.waits_for_environment(role)
 
     def lock(self, name: str) -> asyncio.Lock:
         """Serialises what happens to one sandbox (a rework's launch against a pause)."""
@@ -287,10 +292,13 @@ class Sandboxes:
         return Script(SETUP_COMMAND, SETUP, required, "mise-setup.sh", (pin,),
                       timeout=self.c.cfg.limits.setup_timeout_s)
 
-    def verifier_work(self, name: str, label: str, sha: str, commands: tuple[str, ...]) -> Work:
+    def verifier_work(self, name: str, label: str, sha: str, commands: tuple[str, ...],
+                      in_new_build: bool = False) -> Work:
         """A verification: a fresh verifier sandbox checked out at ``sha`` (the same steps as an
         agent's detached checkout), the repository's setup (§5.3c, G-V3: a failure stops here),
-        then each command – all of them, whatever their exit codes."""
+        then each command – all of them, whatever their exit codes. It starts once the
+        verifier's environment is built – but ``in_new_build`` (provisioning's own check runs in
+        the build it checks)."""
         timeout = self.c.cfg.limits.verify_timeout_s
         pin = self.c.change.setup_pin
         cmds: list[Command] = [Script("clone.sh", PREPARE, True, "clone.sh", in_work=False),
@@ -298,7 +306,8 @@ class Sandboxes:
         if pin:
             cmds.append(self.setup(pin.blob, required=True))
         cmds += [Shell(cmd, COMMAND, False, timeout=timeout) for cmd in commands]
-        return Work(VerifierSession(self, name, label), cmds)
+        ready = None if in_new_build else (lambda: self.environment_built(VERIFIER))
+        return Work(VerifierSession(self, name, label), cmds, ready=ready)
 
     def _should_pause(self, run: Run) -> bool:
         node = self.c.nodes.get(run.node_id)

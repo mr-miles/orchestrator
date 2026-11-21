@@ -14,8 +14,11 @@ from legion_orch.workflow.engine.base.dispatch import Dispatcher, Withdrawn
 class Job:
     """Work that runs until the test lets it finish."""
 
-    def __init__(self, name: str, log: list[str]):
-        self.name, self.log, self.done = name, log, asyncio.Event()
+    def __init__(self, name: str, log: list[str], ready=lambda: True):
+        self.name, self.log, self.done, self.ready = name, log, asyncio.Event(), ready
+
+    def can_start(self) -> bool:
+        return self.ready()
 
     async def execute(self) -> str:
         self.log.append(self.name)
@@ -169,3 +172,33 @@ async def test_cancelled_waiting_work_gives_up_its_place():
     a.done.set()
     await ta
     assert d.in_use == 0 and log == ["a"]
+
+
+@sync
+async def test_work_that_cannot_start_keeps_its_place_and_holds_no_slot():
+    """Work waiting for its environment is passed over, its step's idle reserved slot goes back
+    meanwhile, and it starts at the next change of slots or reservations once it can – as
+    provisioning ends with its step's reservation released."""
+    d, log, built = Dispatcher(1), [], [False]
+    step, provision = d.reserve(), d.reserve()
+    first = Job("first", log)
+    t1 = asyncio.ensure_future(d.run(first, step))
+    await tick()
+    first.done.set()
+    await t1                                          # the step holds its slot, idle
+    judge = Job("judge", log, ready=lambda: built[0])
+    t2 = asyncio.ensure_future(d.run(judge, step))    # waits for the environment
+    await tick()
+    assert log == ["first"] and not step.bound and d.in_use == 0      # its slot went back
+    check = Job("setup check", log)                   # provisioning's own work: it can start
+    t3 = asyncio.ensure_future(d.run(check, provision))
+    await tick()
+    assert log == ["first", "setup check"]
+    built[0] = True                                   # provisioning recorded as accepted …
+    check.done.set()
+    await t3
+    provision.release()                               # … then its reservation goes back
+    await tick()
+    assert log == ["first", "setup check", "judge"]
+    judge.done.set()
+    assert await t2 == "judge"

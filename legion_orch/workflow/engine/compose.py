@@ -31,6 +31,7 @@ def compose(ce: ChangeEngine) -> None:
     agents = AgentRuns(ce, lifecycle, sandboxes, roles=ce)
     phases = PhaseContext(ce, sandboxes, ce.svc.dispatcher, agents)
     provisioner = Provisioner(ce, lifecycle, sandboxes, ce.svc.dispatcher)
+    sandboxes.environments = provisioner          # whether a role's environment is built
     reports = Reports(ce, lifecycle, roles=ce)
     agents.reports = reports
     gates = HumanGates(ce, lifecycle)

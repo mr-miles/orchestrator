@@ -9,7 +9,7 @@ A phase knows three things, and nothing about which kind of node it serves:
 
 * **how it is entered** (``enter``): the node's status while the phase runs;
 * **its work** (:meth:`ActivePhase.task`, the same shape for every phase): once it is
-  ``ready`` (the same for every kind, from the ``waits_in`` and ``uses`` it declares) it
+  ``ready`` (the same for every kind, from the ``waits_in`` it declares) it
   ``begin``s (its status), ``perform``s its work (through the step's dispatcher, a check) and
   then – under the lock – its ``result`` says what that means. Every hook is abstract: each
   kind says them all itself;
@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ....sandbox import VERIFIER_PREFIX
 from ... import governance
-from ...environment import VERIFIER
 from ...model import (
     MERGING,
     ORACLE,
@@ -102,13 +101,11 @@ class Phase(ABC):
     implements every hook; a hook is given the phase as it runs for a node (``active``: an
     :class:`ActivePhase` – the node's step, the node, the step's dispatcher), so the phase
     itself holds nothing of any node. Whether its work may begin is the same for every kind
-    (:meth:`ActivePhase.ready`), from the ``waits_in`` and ``uses`` each kind declares."""
+    (:meth:`ActivePhase.ready`), from the ``waits_in`` each kind declares."""
     #: the node statuses while this phase is the node's current one
     statuses: ClassVar[frozenset[NodeStatus]]
     #: the statuses in which its work is the step's first, so the step's waits must hold
     waits_in: ClassVar[frozenset[NodeStatus]]
-    #: whose environment its work's sandbox uses (a role, the verifier; None: no sandbox)
-    uses: ClassVar[str | None]
 
     @abstractmethod
     def enter(self, active: ActivePhase) -> None:
@@ -196,13 +193,11 @@ class ActivePhase:
     # ------------------------------------------------------------ its work, the same for all
     def ready(self) -> bool:
         """Its work may begin – the same for every kind, from what its phase declares: as the
-        step's first work (``waits_in``) the step's waits hold, and the environment its sandbox
-        uses (``uses``) is built – none while it is built again. Checked now and at each save;
-        while it does not hold, the step holds no slot."""
-        phase = self.phase
-        if self.node.status in phase.waits_in and not self.step.waits_hold():
-            return False
-        return phase.uses is None or not self.step.provisioner.waits_for_environment(phase.uses)
+        step's first work (``waits_in``) the step's waits hold. Checked now and at each save;
+        while it does not hold, the step holds no slot. (Whether its sandbox's environment is
+        built is its work's own: the dispatcher starts work only once it can.)"""
+        return self.node.status not in self.phase.waits_in or self.step.waits_hold()
+
 
     async def task(self) -> None:
         """The phase's work: once it is :meth:`ready` (at once, or at a later save – the step's
@@ -418,10 +413,6 @@ class Produce(Phase):
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
     waits_in: ClassVar = frozenset({READY, REWORK})        # each run of its agent
 
-    @property
-    def uses(self) -> str:                                  # type: ignore[override]
-        return self.role
-
     def enter(self, active: ActivePhase) -> None:
         if active.node.status != REWORK:                # a rework continues in REWORK
             active.step.move(READY)
@@ -504,7 +495,6 @@ class Panel(Phase):
     decides: bool = True
     statuses: ClassVar = frozenset({REVIEWING})
     waits_in: ClassVar = frozenset()
-    uses: ClassVar = None                                   # each judge: its own role's
 
     def enter(self, active: ActivePhase) -> None:
         roles = self._roles(active)
@@ -608,9 +598,8 @@ class Panel(Phase):
                 c.save()
                 return ended
 
-        def wanted() -> bool:
-            return active.node.review(active.node.cycle, role) is None \
-                and not active.step.provisioner.waits_for_environment(role)
+        def wanted() -> bool:                                # no review at the cycle yet
+            return active.node.review(active.node.cycle, role) is None
         while await active.wait_until(wanted):
             done = await agent_work(active, role, wanted=wanted,
                                                 judged_sha=active.node.candidate_sha)
@@ -653,7 +642,6 @@ class Verify(Phase):
     on_setup_failed: SetupFailurePolicy | None = None
     notes: Notes | None = None
     waits_in: ClassVar = frozenset({READY})                 # at the head: the step's first work
-    uses: ClassVar = VERIFIER
 
     @property
     def statuses(self) -> frozenset[NodeStatus]:  # type: ignore[override]
@@ -809,7 +797,6 @@ class Merge(Phase):
     The judges whose PASS it requires are its step's panel's."""
     statuses: ClassVar = frozenset({MERGING})
     waits_in: ClassVar = frozenset()
-    uses: ClassVar = None
 
     def enter(self, active: ActivePhase) -> None:
         active.step.move(MERGING)
@@ -888,7 +875,6 @@ class BuildImages(Phase):
     environment's images and checks the setup (G-PV1, G-PV3); its result is the phase's."""
     statuses: ClassVar = frozenset({READY, RUNNING})
     waits_in: ClassVar = frozenset({READY})                 # the environment is quiet
-    uses: ClassVar = None
 
     def enter(self, active: ActivePhase) -> None:
         active.step.move(READY)
@@ -1010,7 +996,6 @@ class Approval(Phase):
     automatic: AutomaticBelow | None = None
     statuses: ClassVar = frozenset({READY, RUNNING})
     waits_in: ClassVar = frozenset()
-    uses: ClassVar = None
 
     def enter(self, active: ActivePhase) -> None:
         active.step.move(READY)

@@ -172,7 +172,8 @@ class AgentRuns:
                              AgentTurn("the agent's turn", AGENT, True, runs=self, of=run)]
             work.log = lambda cmd, r: self._log(run, cmd, r)
             return True
-        return Work(prepare=prepare), prepared
+        # it starts once its role's environment is built (no sandbox from the old build)
+        return Work(prepare=prepare, ready=lambda: self.sandboxes.environment_built(role)), prepared
 
     def finish(self, run: Run, outcome: Outcome) -> None:
         """Under the lock, however the work ended (also when its step no longer wants the

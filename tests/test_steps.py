@@ -142,16 +142,16 @@ async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
 
 def test_every_phase_says_every_hook_and_what_its_readiness_needs():
     """A phase kind implements every hook (none has a default) but ready, the same for all from
-    the waits_in and uses it declares; a kind that leaves a hook out cannot be made."""
+    the waits_in it declares; a kind that leaves a hook out cannot be made."""
     import pytest
 
     from legion_orch.workflow.engine.steps import GATE_TYPES
     for p in {p for t in (*STEP_TYPES.values(), *GATE_TYPES.values()) for p in t.phases}:
         assert not type(p).__abstractmethods__, type(p).__name__
-        assert hasattr(p, "waits_in") and hasattr(p, "uses"), type(p).__name__   # for ready()
+        assert hasattr(p, "waits_in"), type(p).__name__                       # for ready()
 
     class Unfinished(Phase):
-        statuses, waits_in, uses = frozenset(), frozenset(), None
+        statuses, waits_in = frozenset(), frozenset()
     with pytest.raises(TypeError, match="abstract"):
         Unfinished()
 

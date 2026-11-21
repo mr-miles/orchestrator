@@ -1,16 +1,18 @@
 """The dispatcher: runs work within the sandbox limit (plan: state-model.md, addendum).
 
 ``limits.max_parallel`` bounds the work running at once across every change – an agent's run, a
-verifier sandbox. The dispatcher is given work it does not look into: anything with an
-``async execute()``. It runs each piece when a slot is free and returns its result; it knows nothing
-of agents, verifications, nodes or steps (a :class:`.work.Work` is a sandbox session and its
-commands; the dispatcher only calls its ``execute``).
+verifier sandbox. The dispatcher is given work it does not look into: anything that says whether
+it ``can_start()`` and has an ``async execute()``. It runs each piece once a slot is free and the
+work can start (its sandbox's environment is not being built again), and returns its result;
+it knows nothing of agents, verifications, nodes or steps (a :class:`.work.Work` is a sandbox
+session and its commands). Work that cannot start yet keeps its place and holds no slot; the
+dispatcher looks again whenever a slot or a reservation changes.
 
 **Reservations.** A step holds one, so the work of its phases – its agent's run, then its
 verification, then its judges – follows on in the same slot instead of queueing behind other
 steps' new work. A reservation takes a real slot only when its first work runs, and keeps it
 between pieces of work that follow straight on. While its step waits on its conditions (a
-rework waiting for the environment, say) it gives the slot back (:meth:`Dispatcher.idle`): a
+rework waiting for an overlapping task, say) it gives the slot back (:meth:`Dispatcher.idle`): a
 waiting step holds no slot, so it cannot starve the work it waits for. Its next work binds a
 slot again. It is released when the step is done, sent back or escalated. Work
 dispatched under a reservation while its slot is busy (a panel's judges, in parallel) waits for
@@ -27,7 +29,9 @@ T = TypeVar("T")
 
 
 class Executable(Protocol[T]):
-    """What the dispatcher runs (it calls nothing else on it)."""
+    """What the dispatcher runs: given a slot once it can start (it calls nothing else)."""
+
+    def can_start(self) -> bool: ...
 
     async def execute(self) -> T: ...
 
@@ -53,13 +57,13 @@ class Dispatcher:
     def __init__(self, limit: int):
         self.limit = limit
         self.in_use = 0             # slots taken: work in unreserved slots, bound reservations
-        self._waiting: list[tuple[int, Reservation | None, asyncio.Future[bool]]] = []
+        self._waiting: list[tuple[int, Reservation | None, asyncio.Future[bool], Executable]] = []
         self._order = itertools.count()
 
     @property
     def waiting(self) -> int:
         """Work waiting for a slot."""
-        return sum(1 for *_, f in self._waiting if not f.done())
+        return sum(1 for _, _, f, _ in self._waiting if not f.done())
 
     def reserve(self) -> Reservation:
         """A reservation; it takes no slot until its first work runs."""
@@ -71,7 +75,7 @@ class Dispatcher:
         if reservation is not None and reservation.released:
             raise Withdrawn()
         fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-        self._waiting.append((next(self._order), reservation, fut))
+        self._waiting.append((next(self._order), reservation, fut, work))
         self._grant()
         try:
             reserved = await asyncio.shield(fut)
@@ -101,7 +105,7 @@ class Dispatcher:
         if reservation.released:
             return
         reservation.released = True
-        for _, r, fut in self._waiting:
+        for _, r, fut, _ in self._waiting:
             if r is reservation and not fut.done():
                 fut.set_exception(Withdrawn())
         self._prune()
@@ -112,10 +116,19 @@ class Dispatcher:
 
     # ------------------------------------------------------------------ slots
     def _grant(self) -> None:
-        """Serve the waiting work in order: into its idle reserved slot, else a free one (which
-        a reservation without a slot then keeps)."""
-        for _, r, fut in self._waiting:
-            if fut.done():
+        """Serve the waiting work that can start, in order: into its idle reserved slot, else a
+        free one (which a reservation without a slot then keeps). Work that cannot start yet
+        keeps its place, and an idle reserved slot whose work cannot start goes back – a step
+        waiting for its environment holds no slot. Called whenever a slot or a reservation
+        changes: provisioning ends with its step's reservation released, so work waiting for
+        the environment it builds is served then."""
+        for r in {r for _, r, fut, _ in self._waiting if r is not None and not fut.done()}:
+            if r.bound and not r.busy and not any(
+                    w.can_start() for _, rr, f, w in self._waiting if rr is r and not f.done()):
+                r.bound = False
+                self.in_use -= 1
+        for _, r, fut, work in self._waiting:
+            if fut.done() or not work.can_start():
                 continue
             if r is not None and r.bound and not r.busy:
                 r.busy = True

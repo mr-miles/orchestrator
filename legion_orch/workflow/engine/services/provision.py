@@ -159,7 +159,7 @@ class Provisioner:
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
         work = self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
-                                            c.change.integration_head, ())
+                                            c.change.integration_head, (), in_new_build=True)
         outcome = await (dispatch or self.dispatcher).run(work)
         async with c.lock:
             if not current():
