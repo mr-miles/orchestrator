@@ -312,12 +312,12 @@ def test_AC_6_gate_steps_show_awaiting_human_then_resumed(runs, gate):
     assert attr(s, "legion.outcome") == "accepted"
 
 
-def test_AC_6_a_send_back_ends_the_step_rework_and_starts_a_new_one(runs):
+def test_AC_6_a_send_back_keeps_the_finished_step_accepted_and_starts_a_new_one(runs):
     r = result(runs, "sendback")
     assert r["final"]["status"] == "READY"
     plans = steps(r, "plan")
     assert len(plans) >= 2, [(s["start"], attr(s, "legion.outcome")) for s in plans]
-    assert attr(plans[0], "legion.outcome") == "rework"
+    assert attr(plans[0], "legion.outcome") == "accepted" and plans[0]["end"] > 0
     assert plans[1]["span_id"] != plans[0]["span_id"] and plans[1]["start"] >= plans[0]["end"]
     assert attr(plans[-1], "legion.outcome") == "accepted"
 
