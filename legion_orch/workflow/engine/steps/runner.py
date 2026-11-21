@@ -7,11 +7,13 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Protocol
 
-from ...model import Feedback, Node, Run
+from ....telemetry import NodeMove
+from ...model import ACCEPTED, AWAITING_HUMAN, FAILED, PENDING, Feedback, Node, NodeStatus, Run
 from ..base.core import ChangeCore
 from .active import ActiveStep
 from .node_states import WAITING, NodeStates
 from .phases import PhaseContext
+from .step_types import step_for
 
 if TYPE_CHECKING:
     from ..services.provision import Provisioner
@@ -52,10 +54,29 @@ class StepRunner:
     def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
                  provisioner: Provisioner):
         self.c, self.ctx, self.lifecycle, self.provisioner = core, ctx, lifecycle, provisioner
-        self.states = NodeStates()
+        self.states = NodeStates(self._moved)
         self.runtime: StepEvents = None  # type: ignore[assignment]   # set once it exists
         self._active: dict[str, ActiveStep] = {}     # node -> its step as it runs
         self.waiting = 0                     # phase tasks waiting on the change's state
+
+    def _moved(self, node: Node, before: NodeStatus | None, to: NodeStatus) -> None:
+        """A node's status changed (``before`` None: adopted after a restart): tell the trace."""
+        step = step_for(node)
+        phase = step.phase_in(to)
+        order = (next(i for i, p in enumerate(step.phases) if p is phase)
+                 if phase is not None else None)
+        esc = node.escalation if to in WAITING else None
+        self.c.trace.node(NodeMove(
+            node_id=node.id, kind=str(node.kind), cycle=node.cycle,
+            before=None if before is None else str(before), to=str(to),
+            phase=type(phase).__name__ if phase is not None else None, order=order,
+            escalation_kind=esc.kind if esc is not None else None,
+            expected=to == AWAITING_HUMAN))
+
+    def adopted(self, node: Node) -> None:
+        """After a restart: the node's current status, as a move from nothing."""
+        if node.status not in (PENDING, ACCEPTED, FAILED):
+            self._moved(node, None, node.status)
 
     def of(self, node: Node) -> ActiveStep:
         """The node's step as it runs (a node replaced – a fix round's – gets a new one)."""
