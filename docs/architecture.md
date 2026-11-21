@@ -484,7 +484,6 @@ classDiagram
     StepType *-- Wait
     StepType *-- Reset
     Phase <|-- Produce
-    Merge ..> Panel : requires its judges' PASS
     Phase <|-- Verify
     Phase <|-- Panel
     Phase <|-- Merge
