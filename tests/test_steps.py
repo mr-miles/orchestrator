@@ -100,9 +100,10 @@ def test_waits_and_resume_points():
 @scenario()
 async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Flow):
     f.ce.change.panel = ["reviewer", "security"]
-    def judges(kind):
-        return f.ce._runner.of(Node(id=f"N-{kind}", kind=kind, title="x")).judges()
-    judges = {k: judges(k) for k in STEP_TYPES if k != HUMAN and judges(k)}   # a gate: no panel
+    def judges(kind):                                   # the panel's judges policy, resolved
+        panel = STEP_TYPES[kind].phase(Panel)
+        return tuple(panel.judges(f.ce)) if panel else ()
+    judges = {k: judges(k) for k in STEP_TYPES if judges(k)}
     assert judges == {PLAN: ("critic",), BUILD: ("reviewer", "security")}
     assert not STEP_TYPES[PLAN].phase(Panel).decides        # the critic's handler decides
 

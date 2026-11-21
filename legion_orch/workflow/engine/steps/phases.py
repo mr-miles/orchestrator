@@ -49,6 +49,7 @@ from ...model import (
     Node,
     NodeStatus,
     Oracle,
+    PanelDecision,
     Readiness,
     Resume,
     Run,
@@ -499,6 +500,8 @@ class Panel(Phase):
     def enter(self, active: ActivePhase) -> None:
         roles = self._roles(active)
         if not roles:                        # an empty panel: nothing to wait for
+            if self.decides:
+                self._record_pass(active, ())
             active.step.advance(active)
             return
         active.step.move(REVIEWING)
@@ -543,7 +546,24 @@ class Panel(Phase):
             return next((e.result for e in ended.values() if e is not None), None)
         held = {role: e.result for role, e in ended.items()
                 if e is not None and isinstance(e.result, Escalate)}
-        return combined(held) if held else self._decide(active)
+        if held:
+            return combined(held)
+        decision = self._decide(active)
+        if isinstance(decision, Ok):
+            self._record_pass(active, self._roles(active))
+        return decision
+
+    def _record_pass(self, active: ActivePhase, roles: tuple[str, ...]) -> None:
+        """The evidence of its pass: which judges sat, at which candidate and cycle, citing
+        their reviews – stored, and kept on the node (what the merge checks, G-A1)."""
+        node, c = active.node, active.c
+        reviews = [r.doc for r in (node.review(node.cycle, role) for role in roles) if r and r.doc]
+        decision = PanelDecision(sha=node.candidate_sha, cycle=node.cycle, judges=list(roles),
+                                 reviews=reviews)
+        path = (f"tasks/{node.task.id}/panel.json" if node.task
+                else f"control/panel/{_slug(node.id)}.json")
+        decision.attestation = c.write_record(path, decision).attestation
+        node.panel[str(node.cycle)] = decision
 
     def _roles(self, active: ActivePhase) -> tuple[str, ...]:
         """Its judges, for this change."""
@@ -791,10 +811,10 @@ def setup_failed_text(r: CommandResult) -> str:
 
 @dataclass(frozen=True, eq=False)
 class Merge(Phase):
-    """G-A1 (verification and every panel PASS at the candidate, unless overridden), G-H1 (the
+    """G-A1 – the evidence on the node: a passing verification and the panel's recorded pass at
+    the candidate (unless overridden: the panel is waived, verification is not) – and G-H1 (the
     integration head is where the controller left it), then the merge into the integration
-    branch; a conflict is rework onto the new head (G-A2). Under the lock. Ok: the new head.
-    The judges whose PASS it requires are its step's panel's."""
+    branch; a conflict is rework onto the new head (G-A2). Under the lock. Ok: the new head."""
     statuses: ClassVar = frozenset({MERGING})
     waits_in: ClassVar = frozenset()
 
@@ -838,17 +858,15 @@ class Merge(Phase):
 
     async def _merge(self, active: ActivePhase) -> PhaseResult:
         """G-A1 for its step's judges, G-H1, then the merge (or the conflict's rework)."""
-        c, node, judges = active.c, active.node, active.step.judges()
+        c, node = active.c, active.node
         sha = node.candidate_sha
         ver = node.current_verification()
         v = []
         if not ver or not ver.ok or ver.sha != sha:
             v.append("G-A1: no passing deterministic verification at candidate")
-        if not node.override:
-            for role in judges:
-                r = node.review(node.cycle, role)
-                if not r or r.verdict != Verdict.PASS or r.sha != sha:
-                    v.append(f"G-A1: no {role} PASS at candidate")
+        panel = node.current_panel()
+        if not node.override and (not panel or panel.sha != sha):
+            v.append("G-A1: no panel PASS at candidate")
         if v:
             return Escalate("accept_guard", "; ".join(v), Resume.REWORK)
         if moved := c.head_moved(await c.git.integration_head(c.change.id)):

@@ -310,8 +310,11 @@ node, the change and the step (`perform(active)`, `result(active, done)`) – th
 holds nothing of any node. Everything that lasts is on the node, so active steps and phases
 are made again after a restart.
 
-A step type holds only declarations and lookups (`phase_in(status)`, `after(phase)`); what reads
-a node or the change is the active step's (`ActiveStep.judges()`). The policy objects stay
+A step type holds only declarations and lookups (`phase_in(status)`, `after(phase)`). A phase
+never consults another phase: what it needs from an earlier one is that phase's **evidence**
+on the node and in the store – the merge (G-A1) checks the verification's record and the
+panel's recorded pass (`PanelDecision`: the candidate, the cycle, the judges that sat and their
+reviews' attestations), not which commands or judges those phases have. The policy objects stay
 functions of what they are given (a wait: the active step; a command source: the change and
 the node).
 
@@ -395,7 +398,6 @@ classDiagram
         release() None
         at(phase) ActivePhase
         current() ActivePhase
-        judges() tuple~str~
         run(phase, work) None
         may_work() bool
         stale(phase) bool

@@ -734,7 +734,7 @@ HIGH findings attested as feedback (cycle + 1).
 
 | ID | Rule |
 | --- | --- |
-| G-A1 | Verification passed and every panel member returned PASS at the same candidate sha. |
+| G-A1 | Verification passed and every panel member returned PASS at the same candidate sha – checked from the evidence: the verification record and the panel's recorded pass (which judges sat, citing their reviews; `tasks/<id>/panel.json`). An override waives the panel, not verification. |
 | G-A2 | `git merge --no-ff` of the candidate into `legion/<change>/integration` is clean. A conflict ⇒ `REWORK` with reason `rebase onto <head>` (counts as a cycle). |
 | G-H1 | Before a merge, and before dispatching a run at the integration head (integration, baseline, release), the integration branch is at the head the controller recorded. Otherwise commits were added outside the workflow: they are **not adopted** (they bypass verification and review); the node escalates `head_moved`, naming both shas, and a retry after the branch is reset to the recorded head resumes it (the merge, or a fresh run). |
 

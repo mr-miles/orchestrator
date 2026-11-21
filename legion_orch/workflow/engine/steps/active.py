@@ -28,7 +28,7 @@ from ...results import Escalate, Redo, Rework
 from ..base.common import WorkflowError
 from ..base.dispatch import StepDispatcher, Withdrawn
 from .node_states import WAITING, IllegalNodeTransition
-from .phases import ActivePhase, Merge, Panel, Phase, PhaseResult
+from .phases import ActivePhase, Merge, Phase, PhaseResult
 from .step_types import StepType, step_for
 
 if TYPE_CHECKING:
@@ -259,13 +259,6 @@ class ActiveStep:
             except Withdrawn:                    # it ended while its work waited for a slot
                 pass
         self.c.spawn(task())
-
-    def judges(self) -> tuple[str, ...]:
-        """Its panel's judges, for this change (none: it has no panel)."""
-        panel = self.type.phase(Panel)
-        if not isinstance(panel, Panel):
-            return ()
-        return panel.judges if isinstance(panel.judges, tuple) else panel.judges(self.c)
 
     def may_work(self) -> bool:
         """The change is active (or the step runs after the end)."""

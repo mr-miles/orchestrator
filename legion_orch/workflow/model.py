@@ -283,6 +283,17 @@ class Verification(Record):
     attestation: str | None = None   # the stored verification record
 
 
+class PanelDecision(Record):
+    """A panel's pass (G-RV1): every judge that sat passed the candidate ``sha`` in ``cycle``,
+    each citing its review document. What the merge checks (G-A1), with the verification."""
+    sha: str
+    cycle: int
+    judges: list[str] = []               # the roles that sat (none: an empty panel)
+    reviews: list[str] = []              # attestations of their review documents
+    at: str = Field(default_factory=now_iso)
+    attestation: str | None = None       # the stored decision record
+
+
 class Escalation(Record):
     kind: str                        # blocked | run_failed | cycle_budget | verify_unrunnable | ...
     reason: str
@@ -326,6 +337,7 @@ class Node(Record):
     finding_history: list[list[str]] = []  # HIGH finding fingerprints per review cycle
     reviews: dict[str, ReviewResult] = {}  # review_key(cycle, role) or "integration"
     verification: dict[str, Verification] = {}   # str(cycle) or "integration"
+    panel: dict[str, PanelDecision] = {}  # str(cycle): the panel's pass at that cycle
     escalation: Escalation | None = None
     extra_cycles: int = 0                 # granted by a human on escalation
     override: Override | None = None
@@ -345,6 +357,9 @@ class Node(Record):
 
     def current_verification(self) -> Verification | None:
         return self.verification.get(str(self.cycle))
+
+    def current_panel(self) -> PanelDecision | None:
+        return self.panel.get(str(self.cycle))
 
 
 # ---------------------------------------------------------------------------- run records

@@ -21,6 +21,7 @@ from legion_orch.workflow.model import (
     ESCALATED,
     R_REPORTED,
     R_SUPERSEDED,
+    REVIEWING,
     REWORK,
     VERIFYING,
     CommandResult,
@@ -28,6 +29,7 @@ from legion_orch.workflow.model import (
     Feedback,
     Finding,
     Node,
+    PanelDecision,
     Readiness,
     Resume,
     ReviewResult,
@@ -243,24 +245,35 @@ async def merged(f: Flow, node: Node):
 
 
 @scenario()
-async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow):
+async def test_merge_needs_the_evidence_of_verification_and_the_panel_at_the_candidate(f: Flow):
+    """G-A1 checks what is recorded: a passing verification and the panel's pass, both at the
+    candidate – not which judges the panel has."""
     node = task(f)
-    judged(node, "reviewer", Verdict.PASS, sha=SHA)
-    f.ce.change.panel = ["reviewer", "security"]           # the build's judges
+    node.panel["1"] = PanelDecision(sha=SHA, cycle=1, judges=["reviewer"])   # an older candidate
     result = await merged(f, node)
     assert isinstance(result, Escalate) and result.kind == "accept_guard"
     assert result.question.split("; ") == [
         "G-A1: no passing deterministic verification at candidate",
-        "G-A1: no reviewer PASS at candidate", "G-A1: no security PASS at candidate"]
+        "G-A1: no panel PASS at candidate"]
     assert result.resume == Resume.REWORK
+
+
+@scenario()
+async def test_the_panel_records_its_pass_as_the_merge_s_evidence(f: Flow):
+    node = task(f, status=REVIEWING)
+    judged(node, "reviewer", Verdict.PASS)
+    judged(node, "security", Verdict.PASS)
+    assert await decided(f, node, "reviewer", "security") == Ok()
+    decision = node.current_panel()
+    assert (decision.sha, decision.judges) == (CAND, ["reviewer", "security"])
+    assert decision.reviews == ["file:reviewer@1", "file:security@1"] and decision.attestation
 
 
 @scenario()
 async def test_an_override_waives_the_panel_but_not_verification(f: Flow):
     from legion_orch.workflow.model import Override
     node = task(f, override=Override(approver="miles", reason="trusted", sha=CAND))
-    f.ce.change.panel = ["reviewer"]
-    result = await merged(f, node)
+    result = await merged(f, node)                         # no panel pass: waived
     assert result.question == "G-A1: no passing deterministic verification at candidate"
 
 
@@ -268,8 +281,8 @@ async def test_an_override_waives_the_panel_but_not_verification(f: Flow):
 async def test_merge_stops_when_the_integration_head_moved(f: Flow):
     node = task(f)
     node.verification["1"] = Verification(sha=CAND, ok=True)
+    node.panel["1"] = PanelDecision(sha=CAND, cycle=1)
     f.ce.change.integration_head = SHA                     # not where the branch is
-    f.ce.change.panel = []
     result = await merged(f, node)
     assert isinstance(result, Escalate) and result.kind == "head_moved"
     assert result.resume == Resume.MERGING
