@@ -153,9 +153,19 @@ def judged(node: Node, role: str, verdict: Verdict, *, sha: str = CAND, findings
         verdict=verdict, sha=sha, run=f"r-{role}", findings=list(findings), doc=f"file:{role}@1")
 
 
-def reviewing(f: Flow, node: Node, *roles: str) -> Phase:
+class Running:
+    """A phase as it runs for a node, its node-reading methods called with it."""
+    def __init__(self, f: Flow, node: Node, phase: Phase):
+        self.active = f.ce._runner.of(node).at(phase)
+
+    def __getattr__(self, name):
+        method = getattr(self.active.phase, name)
+        return lambda *a: method(self.active, *a)
+
+
+def reviewing(f: Flow, node: Node, *roles: str) -> Running:
     """A panel of ``roles`` as it runs for ``node``."""
-    return f.ce._runner.of(node).at(Panel(roles))
+    return Running(f, node, Panel(roles))
 
 
 @scenario()
@@ -223,8 +233,8 @@ async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
 
 
 # ---------------------------------------------------------------------------- Merge
-def merging(f: Flow, node: Node) -> Phase:
-    return f.ce._runner.of(node).at(Merge())
+def merging(f: Flow, node: Node) -> Running:
+    return Running(f, node, Merge())
 
 
 @scenario()

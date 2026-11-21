@@ -291,26 +291,29 @@ A step type is declared – shared by every node of its kind – and **runs** fo
 `ActiveStep`: the step runner makes it from the node, its step type and the runner's services,
 and it owns the node's reservation. A **phase** is one class per kind – `Produce`, `Panel`,
 `Verify`, `Merge`, `BuildImages`, `Approval`, implementing the abstract `Phase` – holding its
-policies and its work together. In the table it is declared, unbound; as it runs for a node it
-is a copy bound to the node's active step (`phase.at(step)`, with the step's dispatcher while it
-works), so nothing is handed the node, the change or the runner again: the methods take only
-what varies – a result, an escalation, an answer. Everything that lasts is on the node, so the
-active step and the bound phases are made again after a restart.
+policies and its work together, declared in the table and shared by every node of its kind. As
+it runs for a node it is an **`ActivePhase`**: one concrete class, made by the active step from
+itself, the phase and – while it works – the step's dispatcher (`ActiveStep.at(phase)`). The
+active step works only with active phases (`enter()`, `start()`, `resume(answered)`,
+`task()`), and each of the phase's hooks is given the active phase as its one argument for the
+node, the change and the step (`perform(active)`, `result(active, done)`) – the phase itself
+holds nothing of any node. Everything that lasts is on the node, so active steps and phases
+are made again after a restart.
 
 A step type holds only declarations and lookups (`phase_in(status)`, `after(phase)`); what reads
 a node or the change is the active step's (`ActiveStep.judges()`). The policy objects stay
 functions of what they are given (a wait: the active step; a command source: the change and
 the node).
 
-Every phase's work has one shape (`Phase.task`): once it is **ready** (at once, or at a later
+Every phase's work has one shape (`ActivePhase.task`): once it is **ready** (at once, or at a later
 save – the step's slot given back meanwhile) it **begins** (its status, under the lock),
 **performs** its work outside the lock (through the step's dispatcher, or a check), and then,
 under the lock and unless its step or phase ended meanwhile, its **result** says what the work
 means – the one method each phase answers with a `PhaseResult`.
 
-`Phase` holds only what is the same for every kind – the work's shape (`task`), concluding a
-result, whether its work still counts, and whether it may begin (`ready`) – and **every other
-hook is abstract**: each kind says, in one place, how it is entered, started, recovered and
+What is the same for every kind is `ActivePhase`'s – the work's shape (`task`), concluding a
+result, whether its work still counts, and whether it may begin (`ready`) – and **every hook of
+`Phase` is abstract**: each kind says, in one place, how it is entered, started, recovered and
 resumed, where it resumes after a service's escalation, and its work's `begin`, `perform` and
 `result` (a kind that leaves one out cannot be made).
 
@@ -378,8 +381,8 @@ classDiagram
         again() None
         recover(failed) None
         release() None
-        at(phase) Phase
-        current() Phase
+        at(phase) ActivePhase
+        current() ActivePhase
         judges() tuple~str~
         run(phase, work) None
         may_work() bool
@@ -398,29 +401,36 @@ classDiagram
         statuses: frozenset~NodeStatus~
         waits_in: frozenset~NodeStatus~
         uses: str
+        enter(active)* None
+        start(active)* None
+        recover(active)* None
+        resume(active, answered)* None
+        resume_after(active, escalation)* Resume
+        begin(active)* bool
+        perform(active)* object
+        result(active, done)* PhaseResult
+    }
+    class ActivePhase {
         step: ActiveStep
+        phase: Phase
         dispatch: StepDispatcher
         node: Node
-        at(step, dispatch) Phase
+        enter() None
+        start() None
+        recover() None
+        resume(answered) None
+        resume_after(escalation) Resume
+        ready() bool
         task() None
         conclude(result) None
         stale() bool
         wait_until(ready) bool
-        ready() bool
-        enter()* None
-        start()* None
-        recover()* None
-        resume(answered)* None
-        resume_after(escalation)* Resume
-        begin()* bool
-        perform()* object
-        result(done)* PhaseResult
     }
     class Produce {
         source: RoleWork
         role: str
-        conclude_later(run) None
-        ended(ended) PhaseResult
+        conclude_later(active, run) None
+        ended(active, ended) PhaseResult
     }
     class RoleWork {
         role: str
@@ -434,19 +444,19 @@ classDiagram
         on_setup_failed: SetupFailurePolicy
         notes: Notes
         interpret(result, cycle, att) PhaseResult
-        to_run() tuple~str~
-        record() tuple~str~
+        to_run(active) tuple~str~
+        record(active) tuple~str~
     }
     class Panel {
         judges: JudgeSource
         decides: bool
-        roles() tuple~str~
-        missing() list~str~
-        decide() PhaseResult
-        judged(ended) None
+        roles(active) tuple~str~
+        missing(active) list~str~
+        decide(active) PhaseResult
+        judged(active, ended) None
     }
     class Merge {
-        merge() PhaseResult
+        merge(active) PhaseResult
     }
     class BuildImages
     class Approval {
@@ -472,7 +482,8 @@ classDiagram
 
     StepRunner *-- ActiveStep : one per node
     ActiveStep --> StepType : runs
-    ActiveStep *-- Phase : its current phase, bound
+    ActiveStep *-- ActivePhase : its current phase
+    ActivePhase --> Phase : runs
     StepType *-- Phase
     StepType *-- SandboxPlan
     StepType *-- Wait

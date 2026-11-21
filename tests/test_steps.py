@@ -5,7 +5,7 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.workflow.engine.sandboxes.plan import JUDGE
-from legion_orch.workflow.engine.steps.phases import Ok, Panel, Phase, Verify
+from legion_orch.workflow.engine.steps.phases import ActivePhase, Ok, Panel, Phase, Verify
 from legion_orch.workflow.engine.steps.step_types import (
     STEP_TYPES,
     EnvironmentQuiescent,
@@ -111,7 +111,7 @@ async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Fl
 async def test_each_verification_resolves_its_commands(f: Flow):
     f.ce.change.oracle = ORACLE_DOC
     n = Node(id="x", kind=BASELINE, title="x")
-    cmds = {k: f.ce._runner.of(n).at(STEP_TYPES[k].phase(Verify)).to_run()
+    cmds = {k: (v := STEP_TYPES[k].phase(Verify)).to_run(f.ce._runner.of(n).at(v))
             for k in (BASELINE, PREFLIGHT, INTEGRATION)}
     assert cmds[BASELINE] == ("bun test acc", "bun install")
     assert cmds[PREFLIGHT] == ("bun test acc",)
@@ -126,7 +126,8 @@ async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
     build.task = T()  # type: ignore[assignment]
 
     def record(n: Node) -> tuple[str, str]:
-        return f.ce._runner.of(n).at(step_for(n).phase(Verify)).record()
+        verify = step_for(n).phase(Verify)
+        return verify.record(f.ce._runner.of(n).at(verify))
     assert record(build) == ("tasks/T3/verification.json", "2")
     for kind in (BASELINE, PREFLIGHT, INTEGRATION):
         path, key = record(Node(id=f"{kind}-node", kind=kind, title="x"))
@@ -179,11 +180,11 @@ async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     rt = f.ce._runner
     phase = rt.of(n).current()
     ended = Ended(run, Ok() if result is None else result)
-    if isinstance(phase, Panel):                         # a judge's: collated by the panel
-        phase.judged(ended)
-        phase.conclude(await phase.result({role: ended}))
+    if isinstance(phase.phase, Panel):                   # a judge's: collated by the panel
+        phase.phase.judged(phase, ended)
+        phase.conclude(await phase.phase.result(phase, {role: ended}))
     else:
-        phase.conclude(phase.ended(ended))
+        phase.conclude(phase.phase.ended(phase, ended))
     return run
 
 
@@ -195,7 +196,7 @@ def capture_work(f: Flow) -> list[str]:
 
     def capturing(node):
         step = of(node)
-        step.run = lambda phase, work=None: started.append(type(phase).__name__)
+        step.run = lambda phase, work=None: started.append(type(phase.phase).__name__)
         return step
     rt.of = capturing
     return started
@@ -279,7 +280,7 @@ async def test_a_waiting_step_goes_on_at_a_save_once_its_waits_hold(f: Flow):
     rt = f.ce._runner
     n = node(f, NodeKind.RELEASE, status=READY)
     step, holds = rt.of(n), [False]
-    phase = step_for(n).phases[0].at(step, step.dispatch)
+    phase = ActivePhase(step, step_for(n).phases[0], step.dispatch)
     waiting = asyncio.ensure_future(step.wait_until(phase, lambda: holds[0]))
     await asyncio.sleep(0)
     assert rt.waiting == 1 and not waiting.done()
@@ -336,7 +337,7 @@ async def conclude(f: Flow, n: Node, res: Verification) -> None:
     """The verification's result, as its phase's work hands it over."""
     rt = f.ce._runner
     phase = rt.of(n).at(step_for(n).phase(Verify))
-    phase.conclude(await phase.result(res))
+    phase.conclude(await phase.phase.result(phase, res))
 
 
 @scenario()
@@ -421,7 +422,7 @@ async def run_gate(f: Flow, n: Node, answered: bool | None = None) -> None:
     if answered:
         n.approved = True                                # what resuming answered does
     step = rt.of(n)
-    await phase.at(step, step.dispatch).task()
+    await ActivePhase(step, phase, step.dispatch).task()
 
 
 @scenario()
