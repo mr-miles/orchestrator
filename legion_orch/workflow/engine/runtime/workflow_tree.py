@@ -2,11 +2,12 @@
 environment and repository:
 
 ```
-Requirements   intake ───────────────────────────────────────────────── ◆ H-1
+Requirements   workspace ─ intake ───────────────────────────────────── ◆ H-1
 Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ──────────────────────────────── ◆ H-E1 "approve the plan"
   Oracle       [provision] [scaffold] [oracle preflight] [baseline] ──── ◆ H-2 "approve the oracle"
-Delivery       tasks (DAG) ─ [integration] ─ [release] ───────────────── ◆ H-3 "accept the change"
+Delivery       tasks (DAG) ─ [integration] ─ describe ───────────────── ◆ H-3 "accept the change"
+[Publish]      publish (the source is on GitHub: the pull request, opened)
 ```
 
 A gate (◆) is a step that ends its stage: its work checks what it needs and waits for a human's
@@ -19,6 +20,7 @@ from __future__ import annotations
 from ...flow import AppendRound, Parallel, Stage, StartOver, Step, Workflow
 from ...model import (
     BASELINE,
+    DESCRIBE,
     H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
@@ -30,7 +32,8 @@ from ...model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
-    RELEASE,
+    PUBLISH,
+    WORKSPACE,
     NodeKind,
 )
 from ..base.ids import base_id, in_round, round_of, stage_id, stage_title  # noqa: F401  (re-exported)
@@ -39,6 +42,7 @@ TASKS, SCAFFOLD = "tasks", "scaffold"          # the parallel groups of build st
 
 # the engine node each step or gate of the tree is (build steps come with their task)
 NODES: dict[str, tuple[NodeKind, str]] = {
+    WORKSPACE: (NodeKind.WORKSPACE, "Workspace: synced, the change's base"),
     INTAKE: (NodeKind.INTAKE, "Intake: requirements & risk"),
     H_REQUIREMENTS: (HUMAN, "Accept requirements & tier"),
     PLAN: (NodeKind.PLAN, "Plan: spec, oracle, task graph; critique"),
@@ -49,7 +53,8 @@ NODES: dict[str, tuple[NodeKind, str]] = {
     BASELINE: (NodeKind.BASELINE, "Independent baseline"),
     H_SPEC: (HUMAN, "Approve the oracle"),
     INTEGRATION: (NodeKind.INTEGRATION, "Integration verification"),
-    RELEASE: (NodeKind.RELEASE, "Release & rollback plan"),
+    DESCRIBE: (NodeKind.DESCRIBE, "Describe: the pull request, reviewed"),
+    PUBLISH: (NodeKind.PUBLISH, "Publish: the pull request opened"),
     H_CHANGE: (HUMAN, "Accept the change"),
 }
 
@@ -89,10 +94,11 @@ def round_template(rank: int, environment: bool):
 
 def requirements_workflow() -> Workflow:
     """Before H-1: only the requirements are known (the tier decides the rest)."""
-    return Workflow([Stage(stage_id("requirements"), [Step(INTAKE)], Step(H_REQUIREMENTS))])
+    return Workflow([Stage(stage_id("requirements"), [Step(WORKSPACE), Step(INTAKE)],
+                           Step(H_REQUIREMENTS), feedback_to=INTAKE)])
 
 
-def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflow:
+def build_workflow(rank: int, *, environment: bool, blank_repo: bool, publish: bool) -> Workflow:
     """The change's tree. ``rank``: the tier's (risk.rank); stages without content are left out,
     and gates without a human decision at the tier left out (H-3 stays: its checks, the ship
     gates, hold at every tier – below R2 it passes by itself once they do)."""
@@ -104,13 +110,16 @@ def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflo
     delivery_children: list[Stage | Step | Parallel] = [Parallel(TASKS, [])]
     if rank >= 2:
         delivery_children.append(Step(INTEGRATION))
-    if rank >= 3:
-        delivery_children.append(Step(RELEASE))
+    delivery_children.append(Step(DESCRIBE))      # every tier: the PR, described and reviewed
+    # a fix round runs before integration (or, without one, the description): both again after
     delivery = Stage(stage_id("delivery"), delivery_children,
                      Step(H_CHANGE, rejectable=True),
                      rework=AppendRound(round_template(rank, environment),
-                                        before=INTEGRATION if rank >= 2 else None))
-    return Workflow([requirements, plan, delivery])
+                                        before=INTEGRATION if rank >= 2 else DESCRIBE))
+    stages = [requirements, plan, delivery]
+    if publish:        # the source is on GitHub: the accepted change's pull request is opened
+        stages.append(Stage(stage_id("publish"), [Step(PUBLISH)]))
+    return Workflow(stages)
 
 
 def task_steps(taskgraph: dict, *, built: set[str] = frozenset()) -> tuple[list[Step], list[Step]]:

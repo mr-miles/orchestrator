@@ -1,9 +1,10 @@
 project: demo
-repo:
-  name: app                      # used in attestations: git:app/<path>@<sha>
-  path: /path/to/your/repo       # local path or URL the controller clones (bare) once;
+workspaces:                      # the repositories changes are made in (a change picks one)
+  - name: app                    # used in attestations: git:app/<path>@<sha>
+    source: https://github.com/you/app   # local path or URL the controller clones (bare);
                                  # omit it to start a new, empty repository
-  base_branch: main
+    base_branch: main            # optional, default main
+    publish_prefix: agent/       # optional: a finished change's branch on the source
 decision_owners: [miles]         # humans allowed to approve (H-1/H-2/H-3, escalations)
 state_dir: .legion-orch          # set once: state.db (store), git/, tmp/ – holds every change
 assets_dir: assets               # roles.yaml, souls/, skills/, prompts/

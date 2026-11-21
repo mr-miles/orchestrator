@@ -9,7 +9,7 @@ import threading
 from datetime import UTC, datetime
 
 from ...config import Config
-from ...git import GitRemote, is_blank_tree
+from ...git import GitRemote
 from ...notify import Notifier
 from ...sandbox import (
     EnvironmentBuilder,
@@ -20,7 +20,6 @@ from ...sandbox import (
 )
 from ...store import DocStore
 from ...util import stop_process
-from .. import setup
 from ..assets import Assets
 from ..attention import AttentionItem
 from ..environment import Library
@@ -55,12 +54,13 @@ class Controller:
         if unhandled:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
         self.changes: dict[str, ChangeEngine] = {}
-        self.auth = WorkloadAuth(cfg, self._runs_by_change)
+        self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of)
         runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
         self.svc = Services(
             cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
-            git=GitRemote(cfg.state_dir / "git", cfg.repo.name, cfg.repo.path, cfg.repo.base_branch,
-                          max_push_bytes=cfg.limits.git_max_push_bytes),
+            hubs={w.name: GitRemote(cfg.state_dir / "git", w.name, w.source, w.base_branch,
+                                    max_push_bytes=cfg.limits.git_max_push_bytes)
+                  for w in cfg.workspaces},
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
             builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel))
         if cfg.environment is not None:   # fail fast: every change would escalate on it
@@ -79,17 +79,17 @@ class Controller:
     def docs(self) -> DocStore:
         return self.svc.docs
 
+    def hub(self, workspace: str) -> GitRemote:
+        """A configured workspace's hub (``LookupError`` if there is none of that name)."""
+        return self.svc.hub(workspace)
+
     @property
-    def git(self) -> GitRemote:
-        return self.svc.git
+    def hubs(self) -> dict[str, GitRemote]:
+        return self.svc.hubs
 
     @property
     def assets(self) -> Assets:
         return self.svc.assets
-
-    @property
-    def git_url(self) -> str:
-        return self.svc.git_url
 
     # ------------------------------------------------------------------ EngineHost
     def changed(self) -> None:
@@ -152,11 +152,17 @@ class Controller:
             if len(parts) == 4 and parts[2:] == ["control", "change.json"]:
                 ce = ChangeEngine(self.svc, self, parts[1])
                 ce.load()
+                if ce.change.workspace not in self.hubs:      # its workspace left the config
+                    log.warning("change %s is in workspace %r, which is not configured: not "
+                                "loaded", ce.cid, ce.change.workspace)
+                    continue
                 self.changes[ce.cid] = ce
                 self.notifier.seed(ce.attention_items)
 
     async def start(self) -> None:
-        await self.git.ensure()
+        for hub in self.hubs.values():   # configure the hubs there are; a change clones one
+            if hub.exists or hub.source is None:
+                await hub.ensure()
         shutil.rmtree(self.svc.tmp, ignore_errors=True)   # stale payloads may contain old tokens
         self.svc.tmp.mkdir(parents=True)
         self.load()
@@ -194,24 +200,25 @@ class Controller:
             await asyncio.sleep(self.REMIND_S)
 
     # ------------------------------------------------------------------ changes
-    async def start_change(self, goal: str) -> ChangeEngine:
+    async def start_change(self, goal: str, workspace: str) -> ChangeEngine:
+        """A new change in ``workspace``. (No workspace is kept for a change across workspaces,
+        planned by an agent in several places – not supported yet.)"""
         goal = goal.strip()
         if not goal:
             raise WorkflowError("goal is required")
+        if not workspace:
+            raise WorkflowError(f"workspace is required: one of {', '.join(self.hubs)} (a change "
+                                "across workspaces is not supported yet)")
+        if workspace not in self.hubs:
+            raise WorkflowError(f"unknown workspace {workspace!r} (one of {', '.join(self.hubs)})")
         async with self.svc.lock:
-            base = await self.git.resolve_base()
-            blank = is_blank_tree(await self.git.tree_paths(base))
-            # §5.3c: the base's setup task – not in a blank repository, where what a setup needs
-            # does not exist yet (it comes with the scaffold, through the environment stage)
-            pin = None if blank else await setup.pin_at_base(self.git, base)
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
                 if cid not in self.changes:
                     break
-            await self.git.init_integration(cid, base)
             ce = ChangeEngine(self.svc, self, cid)
             self.changes[cid] = ce
-            ce.start(goal, base, blank_repo=blank, setup_pin=pin)
+            ce.start(goal, workspace)               # its first step syncs the workspace
             return ce
 
     def get(self, cid: str) -> ChangeEngine:
@@ -221,6 +228,10 @@ class Controller:
             raise WorkflowError(f"unknown change {cid}") from None
 
     # ------------------------------------------------------------------ runs / tokens
+    def _workspace_of(self, cid: str) -> str | None:
+        ce = self.changes.get(cid)
+        return ce.change.workspace if ce is not None and ce.change is not None else None
+
     def all_runs(self):
         for ce in self.changes.values():
             for r in ce.runs.values():

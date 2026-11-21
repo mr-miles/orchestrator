@@ -22,7 +22,6 @@ from .model import (
     AWAITING_HUMAN,
     ESCALATED,
     H_CHANGE,
-    HUMAN,
     RETRO,
     ChangeStatus,
     GateStatus,
@@ -66,7 +65,7 @@ def items(e: ChangeView) -> list[AttentionItem]:
     goal = _clip(ch.goal, 120)
     out: list[AttentionItem] = []
     for n in e.nodes.values():
-        if n.kind == HUMAN and n.status == AWAITING_HUMAN and n.id == H_CHANGE and ch.ship \
+        if n.status == AWAITING_HUMAN and n.id == H_CHANGE and ch.ship \
                 and (H_CHANGE in ch.approvals or not ch.tier or risk.rank(ch.tier) < 2):
             bad = {g: r for g, r in ch.ship.gates.items() if r.status != GateStatus.SATISFIED}
             out.append(AttentionItem(
@@ -74,7 +73,7 @@ def items(e: ChangeView) -> list[AttentionItem]:
                 title=f"Not ready to ship: {len(bad)} gate{'s' * (len(bad) != 1)} not satisfied",
                 reason=_clip("; ".join(f"{g}: {r.detail}" for g, r in sorted(bad.items()))),
                 since=n.status_since or "", blocking=True))
-        elif n.kind == HUMAN and n.status == AWAITING_HUMAN:
+        elif n.status == AWAITING_HUMAN:
             out.append(AttentionItem(change=ch.id, goal=goal, node=n.id, kind=GATE, detail=n.id,
                                      title=f"{n.id}: {n.title}", since=n.status_since or "",
                                      blocking=True))

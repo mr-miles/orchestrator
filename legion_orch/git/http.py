@@ -21,7 +21,7 @@ import asyncio
 import contextlib
 import os
 import subprocess
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 
 from starlette.requests import Request
@@ -39,12 +39,19 @@ CHUNK = 64 * 1024
 class GitGrant:
     identity: str             # run id / verifier id
     allowed_ref: str | None   # None => read-only
+    repo: str                 # the one hub it may reach (its change's workspace)
 
 
 def _valid_path(path: str, repo_name: str) -> bool:
     parts = path.split("/")
     return (parts[0] == f"{repo_name}.git" and "\\" not in path
             and not any(p in ("", ".", "..") for p in parts[1:]))
+
+
+def _repo_of(path: str) -> str:
+    """The hub a request path names (``<name>.git/...``), or '' if none."""
+    first = path.split("/", 1)[0]
+    return first[:-4] if first.endswith(".git") else ""
 
 
 def _parse_cgi_head(head: bytes) -> tuple[int, dict[str, str], str | None, bytes] | None:
@@ -191,11 +198,13 @@ def git_exec_path() -> str:
 
 
 class GitEndpoint:
-    """The smart-HTTP endpoint for one repository (see the module docstring)."""
+    """The smart-HTTP endpoint for the hubs (see the module docstring): a request reaches only
+    the hub its grant names."""
 
-    def __init__(self, remote: GitRemote, authorize: Callable[[Request], GitGrant | None], *,
+    def __init__(self, remotes: Mapping[str, GitRemote],
+                 authorize: Callable[[Request], GitGrant | None], *,
                  max_request_bytes: int = 256 * 1024 * 1024, max_concurrency: int = 8):
-        self.remote, self.authorize = remote, authorize
+        self.remotes, self.authorize = remotes, authorize
         self.max_request_bytes = max_request_bytes
         self._slots = asyncio.Semaphore(max_concurrency)
         self._exe = os.path.join(git_exec_path(), "git-http-backend")
@@ -208,8 +217,10 @@ class GitEndpoint:
         refusal = self._refusal(request, grant)
         if refusal is not None:
             return refusal
+        remote = self.remotes[grant.repo]
         await self._slots.acquire()
-        backend = await _Backend.start(self._exe, self._cgi_env(request, grant), self._slots)
+        backend = await _Backend.start(self._exe, self._cgi_env(request, grant, remote),
+                                       self._slots)
         try:
             return await self._respond(request, backend)
         except BaseException:
@@ -219,7 +230,8 @@ class GitEndpoint:
     def _refusal(self, request: Request, grant: GitGrant) -> Response | None:
         """Checks that need no backend: repository path, read-only grants, declared size."""
         path = request.path_params["path"]
-        if not _valid_path(path, self.remote.repo_name):
+        if _repo_of(path) != grant.repo or grant.repo not in self.remotes \
+                or not _valid_path(path, grant.repo):
             return PlainTextResponse("unknown repository", status_code=404)
         service = request.query_params.get("service", "")
         if (service == "git-receive-pack" or path.endswith("/git-receive-pack")) \
@@ -233,12 +245,12 @@ class GitEndpoint:
                 return PlainTextResponse("payload too large", status_code=413)
         return None
 
-    def _cgi_env(self, request: Request, grant: GitGrant) -> dict[str, str]:
+    def _cgi_env(self, request: Request, grant: GitGrant, remote: GitRemote) -> dict[str, str]:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "HOME": str(self.remote.root),
+            "HOME": str(remote.root),
             "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_PROJECT_ROOT": str(self.remote.project_root),
+            "GIT_PROJECT_ROOT": str(remote.project_root),
             "GIT_HTTP_EXPORT_ALL": "1",
             "PATH_INFO": "/" + request.path_params["path"],
             "REQUEST_METHOD": request.method,
@@ -275,8 +287,9 @@ class GitEndpoint:
                                  media_type=media)
 
 
-def make_git_endpoint(remote: GitRemote, authorize: Callable[[Request], GitGrant | None], *,
+def make_git_endpoint(remotes: Mapping[str, GitRemote],
+                      authorize: Callable[[Request], GitGrant | None], *,
                       max_request_bytes: int = 256 * 1024 * 1024, max_concurrency: int = 8):
     """A Starlette request handler for ``/git/{path:path}`` (GET and POST)."""
-    return GitEndpoint(remote, authorize, max_request_bytes=max_request_bytes,
+    return GitEndpoint(remotes, authorize, max_request_bytes=max_request_bytes,
                        max_concurrency=max_concurrency).handle

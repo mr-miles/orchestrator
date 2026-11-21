@@ -16,6 +16,7 @@ from ..util import now_iso
 
 # ---------------------------------------------------------------------------- enums
 class NodeKind(StrEnum):
+    WORKSPACE = "workspace"              # the controller syncs the change's workspace (first)
     INTAKE = "intake"
     PLAN = "plan"
     PROVISION = "provision"
@@ -24,7 +25,9 @@ class NodeKind(StrEnum):
     BASELINE = "baseline"
     BUILD = "build"
     INTEGRATION = "integration"
-    RELEASE = "release"
+    DESCRIBE = "describe"                # the change's pull request description, judged
+    PUBLISH = "publish"                  # after H-3: the controller opens the pull request
+    RELEASE = "release"                  # (kept for live-system workflows; in no tier's tree)
     HUMAN = "human"
     RETROSPECTIVE = "retrospective"      # on demand, once the change has ended
 
@@ -156,6 +159,7 @@ INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
     NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.HUMAN)
 PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKind.PREFLIGHT
+WORKSPACE, DESCRIBE, PUBLISH = NodeKind.WORKSPACE, NodeKind.DESCRIBE, NodeKind.PUBLISH
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment
 PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
@@ -167,7 +171,7 @@ LIVE_RUN = {R_STARTING, R_ACTIVE}
 # Which agent role executes each node kind
 ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ORACLE: "oracle",
                  BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
-                 RELEASE: "release", RETRO: "retrospective"}
+                 DESCRIBE: "describer", RELEASE: "release", RETRO: "retrospective"}
 
 
 class Record(BaseModel):
@@ -585,6 +589,7 @@ class SetupPin(Record):
 class Change(Record):
     id: str
     goal: str
+    workspace: str                  # the configured workspace (repository) it is made in
     created_at: str = Field(default_factory=now_iso)
     status: ChangeStatus = ChangeStatus.ACTIVE
     base_sha: str | None = None

@@ -164,6 +164,25 @@ export function OverviewTab({ state, selected }: { state: ChangeState; selected:
         <CardHeader>
           <CardTitle>Workflow</CardTitle>
           <CardDescription>{state.change?.goal}</CardDescription>
+          {state.pull_request && (
+            <p className="text-sm">
+              Pull request{' '}
+              <a
+                href={state.pull_request.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium underline underline-offset-4"
+              >
+                #{state.pull_request.number}
+              </a>{' '}
+              from <code>{state.pull_request.branch}</code>
+              {state.pull_request.labels.map((l) => (
+                <Badge key={l} variant="secondary" className="ml-1">
+                  {l}
+                </Badge>
+              ))}
+            </p>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           <Pipeline nodes={state.nodes} />

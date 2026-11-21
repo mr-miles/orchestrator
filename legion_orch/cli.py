@@ -33,6 +33,8 @@ def _parser() -> argparse.ArgumentParser:
     so.add_argument("--apply", action="store_true", help="run the openshell commands (else print)")
     st = sub.add_parser("start", help="start a change on a running controller")
     st.add_argument("goal")
+    st.add_argument("--workspace", "-w", required=True,
+                    help="the workspace (repository) to make it in")
     sub.add_parser("changes", help="list changes on a running controller")
     sub.add_parser("attention", help="what needs a decision (gates, escalations) and the inbox "
                                      "(ended changes, retrospective reports)")
@@ -106,8 +108,8 @@ class OperatorClient:
     def trace(self, change: str) -> dict:
         return self._call(f"/api/changes/{urllib.parse.quote(change)}/trace")
 
-    def start(self, goal: str) -> dict:
-        return self._call("/api/changes", {"goal": goal})
+    def start(self, goal: str, workspace: str) -> dict:
+        return self._call("/api/changes", {"goal": goal, "workspace": workspace})
 
     def node_action(self, change: str, node: str, action: str, approver: str, payload: dict) -> dict:
         return self._call(f"/api/changes/{change}/nodes/{node}/action",
@@ -218,7 +220,7 @@ def cmd_trace(cfg: Config, args) -> int:
 
 
 def cmd_start(cfg: Config, args) -> int:
-    return _show(OperatorClient(cfg).start(args.goal))
+    return _show(OperatorClient(cfg).start(args.goal, args.workspace))
 
 
 def cmd_act(cfg: Config, args) -> int:

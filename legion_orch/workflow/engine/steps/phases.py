@@ -54,6 +54,7 @@ from ...model import (
     Readiness,
     Resume,
     Run,
+    SetupPin,
     Verdict,
     Verification,
 )
@@ -70,8 +71,10 @@ if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
     from ..services.agent_runs import AgentRuns, Ended
     from ..services.provision import Provisioner
+    from ..services.publish import Published, Publisher
     from ..services.runs import RunLifecycle
     from .active import ActiveStep
+    from .approvals import Approves
     from .runner import StepEvents
     from .step_types import StepType
 
@@ -90,6 +93,7 @@ class PhaseContext:
     sandboxes: Sandboxes
     dispatcher: Dispatcher = None  # type: ignore[assignment]
     agents: AgentRuns = None  # type: ignore[assignment]
+    publisher: Publisher = None  # type: ignore[assignment]
 
 
 class _Again:
@@ -690,10 +694,12 @@ class Panel(Phase):
 
 @dataclass(frozen=True, eq=False)
 class Critique(Phase):
-    """The plan's critic (G-C2): one judge of the drafted plan. Its PASS accepts the plan; its
-    REWORK sends the plan back to the planner with the critique, within the critique budget –
-    counted from the start of the plan's fix round – else a human decides."""
-    role: str = "critic"
+    """One judge of a document its step's agent wrote: the plan's critic (G-C2), the PR
+    description's reviewer (G-PR3). Its PASS accepts the step; its REWORK sends the work back
+    to the producer with the critique, within the critique budget – counted from the start of
+    the step's fix round – else a human decides (``budget``: the guard that says so)."""
+    role: str
+    budget: str
     statuses: ClassVar = frozenset({REVIEWING})
     waits_in: ClassVar = frozenset()
 
@@ -742,7 +748,8 @@ class Critique(Phase):
         limit = active.c.cfg.limits.critique_max_cycles + node.extra_cycles
         cycles = node.cycle - node.round_start_cycle + 1      # a fix round has its own budget
         if cycles >= limit:
-            return Escalate("critique_budget", f"G-C2: {cycles} critique cycles without PASS",
+            return Escalate("critique_budget", f"{self.budget}: {cycles} {self.role} cycles "
+                            "without PASS",
                             Resume.CRITIQUE_BUDGET, feedback=feedback)
         return Rework(feedback, "critique", budget_checked=True)
 
@@ -1024,14 +1031,169 @@ class Merge(Phase):
                 cycle=node.cycle, source="merge",
                 text=f"G-A2: merge conflict with integration; rebase onto {head} "
                      f"and force-push your branch. Details: {out[-600:]}",
-                attestations=[f"git:{c.cfg.repo.name}@{head}"])], "merge", base=head)
+                attestations=[f"git:{c.workspace}@{head}"])], "merge", base=head)
         c.change.integration_head = out
         return Ok(out)
 
 
+# ---------------------------------------------------------------------------- workspace
+@dataclass(frozen=True)
+class Synced:
+    """What syncing the workspace found: the base and what it holds."""
+    base: str
+    blank: bool
+    pin: SetupPin | None
+
+
+@dataclass(frozen=True, eq=False)
+class SyncWorkspace(Phase):
+    """The change's first step: its workspace's hub brought up to date with the source (cloned
+    if there is none yet; one sync of a hub at a time), and the change based on the base
+    branch's commit – its integration branch, whether the repository is blank (§5.3b) and the
+    base's setup (§5.3c). A hub that cannot follow its source escalates (what differs): the
+    decision owner fixes the hub or the source and retries. Once the change has a base, it
+    keeps it: the step run again (its stage sent back) passes at once."""
+    statuses: ClassVar = frozenset({READY, RUNNING})
+    waits_in: ClassVar = frozenset()
+
+    def enter(self, active: ActivePhase) -> None:
+        active.move(READY)
+        self.start(active)
+
+    def start(self, active: ActivePhase) -> None:
+        if active.node.status in (READY, RUNNING):         # RUNNING: syncing (after a restart)
+            active.run()
+
+    def recover(self, active: ActivePhase) -> None:
+        self.start(active)
+
+    def resume(self, active: ActivePhase, answered: bool) -> None:
+        self.start(active)                                   # synced again
+
+    def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
+        return Resume.READY
+
+    def begin(self, active: ActivePhase) -> bool:
+        active.move(RUNNING)
+        return True
+
+    async def perform(self, active: ActivePhase) -> object:
+        """The sync and what the base holds – or what keeps the hub from following its
+        source."""
+        from ....git import WorkspaceUnsynced, is_blank_tree
+        from ... import setup
+        c = active.c
+        if c.change.base_sha:
+            return None
+        try:
+            base = await c.git.sync()
+        except WorkspaceUnsynced as e:
+            return e
+        blank = is_blank_tree(await c.git.tree_paths(base))
+        # not in a blank repository, where what a setup needs does not exist yet
+        return Synced(base, blank, None if blank else await setup.pin_at_base(c.git, base))
+
+    async def result(self, active: ActivePhase, done: object) -> PhaseResult:
+        from ....git import WorkspaceUnsynced
+        c, ch = active.c, active.c.change
+        if done is None:                                     # it has its base already
+            return Ok()
+        if isinstance(done, WorkspaceUnsynced):
+            return Escalate("workspace_unsynced", f"workspace {ch.workspace}: {done}",
+                            Resume.READY)
+        synced: Synced = done                                # type: ignore[assignment]
+        await c.git.init_integration(ch.id, synced.base)
+        ch.base_sha = ch.integration_head = synced.base
+        ch.blank_repo, ch.setup_pin = synced.blank, synced.pin
+        c.write_record("control/workspace.json", {
+            "workspace": ch.workspace, "source": c.git.source, "base_branch": c.git.base_branch,
+            "base": synced.base, "blank_repo": synced.blank})
+        c.event("workspace", f"{ch.workspace} synced: the change is based on "
+                f"{synced.base[:12]}" + (" (a blank repository: the plan starts with a "
+                                          "scaffold task)" if synced.blank else ""),
+                active.node.id)
+        return Ok()
+
+
+# ---------------------------------------------------------------------------- publish
+class PrLabels(ABC):
+    """One family of a pull request's labels: which of them the change gets."""
+    prefix: ClassVar[str]
+    color: ClassVar[str]
+    description: ClassVar[str]
+
+    @abstractmethod
+    def names(self, c: ChangeCore) -> tuple[str, ...]:
+        """The family's labels the change's pull request has."""
+
+
+@dataclass(frozen=True)
+class RiskLabel(PrLabels):
+    """``risk:<tier>``, from the tier approved at H-1."""
+    prefix: ClassVar = "risk:"
+    color: ClassVar = "d93f0b"
+    description: ClassVar = "The change's risk tier (Legion)"
+
+    def names(self, c: ChangeCore) -> tuple[str, ...]:
+        return (f"risk:{c.change.tier}",) if c.change.tier else ()
+
+
+@dataclass(frozen=True, eq=False)
+class OpenPullRequest(Phase):
+    """After H-3: the change published – its integration branch pushed to the workspace's
+    source on GitHub as ``<publish_prefix><change-id>`` and a pull request opened from it, ready
+    for review, with the reviewed description, the change's id and its labels (``labels``: one
+    policy per family). Run again (a retry, a restart), it brings the pull request up to date.
+    A failure (authentication, a branch that moved, GitHub) escalates; a retry publishes
+    again."""
+    labels: tuple[PrLabels, ...]
+    statuses: ClassVar = frozenset({READY, RUNNING})
+    waits_in: ClassVar = frozenset()
+
+    def enter(self, active: ActivePhase) -> None:
+        active.move(READY)
+        self.start(active)
+
+    def start(self, active: ActivePhase) -> None:
+        if active.node.status in (READY, RUNNING):         # RUNNING: publishing (a restart)
+            active.run()
+
+    def recover(self, active: ActivePhase) -> None:
+        self.start(active)
+
+    def resume(self, active: ActivePhase, answered: bool) -> None:
+        self.start(active)                                   # published again
+
+    def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
+        return Resume.READY
+
+    def begin(self, active: ActivePhase) -> bool:
+        active.move(RUNNING)
+        return True
+
+    async def perform(self, active: ActivePhase) -> object:
+        """The pull request as published – or what kept it from being."""
+        from ....git import GitHubError
+        from ..services.publish import LabelSpec
+        specs = [LabelSpec(p.prefix, p.names(active.c), p.color, p.description)
+                 for p in self.labels]
+        try:
+            return await active.ctx.publisher.publish(specs)
+        except GitHubError as e:
+            return e
+
+    async def result(self, active: ActivePhase, done: object) -> PhaseResult:
+        from ....git import GitHubError
+        if isinstance(done, GitHubError):
+            return Escalate("publish_failed", str(done), Resume.READY)
+        published: Published = done                          # type: ignore[assignment]
+        active.ctx.publisher.record(published)
+        active.c.event("publish", f"pull request {published.url} ({published.branch} at "
+                       f"{published.head[:12]})", active.node.id)
+        return Ok()
+
+
 # ---------------------------------------------------------------------------- environment
-
-
 @dataclass(frozen=True, eq=False)
 class BuildImages(Phase):
     """Provisioning, as a step's phase: once its waits hold, the provisioner builds the approved
@@ -1073,35 +1235,6 @@ class BuildImages(Phase):
 
 
 # ---------------------------------------------------------------------------- gates
-class Subjects:
-    """What approving a gate means beyond the answer itself: subjects approved separately (and
-    still fresh); the gate passes once none is pending."""
-
-    def pending(self, c: ChangeCore) -> list[str]:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class SubjectsApproved(Subjects):
-    """H-E1's (the plan's subjects) or H-2's (the oracle's, and at R3 the independent baseline's
-    attestation)."""
-    which: str                                   # "plan" | "oracle"
-    baseline_from: int = 99                      # the tier rank from which the baseline counts
-
-    def pending(self, c: ChangeCore) -> list[str]:
-        from ... import risk
-        from ...model import ApprovalState
-        subjects = (governance.plan_subjects(c) if self.which == "plan"
-                    else governance.oracle_subjects(c))
-        status = {x.subject: x.status for x in governance.subject_status(c)}
-        out = [s for s in subjects if status.get(s) != ApprovalState.APPROVED]
-        if c.change.tier and risk.rank(c.change.tier) >= self.baseline_from:
-            base = governance.baseline_subject(c)
-            if base is not None and base.status != ApprovalState.APPROVED:
-                out.append(governance.BASELINE_SUBJECT)
-        return out
-
-
 class GateChecks:
     """What a gate checks before it passes (its preconditions): evaluated without the lock,
     then read under it – the unmet ones by name."""
@@ -1151,10 +1284,10 @@ class Approval(Phase):
     """A gate: the stage's end, a human's decision. Its work checks what the gate needs
     (``checks``, e.g. the ship gates) and then – unless it passes by itself (``automatic``) –
     waits for a human: an *expected* escalation (``AWAITING_HUMAN``), which approving answers.
-    Answered, it checks again: its subjects all approved (``subjects``) and its checks met, it
+    Answered, it checks again: nothing still to approve (``approves``) and its checks met, it
     passes; unmet checks escalate again (a re-check is a retry). A new attempt (the stage sent
-    back) asks again."""
-    subjects: Subjects | None = None
+    back) asks again. What approving records, and what is still to approve, is ``approves``."""
+    approves: Approves
     checks: GateChecks | None = None
     automatic: AutomaticBelow | None = None
     statuses: ClassVar = frozenset({READY, RUNNING})
@@ -1191,7 +1324,7 @@ class Approval(Phase):
         c = active.c
         unmet = self.checks.unmet(c, node, done) if self.checks else ()
         approved = node.approved or bool(self.automatic and self.automatic(c))
-        pending = self.subjects.pending(c) if self.subjects and approved else []
+        pending = self.approves.pending(c) if approved else []
         if not approved:
             ask = f"{node.title}" + (f" (not met yet: {', '.join(unmet)})" if unmet else "")
             return Escalate("awaiting_approval", ask, Resume.READY, expected=True)

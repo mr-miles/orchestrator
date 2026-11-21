@@ -13,7 +13,7 @@ async def resolve_or_raise(e: ChangeView, ref: str, what: str) -> None:
     """Raise :class:`GovernanceError` unless ``ref`` parses and resolves (``what`` prefixes the
     message, for example ``"G-AT1: source"``)."""
     try:
-        ok = await attest.resolve(attest.parse(ref, [e.cfg.repo.name]), e.docs, e.git)
+        ok = await attest.resolve(attest.parse(ref, [e.workspace]), e.docs, e.git)
     except attest.AttestationError as ex:
         raise GovernanceError(f"{what}: {ex}") from None
     if not ok:

@@ -84,7 +84,7 @@ def build_context(e: RoleContext, node: Node) -> list[str]:
     for d in node.depends_on:
         dn = e.nodes.get(d)
         if dn and dn.task and dn.accepted_sha:
-            refs.append(f"git:{e.cfg.repo.name}@{dn.accepted_sha}")
+            refs.append(f"git:{e.workspace}@{dn.accepted_sha}")
     return refs
 
 

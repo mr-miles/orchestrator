@@ -215,6 +215,22 @@ def main():
         r = write("release/rollback.md", f"Strategy: rollback\nRationale: no data changes\n\n"
                                          f"Revert to {a['base_sha']}\n")
         print(call("report", status="DONE", summary="release plan", attestations=[p, r]))
+    elif role == "describer":
+        head = a["head_sha"]
+        files = git("ls-files", "src", "docs").split()          # what the tasks wrote
+        pr = write("delivery/pr.md", "# Say hello and goodbye\n\n## Motivation\n\n"
+                   "REQ-1 and REQ-2: greet and say goodbye.\n\n## Changes\n\n"
+                   + "".join(f"- `{f}`\n" for f in files) +
+                   "\n## Verification\n\n- the protected acceptance tests, at the head\n")
+        print(call("report", status="DONE", summary="PR described",
+                   attestations=[f"git:{REPO}@{head}", pr]))
+    elif role == "pr-reviewer":
+        head = a["head_sha"]
+        pr = call("docs_read", path="delivery/pr.md")["attestation"]
+        doc = write(f"delivery/reviews/pr-reviewer-cycle-{cycle}.md", "faithful")
+        print(call("report", status="DONE", summary="PR reviewed",
+                   attestations=[f"git:{REPO}@{head}", pr, doc],
+                   data={"verdict": "PASS", "findings": [], "checked": ["the diff"]}))
     elif role == "integration":
         head = a["head_sha"]
         orc = json.loads(call("docs_read", path="plan/oracle.json")["content"])

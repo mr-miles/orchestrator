@@ -126,7 +126,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                   "required_docs": r.required_docs, "context": r.context_refs,
                   "required_git": ctl.assets.roles[r.role].git,
                   "report_schema": ctl.assets.roles[r.role].report_schema,
-                  "git": {"url": ctl.git_url, "branch": r.branch, "base_sha": r.base_sha,
+                  "git": {"url": ce.git_url, "branch": r.branch, "base_sha": r.base_sha,
                           "checkout_sha": r.judged_sha or r.base_sha,
                           "can_push": r.branch is not None},   # only roles that push get one
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
@@ -137,10 +137,10 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         ce, _ = current(ctx)
         ref = attest.normalize(ref, ce.cid)
         try:
-            a = attest.parse(ref, [ctl.cfg.repo.name])
+            a = attest.parse(ref, [ce.workspace])
         except attest.AttestationError as e:
             return {"ref": ref, "valid": False, "error": str(e)}
-        return {"ref": ref, "valid": await attest.resolve(a, ctl.docs, ctl.git)}
+        return {"ref": ref, "valid": await attest.resolve(a, ctl.docs, ce.git)}
 
     @server.tool(description="Report progress (shown live to the operator).")
     async def progress(ctx: Context, message: str, percent: float | None = None) -> dict:

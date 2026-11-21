@@ -147,6 +147,6 @@ def h3_attestations(e: ChangeView) -> list[GateAttestation]:
             head = e.change.integration_head
             row.waiver_sources = [a for a in (
                 e.latest_att("integration/report.md")
-                or (f"git:{e.cfg.repo.name}@{head}" if head else None),) if a]
+                or (f"git:{e.workspace}@{head}" if head else None),) if a]
         rows.append(row)
     return rows

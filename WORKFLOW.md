@@ -148,14 +148,24 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 
 ### 2.1 State and persistence
 
-The document store and the git remote are the **only durable state**. Several changes can run side
-by side under one controller; they share `max_parallel` and the git remote but nothing else.
+The document store and the git hubs are the **only durable state**. Several changes can run side
+by side under one controller; they share `max_parallel` but nothing else.
+
+**Workspaces.** The config names one or more workspaces (`workspaces:` – `name`, `source`,
+`base_branch`, `publish_prefix`): the repositories changes are made in. Each has its own bare
+hub (`<state_dir>/git/served/<name>.git`), cloned from its `source` (none: a new, empty
+repository). A change is made in exactly one (`Change.workspace`, required when it starts – no workspace
+is kept for a later change across workspaces, planned in several places); its attestations name it (`git:<workspace>@<sha>`),
+and its runs' git credentials reach its hub and no other. `legion/*` is the hub's own namespace
+(integration and run branches); a finished change is published as
+`<publish_prefix><change-id>` (default `agent/`).
 
 | Where | What |
 | --- | --- |
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
-| `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
+| `changes/<id>/control/pr.json` | the published pull request (§5.10c): url, number, branch, head, labels |
+| `changes/<id>/control/change.json` | change record: goal, workspace, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
 | `changes/<id>/control/nodes/<node>.json` | a node's detail (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox); one new version per transition, so the version history is the node's audit trail. Which nodes exist and their order come from the workflow's tree |
 | `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
@@ -259,10 +269,10 @@ scope_breadth, novelty_uncertainty, verification_quality`).
 
 | Tier | Ship gates (from Legion `DEFAULT_RISK_POLICY`) | Workflow consequence |
 | --- | --- | --- |
-| R0 | `current_task_contract_or_small_change_record`, `deterministic_verification`, `evidence_note` | no reviewer, no oracle task |
-| R1 | `task_contract`, `scoped_implementer_run`, `deterministic_verification`, `evidence_bundle_or_log`, `lightweight_independent_review` | 1 reviewer per task |
-| R2 | `approved_delta_spec`, `protected_oracle`, `task_contract`, `deterministic_verification`, `task_level_independent_review`, `integration_or_real_interface_checks`, `whole_change_acceptance_evidence` | oracle task with verification surfaces, reviewer per task (+security reviewer if `security`/`authorization` ≥ 2, +architecture reviewer if `scope_breadth`/`novelty_uncertainty` ≥ 2), integration verifier, H-3 |
-| R3 | `independent_baseline`, `approved_spec_and_oracle`, `protected_oracle`, `deterministic_verification`, `architecture_or_security_review`, `protected_acceptance_tests`, `security_or_e2e_evaluator`, `explicit_human_approval`, `release_observation_plan`, `rollback_or_forward_fix_evidence` | adds baseline, security and architecture reviewers on every task, release planner, and human attestations (§5.12) |
+| R0 | `current_task_contract_or_small_change_record`, `deterministic_verification`, `evidence_note`, `pr_description_verified` | no reviewer, no oracle task |
+| R1 | `task_contract`, `scoped_implementer_run`, `deterministic_verification`, `evidence_bundle_or_log`, `lightweight_independent_review`, `pr_description_verified` | 1 reviewer per task |
+| R2 | `approved_delta_spec`, `protected_oracle`, `task_contract`, `deterministic_verification`, `task_level_independent_review`, `integration_or_real_interface_checks`, `whole_change_acceptance_evidence`, `pr_description_verified` | oracle task with verification surfaces, reviewer per task (+security reviewer if `security`/`authorization` ≥ 2, +architecture reviewer if `scope_breadth`/`novelty_uncertainty` ≥ 2), integration verifier, H-3 |
+| R3 | `independent_baseline`, `approved_spec_and_oracle`, `protected_oracle`, `deterministic_verification`, `architecture_or_security_review`, `protected_acceptance_tests`, `security_or_e2e_evaluator`, `explicit_human_approval`, `pr_description_verified` | adds baseline, security and architecture reviewers on every task, and human attestations (§5.12) |
 
 Each gate is reported as `satisfied`, `unsatisfied` or `unevaluable` by the deterministic ship check,
 which is H-3's precondition (§5.11). Where each gate's evidence comes from:
@@ -276,8 +286,9 @@ which is H-3's precondition (§5.11). Where each gate's evidence comes from:
 | `independent_baseline` | human `independent-baseline` attestation (pass), recorded **before** the first build run (the scaffold excepted) |
 | `security_or_e2e_evaluator` | human `security-evaluation` or `e2e-evaluation` attestation; any `fail` blocks |
 | `architecture_or_security_review` | architecture or security panel PASS on every task, or a human `architecture-review` attestation; a `fail` attestation blocks |
-| `rollback_or_forward_fix_evidence` | human `rollback-evidence` or `forward-fix-evidence` attestation |
-| `release_observation_plan` | release planner's `release/plan.md`, or a `release-observation` `not_applicable` attestation (waiver) |
+| `pr_description_verified` | the PR reviewer's PASS on `delivery/pr.md` at the integration head (§5.10b) |
+| `rollback_or_forward_fix_evidence` | human `rollback-evidence` or `forward-fix-evidence` attestation (in no tier today: a live-system workflow's; addable, G-OV1) |
+| `release_observation_plan` | release planner's `release/plan.md`, or a `release-observation` `not_applicable` attestation (waiver) (in no tier today, as above) |
 
 Gates can be added or waived by a human (G-OV1, §5.12); waived and human-judgement gates are
 listed in the readiness result.
@@ -422,6 +433,23 @@ Universal guards apply to every task and are listed once.
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). Content identical to the latest version creates no version: that version is returned (`unchanged: true`) and costs no G-W4 quota. |
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
 | G-W4 | docs_write | Per-run quota: at most `limits.max_docs_per_run` document versions (default 200) and `limits.max_doc_bytes_per_run` bytes (default 50 MB). Refused writes say which limit was hit. |
+
+### 5.0a `workspace` – the change's base (controller, no agent)
+
+A change's first step. The workspace's hub is brought up to date with its `source`: cloned if
+there is no hub yet, otherwise fetched, and its base branch fast-forwarded to the source's.
+`legion/*` (every change's integration and run branches) is never touched. One sync of a hub
+runs at a time: changes started together wait for each other, and one that waited takes the
+result of the sync before it (no second fetch). The change is then based on the base branch's
+commit: its integration branch, whether the repository is blank (§5.3b) and the base's setup
+(§5.3c), recorded in `control/workspace.json`.
+
+If the hub cannot follow its source – the clone's origin is not the configured `source`, the
+source's base branch was rewritten (the hub's commit is not an ancestor of it), or the fetch
+fails – the step escalates (`workspace_unsynced`, with what differs) with the standard actions:
+the decision owner fixes the hub or the source and **retries**, or abandons the change. Once
+the change has a base it keeps it: Requirements sent back runs the step again, and it passes at
+once.
 
 ### 5.1 `intake` – start
 
@@ -583,7 +611,7 @@ When a change starts, the controller lists the base commit's tree. It is **blank
 is documentation (`*.md`, `*.rst`, `*.adoc`), a top-level licence or notice file (`LICENSE*`,
 `LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`,
 a top-level mise file (`mise.toml`, `.mise.toml`, `.tool-versions`: tool versions are not code)
-or under `.github/` – including a repository with no files at all (`repo.path` omitted). The
+or under `.github/` – including a repository with no files at all (a workspace without a `source`). The
 change record keeps it (`blank_repo`). Without this the oracle would have to guess the layout,
 test runner and configuration the first build task will create.
 
@@ -741,7 +769,7 @@ HIGH findings attested as feedback (cycle + 1).
 
 On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their sandboxes are deleted**.
 
-### 5.10 `integration` (R2+) and `release` (R3)
+### 5.10 `integration` (R2+) and `release` (kept for a live-system workflow; in no tier today)
 
 * `integration` – **Soul:** `integration-verifier`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Writes:** `integration/**`; **Required:** `integration/report.md`, git `head`. **Inputs** add every task's evidence and, at R3, the baseline report and the controller's baseline run.
 * `release` – **Soul:** `release-planner`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`; **Writes:** `release/**`; **Required:** `release/plan.md`, `release/rollback.md`.
@@ -752,6 +780,37 @@ On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their s
 | G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
 | G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha and recommends a recovery strategy on its own line, `Strategy: rollback` or `Strategy: forward-fix` (with a `Rationale:`). |
 | H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). The gates only a human attestation satisfies are rows on the card, attested with the acceptance (G-AT1). `rollback_or_forward_fix_evidence` shows the release planner's recommended strategy and rationale with `release/rollback.md`: confirming it attests `rollback-evidence` or `forward-fix-evidence` accordingly, citing the plan. `security_or_e2e_evaluator` is attested `pass` citing the evidence ticked (security reviews, the integration report, the controller's oracle run) or named. A row with no specific evidence behind it – any but a recommended recovery plan – may instead be attested `not_applicable` with a reason, recorded against the integration report (else the integration head); the gate itself is not waived. Every row has one **Attest** button that records it at once; the card's own action (Accept change, Re-check the ship gates; at H-2 Approve all pending for the baseline) also records every row that is complete, and says which. A gate left unattested is reported as a warning: H-3 waits on it (its preconditions, §5.11) until one is recorded. |
+
+### 5.10b `describe` – the pull request (every tier)
+
+The last step before H-3: the description H-3 accepts with the change (published as the PR after H-3).
+
+* `describer` – **Soul:** `pr-writer`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`; **Writes:** `delivery/pr.md`; **Required:** `delivery/pr.md`, git `head`. At the integration head, with the change's whole diff (`{{change_base_sha}}..{{head_sha}}`); **inputs** the goal, requirements, plan, each task's evidence, the integration report and every fix round's record.
+* `pr-reviewer` – **Soul:** `pr-reviewer`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Writes:** its own `delivery/reviews/pr-reviewer-*`; **Required:** `delivery/reviews/pr-reviewer-cycle-<n>.md`, git `head`. Judges whether the description is *faithful*: its motivation is the change's, every significant change in the diff is described, nothing described is absent, and what it says was verified was.
+
+| ID | Rule |
+| --- | --- |
+| G-PR1 | `delivery/pr.md` starts with the PR's title (`# <title>`, at most 120 characters) and has the sections `## Motivation`, `## Changes` and `## Verification`; every requirement of the change is cited by its id. |
+| G-PR2 | The review attests the latest version of `delivery/pr.md`; `REWORK` names at least one finding, each with evidence the report attests. |
+| G-PR3 | `REWORK` sends the description back to the describer with the findings, at most `critique_max_cycles` cycles (counted from the fix round's start); then a human decides (`critique_budget`). |
+
+### 5.10c `publish` – the pull request on GitHub (controller, no agent)
+
+When the workspace's `source` is on GitHub, a **Publish** stage follows Delivery (no gate): once
+H-3 accepts the change, its integration branch is pushed to the source as
+`<publish_prefix><change-id>` (default `agent/<change-id>`; `legion/*` is never pushed) and a pull
+request is opened from it against the base branch, **ready for review**: its title and body are
+the reviewed `delivery/pr.md`, followed by a footer the controller adds – `Legion change:
+<change-id>` and the risk tier. Its labels come from the step's label policies, one family
+each: today `risk:<tier>`. A label the repository lacks is created (an existing one's colour is
+left alone); each family's labels on the pull request are made exactly the wanted ones (a stale
+`risk:R1` goes when the tier is R2), and labels of other families – a human's included – stay.
+Run again (a retry, a restart), it finds the pull request and brings it up to date; the branch
+is never force-pushed. The result is `control/pr.json` (url, number, branch, head, labels) and
+the change is `READY`. A failure – `gh` not authenticated, a branch that moved on GitHub, an
+API error – escalates (`publish_failed`) with the standard actions; retry publishes again. `gh`
+runs with the host's authentication, never a sandbox's. A workspace whose source is not on
+GitHub has no Publish stage: the change ends at H-3.
 
 ### 5.10a Fix rounds
 
@@ -990,6 +1049,8 @@ assets/
 | `security` | [`prompts/security.md`](assets/prompts/security.md) |
 | `architecture` | [`prompts/architecture.md`](assets/prompts/architecture.md) |
 | `integration` | [`prompts/integration.md`](assets/prompts/integration.md) |
+| `describer` | [`prompts/describer.md`](assets/prompts/describer.md) |
+| `pr-reviewer` | [`prompts/pr-reviewer.md`](assets/prompts/pr-reviewer.md) |
 | `release` | [`prompts/release.md`](assets/prompts/release.md) |
 | `retrospective` | [`prompts/retrospective.md`](assets/prompts/retrospective.md) |
 
@@ -1007,6 +1068,8 @@ assets/
 * [`security-reviewer`](assets/souls/security-reviewer.md)
 * [`architecture-reviewer`](assets/souls/architecture-reviewer.md)
 * [`integration-verifier`](assets/souls/integration-verifier.md)
+* [`pr-writer`](assets/souls/pr-writer.md)
+* [`pr-reviewer`](assets/souls/pr-reviewer.md)
 * [`release-planner`](assets/souls/release-planner.md)
 * [`retrospective-analyst`](assets/souls/retrospective-analyst.md)
 

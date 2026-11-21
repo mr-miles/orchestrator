@@ -14,6 +14,7 @@ from .runtime.human import HumanGates
 from .sandboxes.sandboxes import Sandboxes
 from .services.agent_runs import AgentRuns
 from .services.provision import Provisioner
+from .services.publish import Publisher
 from .services.reports import Reports
 from .services.runs import RunLifecycle
 from .steps import StepHolds, StepRunner
@@ -29,13 +30,13 @@ def compose(ce: ChangeEngine) -> None:
     sandboxes = Sandboxes(ce, StepHolds(ce))
     lifecycle = RunLifecycle(ce, sandboxes)
     agents = AgentRuns(ce, lifecycle, sandboxes, roles=ce)
-    phases = PhaseContext(ce, sandboxes, ce.svc.dispatcher, agents)
+    phases = PhaseContext(ce, sandboxes, ce.svc.dispatcher, agents, Publisher(ce))
     provisioner = Provisioner(ce, lifecycle, sandboxes, ce.svc.dispatcher)
     sandboxes.environments = provisioner          # whether a role's environment is built
     reports = Reports(ce, lifecycle, roles=ce)
     agents.reports = reports
-    gates = HumanGates(ce, lifecycle)
     runner = StepRunner(ce, phases, lifecycle, provisioner)
+    gates = HumanGates(ce, lifecycle, runner)
     flow = FlowRuntime(ce, runner, lifecycle)
     runner.runtime = flow
     gates.flow = flow

@@ -173,7 +173,7 @@ async def test_a_revised_oracle_runs_again_from_the_integration_head(f: Flow):
     await f.oracle({"tests/acceptance/test_greet.sh":
                     "grep -q hello src/greet.txt\ngrep -c '' src/greet.txt\n"})
     assert node.status == ACCEPTED and f.ce.change.oracle_sha == node.accepted_sha
-    assert await f.ctl.git.is_ancestor(head, f.ce.change.integration_head)
+    assert await f.git.is_ancestor(head, f.ce.change.integration_head)
     assert f.status("H-2") == AWAITING_HUMAN
     h2 = {s.subject: s.status for s in governance.h2_status(f.ce)}
     assert h2["oracle"] == ApprovalState.STALE

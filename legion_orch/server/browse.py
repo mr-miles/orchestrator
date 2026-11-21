@@ -19,26 +19,26 @@ class BrowseError(Exception):
 
 
 # ---------------------------------------------------------------------------- workspaces
-def workspace_id(ctl: Controller) -> str:
-    """A controller serves one workspace: its repository and document store."""
-    return ctl.cfg.repo.name
-
-
 def workspaces(ctl: Controller) -> list[dict]:
-    """Every workspace this controller serves (today: one) with its changes counted by status."""
-    counts: dict[str, int] = {}
-    for ce in ctl.changes.values():
-        if ce.change:
+    """Every configured workspace (a repository changes are made in), with its changes counted
+    by status and their documents."""
+    out = []
+    for w in ctl.cfg.workspaces:
+        mine = [ce for ce in ctl.changes.values() if ce.change and ce.change.workspace == w.name]
+        counts: dict[str, int] = {}
+        for ce in mine:
             counts[str(ce.change.status)] = counts.get(str(ce.change.status), 0) + 1
-    cfg = ctl.cfg
-    return [{"id": workspace_id(ctl), "name": cfg.project, "repo": cfg.repo.name,
-             "base_branch": cfg.repo.base_branch, "source": cfg.repo.path or None,
-             "changes": counts, "documents": len(ctl.docs.list(""))}]
+        out.append({"id": w.name, "name": w.name, "repo": w.name, "base_branch": w.base_branch,
+                    "source": w.source, "publish_prefix": w.publish_prefix, "changes": counts,
+                    "documents": sum(len(ctl.docs.list(ce.p(""))) for ce in mine)})
+    return out
 
 
-def check_workspace(ctl: Controller, ws: str) -> None:
-    if ws != workspace_id(ctl):
+def check_workspace(ctl: Controller, ws: str) -> str:
+    """``ws`` if it is a configured workspace."""
+    if ws not in ctl.hubs:
         raise BrowseError(f"unknown workspace {ws!r}")
+    return ws
 
 
 # ---------------------------------------------------------------------------- files
@@ -72,35 +72,38 @@ def download(path: str, data: bytes) -> Response:
 
 
 # ---------------------------------------------------------------------------- the repository
-async def git_refs(ctl: Controller) -> list[dict]:
-    return [{"name": n, "sha": sha, "base": n == ctl.cfg.repo.base_branch}
-            for n, sha in await ctl.git.browse_refs()]
+async def git_refs(ctl: Controller, ws: str) -> list[dict]:
+    base = ctl.cfg.workspace(ws).base_branch
+    return [{"name": n, "sha": sha, "base": n == base}
+            for n, sha in await ctl.hub(ws).browse_refs()]
 
 
-async def _commit(ctl: Controller, ref: str) -> str:
-    sha = await ctl.git.browse_commit(ref or ctl.cfg.repo.base_branch)
+async def _commit(ctl: Controller, ws: str, ref: str) -> str:
+    sha = await ctl.hub(ws).browse_commit(ref or ctl.cfg.workspace(ws).base_branch)
     if sha is None:
         raise BrowseError(f"unknown branch or commit {ref!r}")
     return sha
 
 
-async def git_tree(ctl: Controller, ref: str) -> dict:
-    sha = await _commit(ctl, ref)
-    files, truncated = await ctl.git.browse_tree(sha)
-    return {"ref": ref or ctl.cfg.repo.base_branch, "sha": sha, "truncated": truncated,
+async def git_tree(ctl: Controller, ws: str, ref: str) -> dict:
+    sha = await _commit(ctl, ws, ref)
+    files, truncated = await ctl.hub(ws).browse_tree(sha)
+    return {"ref": ref or ctl.cfg.workspace(ws).base_branch, "sha": sha, "truncated": truncated,
             "files": [{"path": p, "size": s} for p, s in files]}
 
 
-async def git_file(ctl: Controller, ref: str, path: str, *, raw: bool) -> dict | Response:
-    sha = await _commit(ctl, ref)
+async def git_file(ctl: Controller, ws: str, ref: str, path: str, *,
+                   raw: bool) -> dict | Response:
+    sha = await _commit(ctl, ws, ref)
     if not path or path.startswith("/") or "\0" in path:
         raise BrowseError("a repository path is required")
-    data = await ctl.git.browse_blob(sha, path, MAX_DOWNLOAD_BYTES if raw else MAX_VIEW_BYTES)
+    git = ctl.hub(ws)
+    data = await git.browse_blob(sha, path, MAX_DOWNLOAD_BYTES if raw else MAX_VIEW_BYTES)
     if raw:
         if data is None:
             raise BrowseError(f"no file {path!r} at {sha[:12]} (or larger than 64 MiB)")
         return download(path, data)
-    if data is None and await ctl.git.blob(sha, path) is None:
+    if data is None and await git.blob(sha, path) is None:
         raise BrowseError(f"no file {path!r} at {sha[:12]}")
     return file_view(path, data, None) | {"sha": sha}
 

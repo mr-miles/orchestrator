@@ -16,6 +16,7 @@ from .phases import PhaseContext
 if TYPE_CHECKING:
     from ..services.provision import Provisioner
     from ..services.runs import RunLifecycle
+    from .approvals import Approved
 
 
 # ---------------------------------------------------------------------------- the runner
@@ -99,6 +100,9 @@ class StepRunner:
 
     def override(self, node: Node) -> None:
         self.of(node).override()
+
+    async def approve(self, node: Node, action: str, approver: str, payload: dict) -> Approved:
+        return await self.of(node).approve(action, approver, payload)
 
     def retry(self, node: Node) -> None:
         self.of(node).retry()

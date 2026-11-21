@@ -412,7 +412,7 @@ def _os_cfg(tmp_path):
     from legion_orch.config import load_config
     (tmp_path / "c.yaml").write_text(f"""
 project: p
-repo: {{name: app, path: {tmp_path}}}
+workspaces: [{{name: app, source: {tmp_path}}}]
 decision_owners: [miles]
 server: {{port: 8765, mcp_port: 8766, git_port: 8767, token_port: 8768}}
 identity: {{jwks_uri: "https://spire/keys"}}
@@ -596,7 +596,7 @@ def test_every_gate_has_exactly_one_check():
     from legion_orch.workflow import risk
     from legion_orch.workflow.ship import GATE_CHECKS, GateEvaluator
     all_gates = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
-    assert set(GATE_CHECKS) == all_gates
+    assert set(GATE_CHECKS) == all_gates | set(risk.RELEASE_GATES)     # those: addable only
     assert all(callable(getattr(GateEvaluator, m)) for m in GATE_CHECKS.values())
 
 
@@ -621,13 +621,14 @@ def test_role_dispatch_policy():
     assert plans["implementer"].base_at_head(False) and not plans["implementer"].base_at_head(True)
     assert not plans["reviewer"].base_at_head(False)              # judges check out detached
     assert {r for r, p in plans.items() if p.at_head} == {"baseline", "integration", "release",
-                                                          "retrospective"}
-    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {"critic"}
+                                                          "retrospective", "describer"}
+    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {
+        "critic", "pr-reviewer"}
     assert {r: p.keep for r, p in plans.items() if p.keeps} == {
         "intake": UntilGate("H-1"), "planner": UntilGate("H-E1"), "oracle": UntilGate("H-2"),
         "implementer": UntilAccepted()}
-    assert roles_where("panel") == panel | {"critic"}         # the critic judges the plan node
-    assert roles_where("judge") == {"critic", "baseline", "integration"} | panel
+    assert roles_where("panel") == panel | {"critic", "pr-reviewer"}   # judge a node REVIEWING
+    assert roles_where("judge") == {"critic", "baseline", "integration", "pr-reviewer"} | panel
     assert not any(plans[r].keeps for r in roles_where("judge"))   # G-D4
     assert roles_where("needs_fresh_approval") == {"implementer"}
     assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
@@ -672,7 +673,7 @@ def test_server_ports_must_be_distinct(tmp_path):
     from legion_orch.config import load_config
     (tmp_path / "c.yaml").write_text(f"""
 project: p
-repo: {{name: app, path: {tmp_path}}}
+workspaces: [{{name: app, source: {tmp_path}}}]
 decision_owners: [miles]
 server: {{port: 8765, git_port: 8765}}
 sandbox: {{runner: local}}
@@ -735,10 +736,10 @@ def test_transition_rollback_keeps_identity():
 
     from legion_orch.workflow.engine.base.core import ChangeCore
     from legion_orch.workflow.model import Change, Node, Run
-    svc = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None,
+    svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
                                 lock=None, procs={})
     ce = ChangeCore(svc, types.SimpleNamespace(), "c1")
-    ce.st.change = Change(id="c1", goal="g", base_sha="a" * 40)
+    ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
     ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
@@ -778,11 +779,23 @@ def test_cgi_head_parsing():
     assert _parse_cgi_head(b"Content-Type: text/plain\r\n") is None        # incomplete header block
 
 
-def test_every_human_gate_action_has_a_handler():
-    from legion_orch.workflow.engine.runtime.human import HumanGates
+def test_every_gate_says_what_approves_it_and_the_runtime_names_no_gate():
+    """What approving a gate records is its step type's (its Approval phase's ``approves``);
+    the human actions in the runtime hold no table of gates."""
+    import inspect
+
+    from legion_orch.workflow.engine.runtime import human
+    from legion_orch.workflow.engine.steps import GATE_TYPES
+    from legion_orch.workflow.engine.steps.phases import Approval
     from legion_orch.workflow.model import H_CHANGE, H_ENV, H_REQUIREMENTS, H_SPEC
-    assert {g for g, _ in HumanGates.GATE_ACTIONS} == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
-    assert all(callable(getattr(HumanGates, m)) for m in HumanGates.GATE_ACTIONS.values())
+    assert set(GATE_TYPES) == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
+    assert {g: sorted(t.phase(Approval).approves.actions) for g, t in GATE_TYPES.items()} == {
+        H_REQUIREMENTS: ["accept", "approve"], H_ENV: ["approve"], H_SPEC: ["approve"],
+        H_CHANGE: ["accept", "approve"]}
+    assert not hasattr(human.HumanGates, "GATE_ACTIONS")
+    code = inspect.getsource(human.HumanGates.human_action) + inspect.getsource(
+        human.HumanGates._human_gate)
+    assert not any(g in code for g in ("H_REQUIREMENTS", "H_ENV", "H_SPEC", "H_CHANGE"))
 
 
 def test_plan_guard_branches():
@@ -843,15 +856,42 @@ def test_report_and_work_guard_branches(tmp_path):
     assert "G-I1" in guards.intake("no ids here", _signals(), None, "DONE")[0]
 
 
-def test_repo_path_is_optional(tmp_path):
+def test_a_workspace_source_is_optional_and_relative_to_the_config(tmp_path):
     from legion_orch.config import load_config
-    for repo in ("{name: app}", "{name: app, path: ''}", "{name: app, path: '  '}"):
-        (tmp_path / "c.yaml").write_text(f"project: p\nrepo: {repo}\ndecision_owners: [m]\n"
+    for ws in ("{name: app}", "{name: app, source: ''}", "{name: app, source: '  '}"):
+        (tmp_path / "c.yaml").write_text(f"project: p\nworkspaces: [{ws}]\ndecision_owners: [m]\n"
                                          "sandbox: {runner: local}\n")
-        assert load_config(tmp_path / "c.yaml").repo.path is None, repo
-    (tmp_path / "c.yaml").write_text("project: p\nrepo: {name: app, path: src}\ndecision_owners: [m]\n"
-                                     "sandbox: {runner: local}\n")
-    assert load_config(tmp_path / "c.yaml").repo.path == str(tmp_path / "src")
+        w = load_config(tmp_path / "c.yaml").workspaces[0]
+        assert w.source is None and w.base_branch == "main" and w.publish_prefix == "agent/", ws
+    (tmp_path / "c.yaml").write_text("project: p\nworkspaces: [{name: app, source: src}]\n"
+                                     "decision_owners: [m]\nsandbox: {runner: local}\n")
+    assert load_config(tmp_path / "c.yaml").workspace("app").source == str(tmp_path / "src")
+
+
+def test_workspaces_are_checked_at_load(tmp_path):
+    import pytest
+
+    from legion_orch.config import load_config
+
+    def load(ws: str):
+        (tmp_path / "c.yaml").write_text(f"project: p\n{ws}\ndecision_owners: [m]\n"
+                                         "sandbox: {runner: local}\n")
+        return load_config(tmp_path / "c.yaml")
+    for ws, msg in [("repo: {name: app}", "replaced by workspaces"),
+                    ("workspaces: []", "at least one"),
+                    ("workspaces: [{name: a}, {name: a}]", "unique"),
+                    ("workspaces: [{name: ../x}]", "path segment"),
+                    ("workspaces: [{name: x.git}]", "path segment"),
+                    ("workspaces: [{name: a, publish_prefix: legion/}]", "outside legion/"),
+                    ("workspaces: [{name: a, publish_prefix: 'bad..'}]", "valid branch name"),
+                    ("workspaces: [{name: a, path: x}]", "unknown WorkspaceConfig keys")]:
+        with pytest.raises(ValueError, match=msg):
+            load(ws)
+    cfg = load("workspaces: [{name: a}, {name: b, publish_prefix: bots/legion-}]")
+    assert [w.name for w in cfg.workspaces] == ["a", "b"]
+    assert cfg.workspace("b").publish_prefix == "bots/legion-"
+    with pytest.raises(KeyError, match="no workspace 'c'"):
+        cfg.workspace("c")
 
 
 def test_sandbox_names_are_first_names_and_fit_the_gateway_limit():
@@ -967,7 +1007,7 @@ def test_the_agent_command_resumes_a_session_and_cannot_be_replaced(tmp_path):
     assert cmd.startswith("'/opt/my claude' -p ")
     assert '${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"}' in cmd
     cfg = tmp_path / "orchestrator.yaml"
-    cfg.write_text("project: p\nrepo: {name: app, path: ., base_branch: main}\n"
+    cfg.write_text("project: p\nworkspaces: [{name: app, source: ., base_branch: main}]\n"
                    "decision_owners: [miles]\nsandbox: {agent_command: claude -p}\n")
     with pytest.raises(ValueError, match="agent_command was removed.*agent_bin"):
         load_config(cfg)
@@ -1194,3 +1234,13 @@ def test_the_checkout_steps_clone_then_detach_or_branch(tmp_path):
     step("clone.sh")
     step("branch.sh", "legion/c1/build-t1", base)
     assert step("run-agent.sh")[-3:] == ["legion/c1/build-t1", base, "legion-implementer"]
+
+
+def test_the_stored_node_schema_knows_every_node_status():
+    """A status the schema does not list fails every save of a node in it (G-W3) – in a
+    background task, where only the log shows it."""
+    import json
+
+    from legion_orch.workflow.model import NodeStatus
+    schema = json.loads((Path(__file__).parent.parent / "assets/schemas/node.json").read_text())
+    assert set(schema["oneOf"][0]["properties"]["status"]["enum"]) == {s.value for s in NodeStatus}

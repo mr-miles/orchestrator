@@ -23,6 +23,7 @@ from ...model import (
     ACTIVE_NODE,
     BASELINE,
     BUILD,
+    DESCRIBE,
     H_CHANGE,
     H_ENV,
     H_REQUIREMENTS,
@@ -34,9 +35,11 @@ from ...model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
+    PUBLISH,
     RELEASE,
     RETRO,
     REWORK,
+    WORKSPACE,
     Node,
     NodeKind,
     NodeStatus,
@@ -45,6 +48,7 @@ from ...model import (
 from ..base.core import ChangeCore
 from ..base.ids import base_id
 from ..sandboxes.plan import JUDGE, Checkout, SandboxPlan, UntilAccepted, UntilGate
+from .approvals import ChangeAccepted, RequirementsAccepted, SubjectsApproved
 from .phases import (
     AcceptanceCommands,
     AlreadyPassing,
@@ -57,13 +61,15 @@ from .phases import (
     DefineTasks,
     EscalateFailures,
     Merge,
+    OpenPullRequest,
     OracleCommands,
     OracleReworks,
     Panel,
     Phase,
     Produce,
+    RiskLabel,
     ShipGates,
-    SubjectsApproved,
+    SyncWorkspace,
     TaskCommands,
     TierPanel,
     Verify,
@@ -230,9 +236,10 @@ def agent(role: str, sandbox: SandboxPlan, *after: Phase, **kw) -> StepType:
 BASE, HEAD = SandboxPlan(Checkout.BASE), SandboxPlan(Checkout.HEAD)
 
 STEP_TYPES: dict[NodeKind, StepType] = {
+    WORKSPACE: StepType((SyncWorkspace(),)),       # the controller's: no agent, no sandbox
     INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
     PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
-                Critique(), DefineTasks(),                         # the critic judges (G-C2)
+                Critique("critic", "G-C2"), DefineTasks(),                         # the critic judges (G-C2)
                 on_reset=(RestartPlan(),)),
     PROVISION: StepType((BuildImages(),), dispatch_when=(EnvironmentQuiescent(),),
                         stands=EnvironmentUnchanged(),
@@ -249,17 +256,19 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     INTEGRATION: agent("integration", HEAD,
                        Verify(OracleCommands(), on_rework=EscalateFailures(
                            "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
-    RELEASE: agent("release", HEAD),
+    DESCRIBE: agent("describer", HEAD, Critique("pr-reviewer", "G-PR3")),
+    PUBLISH: StepType((OpenPullRequest((RiskLabel(),)),)),   # after H-3: the controller's
+    RELEASE: agent("release", HEAD),               # in no tier's tree (live-system workflows)
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
-    HUMAN: StepType((Approval(),)),                # a gate (its policies: GATE_TYPES)
 }
 
 #: each gate's step: what approves it, what it checks, when it passes by itself
 GATE_TYPES: dict[str, StepType] = {
-    H_REQUIREMENTS: StepType((Approval(),)),                        # H-1: the tier with it
-    H_ENV: StepType((Approval(subjects=SubjectsApproved("plan")),)),
-    H_SPEC: StepType((Approval(subjects=SubjectsApproved("oracle", baseline_from=3)),)),
-    H_CHANGE: StepType((Approval(checks=ShipGates(), automatic=AutomaticBelow(2)),)),
+    H_REQUIREMENTS: StepType((Approval(RequirementsAccepted()),)),     # H-1: the tier with it
+    H_ENV: StepType((Approval(SubjectsApproved("plan")),)),
+    H_SPEC: StepType((Approval(SubjectsApproved("oracle", baseline_from=3)),)),
+    H_CHANGE: StepType((Approval(ChangeAccepted(), checks=ShipGates(),
+                                 automatic=AutomaticBelow(2)),)),
 }
 
 

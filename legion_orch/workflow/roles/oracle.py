@@ -17,7 +17,7 @@ class OracleAuthor(RoleHandler):
     def extra_context(self, e: RoleContext, node) -> list[str]:
         """The scaffold's accepted commit: the oracle's tests run under its configuration."""
         s = e.scaffold_node()
-        return [f"git:{e.cfg.repo.name}@{s.accepted_sha}"] if s and s.accepted_sha else []
+        return [f"git:{e.workspace}@{s.accepted_sha}"] if s and s.accepted_sha else []
 
     def extra_variables(self, e: RoleContext, node) -> dict[str, str]:
         return {"scaffold": scaffold_note(e, "oracle")}

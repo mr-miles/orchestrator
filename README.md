@@ -50,11 +50,12 @@ automatically once the ship gates hold.
 ```bash
 pip install -e '.[test]'
 (cd frontend && bun install && bun run build)    # the web UI, into legion_orch/server/static/dist
-cp orchestrator.example.yaml orchestrator.yaml   # set repo, decision_owners, sandbox image/providers
-                                                 # (omit repo.path to start from an empty repository)
+cp orchestrator.example.yaml orchestrator.yaml   # set workspaces, decision_owners, sandbox image/providers
+                                                 # (a workspace without a source starts from an empty repository)
+gh auth login                                     # a workspace on GitHub: accepted changes become PRs
 legion-orch -c orchestrator.yaml check            # validate the assets folder
 legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
-legion-orch -c orchestrator.yaml start "Add a /health endpoint"   # or use the UI
+legion-orch -c orchestrator.yaml start "Add a /health endpoint" --workspace app   # or use the UI
 legion-orch -c orchestrator.yaml changes                            # list changes
 legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
 legion-orch -c orchestrator.yaml act <change-id> H-E1 approve --approver miles --payload '{"subjects": ["REQ-1"]}'

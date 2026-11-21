@@ -116,7 +116,7 @@ async def test_the_scaffold_is_built_before_the_oracle_and_h2(f: Flow):
     await f.implement("T1", files={"Makefile": "test:\n\ttrue\n"})
     await f.review("T1")
     assert s.status == ACCEPTED and ch.integration_head != ch.base_sha
-    assert await f.ctl.git.blob(ch.integration_head, "Makefile")
+    assert await f.git.blob(ch.integration_head, "Makefile")
     # the oracle works at the head with the scaffold, and is told so
     orc = f.run("oracle")
     assert orc.base_sha == ch.integration_head

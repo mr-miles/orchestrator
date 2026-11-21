@@ -33,6 +33,10 @@ exit 0
 """
 
 
+class WorkspaceUnsynced(Exception):
+    """The hub cannot follow its source: what differs, for the decision owner to fix."""
+
+
 class GitError(Exception):
     pass
 
@@ -104,11 +108,20 @@ class GitRemote:
         self.source = source
         self.base_branch = base_branch
         self.lock = asyncio.Lock()
+        # one sync of this hub with its source at a time; a sync that waited for another
+        # reuses its result (``_synced``: how many have finished, ``_base``: the last base)
+        self._sync_lock = asyncio.Lock()
+        self._synced, self._base = 0, ""
+        self._configured = False          # ensure() has configured the hub in this process
 
     async def git(self, *args: str, check: bool = True, cwd: Path | None = None) -> str:
         return (await run("git", *args, cwd=cwd or self.repo, check=check))[1]
 
     async def ensure(self) -> None:
+        """Create the hub if there is none (cloned from its source, or blank), and configure it
+        – once per process."""
+        if self._configured and self.exists:
+            return
         if not (self.repo / "HEAD").exists():
             self.repo.parent.mkdir(parents=True, exist_ok=True)
             if self.source is None:
@@ -133,6 +146,7 @@ class GitRemote:
         hook.parent.mkdir(exist_ok=True)
         hook.write_text(PRE_RECEIVE)
         hook.chmod(hook.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        self._configured = True
 
     async def _init_blank(self) -> None:
         """No source repository: a new bare hub whose base branch has one empty commit."""
@@ -142,6 +156,53 @@ class GitRemote:
                               "-c", "user.email=legion-controller@localhost",
                               "commit-tree", tree, "-m", "legion: initial empty commit")).strip()
         await self.git("update-ref", f"refs/heads/{self.base_branch}", sha)
+
+    @property
+    def exists(self) -> bool:
+        """The hub has been created (cloned, or a blank one initialised)."""
+        return (self.repo / "HEAD").exists()
+
+    async def sync(self) -> str:
+        """Bring the hub up to date with its source and return the base branch's commit: clone
+        it if there is no hub yet, otherwise fetch and fast-forward the base branch. ``legion/*``
+        (changes' integration and run branches) is never touched. One sync of a hub runs at a
+        time; one that waited for another takes that one's result. Raises
+        :class:`WorkspaceUnsynced` when the hub cannot follow its source: the clone's origin is
+        not the configured source, or the source's base branch was rewritten."""
+        seen = self._synced
+        async with self._sync_lock:
+            if self._synced != seen and self._base:      # synced while this one waited
+                return self._base
+            base = await self._sync()
+            self._synced, self._base = self._synced + 1, base
+            return base
+
+    async def _sync(self) -> str:
+        await self.ensure()
+        local = f"refs/heads/{self.base_branch}"
+        if self.source is None:                  # a blank repository: its base lives here
+            return await self.rev_parse(local)
+        origin = (await self.git("config", "--get", "remote.origin.url", check=False)).strip()
+        if origin != self.source:
+            raise WorkspaceUnsynced(f"the hub's origin is {origin or '(none)'}, not the "
+                                    f"configured source {self.source}")
+        rc, out = await run("git", "fetch", "--quiet", "--prune", "origin", cwd=self.repo,
+                            check=False)
+        if rc != 0:
+            raise WorkspaceUnsynced(f"fetching {self.source} failed: {out.strip()[-400:]}")
+        remote = await self.ref_sha(f"refs/remotes/origin/{self.base_branch}")
+        if remote is None:
+            raise WorkspaceUnsynced(f"{self.source} has no branch {self.base_branch}")
+        current = await self.ref_sha(local)
+        if current is not None and current != remote and not await self.is_ancestor(current,
+                                                                                 remote):
+            raise WorkspaceUnsynced(
+                f"{self.base_branch} on {self.source} was rewritten: the hub's {current[:12]} "
+                f"is not an ancestor of {remote[:12]} – reset or re-clone the hub "
+                f"({self.repo}) by hand, then retry")
+        if current != remote:                    # a fast-forward (or the first time)
+            await self.git("update-ref", local, remote, *([current] if current else []))
+        return remote
 
     async def resolve_base(self) -> str:
         if self.source is None:          # a blank repository: the base branch lives in the hub

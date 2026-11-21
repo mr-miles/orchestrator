@@ -325,6 +325,17 @@ export interface Stage {
   status: string
 }
 
+/** The change's pull request on GitHub, once published after H-3 (control/pr.json). */
+export interface PullRequestRecord {
+  url: string
+  number: number
+  /** the published branch: <publish_prefix><change-id> */
+  branch: string
+  head: string
+  labels: string[]
+  workspace: string
+}
+
 export interface ChangeState {
   project: string
   repo: string
@@ -346,6 +357,7 @@ export interface ChangeState {
   surfaces: Surface[]
   environment: EnvironmentSpec | null
   attestation_kinds: string[]
+  pull_request?: PullRequestRecord | null
 }
 
 export interface ChangeSummary {
@@ -398,7 +410,8 @@ export interface Digest {
 
 export interface Meta {
   project: string
-  repo: string
+  /** the configured workspaces' names */
+  workspaces: string[]
   decision_owners: string[]
   assets_sha: string
   live_runs: number
@@ -552,13 +565,15 @@ export interface DocDiff {
   diff: string
 }
 
-/** A repository and its document store (a controller serves one). */
+/** A configured repository changes are made in, and its changes' documents. */
 export interface Workspace {
   id: string
   name: string
   repo: string
   base_branch: string
   source?: string | null
+  /** a finished change's branch on the source: <publish_prefix><change-id> */
+  publish_prefix: string
   /** changes by status */
   changes: Record<string, number>
   documents: number

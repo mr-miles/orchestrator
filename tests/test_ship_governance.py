@@ -70,6 +70,7 @@ async def test_an_overridden_build_is_human_judgement(f: Flow):
     await f.implement()
     await f.review(verdict="FAIL")
     await f.human("build:T1", "override_accept", reason=REASON)
+    await f.describe()
     g = f.ce.change.ship.gates["lightweight_independent_review"]
     assert g.status == SAT and g.human_judgement and "override" in g.detail
     assert "lightweight_independent_review" in f.ce.change.ship.human_judgement_gates
@@ -106,6 +107,7 @@ async def test_waived_gate_holds_only_while_its_evidence_resolves(f: Flow):
     await f.change_action("override", kind="waive_gate", gate="lightweight_independent_review",
                           reason=REASON, evidence=evidence)  # ... so a human waives it
     await f.human("build:T1", "override_accept", reason=REASON)
+    await f.describe()
     ship = f.ce.change.ship
     assert ship.verdict == "READY" and "lightweight_independent_review" in ship.waived_gates
     assert ship.gates["lightweight_independent_review"].detail.startswith("waived by miles")

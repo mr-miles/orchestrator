@@ -15,15 +15,15 @@ def client(f: Flow) -> httpx.AsyncClient:
 
 @scenario()
 async def test_the_workspace_lists_its_changes_and_its_repository(f: Flow):
-    ws = f.cfg.repo.name
+    ws = f.cfg.workspaces[0].name
     async with client(f) as c:
         [w] = (await c.get("/api/workspaces")).json()
-        assert w["id"] == ws and w["base_branch"] == f.cfg.repo.base_branch
+        assert w["id"] == ws and w["base_branch"] == f.cfg.workspaces[0].base_branch
         assert w["changes"] == {"ACTIVE": 1} and w["documents"] > 0
         [ch] = (await c.get("/api/changes")).json()
         assert ch["workspace"] == ws
         refs = (await c.get(f"/api/workspaces/{ws}/git/refs")).json()
-        assert refs[0]["name"] == f.cfg.repo.base_branch and refs[0]["base"]
+        assert refs[0]["name"] == f.cfg.workspaces[0].base_branch and refs[0]["base"]
         assert f"legion/{f.ce.cid}/integration" in [r["name"] for r in refs]
         tree = (await c.get(f"/api/workspaces/{ws}/git/tree")).json()
         paths = [x["path"] for x in tree["files"]]

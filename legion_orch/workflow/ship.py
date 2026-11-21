@@ -11,6 +11,7 @@ from . import attest, governance
 from .model import (
     ACCEPTED,
     BASELINE,
+    DESCRIBE,
     H_CHANGE,
     INTEGRATION,
     RELEASE,
@@ -68,7 +69,7 @@ class GateEvaluator:
         if not ref:
             return False
         try:
-            return await attest.resolve(attest.parse(ref, [self.e.cfg.repo.name]),
+            return await attest.resolve(attest.parse(ref, [self.e.workspace]),
                                         self.e.docs, self.e.git)
         except attest.AttestationError:
             return False
@@ -293,6 +294,25 @@ class GateEvaluator:
         if r.status == SAT:
             return r
         return a or r
+
+    @checks("pr_description_verified")
+    async def pr_description(self) -> GateResult:
+        """The PR description (``delivery/pr.md``) judged faithful by the PR reviewer, at the
+        integration head that will be published."""
+        from .guards import PR_DOC
+        n = self.e.current(DESCRIBE)
+        if not n or n.status != ACCEPTED:
+            return _g(UNEVAL, "the PR description is not reviewed yet")
+        r = n.review(n.cycle, "pr-reviewer")
+        if not r or r.verdict != Verdict.PASS:
+            return _g(UNSAT, "no PR review PASS")
+        head = self.ch.integration_head or ""
+        if r.sha != head:
+            return _g(UNSAT, f"the PR review judged {(r.sha or '')[:12]}, not the integration "
+                      f"head {head[:12]}")
+        if not (await self.resolves(r.doc) and await self.resolves(self.e.latest_att(PR_DOC))):
+            return _g(UNSAT, "the PR description or its review is missing")
+        return _g(SAT, f"{PR_DOC} reviewed faithful (PASS) at the integration head")
 
     @checks("release_observation_plan")
     async def release_plan(self) -> GateResult:

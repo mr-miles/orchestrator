@@ -55,7 +55,7 @@ def _config(tmp_path, port):
     fake.chmod(0o755)
     cfg_path.write_text(textwrap.dedent(f"""
         project: e2e
-        repo: {{name: app, path: {tmp_path / 'src-repo'}, base_branch: main}}
+        workspaces: [{{name: app, source: {tmp_path / 'src-repo'}, base_branch: main}}]
         decision_owners: [miles, ana]
         state_dir: state
         assets_dir: {ROOT / 'assets'}
@@ -91,8 +91,8 @@ async def _full_workflow(tmp_path):
     try:
         await _wait(ctl, lambda: server.started, "server start", 20)
         # two changes share one controller / state_dir and run concurrently
-        a = await ctl.start_change("Say hello and goodbye")
-        b = await ctl.start_change("Say hello and goodbye, again")
+        a = await ctl.start_change("Say hello and goodbye", "app")
+        b = await ctl.start_change("Say hello and goodbye, again", "app")
         assert a.cid != b.cid
         await asyncio.gather(_drive(a), _drive(b))
         await _event_streams(ctl, cfg, a)
@@ -166,7 +166,7 @@ async def _drive(ce):
     assert set(ship.gates) == {
         "approved_delta_spec", "protected_oracle", "task_contract", "deterministic_verification",
         "task_level_independent_review", "integration_or_real_interface_checks",
-        "whole_change_acceptance_evidence"}
+        "whole_change_acceptance_evidence", "pr_description_verified"}
 
     # every accepted run's sandbox is gone; documents are namespaced, versioned & immutable
     await _wait(ce, lambda: all(r.sandbox_deleted for r in ce.runs.values()
@@ -199,7 +199,7 @@ async def _r3_workflow(tmp_path):
     server = servers[0]
     try:
         await _wait(ctl, lambda: server.started, "server start", 20)
-        ce = await ctl.start_change("R3: say hello and goodbye")
+        ce = await ctl.start_change("R3: say hello and goodbye", "app")
         n = ce.nodes
         await _wait(ce, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
         await ce.human_action("H-1", "accept", "miles")
@@ -225,23 +225,18 @@ async def _r3_workflow(tmp_path):
         gates = ce.change.ship.gates
         assert ce.change.ship.verdict == "NOT_READY" and n["H-3"].status == "AWAITING_HUMAN"
         assert gates["security_or_e2e_evaluator"].status == "unevaluable"
-        assert gates["rollback_or_forward_fix_evidence"].status == "unevaluable"
         assert gates["independent_baseline"].status == "satisfied"
         assert gates["architecture_or_security_review"].status == "satisfied"
-        assert gates["release_observation_plan"].status == "satisfied"
+        assert gates["pr_description_verified"].status == "satisfied"     # described, reviewed
+        assert "release" not in n                                         # no release step
 
-        with pytest.raises(Exception, match="G-AT1"):
-            await ce.change_action("attest", "miles", {"kind": "release-observation", "verdict": "pass",
-                                                       "sources": ["file:release/plan.md@1"]})
         with pytest.raises(Exception, match="cannot be waived"):
             await ce.change_action("override", "miles", {
                 "kind": "waive_gate", "gate": "deterministic_verification",
-                "reason": "we really want to skip the checks here", "evidence": "file:release/plan.md@1"})
+                "reason": "we really want to skip the checks here", "evidence": "file:delivery/pr.md@1"})
         sec = ce.latest_att("tasks/T1/reviews/security-cycle-2.md")
         await ce.change_action("attest", "ana", {"kind": "security-evaluation", "verdict": "pass",
                                                  "sources": [sec]})
-        await ce.change_action("attest", "ana", {"kind": "rollback-evidence", "verdict": "pass",
-                                                 "sources": ["file:release/rollback.md@1"]})
         await ce.change_action("override", "miles", {
             "kind": "add_gate", "gate": "evidence_bundle_or_log",
             "reason": "keep the per-task evidence logs for audit"})
@@ -252,8 +247,8 @@ async def _r3_workflow(tmp_path):
         unsatisfied = {k: g for k, g in ship.gates.items() if g.status != "satisfied"}
         assert ship.verdict == "READY", unsatisfied
         assert ship.gates["evidence_bundle_or_log"].added
-        assert {"independent_baseline", "security_or_e2e_evaluator",
-                "rollback_or_forward_fix_evidence"} <= set(ship.human_judgement_gates)
+        assert {"independent_baseline", "security_or_e2e_evaluator"} <= set(
+            ship.human_judgement_gates)
         await _wait(ce, lambda: ce.change.status == "READY", "the change accepted")
     finally:
         for srv in servers:
@@ -301,7 +296,7 @@ async def _event_streams(ctl, cfg, ce):
         stream = _sse(c, f"{base}/events")                     # pages without a change: no state
         first = [await anext(stream), await anext(stream)]
         assert [n for n, _ in first] == ["changes", "attention"]
-        assert {x["workspace"] for x in first[0][1]} == {cfg.repo.name}
+        assert {x["workspace"] for x in first[0][1]} == {cfg.workspaces[0].name}
         await stream.aclose()
 
 
@@ -335,7 +330,9 @@ async def _identity_checks(ctl, cfg):
         r = await c.post(token_url, data=form(ctl.auth.dev_spire.mint(deleted, ic.svid_audience)))
         assert r.status_code == 401                               # deleted sandboxes get nothing
         known = "lg-test-verifier"
-        ctl.auth.register_verifier(known, VerifierGrant(id="verifier:test", change="c", task="build:T1"))
+        real = next(iter(ctl.changes))       # a verifier reaches its own change's hub only
+        ctl.auth.register_verifier(known, VerifierGrant(id="verifier:test", change=real,
+                                                        task="build:T1"))
         r = await c.post(token_url, data=form(ctl.auth.dev_spire.mint(known, "wrong-aud")))
         assert r.status_code == 401
         from legion_orch.identity import DevSpire
@@ -355,6 +352,8 @@ async def _identity_checks(ctl, cfg):
         auth = {"Authorization": f"Bearer {tok}"}
         r = await c.get(f"{git}/app.git/info/refs?service=git-upload-pack", headers=auth)
         assert r.status_code == 200                               # verifier: read-only fetch
+        r = await c.get(f"{git}/other.git/info/refs?service=git-upload-pack", headers=auth)
+        assert r.status_code == 404                               # ...of its own hub only
         r = await c.get(f"{git}/app.git/info/refs?service=git-receive-pack", headers=auth)
         assert r.status_code == 403                               # ...but never push
         ctl.auth.unregister_verifier(known)
@@ -464,7 +463,7 @@ def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
                 break
             except httpx.TransportError:
                 time.sleep(0.1)
-        cid = httpx.post(f"http://127.0.0.1:{port}/api/changes", json={"goal": "stream"},
+        cid = httpx.post(f"http://127.0.0.1:{port}/api/changes", json={"goal": "stream", "workspace": "app"},
                          timeout=10).json()["change"]
         with httpx.stream("GET", f"http://127.0.0.1:{port}/api/changes/{cid}/events", timeout=10) as s:
             next(s.iter_lines())                          # the stream is live
