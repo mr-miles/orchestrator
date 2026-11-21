@@ -148,14 +148,23 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 
 ### 2.1 State and persistence
 
-The document store and the git remote are the **only durable state**. Several changes can run side
-by side under one controller; they share `max_parallel` and the git remote but nothing else.
+The document store and the git hubs are the **only durable state**. Several changes can run side
+by side under one controller; they share `max_parallel` but nothing else.
+
+**Workspaces.** The config names one or more workspaces (`workspaces:` – `name`, `source`,
+`base_branch`, `publish_prefix`): the repositories changes are made in. Each has its own bare
+hub (`<state_dir>/git/served/<name>.git`), cloned from its `source` (none: a new, empty
+repository). A change is made in exactly one (`Change.workspace`, required when it starts – no workspace
+is kept for a later change across workspaces, planned in several places); its attestations name it (`git:<workspace>@<sha>`),
+and its runs' git credentials reach its hub and no other. `legion/*` is the hub's own namespace
+(integration and run branches); a finished change is published as
+`<publish_prefix><change-id>` (default `agent/`).
 
 | Where | What |
 | --- | --- |
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
-| `changes/<id>/control/change.json` | change record: goal, base, tier, risk, approvals, oracle, integration head, ship result |
+| `changes/<id>/control/change.json` | change record: goal, workspace, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
 | `changes/<id>/control/nodes/<node>.json` | a node's detail (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox); one new version per transition, so the version history is the node's audit trail. Which nodes exist and their order come from the workflow's tree |
 | `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
@@ -583,7 +592,7 @@ When a change starts, the controller lists the base commit's tree. It is **blank
 is documentation (`*.md`, `*.rst`, `*.adoc`), a top-level licence or notice file (`LICENSE*`,
 `LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`,
 a top-level mise file (`mise.toml`, `.mise.toml`, `.tool-versions`: tool versions are not code)
-or under `.github/` – including a repository with no files at all (`repo.path` omitted). The
+or under `.github/` – including a repository with no files at all (a workspace without a `source`). The
 change record keeps it (`blank_repo`). Without this the oracle would have to guess the layout,
 test runner and configuration the first build task will create.
 

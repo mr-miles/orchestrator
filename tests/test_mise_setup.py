@@ -136,9 +136,9 @@ def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provision(tmp
 
     async def go():
         f = Flow(tmp_path, environment={})
-        await f.ctl.git.ensure()
+        await f.git.ensure()
         f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-        f.ce = await f.ctl.start_change("Say hello")
+        f.ce = await f.ctl.start_change("Say hello", REPO)
         await f.settle()
         assert f.ce.change.setup_pin is None                   # nothing on the base branch
         await f.intake()
@@ -149,7 +149,7 @@ def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provision(tmp
         await f.human("H-E1", "approve")
         ch = f.ce.change
         assert ch.integration_head != before
-        assert await f.ctl.git.blob(ch.integration_head, "mise.toml") == setup.blob_sha(SETUP)
+        assert await f.git.blob(ch.integration_head, "mise.toml") == setup.blob_sha(SETUP)
         assert ch.setup_pin.source == "H-E1" and ch.setup_pin.blob == setup.blob_sha(SETUP)
         assert f.status("provision") == "ACCEPTED"
         assert any("setup ran in the verifier" in e["message"] for e in f.ce.timeline_events())
@@ -161,9 +161,9 @@ def test_a_setup_that_fails_at_provision_escalates_it(tmp_path):
 
     async def go():
         f = Flow(tmp_path, environment={})
-        await f.ctl.git.ensure()
+        await f.git.ensure()
         f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-        f.ce = await f.ctl.start_change("Say hello")
+        f.ce = await f.ctl.start_change("Say hello", REPO)
         await f.settle()
         f.runner.commands[setup.blob_sha(SETUP)] = (1, "uv: lockfile missing\n")
         await f.intake()

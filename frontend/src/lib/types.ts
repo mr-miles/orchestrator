@@ -398,7 +398,8 @@ export interface Digest {
 
 export interface Meta {
   project: string
-  repo: string
+  /** the configured workspaces' names */
+  workspaces: string[]
   decision_owners: string[]
   assets_sha: string
   live_runs: number
@@ -552,13 +553,15 @@ export interface DocDiff {
   diff: string
 }
 
-/** A repository and its document store (a controller serves one). */
+/** A configured repository changes are made in, and its changes' documents. */
 export interface Workspace {
   id: string
   name: string
   repo: string
   base_branch: string
   source?: string | null
+  /** a finished change's branch on the source: <publish_prefix><change-id> */
+  publish_prefix: string
   /** changes by status */
   changes: Record<string, number>
   documents: number

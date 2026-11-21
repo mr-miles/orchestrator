@@ -412,7 +412,7 @@ def _os_cfg(tmp_path):
     from legion_orch.config import load_config
     (tmp_path / "c.yaml").write_text(f"""
 project: p
-repo: {{name: app, path: {tmp_path}}}
+workspaces: [{{name: app, source: {tmp_path}}}]
 decision_owners: [miles]
 server: {{port: 8765, mcp_port: 8766, git_port: 8767, token_port: 8768}}
 identity: {{jwks_uri: "https://spire/keys"}}
@@ -672,7 +672,7 @@ def test_server_ports_must_be_distinct(tmp_path):
     from legion_orch.config import load_config
     (tmp_path / "c.yaml").write_text(f"""
 project: p
-repo: {{name: app, path: {tmp_path}}}
+workspaces: [{{name: app, source: {tmp_path}}}]
 decision_owners: [miles]
 server: {{port: 8765, git_port: 8765}}
 sandbox: {{runner: local}}
@@ -735,10 +735,10 @@ def test_transition_rollback_keeps_identity():
 
     from legion_orch.workflow.engine.base.core import ChangeCore
     from legion_orch.workflow.model import Change, Node, Run
-    svc = types.SimpleNamespace(cfg=None, docs=_store(), git=None, assets=None, runner=None,
+    svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
                                 lock=None, procs={})
     ce = ChangeCore(svc, types.SimpleNamespace(), "c1")
-    ce.st.change = Change(id="c1", goal="g", base_sha="a" * 40)
+    ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
     ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
@@ -855,15 +855,42 @@ def test_report_and_work_guard_branches(tmp_path):
     assert "G-I1" in guards.intake("no ids here", _signals(), None, "DONE")[0]
 
 
-def test_repo_path_is_optional(tmp_path):
+def test_a_workspace_source_is_optional_and_relative_to_the_config(tmp_path):
     from legion_orch.config import load_config
-    for repo in ("{name: app}", "{name: app, path: ''}", "{name: app, path: '  '}"):
-        (tmp_path / "c.yaml").write_text(f"project: p\nrepo: {repo}\ndecision_owners: [m]\n"
+    for ws in ("{name: app}", "{name: app, source: ''}", "{name: app, source: '  '}"):
+        (tmp_path / "c.yaml").write_text(f"project: p\nworkspaces: [{ws}]\ndecision_owners: [m]\n"
                                          "sandbox: {runner: local}\n")
-        assert load_config(tmp_path / "c.yaml").repo.path is None, repo
-    (tmp_path / "c.yaml").write_text("project: p\nrepo: {name: app, path: src}\ndecision_owners: [m]\n"
-                                     "sandbox: {runner: local}\n")
-    assert load_config(tmp_path / "c.yaml").repo.path == str(tmp_path / "src")
+        w = load_config(tmp_path / "c.yaml").workspaces[0]
+        assert w.source is None and w.base_branch == "main" and w.publish_prefix == "agent/", ws
+    (tmp_path / "c.yaml").write_text("project: p\nworkspaces: [{name: app, source: src}]\n"
+                                     "decision_owners: [m]\nsandbox: {runner: local}\n")
+    assert load_config(tmp_path / "c.yaml").workspace("app").source == str(tmp_path / "src")
+
+
+def test_workspaces_are_checked_at_load(tmp_path):
+    import pytest
+
+    from legion_orch.config import load_config
+
+    def load(ws: str):
+        (tmp_path / "c.yaml").write_text(f"project: p\n{ws}\ndecision_owners: [m]\n"
+                                         "sandbox: {runner: local}\n")
+        return load_config(tmp_path / "c.yaml")
+    for ws, msg in [("repo: {name: app}", "replaced by workspaces"),
+                    ("workspaces: []", "at least one"),
+                    ("workspaces: [{name: a}, {name: a}]", "unique"),
+                    ("workspaces: [{name: ../x}]", "path segment"),
+                    ("workspaces: [{name: x.git}]", "path segment"),
+                    ("workspaces: [{name: a, publish_prefix: legion/}]", "outside legion/"),
+                    ("workspaces: [{name: a, publish_prefix: 'bad..'}]", "valid branch name"),
+                    ("workspaces: [{name: a, path: x}]", "unknown WorkspaceConfig keys")]:
+        with pytest.raises(ValueError, match=msg):
+            load(ws)
+    cfg = load("workspaces: [{name: a}, {name: b, publish_prefix: bots/legion-}]")
+    assert [w.name for w in cfg.workspaces] == ["a", "b"]
+    assert cfg.workspace("b").publish_prefix == "bots/legion-"
+    with pytest.raises(KeyError, match="no workspace 'c'"):
+        cfg.workspace("c")
 
 
 def test_sandbox_names_are_first_names_and_fit_the_gateway_limit():
@@ -979,7 +1006,7 @@ def test_the_agent_command_resumes_a_session_and_cannot_be_replaced(tmp_path):
     assert cmd.startswith("'/opt/my claude' -p ")
     assert '${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"}' in cmd
     cfg = tmp_path / "orchestrator.yaml"
-    cfg.write_text("project: p\nrepo: {name: app, path: ., base_branch: main}\n"
+    cfg.write_text("project: p\nworkspaces: [{name: app, source: ., base_branch: main}]\n"
                    "decision_owners: [miles]\nsandbox: {agent_command: claude -p}\n")
     with pytest.raises(ValueError, match="agent_command was removed.*agent_bin"):
         load_config(cfg)

@@ -13,12 +13,12 @@ from legion_orch.workflow.model import ChangeStatus, Node
 
 
 async def heads(f: Flow) -> list[str]:
-    out = await f.ctl.git.git("for-each-ref", "--format=%(refname)", f"refs/heads/legion/{f.ce.cid}/")
+    out = await f.git.git("for-each-ref", "--format=%(refname)", f"refs/heads/legion/{f.ce.cid}/")
     return out.split()
 
 
 async def evidence(f: Flow) -> list[str]:
-    return (await f.ctl.git.git("for-each-ref", "--format=%(refname)", "refs/legion/evidence/")).split()
+    return (await f.git.git("for-each-ref", "--format=%(refname)", "refs/legion/evidence/")).split()
 
 
 @scenario()
@@ -31,7 +31,7 @@ async def test_a_run_branch_goes_when_its_node_merges(f: Flow):
     node = f.ce.nodes["build:T1"]
     assert node.status == "ACCEPTED" and branch not in await heads(f)
     # the commit stays reachable: in the integration history, and pinned as evidence
-    assert await f.ctl.git.is_ancestor(node.accepted_sha, f.ce.change.integration_head)
+    assert await f.git.is_ancestor(node.accepted_sha, f.ce.change.integration_head)
     run = f.runs("build:T1", "implementer")[0]
     assert f"refs/legion/evidence/{run.id}" in await evidence(f)
 
@@ -47,7 +47,7 @@ async def test_the_oracle_branch_goes_when_it_merges(f: Flow):
 async def test_restart_plan_removes_the_changes_run_branches(f: Flow):
     await f.to_h2(tier="R2")
     stray = f"refs/heads/legion/{f.ce.cid}/build-t1"     # e.g. pushed by an earlier plan's T1
-    await f.ctl.git.git("update-ref", stray, f.ce.change.base_sha)
+    await f.git.git("update-ref", stray, f.ce.change.base_sha)
     await f.human("H-2", "restart", feedback="start over with smaller tasks")
     assert stray not in await heads(f)
     assert f"refs/heads/legion/{f.ce.cid}/integration" in await heads(f)
@@ -57,7 +57,7 @@ async def test_restart_plan_removes_the_changes_run_branches(f: Flow):
 async def test_an_ended_change_is_cleaned_up_once(f: Flow):
     await f.to_build()
     stray = f"refs/heads/legion/{f.ce.cid}/build-t9"      # a task that never merged
-    await f.ctl.git.git("update-ref", stray, f.ce.change.base_sha)
+    await f.git.git("update-ref", stray, f.ce.change.base_sha)
     await f.implement()
     await f.review()                                       # R1: ships, the change ends
     assert f.ce.change.status == ChangeStatus.READY

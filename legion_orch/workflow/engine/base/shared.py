@@ -23,7 +23,7 @@ class Services:
     """Resources shared by every change (owned by the Controller)."""
     cfg: Config
     docs: DocStore
-    git: GitRemote
+    hubs: dict[str, GitRemote]                 # one per configured workspace, by name
     assets: Assets
     runner: Runner
     auth: WorkloadAuth
@@ -35,9 +35,17 @@ class Services:
     # runs the work of every change within limits.max_parallel (agent runs, verifiers)
     dispatcher: Dispatcher = field(default_factory=lambda: Dispatcher(4))
 
-    @property
-    def git_url(self) -> str:
-        return f"{self.cfg.server.git_base_url}/{self.cfg.repo.name}.git"
+    def hub(self, workspace: str) -> GitRemote:
+        """The hub of ``workspace`` (a configured workspace's name)."""
+        try:
+            return self.hubs[workspace]
+        except KeyError:
+            raise LookupError(f"workspace {workspace!r} is not configured "
+                              f"(configured: {', '.join(self.hubs)})") from None
+
+    def git_url(self, workspace: str) -> str:
+        """Where sandboxes fetch from and push to: the workspace's hub, served."""
+        return f"{self.cfg.server.git_base_url}/{self.hub(workspace).repo_name}.git"
 
     @property
     def mcp_url(self) -> str:

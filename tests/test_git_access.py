@@ -32,8 +32,12 @@ async def _push_rules(tmp_path: Path):
     await remote.ensure()
     base = await remote.resolve_base()
     await remote.init_integration("c1", base)
-    grants = {"writer": GitGrant("r1", "refs/heads/legion/c1/build-t1"), "judge": GitGrant("r2", None)}
-    endpoint = make_git_endpoint(remote, lambda req: grants.get(bearer(req.headers.get("authorization", ""))))
+    other = GitRemote(tmp_path / "git", "other", str(src), "main")     # another workspace's hub
+    await other.ensure()
+    grants = {"writer": GitGrant("r1", "refs/heads/legion/c1/build-t1", "app"),
+              "judge": GitGrant("r2", None, "app"), "elsewhere": GitGrant("r3", None, "other")}
+    endpoint = make_git_endpoint({"app": remote, "other": other},
+                                 lambda req: grants.get(bearer(req.headers.get("authorization", ""))))
     app = Starlette(routes=[Route("/git/{path:path}", endpoint,
                                   methods=["GET", "POST"])])
     with socket.socket() as s:
@@ -51,6 +55,12 @@ async def _push_rules(tmp_path: Path):
     def run():
         work = tmp_path / "work"
         assert as_("nobody", "clone", "-q", url, str(tmp_path / "nope")).returncode != 0
+        # a grant reaches its own change's hub only
+        assert as_("judge", "clone", "-q", url.replace("app.git", "other.git"),
+                   str(tmp_path / "x")).returncode != 0
+        assert as_("elsewhere", "clone", "-q", url, str(tmp_path / "y")).returncode != 0
+        assert as_("elsewhere", "clone", "-q", url.replace("app.git", "other.git"),
+                   str(tmp_path / "z")).returncode == 0
         assert as_("judge", "clone", "-q", url, str(work)).returncode == 0
         (work / "f").write_text("2")
         _git("-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qam", "change", cwd=work)
@@ -93,8 +103,8 @@ async def _transport_limits(tmp_path: Path):
     for key, want in (("receive.fsckObjects", "true"), ("receive.maxInputSize", "65536"),
                       ("uploadpack.allowAnySHA1InWant", "false"), ("receive.denyDeletes", "true")):
         assert (await remote.git("config", key)).strip() == want, key
-    grant = GitGrant("r1", "refs/heads/legion/c1/build-t1")
-    endpoint = make_git_endpoint(remote, lambda req: grant, max_request_bytes=1024 * 1024,
+    grant = GitGrant("r1", "refs/heads/legion/c1/build-t1", "app")
+    endpoint = make_git_endpoint({"app": remote}, lambda req: grant, max_request_bytes=1024 * 1024,
                                  max_concurrency=2)
     app = Starlette(routes=[Route("/git/{path:path}", endpoint, methods=["GET", "POST"])])
     with socket.socket() as s:

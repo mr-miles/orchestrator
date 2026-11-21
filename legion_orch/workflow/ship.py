@@ -68,7 +68,7 @@ class GateEvaluator:
         if not ref:
             return False
         try:
-            return await attest.resolve(attest.parse(ref, [self.e.cfg.repo.name]),
+            return await attest.resolve(attest.parse(ref, [self.e.workspace]),
                                         self.e.docs, self.e.git)
         except attest.AttestationError:
             return False

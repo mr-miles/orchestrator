@@ -16,7 +16,7 @@ def change_list(ctl: Controller) -> list[dict]:
     out = []
     for ce in ctl.changes.values():
         c = ce.change
-        out.append({"id": c.id, "workspace": ctl.cfg.repo.name, "goal": c.goal,
+        out.append({"id": c.id, "workspace": c.workspace, "goal": c.goal,
                     "status": c.status, "tier": c.tier,
                     "created_at": c.created_at,
                     "accepted": sum(n.status == ACCEPTED for n in ce.nodes.values()),
@@ -74,7 +74,8 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
     nodes = [n.model_dump(mode="json") | {"feedback_count": len(n.feedback)}
              for n in ce.nodes.values()]
     runs = [r.model_dump(mode="json", exclude={"assignment"}) for r in ce.runs.values()]
-    return {"project": cfg.project, "repo": cfg.repo.name, "decision_owners": cfg.decision_owners,
+    return {"project": cfg.project, "repo": ch.workspace if ch else None,
+            "decision_owners": cfg.decision_owners,
             "assets_sha": ctl.assets.sha, "limits": cfg.limits.__dict__,
             "change": ch.model_dump(mode="json") if ch else None, "nodes": nodes, "runs": runs,
             "gates": governance.gate_set(ce) if ch and ch.tier else [],

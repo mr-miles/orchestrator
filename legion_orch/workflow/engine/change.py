@@ -58,15 +58,17 @@ class ChangeEngine(ChangeCore):
         self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
         self.seed_attention()
 
-    def start(self, goal: str, base: str, *, blank_repo: bool = False,
+    def start(self, goal: str, workspace: str, base: str, *, blank_repo: bool = False,
               setup_pin: SetupPin | None = None) -> None:
-        """Initialise a new change at ``base`` (the caller holds the lock); ``blank_repo``: the
-        base has no build tooling or code yet (§5.3b)."""
-        self.st.change = Change(id=self.cid, goal=goal, base_sha=base, integration_head=base,
+        """Initialise a new change in ``workspace`` at ``base`` (the caller holds the lock);
+        ``blank_repo``: the base has no build tooling or code yet (§5.3b)."""
+        self.st.change = Change(id=self.cid, goal=goal, workspace=workspace, base_sha=base,
+                                integration_head=base,
                                 blank_repo=blank_repo, setup_pin=setup_pin)
-        self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
+        self.write_record("control/goal.md",
+                          f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n\nBase: `{base}`\n")
         self._flow.start()
-        self.event("change", f"change {self.cid} started at {base[:12]}"
+        self.event("change", f"change {self.cid} started in {workspace} at {base[:12]}"
                    + (" (a blank repository: the plan starts with a scaffold task)" if blank_repo
                       else ""))
         self.save()

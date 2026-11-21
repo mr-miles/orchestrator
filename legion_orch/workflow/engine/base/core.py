@@ -31,7 +31,7 @@ from .shared import EngineHost, Services
 from .state import StateStore
 
 if TYPE_CHECKING:
-    pass
+    from ....git import GitRemote
 
 
 def _waited(since: str) -> str:
@@ -51,7 +51,7 @@ class ChangeCore:
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         self.svc, self.host, self.cid = svc, host, cid
-        self.cfg, self.docs, self.git = svc.cfg, svc.docs, svc.git
+        self.cfg, self.docs = svc.cfg, svc.docs
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
@@ -238,8 +238,18 @@ class ChangeCore:
 
     # ------------------------------------------------------------------ documents
     @property
+    def workspace(self) -> str:
+        """The workspace (repository) the change is made in."""
+        return self.change.workspace
+
+    @property
+    def git(self) -> GitRemote:
+        """The change's workspace's hub."""
+        return self.svc.hub(self.change.workspace)
+
+    @property
     def git_url(self) -> str:
-        return self.svc.git_url
+        return self.svc.git_url(self.change.workspace)
 
     @property
     def mcp_url(self) -> str:

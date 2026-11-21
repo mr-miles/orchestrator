@@ -37,25 +37,32 @@ import { startChange } from '@/lib/api'
 import { useSettings } from '@/lib/settings'
 import { CHANGE_DOT, humanize } from '@/lib/status'
 import type { Connection } from '@/lib/streams'
-import type { Attention, AttentionItem, ChangeSummary } from '@/lib/types'
+import type { Attention, AttentionItem, ChangeSummary, Workspace } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { AttentionMenu } from './attention-menu'
-import { TextField } from './fields'
+import { SelectField, TextField } from './fields'
 import { StatusBadge } from './status'
 import { useTheme, type Theme } from './theme-provider'
 
-/** Starts a change: intake runs on the goal. */
+/** Starts a change in a workspace: intake runs on the goal. */
 export function NewChangeDialog({
   open,
   onOpenChange,
   onStarted,
+  workspaces,
+  defaultWorkspace,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
-  onStarted: (cid: string) => void
+  onStarted: (cid: string, ws: string) => void
+  workspaces: Workspace[]
+  /** the workspace being looked at, else the first */
+  defaultWorkspace: string
 }) {
   const who = useSettings()
   const [goal, setGoal] = useState('')
+  const [picked, setPicked] = useState<string | null>(null)
+  const ws = picked ?? defaultWorkspace
   const [busy, setBusy] = useState(false)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -66,10 +73,11 @@ export function NewChangeDialog({
             e.preventDefault()
             setBusy(true)
             try {
-              const r = await startChange(goal, who)
+              const r = await startChange(goal, ws, who)
               setGoal('')
+              setPicked(null)
               onOpenChange(false)
-              onStarted(r.change)
+              onStarted(r.change, ws)
             } catch (err) {
               toast.error(err instanceof Error ? err.message : String(err))
             } finally {
@@ -84,6 +92,15 @@ export function NewChangeDialog({
             </DialogDescription>
           </DialogHeader>
           <FieldGroup>
+            {workspaces.length > 1 && (
+              <SelectField
+                label="Workspace"
+                value={ws}
+                onChange={setPicked}
+                options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+                description="The repository the change is made in."
+              />
+            )}
             <TextField
               label="Goal"
               value={goal}
@@ -93,7 +110,7 @@ export function NewChangeDialog({
             />
           </FieldGroup>
           <DialogFooter showCloseButton>
-            <Button type="submit" disabled={busy || !goal.trim()}>
+            <Button type="submit" disabled={busy || !goal.trim() || !ws}>
               Start intake
             </Button>
           </DialogFooter>

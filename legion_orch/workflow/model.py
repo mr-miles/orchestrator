@@ -585,6 +585,7 @@ class SetupPin(Record):
 class Change(Record):
     id: str
     goal: str
+    workspace: str                  # the configured workspace (repository) it is made in
     created_at: str = Field(default_factory=now_iso)
     status: ChangeStatus = ChangeStatus.ACTIVE
     base_sha: str | None = None

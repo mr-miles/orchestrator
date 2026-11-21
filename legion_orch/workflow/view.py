@@ -20,7 +20,8 @@ class ChangeView(Protocol):
     cid: str
     cfg: Config
     docs: DocStore
-    git: GitRemote
+    git: GitRemote                   # the change's workspace's hub
+    workspace: str                   # the change's workspace: attestations' git:<workspace>@…
 
     @property
     def change(self) -> Change: ...

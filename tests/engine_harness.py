@@ -192,9 +192,10 @@ def make_config(tmp_path: Path, *, blank_repo: bool = False, environment: dict |
     lim = {"max_parallel": 4, "review_max_cycles": 3, "critique_max_cycles": 2,
            "run_timeout_s": 120} | limits
     cfg_path = tmp_path / "orchestrator.yaml"
+    source = "" if blank_repo else f", source: {tmp_path / 'src-repo'}"
     cfg_path.write_text(textwrap.dedent(f"""
         project: engine-test
-        repo: {{name: {REPO}{'' if blank_repo else f", path: {tmp_path / 'src-repo'}"}, base_branch: main}}
+        workspaces: [{{name: {REPO}{source}, base_branch: main}}]
         decision_owners: [miles, ana]
         state_dir: state
         assets_dir: {ROOT / 'assets'}
@@ -265,9 +266,9 @@ class Flow:
     async def create(cls, tmp_path: Path, goal: str = "Say hello", *, blank_repo: bool = False,
                      **limits) -> Flow:
         f = cls(tmp_path, blank_repo=blank_repo, **limits)
-        await f.ctl.git.ensure()
+        await f.git.ensure()
         f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-        f.ce = await f.ctl.start_change(goal)
+        f.ce = await f.ctl.start_change(goal, REPO)
         await f.settle()
         return f
 
@@ -295,6 +296,11 @@ class Flow:
         ch = self.ce.change
         return (ch.status, tuple((k, n.status, n.cycle) for k, n in self.ce.nodes.items()),
                 tuple((k, r.status, r.sandbox_deleted) for k, r in self.ce.runs.items()))
+
+    @property
+    def git(self):
+        """The test workspace's hub."""
+        return self.ctl.hub(REPO)
 
     def nid(self, node: str) -> str:
         """A base id (``plan``, ``H-2``) means the current fix round's node; ``plan@2`` is
@@ -362,7 +368,7 @@ class Flow:
         wt = self.tmp / f"wt-{run.id}-{len(os.listdir(self.tmp))}"
         g = lambda *a, **kw: subprocess.run(["git", *a], cwd=wt, check=True, capture_output=True,
                                             text=True, **kw).stdout.strip()
-        subprocess.run(["git", "clone", "-q", str(self.ctl.git.repo), str(wt)], check=True,
+        subprocess.run(["git", "clone", "-q", str(self.git.repo), str(wt)], check=True,
                        capture_output=True)
         g("checkout", "-q", base or run.base_sha)
         g("config", "user.email", "agent@sandbox")

@@ -55,7 +55,7 @@ flowchart TB
 
     subgraph infra["Infrastructure"]
         runnerx["Runner<br/>OpenShell / local"]
-        git["GitRemote"]
+        git["GitRemote – one hub per workspace<br/><i>a change uses its workspace's</i>"]
         store["DocStore<br/><i>the only durable state</i>"]
         builder["EnvironmentBuilder<br/>podman"]
     end

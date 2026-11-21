@@ -76,8 +76,8 @@ export interface Who {
   token: string
 }
 
-export function startChange(goal: string, who: Who) {
-  return api<{ change: string }>('/api/changes', { goal }, who.token)
+export function startChange(goal: string, workspace: string, who: Who) {
+  return api<{ change: string }>('/api/changes', { goal, workspace }, who.token)
 }
 
 export function nodeAction(

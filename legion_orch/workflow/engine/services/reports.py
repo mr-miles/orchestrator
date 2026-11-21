@@ -191,7 +191,7 @@ class Reports:
         timeout = self.c.cfg.limits.report_check_timeout_s
         try:
             async with asyncio.timeout(timeout):
-                parsed, v = await attest.check_all(sub.r.attestations, [self.c.cfg.repo.name],
+                parsed, v = await attest.check_all(sub.r.attestations, [self.c.workspace],
                                                    self.c.docs, self.c.git)
                 sub.violations += v
                 if sub.violations or sub.r.status != ReportStatus.DONE:
@@ -261,7 +261,7 @@ class Reports:
     async def _recheck(self, run: Run, node: Node) -> Report:
         """The typed report again, from the run's record (the controller restarted since it
         was accepted); raises if it no longer holds."""
-        parsed, v = await attest.check_all(run.report.attestations, [self.c.cfg.repo.name],
+        parsed, v = await attest.check_all(run.report.attestations, [self.c.workspace],
                                            self.c.docs, self.c.git)
         if not v:
             v, report = await self._role_guards(run, node, parsed, run.report.data)
@@ -286,7 +286,7 @@ class Reports:
         role = self.c.assets.roles[run.role]
         found, v = guards.required_docs(run.id, run.required_docs, parsed, self.c.docs,
                                         run.confirmed_docs)
-        sha, vg = guards.required_git(role.git, parsed, self.c.cfg.repo.name, run.judged_sha)
+        sha, vg = guards.required_git(role.git, parsed, self.c.workspace, run.judged_sha)
         v += vg
         if v:
             return v, None

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,12 +13,27 @@ import yaml
 
 
 @dataclass
-class RepoConfig:
+class WorkspaceConfig:
+    """A repository changes are made in. Its name is used in attestations
+    (``git:<name>/<path>@<sha>``) and names its hub (``<state_dir>/git/served/<name>.git``)."""
     name: str
     # Source repository (local path or URL) the hub is cloned from. Omitted or blank: the
     # controller starts a new, empty repository (one empty commit on base_branch).
-    path: str | None = None
+    source: str | None = None
     base_branch: str = "main"
+    # A finished change is published as <publish_prefix><change-id> on the source; legion/* is
+    # the hub's own (integration and run branches) and is never published.
+    publish_prefix: str = "agent/"
+
+
+WORKSPACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def _valid_ref_prefix(prefix: str) -> bool:
+    """``prefix`` + a change id is a valid branch name (``git check-ref-format``)."""
+    r = subprocess.run(["git", "check-ref-format", "--branch", f"{prefix}c000000-0000"],
+                       capture_output=True)
+    return r.returncode == 0
 
 
 @dataclass
@@ -241,7 +258,7 @@ def _notify_config(raw: dict | None) -> NotifyConfig:
 @dataclass
 class Config:
     project: str
-    repo: RepoConfig
+    workspaces: list[WorkspaceConfig]
     decision_owners: list[str]
     state_dir: Path
     assets_dir: Path
@@ -255,6 +272,13 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
+
+    def workspace(self, name: str) -> WorkspaceConfig:
+        for w in self.workspaces:
+            if w.name == name:
+                return w
+        raise KeyError(f"no workspace {name!r} (configured: "
+                       f"{', '.join(w.name for w in self.workspaces)})")
 
     def resolve(self, p: str | Path) -> Path:
         p = Path(p)
@@ -298,12 +322,15 @@ def load_config(path: str | Path) -> Config:
     path = Path(path).resolve()
     raw = yaml.safe_load(path.read_text()) or {}
     base = path.parent
+    if "repo" in raw:
+        raise ValueError("repo: was replaced by workspaces: – a list of {name, source, "
+                         "base_branch, publish_prefix}")
     owners = raw.get("decision_owners") or []
     if not owners:
         raise ValueError("decision_owners must name at least one human approver")
     cfg = Config(
         project=raw["project"],
-        repo=_build(RepoConfig, raw["repo"]),
+        workspaces=[_build(WorkspaceConfig, w) for w in raw.get("workspaces") or []],
         decision_owners=list(owners),
         state_dir=(base / raw.get("state_dir", ".legion-orch")).resolve(),
         assets_dir=(base / raw.get("assets_dir", "assets")).resolve(),
@@ -329,7 +356,23 @@ def load_config(path: str | Path) -> Config:
         raise ValueError("identity.jwks_uri (SPIRE JWKS) is required unless identity.dev_spire is true")
     if cfg.server.operator_token is None:
         cfg.server.operator_token = os.environ.get("LEGION_OPERATOR_TOKEN")
-    cfg.repo.path = (cfg.repo.path or "").strip() or None
-    if cfg.repo.path and not Path(cfg.repo.path).is_absolute() and "://" not in cfg.repo.path:
-        cfg.repo.path = str((base / cfg.repo.path).resolve())
+    _check_workspaces(cfg.workspaces, base)
     return cfg
+
+
+def _check_workspaces(workspaces: list[WorkspaceConfig], base: Path) -> None:
+    if not workspaces:
+        raise ValueError("workspaces must name at least one repository")
+    names = [w.name for w in workspaces]
+    if dup := sorted({n for n in names if names.count(n) > 1}):
+        raise ValueError(f"workspace names must be unique: {dup}")
+    for w in workspaces:
+        if not WORKSPACE_NAME.fullmatch(w.name) or w.name.endswith(".git"):
+            raise ValueError(f"workspace name {w.name!r}: letters, digits, '.', '_' and '-' only "
+                             "(a path segment), not ending in .git")
+        if w.publish_prefix.startswith("legion/") or not _valid_ref_prefix(w.publish_prefix):
+            raise ValueError(f"workspace {w.name}: publish_prefix {w.publish_prefix!r} must make "
+                             "a valid branch name, outside legion/ (the hub's own branches)")
+        w.source = (w.source or "").strip() or None
+        if w.source and not Path(w.source).is_absolute() and "://" not in w.source:
+            w.source = str((base / w.source).resolve())

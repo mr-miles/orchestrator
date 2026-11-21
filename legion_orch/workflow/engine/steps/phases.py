@@ -1025,7 +1025,7 @@ class Merge(Phase):
                 cycle=node.cycle, source="merge",
                 text=f"G-A2: merge conflict with integration; rebase onto {head} "
                      f"and force-push your branch. Details: {out[-600:]}",
-                attestations=[f"git:{c.cfg.repo.name}@{head}"])], "merge", base=head)
+                attestations=[f"git:{c.workspace}@{head}"])], "merge", base=head)
         c.change.integration_head = out
         return Ok(out)
 

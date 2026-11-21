@@ -42,9 +42,11 @@ class VerifierGrant:
 
 
 class WorkloadAuth:
-    def __init__(self, cfg: Config, runs: RunSource):
+    def __init__(self, cfg: Config, runs: RunSource,
+                 workspace_of: Callable[[str], str | None]):
         self.cfg = cfg
         self._runs = runs
+        self._workspace_of = workspace_of      # a change id -> its workspace (its hub's name)
         self._verifiers: dict[str, VerifierGrant] = {}     # sandbox ref -> grant
         ic = cfg.identity
         self.dev_spire = DevSpire(ic.trust_prefix) if ic.dev_spire else None
@@ -93,16 +95,19 @@ class WorkloadAuth:
         b = self.identity.tokens.verify(token) if token else None
         if b is None:
             return None
+        repo = self._workspace_of(b.change)            # only its own change's hub
+        if repo is None:
+            return None
         if b.role == "verifier":
             v = self._verifiers.get(b.sandbox)
             if v and (v.change, v.task) == (b.change, b.task):
-                return GitGrant(v.id, None)          # read-only
+                return GitGrant(v.id, None, repo)          # read-only
             return None
         found = self.live_run(token)
         if found is None:
             return None
         run = found[1]
-        return GitGrant(run.id, f"refs/heads/{run.branch}" if run.branch else None)
+        return GitGrant(run.id, f"refs/heads/{run.branch}" if run.branch else None, repo)
 
     # ---- local runner only
     async def dev_gateway(self, sandbox_ref: str) -> str:

@@ -51,7 +51,7 @@ beforeEach(() => {
   calls = fakeFetch({
     '/api/meta': {
       project: 'demo',
-      repo: 'app',
+      workspaces: ['app'],
       decision_owners: ['miles'],
       assets_sha: 'sha256:abc',
       live_runs: 0,

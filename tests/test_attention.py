@@ -11,7 +11,7 @@ import textwrap
 
 import httpx
 import pytest
-from engine_harness import Flow, scenario
+from engine_harness import REPO, Flow, scenario
 
 from legion_orch import cli
 from legion_orch.config import ATTENTION_KINDS, NotifyConfig, NotifySink, load_config
@@ -43,9 +43,9 @@ async def _flow_with(tmp_path, *sinks: NotifySink, **notify) -> Flow:
     f.cfg.notify.sinks = list(sinks)
     for k, v in notify.items():
         setattr(f.cfg.notify, k, v)
-    await f.ctl.git.ensure()
+    await f.git.ensure()
     f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-    f.ce = await f.ctl.start_change("Say hello")
+    f.ce = await f.ctl.start_change("Say hello", REPO)
     await f.settle()
     return f
 
@@ -279,7 +279,7 @@ def test_webhook_and_ntfy_sinks(tmp_path, monkeypatch):
 def test_notify_config_is_validated(tmp_path, notify, error):
     (tmp_path / "c.yaml").write_text(textwrap.dedent(f"""
         project: p
-        repo: {{name: app}}
+        workspaces: [{{name: app}}]
         decision_owners: [miles]
         sandbox: {{runner: local}}
         notify: {json.dumps(notify)}
@@ -314,7 +314,7 @@ def test_cli_attention_prints_items_with_links(tmp_path, monkeypatch, capsys):
             "since": "2026-11-18T00:33:00.000Z", "reason": "", "blocking": True}
     monkeypatch.setattr(cli.OperatorClient, "attention",
                         lambda self: {"needs_you": [item], "inbox": []})
-    (tmp_path / "c.yaml").write_text("project: p\nrepo: {name: app}\ndecision_owners: [m]\n"
+    (tmp_path / "c.yaml").write_text("project: p\nworkspaces: [{name: app}]\ndecision_owners: [m]\n"
                                      "sandbox: {runner: local}\nnotify: {ui_url: 'https://ui/'}\n")
     assert cli.main(["-c", str(tmp_path / "c.yaml"), "attention"]) == 0
     out = capsys.readouterr().out
@@ -327,7 +327,7 @@ def test_cli_digest_since_accepts_durations():
 
 
 def test_notify_config_from_yaml(tmp_path):
-    base = "project: p\nrepo: {name: app}\ndecision_owners: [m]\nsandbox: {runner: local}\n"
+    base = "project: p\nworkspaces: [{name: app}]\ndecision_owners: [m]\nsandbox: {runner: local}\n"
     (tmp_path / "c.yaml").write_text(base + textwrap.dedent("""
         notify:
           items: [gate, escalation, change_ended]

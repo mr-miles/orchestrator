@@ -84,7 +84,7 @@ async def build_mcp_app(ctl: Controller) -> Starlette:
 
 def build_git_app(ctl: Controller) -> Starlette:
     endpoint = make_git_endpoint(
-        ctl.git, lambda request: ctl.auth.git_grant(bearer(request.headers.get("authorization", ""))),
+        ctl.hubs, lambda request: ctl.auth.git_grant(bearer(request.headers.get("authorization", ""))),
         max_request_bytes=ctl.cfg.limits.git_max_push_bytes,
         max_concurrency=ctl.cfg.limits.git_max_concurrency)
     return Starlette(routes=[Route("/git/{path:path}", endpoint, methods=["GET", "POST"])])
@@ -235,7 +235,7 @@ def build_app(ctl: Controller) -> Starlette:
     # ---- reads
     @api()
     async def meta(_: Request):
-        return {"project": ctl.cfg.project, "repo": ctl.cfg.repo.name,
+        return {"project": ctl.cfg.project, "workspaces": [w.name for w in ctl.cfg.workspaces],
                 "decision_owners": ctl.cfg.decision_owners, "assets_sha": ctl.assets.sha,
                 "version": ctl.version, "live_runs": ctl.live_count(),
                 "max_parallel": ctl.cfg.limits.max_parallel}
@@ -294,24 +294,22 @@ def build_app(ctl: Controller) -> Starlette:
     async def list_workspaces(_: Request):
         return browse.workspaces(ctl)
 
-    def workspace(request: Request) -> None:
-        browse.check_workspace(ctl, request.path_params["ws"])
+    def workspace(request: Request) -> str:
+        return browse.check_workspace(ctl, request.path_params["ws"])
 
     @api()
     async def git_refs(request: Request):
-        workspace(request)
-        return await browse.git_refs(ctl)
+        return await browse.git_refs(ctl, workspace(request))
 
     @api()
     async def git_tree(request: Request):
-        workspace(request)
-        return await browse.git_tree(ctl, request.query_params.get("ref", ""))
+        return await browse.git_tree(ctl, workspace(request), request.query_params.get("ref", ""))
 
     @api()
     async def git_file(request: Request):
-        workspace(request)
+        ws = workspace(request)
         q = request.query_params
-        return await browse.git_file(ctl, q.get("ref", ""), q.get("path", ""),
+        return await browse.git_file(ctl, ws, q.get("ref", ""), q.get("path", ""),
                                      raw=q.get("download") == "1")
 
     @api()
@@ -425,7 +423,7 @@ def build_app(ctl: Controller) -> Starlette:
     # ---- writes (human decisions)
     @api(write=True)
     async def start_change(_: Request, body: dict):
-        ce = await ctl.start_change(str(body.get("goal", "")))
+        ce = await ctl.start_change(str(body.get("goal", "")), str(body.get("workspace") or ""))
         return {"change": ce.cid}
 
     @api(write=True)

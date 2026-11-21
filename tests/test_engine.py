@@ -80,7 +80,7 @@ async def test_r2_change_with_oracle_integration_and_h3(f: Flow):
 def _operator_commit(f: Flow) -> tuple[str, object]:
     """Commit straight onto the integration branch, as an operator did in change c261118-53c3."""
     import subprocess
-    wt = f.ctl.git.worktree(f.ce.cid)
+    wt = f.git.worktree(f.ce.cid)
     g = lambda *a: subprocess.run(["git", *a], cwd=wt, check=True, capture_output=True,
                                   text=True).stdout.strip()
     (wt / "setup.ts").write_text("operator fix\n")
@@ -140,8 +140,8 @@ async def test_a_merge_does_not_absorb_commits_made_outside_the_workflow(f: Flow
     await f.human("build:T1", "retry")                  # resume MERGING: the merge runs again
     assert node.status == ACCEPTED, (node.status, node.escalation)
     head = f.ce.change.integration_head
-    assert head != rec and await f.ctl.git.is_ancestor(rec, head)
-    assert not await f.ctl.git.blob(head, "setup.ts")    # the operator's commit is not in it
+    assert head != rec and await f.git.is_ancestor(rec, head)
+    assert not await f.git.blob(head, "setup.ts")    # the operator's commit is not in it
     assert f.status("integration") == RUNNING
 
 
@@ -655,7 +655,7 @@ async def test_abandon_from_an_escalation(f: Flow):
 async def test_merge_conflict_is_rework_onto_the_new_head(f: Flow):
     await f.to_build()
     await f.implement()
-    real_merge = f.ctl.git.merge
+    real_merge = f.git.merge
     calls = []
 
     async def conflict(cid, sha, msg):
@@ -663,12 +663,12 @@ async def test_merge_conflict_is_rework_onto_the_new_head(f: Flow):
         if len(calls) == 1:
             return False, "CONFLICT (content): src/greet.txt"
         return await real_merge(cid, sha, msg)
-    f.ctl.git.merge = conflict
+    f.git.merge = conflict
     await f.review()
     node = f.ce.nodes["build:T1"]
     assert node.status == RUNNING and node.cycle == 2
     assert node.feedback[-1].source == "merge" and "G-A2" in node.feedback[-1].text
-    assert node.base_sha == await f.ctl.git.integration_head(f.ce.cid)
+    assert node.base_sha == await f.git.integration_head(f.ce.cid)
     await f.implement()
     await f.review()
     assert node.status == ACCEPTED and len(calls) == 2
@@ -826,7 +826,7 @@ async def test_sandboxes_get_readable_names_never_reused(f: Flow):
     assert all(re.fullmatch(r"lgv-[a-z]+", n) for n in verifiers), verifiers
     assert len(set(agents)) == len(agents) and not set(agents) & set(verifiers)
     assert set(agents) <= f.ctl.used_sandbox_names()
-    other = await f.ctl.start_change("Another goal")       # names stay unique across changes
+    other = await f.ctl.start_change("Another goal", REPO)       # names stay unique across changes
 
     await f.settle()
     assert [r.sandbox for r in other.runs.values()] and not (
@@ -1053,9 +1053,9 @@ def test_signals_helper_derives_r1():
 async def test_a_change_on_a_blank_repository(f: Flow):
     """No repo.path: the hub starts with one empty commit and a change runs to READY on it,
     starting with a scaffold task (§5.3b)."""
-    assert f.cfg.repo.path is None
+    assert f.cfg.workspaces[0].source is None
     base = f.ce.change.base_sha
-    assert await f.ctl.git.tree_paths(base) == [] and f.ce.change.blank_repo
+    assert await f.git.tree_paths(base) == [] and f.ce.change.blank_repo
     scaffold = dict(TASKS[0], id="T0", title="scaffold", files_modified=["Makefile"],
                     verification=["make -n"], scaffold=True)
     await f.intake()
@@ -1069,8 +1069,8 @@ async def test_a_change_on_a_blank_repository(f: Flow):
     await f.implement(files={"src/greet.txt": "hello\n"})
     await f.review()
     assert f.ce.change.status == ChangeStatus.READY
-    assert await f.ctl.git.blob(base, "src/greet.txt") is None                 # nothing at base
-    assert await f.ctl.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged
+    assert await f.git.blob(base, "src/greet.txt") is None                 # nothing at base
+    assert await f.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged
 
 
 @scenario()
