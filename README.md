@@ -157,6 +157,12 @@ Without the section the workflow is unchanged.
 `sandbox.runner: local` runs everything as local processes. It provides **no isolation** and is for
 development and tests only.
 
+## Tracing (OpenTelemetry)
+
+Opt-in: off unless configured. Install with `uv sync --extra telemetry`, then set `telemetry: {enabled: true, endpoint: http://localhost:4318}`
+(otel-front's OTLP/HTTP receiver) or `OTEL_EXPORTER_OTLP_ENDPOINT`.
+Details: [docs/telemetry.md](docs/telemetry.md).
+
 ## Release zip
 
 `mise run package` (or `cd frontend && bun run build`, then `python scripts/package.py`) writes
