@@ -41,7 +41,7 @@ function Escalated({ node }: { node: Node }) {
   if (!e) return null
   // a late integration failure is fixed by a fix round: new tasks on top of the head (§5.10a)
   const planFix = node.kind === 'integration' && e.kind === 'integration_failed'
-  // before H-2, an oracle, preflight or baseline the plan cannot satisfy goes back to the planner
+  // an oracle, preflight or baseline the plan cannot satisfy sends the design back
   const revisePlan = ['oracle', 'preflight', 'baseline'].includes(node.kind)
   if (e.retrying)
     return (
@@ -126,7 +126,7 @@ function Escalated({ node }: { node: Node }) {
           <Button
             variant="secondary"
             disabled={!answer.trim()}
-            title="Sends the plan back to the planner with this feedback, as Request revision does at H-2: the plan is critiqued again, then the oracle and baseline start over"
+            title="Sends the design back to the planner with this feedback: the plan is critiqued and approved again (H-E1), then the oracle and baseline start over"
             onClick={() =>
               act.node(
                 node.id,
@@ -142,7 +142,7 @@ function Escalated({ node }: { node: Node }) {
         {planFix && (
           <Button
             variant="secondary"
-            title="The planner plans new tasks on top of the integration head: critique, H-2, build and integration again. Accepted tasks are not reopened."
+            title="Sends Delivery back: a fix round plans new tasks on top of the integration head (critique, H-E1, the oracle if it changes, H-2), builds them and runs integration again. Accepted tasks are not reopened."
             onClick={() => act.node(node.id, 'plan_fix', { comment: answer }, 'Fix round planned')}
           >
             Plan a fix
@@ -272,27 +272,43 @@ function BaselineSummary({ row }: { row: H2Subject }) {
   )
 }
 
-function ApproveSpec({ state }: { state: ChangeState }) {
+/** H-E1 "approve the plan" (spec and task graph, each delta spec, the environment) and H-2
+ * "approve the oracle" (the oracle; at R3 the baseline attestation, its precondition): each
+ * subject is a separate decision, possibly by different approvers. */
+function ApproveSubjects({ state, nodeId }: { state: ChangeState; nodeId: string }) {
+  const gate = baseId(nodeId)
+  const oracle = gate === 'H-2'
   const round = state.change?.round ?? 1
   const nav = useNav()
   const act = useAct(nav.cid)
   const [feedback, setFeedback] = useState('')
   const c = state.change
-  const approvals = state.h2.filter((x) => x.kind !== 'attestation')
-  const baseline = state.h2.filter((x) => x.kind === 'attestation')
+  const rows = state.h2.filter((x) => (x.gate ?? 'H-2') === gate)
+  const approvals = rows.filter((x) => x.kind !== 'attestation')
+  const baseline = rows.filter((x) => x.kind === 'attestation')
   const attestsToo = baseline.some((x) => x.status !== 'approved' && !x.note)
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Approve spec &amp; oracle</CardTitle>
+        <CardTitle>{oracle ? 'Approve the oracle' : 'Approve the plan'}</CardTitle>
         <CardDescription>
-          Each delta spec, the plan and the oracle are separate decisions
-          {c?.tier === 'R3' && ', and the baseline evidence is attested'}; all must be done before
-          build. Oracle commit <Sha sha={c?.oracle_sha} />
+          {oracle ? (
+            <>
+              The protected acceptance tests
+              {c?.tier === 'R3' && ', with the baseline evidence attested'}, before any task is
+              built. Oracle commit <Sha sha={c?.oracle_sha} />
+            </>
+          ) : (
+            <>
+              The spec and task graph, each delta spec
+              {state.environment && ' and the sandbox environment'} are separate decisions; the
+              oracle and the tasks are built on them.
+            </>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <TraceSummary state={state} />
+        {oracle ? <TraceSummary state={state} /> : <EnvironmentSpec env={state.environment} />}
         <Table>
           <TableBody>
             {approvals.map((x) => (
@@ -340,7 +356,7 @@ function ApproveSpec({ state }: { state: ChangeState }) {
                   {x.status !== 'approved' && (
                     <Button
                       size="sm"
-                      onClick={() => act.node('H-2', 'approve', { subjects: [x.subject] })}
+                      onClick={() => act.node(nodeId, 'approve', { subjects: [x.subject] })}
                     >
                       Approve
                     </Button>
@@ -362,7 +378,7 @@ function ApproveSpec({ state }: { state: ChangeState }) {
               att,
             }))}
             disabled={Boolean(x.note)}
-            onAttest={() => act.node('H-2', 'approve', { subjects: [x.subject] }, 'Attested')}
+            onAttest={() => act.node(nodeId, 'approve', { subjects: [x.subject] }, 'Attested')}
           />
         ))}
         <TextField
@@ -374,62 +390,35 @@ function ApproveSpec({ state }: { state: ChangeState }) {
         />
       </CardContent>
       <CardFooter className="flex gap-2">
-        <Button onClick={() => act.node('H-2', 'approve', { subjects: 'all' }, 'Approved')}>
+        <Button onClick={() => act.node(nodeId, 'approve', { subjects: 'all' }, 'Approved')}>
           Approve all pending
         </Button>
         {attestsToo && <Muted>Also attests: {GATE_TITLE.independent_baseline}</Muted>}
         <Button
           variant="outline"
           title={
-            round > 1
-              ? `Sends fix round ${round} back to the planner; earlier rounds stand`
-              : undefined
+            oracle
+              ? 'Sends the oracle stage back: the oracle is written again with this feedback'
+              : round > 1
+                ? `Sends fix round ${round}'s plan back to the planner; earlier rounds stand`
+                : 'Sends the plan back to the planner with this feedback'
           }
-          onClick={() => act.node('H-2', 'revise', { feedback }, 'Revision requested')}
+          onClick={() => act.node(nodeId, 'revise', { feedback }, 'Revision requested')}
         >
-          {round > 1 ? `Revise round ${round}` : 'Request revision'}
+          {oracle ? 'Revise the oracle' : round > 1 ? `Revise round ${round}` : 'Request revision'}
         </Button>
-        {round > 1 && (
+        {(oracle || round > 1) && (
           <ConfirmButton
             title="Restart the whole plan?"
             description="Every build task of every round, the integration branch, the oracle and the surface pins start over."
             confirm="Restart plan"
-            onConfirm={() => act.node('H-2', 'restart', { feedback }, 'Plan restarted')}
+            onConfirm={() =>
+              act.node(nodeId, 'send_back', { stage: 'plan', feedback }, 'Plan restarted')
+            }
           >
             Restart plan
           </ConfirmButton>
         )}
-      </CardFooter>
-    </Card>
-  )
-}
-
-function ApproveEnvironment({ state }: { state: ChangeState }) {
-  const act = useAct(useNav().cid)
-  const [feedback, setFeedback] = useState('')
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Approve sandbox environment</CardTitle>
-        <CardDescription>
-          The controller then builds the images and adds the network policies to each sandbox's
-          policy; flagged entries are proposed, not yet in the library.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <EnvironmentSpec env={state.environment} />
-        <TextField label="Feedback / note" value={feedback} onChange={setFeedback} multiline />
-      </CardContent>
-      <CardFooter className="flex gap-2">
-        <Button onClick={() => act.node('H-E1', 'approve', { feedback }, 'Environment approved')}>
-          Approve
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => act.node('H-E1', 'revise', { feedback }, 'Revision requested')}
-        >
-          Request revision
-        </Button>
       </CardFooter>
     </Card>
   )
@@ -506,9 +495,9 @@ function AcceptChange({ state }: { state: ChangeState }) {
   )
 }
 
-/** The ship check's verdict. NOT_READY: the gates not satisfied and why; the attestations only
- * a human can give, recorded with the re-run in one step. */
-function ShipReadiness({ state }: { state: ChangeState }) {
+/** H-3's preconditions, the ship gates: what is not satisfied and why; the attestations only a
+ * human can give, recorded with the recheck in one step. */
+function ShipReadiness({ state, nodeId }: { state: ChangeState; nodeId: string }) {
   const act = useAct(useNav().cid)
   const [drafts, setDrafts] = useState<Record<string, AttestDraft>>({})
   const res = state.change?.ship
@@ -517,7 +506,7 @@ function ShipReadiness({ state }: { state: ChangeState }) {
   const todo = pendingAttestations(gates, drafts)
   const rerun = async () => {
     for (const t of todo) if (!(await act.change('attest', { ...t.payload }))) return
-    await act.node('ship', 'recheck', {}, 'Re-running the readiness check')
+    await act.node(nodeId, 'recheck', {}, 'Re-checking the ship gates')
   }
   return (
     <Card className={res?.verdict === 'NOT_READY' ? 'ring-destructive/40' : undefined}>
@@ -565,7 +554,7 @@ function ShipReadiness({ state }: { state: ChangeState }) {
       )}
       <CardFooter className="flex flex-wrap items-center gap-2">
         <Button variant={bad.length ? 'default' : 'outline'} onClick={rerun}>
-          Re-run readiness check
+          Re-check the ship gates
         </Button>
         {todo.length > 0 && <Muted>Also attests: {alsoRecords(todo)}</Muted>}
       </CardFooter>
@@ -573,15 +562,27 @@ function ShipReadiness({ state }: { state: ChangeState }) {
   )
 }
 
+/** A node id without its fix round (``H-2@2`` -> ``H-2``). */
+function baseId(id: string): string {
+  return id.split('@')[0] ?? id
+}
+
 /** The decision a node waits for, if any. */
 export function NodeActions({ node, state }: { node: Node; state: ChangeState }) {
   if (node.status === 'ESCALATED') return <Escalated node={node} />
-  if (node.kind === 'ship' && (node.status === 'ACCEPTED' || node.status === 'FAILED'))
-    return <ShipReadiness state={state} />
   if (node.status !== 'AWAITING_HUMAN') return null
-  if (node.id === 'H-1') return <AcceptRequirements state={state} />
-  if (node.id === 'H-2') return <ApproveSpec state={state} />
-  if (node.id === 'H-E1') return <ApproveEnvironment state={state} />
-  if (node.id === 'H-3') return <AcceptChange state={state} />
+  const gate = baseId(node.id)
+  if (gate === 'H-1') return <AcceptRequirements state={state} />
+  if (gate === 'H-E1' || gate === 'H-2') return <ApproveSubjects state={state} nodeId={node.id} />
+  if (gate === 'H-3') {
+    // accepted (or, at R0/R1, automatic): what holds it is its preconditions, the ship gates
+    const tier = state.change?.tier ?? 'R1'
+    const accepted = Boolean(state.change?.approvals?.['H-3']) || tier === 'R0' || tier === 'R1'
+    return accepted ? (
+      <ShipReadiness state={state} nodeId={node.id} />
+    ) : (
+      <AcceptChange state={state} />
+    )
+  }
   return null
 }

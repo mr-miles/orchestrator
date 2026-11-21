@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .. import guards
-from ..model import H_SPEC, Oracle, Resume
+from ..model import Oracle, Resume
 from ..view import RoleContext
 from .base import Report, RoleHandler, register, scaffold_note
 
@@ -10,8 +10,6 @@ from .base import Report, RoleHandler, register, scaffold_note
 @register
 class OracleAuthor(RoleHandler):
     roles = ("oracle",)
-    keeps_session_until = H_SPEC       # reworked (sent back) until this gate passes
-    pushes = True
     sees_draft_plan = True
     sees_oracle_commit = False
 

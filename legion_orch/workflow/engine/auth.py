@@ -27,7 +27,6 @@ from ...identity import (
     WorkloadBinding,
 )
 from ..model import LIVE_RUN, Run
-from ..roles import handler_for
 from .common import log
 
 # Every run of every change, as (change id, run).
@@ -103,7 +102,7 @@ class WorkloadAuth:
         if found is None:
             return None
         run = found[1]
-        return GitGrant(run.id, f"refs/heads/{run.branch}" if handler_for(run.role).pushes else None)
+        return GitGrant(run.id, f"refs/heads/{run.branch}" if run.branch else None)
 
     # ---- local runner only
     async def dev_gateway(self, sandbox_ref: str) -> str:

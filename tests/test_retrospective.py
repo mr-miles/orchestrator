@@ -146,8 +146,8 @@ async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
     say(f, plan, init("plan-session"))
     await f.plan()
     await f.critique("PASS")
-    assert not f.runner.reflected                        # still kept: H-2 can send it back
-    await f.human("H-2", "approve")
+    assert not f.runner.reflected                        # still kept: H-E1 can send it back
+    await f.human("H-E1", "approve")
     await f.settle()
     (sb, prompt), = [x for x in f.runner.reflected if x[0] == plan.sandbox]
     assert "Your only tool in this turn is the Skill tool" in prompt and "## Time sinks" in prompt
@@ -167,9 +167,9 @@ async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
 
 
 @scenario(environment={})
-async def test_provisioning_keeps_the_planners_sandbox_to_h2(f: Flow):
-    """The environment build maps the build roles, not the planner: H-E1 and provisioning leave
-    its stopped sandbox (and session) for H-2, after which it reflects as usual."""
+async def test_the_planner_reflects_once_h_e1_approves_its_plan_and_environment(f: Flow):
+    """The planner's sandbox is kept until H-E1 approves the plan (with its environment); then
+    it reflects as usual – provisioning, which maps the build roles, does not touch it."""
     f.cfg.retrospective.reflect = True
     await f.intake()
     await f.human("H-1", "accept")
@@ -177,14 +177,11 @@ async def test_provisioning_keeps_the_planners_sandbox_to_h2(f: Flow):
     say(f, plan, init("plan-session"))
     await f.plan()
     await f.critique("PASS")
+    assert f.ce.nodes["plan"].sandbox == plan.sandbox and not f.runner.reflected
     await f.human("H-E1", "approve")
     await f.settle()
     assert f.status("provision") == "ACCEPTED", f.status()
     assert "planner" not in f.ce.change.environment.roles
-    assert f.ce.nodes["plan"].sandbox == plan.sandbox
-    assert plan.sandbox not in f.runner.deleted and not f.runner.reflected
-    await f.human("H-2", "approve")
-    await f.settle()
     assert [sb for sb, _ in f.runner.reflected] == [plan.sandbox]
     assert plan.sandbox in f.runner.restarted          # started again to reflect
     assert f.ce.latest(f"control/reflections/{plan.id}.md")
@@ -279,7 +276,7 @@ async def test_no_reflection_without_a_session_or_when_turned_off(f: Flow):
     plan = f.run("plan")
     await f.plan()                                       # no session id in its log
     await f.critique("PASS")
-    await f.human("H-2", "approve")
+    await f.human("H-E1", "approve")
     await f.settle()
     assert not f.runner.reflected and plan.sandbox in f.runner.deleted
     assert f"sandbox {plan.sandbox}: no agent session recorded" in f.ce.timeline()

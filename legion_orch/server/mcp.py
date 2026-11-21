@@ -29,9 +29,9 @@ from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
 from ..workflow import attest
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
+from ..workflow.engine.steps import sandbox_plan
 from ..workflow.model import Run
 from ..workflow.results import ReportOutcome
-from ..workflow.roles import handler_for
 
 INSTRUCTIONS = """Legion orchestrator tools. Start with get_assignment(). Documents are immutable,
 versioned and schema-validated (docs_write creates a new version; pass base_version when revising;
@@ -129,7 +129,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                   "report_schema": ctl.assets.roles[r.role].report_schema,
                   "git": {"url": ctl.git_url, "branch": r.branch, "base_sha": r.base_sha,
                           "checkout_sha": r.judged_sha or r.base_sha,
-                          "can_push": handler_for(r.role).pushes},
+                          "can_push": sandbox_plan(r.role).pushes},
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
         return a
 

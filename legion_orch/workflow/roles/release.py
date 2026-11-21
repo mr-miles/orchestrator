@@ -9,7 +9,6 @@ from .base import Report, RoleHandler, evidence_of, register
 @register
 class Release(RoleHandler):
     roles = ("release",)
-    judges_head = True
 
     def extra_context(self, e: RoleContext, node) -> list[str]:
         refs = [a for a in (evidence_of(e, b) for b in e.build_nodes()) if a]

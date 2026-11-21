@@ -3,7 +3,7 @@ controller re-runs the oracle and surface commands deterministically."""
 from __future__ import annotations
 
 from .. import governance, guards
-from ..model import BASELINE, VERIFYING, Resume, ReviewResult, Verdict
+from ..model import BASELINE, Resume, ReviewResult, Verdict
 from ..view import RoleContext
 from .base import Report, RoleHandler, brief_findings, evidence_of, register
 
@@ -12,13 +12,12 @@ from .base import Report, RoleHandler, brief_findings, evidence_of, register
 class Integration(RoleHandler):
     roles = ("integration",)
     judge = True
-    judges_head = True
 
     def extra_context(self, e: RoleContext, node) -> list[str]:
         """Each task's evidence, (R3) the baseline – what failed before any build – and every
         fix round's record with the failure it set out to fix."""
         refs = [a for a in (evidence_of(e, b) for b in e.build_nodes()) if a]
-        base = e.nodes.get(BASELINE)
+        base = e.current(BASELINE)
         ver = base.verification.get("baseline") if base else None
         rounds = [a for rnd in e.change.rounds for a in (rnd.attestation, *rnd.failure) if a]
         return refs + [a for a in (e.latest_att("baseline/report.md"),
@@ -39,5 +38,4 @@ class Integration(RoleHandler):
                         resume=Resume.READY, run=r.run.id)
             return
         node.candidate_sha = r.sha
-        node.status = VERIFYING
-        e.start_verification(node.id)
+        e.step_done(node)                   # verification next

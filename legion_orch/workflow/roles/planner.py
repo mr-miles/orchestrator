@@ -6,7 +6,7 @@ from .. import governance, guards
 from ..assets import GitMode
 from ..engine.common import ENV_SPEC
 from ..environment import EnvironmentSpec, Library, LibraryError
-from ..model import H_ENV, H_SPEC, REVIEWING, Node
+from ..model import Node
 from ..view import RoleContext
 from .base import Report, RoleHandler, fix_round_note, register, scaffold_note
 
@@ -17,7 +17,6 @@ NO_ENVIRONMENT = (f"No sandbox environment stage is configured: do not write `{E
 @register
 class Planner(RoleHandler):
     roles = ("planner",)
-    keeps_session_until = H_SPEC       # reworked (sent back) until this gate passes
     sees_oracle_commit = False
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
@@ -34,7 +33,7 @@ class Planner(RoleHandler):
                                             "scaffold": scaffold_note(e, "planner")}
 
     def _environment_vars(self, e: RoleContext) -> dict[str, str]:
-        if H_ENV not in e.nodes:
+        if e.cfg.environment is None:
             return {"environment": NO_ENVIRONMENT}
         try:
             catalogue = Library.for_config(e.cfg, e.assets.schemas).catalogue()
@@ -51,7 +50,8 @@ class Planner(RoleHandler):
             return e1 + e2
         souls = e.assets.roles["implementer"].souls_allowed
         if r.node.round > 1:          # a fix round appends to the task graph (G-FR1, G-FR2)
-            built = {b.task.id: b.task.model_dump(mode="json") for b in e.build_nodes()}
+            built = {b.task.id: b.task.model_dump(mode="json") for b in e.build_nodes()
+                     if b.round < r.node.round}           # earlier rounds' (this one's is redone)
             v = guards.fix_round(tg, orc, e.change.requirements, e.change.tier,
                                  e.cfg.protected_paths + governance.setup_paths(e), souls,
                                  e.docs.schemas, built)
@@ -66,7 +66,7 @@ class Planner(RoleHandler):
     def _environment(self, e: RoleContext, r: Report) -> list[str]:
         """G-E1..G-E4 on the environment spec, when the stage is configured. The report attests
         its latest version, which a rework may leave as an earlier run wrote it."""
-        if H_ENV not in e.nodes:
+        if e.cfg.environment is None:
             return []
         path = e.p(ENV_SPEC)
         att = max((a for a in r.parsed if a.kind == "file" and a.path == path),
@@ -89,4 +89,4 @@ class Planner(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         """The plan is critiqued next (the critic is dispatched while it is REVIEWING); it is
         accepted when the critic passes it."""
-        r.node.status = REVIEWING
+        e.step_done(r.node)                 # the critic next

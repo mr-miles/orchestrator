@@ -17,7 +17,8 @@ class Step:
 
 @dataclass
 class Parallel:
-    """Steps that run as their dependencies allow (a task graph); done when all are."""
+    """Steps that run as their dependencies allow (a task graph); done when all are. Its steps
+    may be known only later (:meth:`.FlowState.define`); empty, it is done at once."""
     id: str
     steps: list[Step]
 
@@ -41,9 +42,9 @@ class StartOver:
 @dataclass
 class AppendRound:
     """Sent back: the work done stays; a new round (``template(n)``) is inserted before child
-    ``before``, which runs again with everything after it."""
+    ``before``, which runs again with everything after it (None: after the last child)."""
     template: Callable[[int], Stage]
-    before: str
+    before: str | None = None
 
 
 @dataclass

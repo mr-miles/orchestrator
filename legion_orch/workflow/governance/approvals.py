@@ -1,6 +1,7 @@
-"""H-2: per-subject approvals of the plan, each delta spec and the oracle, pinned to the
-exact document versions approved (guard G-B1 checks they are still current); and the freshness of
-the H-E1 environment approval behind a provisioned environment (G-E5)."""
+"""Per-subject approvals, pinned to the exact document versions approved (guard G-B1 checks they
+are still current): at H-E1 "approve the plan" the spec and task graph, each delta spec and the
+sandbox environment; at H-2 "approve the oracle" the oracle (from R2, where there is one). And the
+freshness of the environment approval behind a provisioned environment (G-E5)."""
 from __future__ import annotations
 
 from pydantic import BaseModel
@@ -19,6 +20,8 @@ from ..view import ChangeView
 from .common import GovernanceError
 from .surfaces import pin_surfaces
 
+ENV_SPEC = "plan/environment.json"
+
 
 def h2_subjects(e: ChangeView) -> dict[str, dict[str, int | None]]:
     """Subject -> {qualified path: current latest version}. One subject per delta spec."""
@@ -26,8 +29,38 @@ def h2_subjects(e: ChangeView) -> dict[str, dict[str, int | None]]:
                          e.p("plan/taskgraph.json"): e.latest("plan/taskgraph.json")}}
     for req in e.change.requirements:
         subjects[req] = {e.p(f"plan/specs/{req}.md"): e.latest(f"plan/specs/{req}.md")}
-    subjects["oracle"] = {e.p("plan/oracle.json"): e.latest("plan/oracle.json")}
+    if e.change.tier and risk.rank(e.change.tier) >= 2:       # an oracle stage
+        subjects["oracle"] = {e.p("plan/oracle.json"): e.latest("plan/oracle.json")}
     return subjects
+
+
+ENVIRONMENT_SUBJECT = "environment"
+
+
+def plan_subjects(e: ChangeView) -> list[str]:
+    """What H-E1 approves: the plan, each delta spec, and the environment (if any)."""
+    return [s for s in h2_subjects(e) if s != "oracle"] + (
+        [ENVIRONMENT_SUBJECT] if e.cfg.environment is not None else [])
+
+
+def oracle_subjects(e: ChangeView) -> list[str]:
+    """What H-2 approves: the oracle (the R3 baseline attestation is its precondition)."""
+    return [s for s in h2_subjects(e) if s == "oracle"]
+
+
+def subject_status(e: ChangeView) -> list[SubjectStatus]:
+    """Every approval subject's status, the environment's included."""
+    out = h2_status(e)
+    if e.cfg.environment is not None:
+        appr = e.change.approvals.get(H_ENV)
+        pins = {e.p(ENV_SPEC): e.latest(ENV_SPEC)}
+        out.append(SubjectStatus(
+            subject=ENVIRONMENT_SUBJECT, paths=list(pins),
+            status=ApprovalState.APPROVED if appr and appr.pins == pins
+            else ApprovalState.STALE if appr else ApprovalState.PENDING,
+            approver=appr.approver if appr else None, at=appr.at if appr else None,
+            approved=dict(appr.pins) if appr else {}, latest=pins))
+    return out
 
 
 def approval_key(subject: str) -> str:
@@ -64,7 +97,7 @@ def baseline_warnings(e: ChangeView) -> list[str]:
     """G-BL2 (R3): what the baseline – the oracle commands the controller ran at the head before
     any build – says about the oracle. An acceptance command that already passes cannot show
     that the change works; a result that differs from the baseline verifier's is suspect."""
-    node = e.nodes.get(BASELINE)
+    node = e.current(BASELINE)
     ver = node.verification.get("baseline") if node and node.status == "ACCEPTED" else None
     if ver is None:
         return []
@@ -104,9 +137,9 @@ def baseline_subject(e: ChangeView) -> BaselineSubject | None:
     """At R3 (once there is a baseline node): the attestation's status. ``approved`` while a pass
     newer than the baseline verification stands; ``stale`` if the baseline ran again since;
     ``pending`` otherwise."""
-    if not e.change.tier or risk.rank(e.change.tier) < 3 or BASELINE not in e.nodes:
+    node = e.current(BASELINE)
+    if not e.change.tier or risk.rank(e.change.tier) < 3 or node is None:
         return None
-    node = e.nodes[BASELINE]
     ver = node.verification.get("baseline") if node.status == ACCEPTED else None
     rec = e.change.attestations.get(BASELINE_SUBJECT)
     sources = [s for s in (e.latest_att("baseline/report.md"), ver and ver.attestation) if s]
@@ -125,9 +158,6 @@ def baseline_subject(e: ChangeView) -> BaselineSubject | None:
 def stale_approvals(e: ChangeView) -> list[str]:
     """Guard G-B1: every H-2 subject approved against the current bytes."""
     return [f"G-B1: {s.subject} {s.status}" for s in h2_status(e) if s.status != ApprovalState.APPROVED]
-
-
-ENV_SPEC = "plan/environment.json"
 
 
 def stale_environment(e: ChangeView) -> str | None:

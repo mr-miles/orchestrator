@@ -32,7 +32,7 @@ async def test_the_matrix_at_h2_traces_requirements_to_tasks_and_criteria(f: Flo
         t = (await c.get(f"/api/changes/{f.ce.cid}/trace")).json()
     [req] = t["requirements"]
     assert req["id"] == "REQ-1" and req["text"] == "greet.txt says hello"
-    assert req["tasks"] == ["T1"] and req["spec"]["status"] == "pending"
+    assert req["tasks"] == ["T1"] and req["spec"]["status"] == "approved"     # at H-E1
     assert [c["id"] for c in req["criteria"]] == ["AC-1"]
     [task] = t["tasks"]
     assert task["node"] == "build:T1" and task["status"] == "PENDING" and task["check"] is None
@@ -49,6 +49,7 @@ async def test_warnings_for_gaps_the_guards_allow(f: Flow):
                          "verification": ["ruff check src", "npx tsc --noEmit"]}]
     await f.plan(tasks=tasks, oracle=LINKED)
     await f.critique("PASS")
+    await f.human("H-E1", "approve")
     await f.oracle()
     t = traceability.traceability(f.ce)
     assert [r.text for r in t.requirements] == ["greet.txt says hello", "and it is lint clean"]
@@ -68,8 +69,7 @@ def test_lint_only_commands():
 
 @scenario()
 async def test_a_spec_changed_since_approval_shows_its_diff(f: Flow):
-    await f.to_h2(tier="R2")
-    await f.human("H-2", "approve", subjects=["REQ-1"])
+    await f.to_h2(tier="R2")                           # H-E1 approved REQ-1's delta spec
     rel = "plan/specs/REQ-1.md"
     old = f.ce.latest(rel)
     new = f.ce.doc(rel).content.replace("add it", "add it, politely")
@@ -158,5 +158,5 @@ async def test_trace_markdown(f: Flow):
     md = traceability.to_markdown(traceability.traceability(f.ce).model_dump(mode="json"), f.ce.cid)
     assert md.startswith(f"# Traceability: {f.ce.cid}\n")
     assert "1 requirements · 1 tasks · 1 criteria · 1 warnings" in md
-    assert "| **REQ-1** greet.txt says hello | pending | T1 (PENDING) | AC-1: hello → unlinked |" in md
+    assert "| **REQ-1** greet.txt says hello | approved | T1 (PENDING) | AC-1: hello → unlinked |" in md
     assert "AC-1 names no test or command" in md

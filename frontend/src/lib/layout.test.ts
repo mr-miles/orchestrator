@@ -15,7 +15,6 @@ function changeGraph(tasks: Record<string, string[]>): LayoutNode[] {
   nodes.push(
     { id: 'integration', depends_on: Object.keys(tasks).map((t) => `build:${t}`) },
     { id: 'H-3', depends_on: ['integration'] },
-    { id: 'ship', depends_on: ['H-3'] },
   )
   return nodes
 }

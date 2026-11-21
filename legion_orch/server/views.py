@@ -9,7 +9,7 @@ from ..workflow import governance, ship, traceability
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.engine.common import ENV_SPEC
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
-from ..workflow.model import ACCEPTED, H_ENV, LIVE_RUN, RETRO
+from ..workflow.model import ACCEPTED, H_ENV, H_SPEC, LIVE_RUN, RETRO
 
 
 def change_list(ctl: Controller) -> list[dict]:
@@ -30,7 +30,7 @@ def change_list(ctl: Controller) -> list[dict]:
 def environment_spec(ce: ChangeEngine) -> dict | None:
     """The latest environment spec for the H-E1 card: the proposals its profiles use and each
     profile's effective network (what its tools bring plus extras), or the problems."""
-    if H_ENV not in ce.nodes or not ce.latest(ENV_SPEC):
+    if ce.cfg.environment is None or not ce.latest(ENV_SPEC):
         return None
     raw = ce.json_doc(ENV_SPEC)
     spec = EnvironmentSpec.model_validate(raw)
@@ -47,10 +47,23 @@ def environment_spec(ce: ChangeEngine) -> dict | None:
 
 
 def h2_rows(ce: ChangeEngine) -> list[dict]:
-    """H-2's decisions: each subject's approval and, at R3, the baseline attestation."""
-    rows = [s.model_dump() | {"kind": "approval"} for s in governance.h2_status(ce)]
+    """The approval decisions, each with the gate that makes it: H-E1 "approve the plan" (the
+    spec and task graph, each delta spec, the environment) and H-2 "approve the oracle" (the
+    oracle and, at R3, the baseline attestation, its precondition)."""
+    oracle = set(governance.oracle_subjects(ce))
+    rows = [s.model_dump() | {"kind": "approval", "gate": H_SPEC if s.subject in oracle else H_ENV}
+            for s in governance.subject_status(ce)]
     base = governance.baseline_subject(ce)
-    return rows + ([base.model_dump()] if base else [])
+    return rows + ([base.model_dump() | {"gate": H_SPEC}] if base else [])
+
+
+def workflow_state(ce: ChangeEngine) -> dict:
+    """The stage rules' view: what a human may do on each node now, and each waiting gate's
+    unmet preconditions (from the workflow core)."""
+    wf = ce.workflow
+    actions = {nid: wf.actions(nid) for nid in ce.nodes if wf.actions(nid)}
+    return {"actions": actions, "unmet": {nid: list(wf.unmet(nid)) for nid in ce.nodes
+                                          if wf.unmet(nid)}}
 
 
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
@@ -65,6 +78,7 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "change": ch.model_dump(mode="json") if ch else None, "nodes": nodes, "runs": runs,
             "gates": governance.gate_set(ce) if ch and ch.tier else [],
             "h2": h2_rows(ce) if ch and ch.requirements else [],
+            "workflow": workflow_state(ce) if ch else {"actions": {}, "unmet": {}},
             "h3": [r.model_dump() for r in governance.h3_attestations(ce)] if ch and ch.tier else [],
             "surfaces": [s.model_dump() for s in governance.surfaces(ce)] if ch else [],
             "environment": environment_spec(ce),

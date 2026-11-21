@@ -1,8 +1,11 @@
 """Human actions: the H-1/H-E1/H-2/H-3 gates, escalation resolution, change-level governance."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .. import governance, guards, risk, setup
 from ..environment import EnvironmentSpec, Kind, Library, LibraryError, promote
+from ..flow import CHANGE
 from ..model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -15,13 +18,11 @@ from ..model import (
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
-    INTAKE,
     INTEGRATION,
     LIVE_RUN,
     MERGING,
     ORACLE,
     PENDING,
-    PLAN,
     PREFLIGHT,
     PROVISION,
     R_REPORTED,
@@ -30,8 +31,6 @@ from ..model import (
     RETRO,
     REVIEWING,
     REWORK,
-    RUNNING,
-    SHIP,
     VERIFYING,
     Approval,
     ApprovalState,
@@ -51,6 +50,10 @@ from .common import ENV_SPEC, WorkflowError, _slug
 from .core import ChangeCore
 from .graph import StageGraph
 from .runs import RunLifecycle
+from .workflow_tree import base_id
+
+if TYPE_CHECKING:
+    from .runtime import FlowRuntime
 
 
 class HumanGates:
@@ -59,6 +62,7 @@ class HumanGates:
     def __init__(self, core: ChangeCore, graph: StageGraph, acceptance: Acceptance,
                  lifecycle: RunLifecycle):
         self.c, self.graph, self.acceptance, self.lifecycle = core, graph, acceptance, lifecycle
+        self.flow: FlowRuntime = None  # type: ignore[assignment]   # set once it exists
 
     def _check_approver(self, approver: str) -> None:
         if approver not in self.c.cfg.decision_owners:
@@ -73,15 +77,12 @@ class HumanGates:
             node = self.c.nodes.get(node_id)
             if node is None:
                 raise WorkflowError(f"unknown node {node_id}")
-            if node.status == ESCALATED:
+            if action == "send_back" and node.status in (ESCALATED, AWAITING_HUMAN):
+                res = await self._send_back(node, payload.get("stage") or "", approver, payload)
+            elif node.status == ESCALATED:
                 res = await self._resolve_escalation(node, action, approver, payload)
             elif node.kind == HUMAN and node.status == AWAITING_HUMAN:
                 res = await self._human_gate(node, action, approver, payload)
-            elif node.kind == SHIP and action == "recheck" and node.status in (ACCEPTED, FAILED) \
-                    and not self.c.change.pruned_at:
-                node.status = RUNNING
-                self.c.spawn(self.acceptance.ship())
-                res = ActionResult()
             else:
                 raise WorkflowError(f"action {action!r} not available for {node_id} in {node.status}")
             self.c.event("human_action", f"{approver}: {action}", node_id)
@@ -97,39 +98,59 @@ class HumanGates:
 
     # ------------------------------------------------------------------ human gates
     async def _human_gate(self, node: Node, action: str, approver: str, payload: dict) -> ActionResult:
-        handler = self.GATE_ACTIONS.get((node.id, action))
+        handler = self.GATE_ACTIONS.get((base_id(node.id), action))
         if handler is None:
-            valid = [a for g, a in self.GATE_ACTIONS if g == node.id]
+            valid = [a for g, a in self.GATE_ACTIONS if g == base_id(node.id)] + ["send_back"]
             raise WorkflowError(f"action {action!r} not valid for {node.id} (one of {valid})")
         return await getattr(self, handler)(node, approver, payload)
 
-    # (gate, action) -> method(node, approver, payload)
+    # (gate, action) -> method(node, approver, payload). The gates' decisions; sending work back
+    # is the workflow's generic send_back – the older names stay as its aliases.
     GATE_ACTIONS = {
         (H_REQUIREMENTS, "accept"): "_accept_requirements",
+        (H_REQUIREMENTS, "approve"): "_accept_requirements",
         (H_REQUIREMENTS, "revise"): "_revise_requirements",
-        (H_SPEC, "approve"): "_approve_spec",
-        (H_SPEC, "revise"): "_revise_spec",
+        (H_ENV, "approve"): "_approve_plan",
+        (H_ENV, "revise"): "_revise_plan_gate",
+        (H_SPEC, "approve"): "_approve_oracle",
+        (H_SPEC, "revise"): "_revise_oracle",
         (H_SPEC, "restart"): "_restart_plan",
-        (H_ENV, "approve"): "_approve_environment",
-        (H_ENV, "revise"): "_revise_environment",
         (H_CHANGE, "accept"): "_accept_change",
+        (H_CHANGE, "approve"): "_accept_change",
         (H_CHANGE, "reject"): "_reject_change",
+        (H_CHANGE, "recheck"): "_recheck",
+        (H_CHANGE, "evaluate"): "_recheck",
     }
 
-    def _send_back(self, target: Node, approver: str, payload: dict) -> None:
-        """A human sends ``target``'s work back with feedback: a new cycle, reworked."""
-        text = (payload.get("feedback") or "").strip()
+    def _stage(self, node: Node, name: str) -> str:
+        """The stage ``name`` (requirements, plan, design, oracle, delivery) ``node``'s work was
+        built on – in a fix round, the round's own."""
+        for s in self.flow.built_on(node.id):
+            if base_id(s) == f"stage:{name}" or s == f"stage:{name}":
+                return s
+        raise WorkflowError(f"{node.id} was not built on a {name} stage")
+
+    async def _send_back(self, node: Node, stage: str, approver: str, payload: dict) -> ActionResult:
+        """Send the work of ``stage`` back with feedback (``stage``: a stage id or name): the
+        stage's rework policy runs, and everything built on it starts over."""
+        text = (payload.get("feedback") or payload.get("answer") or "").strip()
         if not text:
             raise WorkflowError("feedback is required")
-        att = self._feedback_doc(target, approver, text, "feedback")
-        target.cycle += 1
-        target.feedback.append(Feedback(cycle=target.cycle, source="feedback", text=text,
-                                        attestations=[att]))
-        target.status = REWORK
+        if not stage.startswith("stage:"):
+            stage = self._stage(node, stage)
+        if f"send_back:{stage}" not in self.flow.actions(node.id):
+            raise WorkflowError(f"{node.id} cannot send {stage} back (it may: "
+                                f"{[a for a in self.flow.actions(node.id) if a.startswith('send_back:')]})")
+        att = self._feedback_doc(node, approver, text, "feedback")
+        node.escalation = None
+        await self.flow.act(node.id, f"send_back:{stage}", approver, text, feedback_doc=att)
+        self.c.event("send_back", f"{approver}: {stage} sent back from {node.id}", node.id)
+        return ActionResult()
 
     async def _accept_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """H-1: accept requirements and the risk tier (raising it is free; lowering needs a
-        reason). Fixes the change's requirements and review panel and creates the stage nodes."""
+        reason). Fixes the change's requirements and review panel; the tier decides the rest of
+        the workflow's stages."""
         ch = self.c.change
         pins = {self.c.p(p): self.c.latest(p) for p in ("intake/requirements.md", "intake/risk.json")}
         derived = ch.risk.tier
@@ -147,91 +168,80 @@ class HumanGates:
         rec = Approval(gate=H_REQUIREMENTS, approver=approver, pins=pins, tier=tier)
         rec.attestation = self.c.write_record("control/approvals/requirements.json", rec).attestation
         ch.approvals[H_REQUIREMENTS] = rec
-        node.status = ACCEPTED
-        self.graph.create_stage_nodes()
+        self.flow.build_tree()
+        await self.flow.act(node.id, "approve", approver)
         return ActionResult(tier=tier, panel=ch.panel)
 
     async def _revise_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        self._send_back(self.c.nodes[INTAKE], approver, payload)
-        node.status = PENDING
-        return ActionResult()
+        return await self._send_back(node, "requirements", approver, payload)
 
-    async def _approve_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2: each delta spec, the plan and the oracle are separate decisions (possibly by
-        different approvers); the gate completes once every subject is approved and fresh (and,
-        at R3, the independent baseline is attested)."""
+    async def _revise_plan_gate(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        return await self._send_back(node, "design", approver, payload)
+
+    async def _revise_oracle(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        return await self._send_back(node, "oracle", approver, payload)
+
+    async def _restart_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """Restart plan: the whole plan starts over – every fix round goes with it."""
+        return await self._send_back(node, "plan", approver, payload)
+
+    async def _approve_subjects(self, node: Node, approver: str, payload: dict,
+                                gate_subjects: list[str], baseline: bool) -> ActionResult:
+        """Approve some (or "all") of the gate's subjects – separate decisions, possibly by
+        different approvers; the gate is approved once every one is approved and fresh."""
         subjects = payload.get("subjects") or "all"
         everything = subjects == "all" or subjects == ["all"]
-        base = governance.baseline_subject(self.c)
+        wanted = gate_subjects if everything else [s for s in subjects if s in gate_subjects]
+        if not everything and (unknown := [s for s in subjects if s not in gate_subjects
+                                          and s != governance.BASELINE_SUBJECT]):
+            raise WorkflowError(f"unknown approval subject(s) {unknown}; choose from "
+                                f"{gate_subjects}")
+        base = governance.baseline_subject(self.c) if baseline else None
         attest = base is not None and base.status != ApprovalState.APPROVED and (
             everything or governance.BASELINE_SUBJECT in subjects)
-        if not everything:
-            subjects = [s for s in subjects if s != governance.BASELINE_SUBJECT]
         if attest and (base.note or not base.sources):
             raise WorkflowError(f"independent-baseline: {base.note or 'no baseline evidence'}")
+        env = governance.ENVIRONMENT_SUBJECT in wanted
+        wanted = [s for s in wanted if s != governance.ENVIRONMENT_SUBJECT]
         try:
-            done = await governance.approve_subjects(self.c, subjects, approver) \
-                if everything or subjects else []
+            done = await governance.approve_subjects(self.c, wanted, approver) if wanted else []
+            if env:
+                await self._approve_environment(node, approver, payload)
+                done.append(governance.ENVIRONMENT_SUBJECT)
             if attest:
                 # R3: the baseline attestation is decided here with the other subjects, citing
                 # the baseline report and the controller's own run of its commands (G-AT1)
                 await governance.record_attestation(self.c, approver, {
                     "kind": governance.BASELINE_SUBJECT, "verdict": "pass",
                     "sources": base.sources})
+                done.append(governance.BASELINE_SUBJECT)
         except governance.GovernanceError as e:
             raise WorkflowError(str(e)) from None
-        if attest:
-            done.append(governance.BASELINE_SUBJECT)
-        pending = [x.subject for x in governance.h2_status(self.c) if x.status != ApprovalState.APPROVED]
-        base = governance.baseline_subject(self.c)
+        status = {x.subject: x.status for x in governance.subject_status(self.c)}
+        pending = [s for s in gate_subjects if status.get(s) != ApprovalState.APPROVED]
+        base = governance.baseline_subject(self.c) if baseline else None
         if base is not None and base.status != ApprovalState.APPROVED:
             pending.append(governance.BASELINE_SUBJECT)
         if pending:
             return ActionResult(approved=done, pending=pending)
-        node.status = ACCEPTED
+        await self.flow.act(node.id, "approve", approver)
         return ActionResult(approved=done, pending=[])
 
-    async def _revise_spec(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2 revise. In a fix round, the round goes back to the planner (its build tasks are
-        withdrawn; earlier rounds stand). Otherwise the whole plan restarts (Restart plan)."""
-        ch = self.c.change
-        if ch.round == 1:
-            return await self._restart_plan(node, approver, payload)
-        self._send_back(self.c.nodes[PLAN], approver, payload)
-        self.graph.remove_round_builds(ch.round)
-        node.status = PENDING
-        return ActionResult(note=f"fix round {ch.round} goes back to the planner; Restart plan "
-                                 "restarts the whole plan")
+    async def _approve_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """H-E1 "approve the plan": the spec and task graph, each delta spec and the sandbox
+        environment (if the controller has one)."""
+        return await self._approve_subjects(node, approver, payload,
+                                            governance.plan_subjects(self.c), baseline=False)
 
-    async def _restart_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-2 restart: the plan is reworked from the start (and critiqued again); everything
-        derived from it starts over (oracle, baseline, every round's build nodes, the
-        integration branch and surface pins)."""
-        ch = self.c.change
-        plan = self.c.nodes[PLAN]
-        self._send_back(plan, approver, payload)
-        if ch.round > 1:          # restarted from a fix round: the rounds' feedback is history
-            plan.round, plan.round_start_cycle = 1, plan.cycle
-        ch.round, ch.rounds = 1, []
-        self.graph.reset_environment()
-        for nid in (ORACLE, PREFLIGHT, BASELINE):
-            if nid in self.c.nodes:
-                n = self.c.nodes[nid]
-                n.status, n.cycle = PENDING, n.cycle + 1
-        for b in self.c.build_nodes():
-            del self.c.nodes[b.id]
-        await self.c.git.init_integration(ch.id, ch.base_sha)
-        ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
-        ch.setup_pin = None if ch.blank_repo else \
-            await setup.pin_at_base(self.c.git, ch.base_sha)          # the base's again
-        # a restarted task of the same name must not continue the old plan's commits
-        await cleanup.delete_run_branches(self.c, "plan restarted")
-        ch.surface_pins = {}
-        node.status = PENDING
-        return ActionResult()
+    async def _approve_oracle(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """H-2 "approve the oracle" (and, at R3, attest the independent baseline, which is the
+        gate's precondition)."""
+        return await self._approve_subjects(node, approver, payload,
+                                            governance.oracle_subjects(self.c), baseline=True)
 
-    async def _approve_environment(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-E1: approve the sandbox environment at its current version; provisioning follows."""
+    async def _approve_environment(self, node: Node, approver: str, payload: dict) -> None:
+        """The sandbox environment at its current version (with the plan, at H-E1);
+        provisioning follows."""
         version = self.c.latest(ENV_SPEC)
         if version is None:
             raise WorkflowError(f"no {ENV_SPEC} to approve")
@@ -240,8 +250,6 @@ class HumanGates:
         rec.attestation = self.c.write_record("control/approvals/environment.json", rec).attestation
         self.c.change.approvals[H_ENV] = rec
         await self._adopt_mise(EnvironmentSpec.model_validate(self.c.json_doc(ENV_SPEC, version)))
-        node.status = ACCEPTED
-        return ActionResult()
 
     async def _adopt_mise(self, spec: EnvironmentSpec) -> None:
         """§5.3c: the approved spec's mise.toml goes onto the integration branch (a controller
@@ -256,15 +264,9 @@ class HumanGates:
         ch.integration_head = head
         ch.setup_pin = setup.pin_for(spec.mise.content, H_ENV)
 
-    async def _revise_environment(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-E1 revise: the planner reworks the plan's environment with the feedback; the plan
-        is then critiqued again."""
-        self._send_back(self.c.nodes[PLAN], approver, payload)
-        node.status = PENDING
-        return ActionResult()
-
     async def _accept_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """H-3: accept the whole change at the current integration head."""
+        """H-3: accept the whole change at the current integration head. The gate completes once
+        its preconditions – the tier's ship gates – hold (evaluated now, again on recheck)."""
         ch = self.c.change
         head = await self.c.git.integration_head(ch.id)
         if head != ch.integration_head:
@@ -296,12 +298,22 @@ class HumanGates:
         rec = Approval(gate=H_CHANGE, approver=approver, head=head, note=note)
         rec.attestation = self.c.write_record("control/approvals/change.json", rec).attestation
         ch.approvals[H_CHANGE] = rec
-        node.status = ACCEPTED
-        return ActionResult(warnings=[f"{g} has no passing attestation: the ship check will be "
-                                      "NOT_READY until one is recorded" for g in missing])
+        await self.flow.act(node.id, "approve", approver)
+        return ActionResult(warnings=[f"{g} has no passing attestation: H-3 waits for it"
+                                      for g in missing])
+
+    async def _recheck(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """Evaluate H-3's preconditions (the ship gates) again, after attesting or waiving."""
+        if self.c.change.pruned_at:
+            raise WorkflowError("the change was pruned")
+        await self.flow.act(node.id, "evaluate", approver)
+        return ActionResult()
 
     async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        return self._end_change(node, approver, payload, "reject")
+        res = self._end_change(node, approver, payload, "reject")
+        await self.flow.act(node.id, "reject", approver,
+                            (payload.get("reason") or payload.get("feedback") or "").strip())
+        return res
 
     def _end_change(self, node: Node, approver: str, payload: dict, action: str) -> ActionResult:
         """Abandon the change (at an escalation, or rejected at H-3): record who, where and
@@ -326,11 +338,13 @@ class HumanGates:
     async def _resolve_escalation(self, node: Node, action: str, approver: str,
                                   payload: dict) -> ActionResult:
         if action == "abandon":
-            return self._end_change(node, approver, payload, "abandon")
+            res = self._end_change(node, approver, payload, "abandon")
+            await self.flow.act(CHANGE, "abandon", approver)
+            return res
         if action == "override_accept":
             return self._override_accept(node, approver, payload)
         if action == "plan_fix":
-            return self._plan_fix(node, approver, payload)
+            return await self._plan_fix(node, approver, payload)
         if action == "revise_plan":
             return await self._revise_plan(node, approver, payload)
         if action not in ("retry", "answer"):
@@ -365,34 +379,18 @@ class HumanGates:
         return ActionResult(status=node.status)
 
     async def _revise_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """An oracle, preflight or baseline escalation the plan caused (an oracle whose commands cannot
-        work, say): the plan goes back to the planner with the human's feedback, as Request
-        revision does at H-2 – which this stage never reaches while it is escalated."""
-        ch = self.c.change
-        if node.kind not in (ORACLE, PREFLIGHT, BASELINE) \
-                or self.c.nodes[H_SPEC].status == ACCEPTED:
+        """An oracle, preflight or baseline escalation the plan caused (an oracle whose commands
+        cannot work, say): the design goes back to the planner with the human's feedback."""
+        if base_id(node.id) not in (ORACLE, PREFLIGHT, BASELINE):
             raise WorkflowError("revise_plan is only available for an oracle, preflight or "
-                                "baseline escalation before H-2 is approved")
-        text = (payload.get("feedback") or payload.get("answer") or "").strip()
-        if not text:
-            raise WorkflowError("feedback for the planner is required")
-        node.escalation = None
-        if ch.round == 1:
-            node.status = PENDING        # the restart resets the oracle and baseline
-        elif node.kind in (PREFLIGHT, BASELINE):
-            # a fix round reruns them once its revised plan passes critique; until then they
-            # stand as before the round (an oracle waits for the plan anyway)
-            node.status = ACCEPTED
-        else:
-            node.status, node.cycle = PENDING, node.cycle + 1
-        self.c.event("escalation", f"{approver}: plan sent back to the planner from {node.id}",
-                     node.id)
-        return await self._revise_spec(self.c.nodes[H_SPEC], approver, {"feedback": text})
+                                "baseline escalation")
+        return await self._send_back(node, "design", approver, payload)
 
-    def _plan_fix(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """Plan a fix (§5.10a): integration failed late, so a fix round plans new work on top of
-        the integration head – planner (fix mode), critique, H-2, new build tasks and
-        integration again. Accepted tasks are never reopened."""
+    async def _plan_fix(self, node: Node, approver: str, payload: dict) -> ActionResult:
+        """Plan a fix (§5.10a): integration failed late, so Delivery is sent back – its policy
+        appends a fix round that plans new work on top of the integration head (planner,
+        critique, H-E1, the oracle again if it changes, H-2, new build tasks), then integration
+        runs again. Accepted tasks are never reopened."""
         ch, limit = self.c.change, self.c.cfg.limits.fix_rounds
         if node.kind != INTEGRATION or not node.escalation \
                 or node.escalation.kind != "integration_failed":
@@ -407,24 +405,15 @@ class HumanGates:
              if a.startswith("file:")] + ([ver.attestation] if ver and ver.attestation
                                          and not ver.ok else [])))
         n = ch.round + 1
+        comment = (payload.get("comment") or payload.get("feedback") or "").strip() or None
         rec = FixRound(number=n, approver=approver, head=ch.integration_head, failure=failure,
-                       comment=(payload.get("comment") or payload.get("feedback") or "").strip()
-                       or None)
+                       comment=comment)
         rec.attestation = self.c.write_record(f"control/rounds/{n}.json", rec).attestation
         ch.round = n
         ch.rounds.append(rec)
+        # the round's record is what the planner is told (fix_round), not send-back feedback
         node.escalation = None
-        self.lifecycle.retire_runs(node)
-        # integration waits for the round's H-2 and (added at its critique PASS) its tasks
-        node.status, node.cycle = PENDING, node.cycle + 1
-        node.depends_on = list(dict.fromkeys([*node.depends_on, H_SPEC]))
-        plan = self.c.nodes[PLAN]
-        plan.cycle += 1
-        plan.round, plan.round_start_cycle, plan.status = n, plan.cycle, READY
-        h2 = self.c.nodes[H_SPEC]
-        h2.status = PENDING
-        waits = [PLAN] + ([PROVISION] if PROVISION in self.c.nodes else [])
-        h2.depends_on = list(dict.fromkeys([*waits, *h2.depends_on]))
+        await self.flow.act(node.id, f"send_back:{self._stage(node, 'delivery')}", approver)
         self.c.event("fix_round", f"{approver}: fix round {n} planned on top of "
                      f"{(ch.integration_head or '')[:12]}", node.id)
         return ActionResult(note=f"fix round {n}: the planner plans it on top of the integration head")
@@ -488,7 +477,6 @@ class HumanGates:
             node.extra_cycles += 1
             node.cycle += 1
             node.status = REWORK
-            self.graph.reset_environment()
         elif resume == Resume.REWORK_CYCLE:           # one more review cycle
             node.extra_cycles += 1
             cur = self.c.runs.get(node.current_run) if node.current_run else None
@@ -559,7 +547,7 @@ class HumanGates:
         wait from now on; provisioning starts once their live runs end and nothing is verifying
         or merging (the old build stays in place until the new one is accepted)."""
         c = self.c
-        prov = c.nodes.get(PROVISION)
+        prov = c.current(PROVISION)
         if prov is None or c.change.environment is None or prov.status != ACCEPTED:
             raise WorkflowError("there is no provisioned environment to rebuild")
         if stale := governance.stale_environment(c):
@@ -568,7 +556,7 @@ class HumanGates:
         if not risk.valid_reason(reason):
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
         prov.status = PENDING
-        c.event("provision", f"{approver} requested reprovisioning: {reason}", PROVISION)
+        c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
         return ("provisioning again from the approved spec and the current library once running "
                 "agents of mapped roles finish; their new runs wait until then")
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from .. import governance, guards
-from ..model import VERIFYING
 from ..view import RoleContext
 from .base import Report, RoleHandler, build_context, register
 
@@ -10,8 +9,6 @@ from .base import Report, RoleHandler, build_context, register
 @register
 class Implementer(RoleHandler):
     roles = ("implementer",)
-    pushes = True
-    reuses_sandbox = True
     needs_fresh_approval = True
     sees_risk = False             # the risk signals set the tier; they don't shape the code
     task_scoped_specs = True
@@ -32,5 +29,4 @@ class Implementer(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         r.node.candidate_sha = r.sha
         await e.git.pin(r.run.id, r.sha)
-        r.node.status = VERIFYING
-        e.start_verification(r.node.id)
+        e.step_done(r.node)                 # verification next

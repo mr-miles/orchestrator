@@ -108,7 +108,7 @@ def _suggested(e: ChangeView, gate: str) -> list[SuggestedSource]:
         for b in e.build_nodes():
             r = b.review(b.cycle, "security")
             out.append((f"{b.task.id} security review", r.doc if r else None))
-        iv = e.nodes.get(INTEGRATION)
+        iv = e.current(INTEGRATION)
         if iv is not None:
             ver = iv.verification.get("integration")
             out.append(("integration report", e.latest_att("integration/report.md")))

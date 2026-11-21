@@ -129,7 +129,9 @@ class FlowState:
     which node; every status change is a transition of the node's machine. Every method that
     changes state returns the effects."""
 
-    def __init__(self, workflow: Workflow):
+    def __init__(self, workflow: Workflow, attempts: dict[str, int] | None = None):
+        """``attempts``: steps' attempts so far (a workflow rebuilt for a new structure
+        continues them, so an attempt number is never reused)."""
         self.workflow = workflow
         self.nodes: dict[str, Stage | Step | Parallel | Gate] = {}
         self.parent: dict[str, Stage | Parallel | None] = {}
@@ -141,7 +143,7 @@ class FlowState:
         self.log: list[tuple[str, str, str, str]] = []
         # attempts of steps that were removed (a round dropped by a send-back): a step made again
         # with the same id continues from them, so an attempt number is never reused
-        self._past_attempts: dict[str, int] = {}
+        self._past_attempts: dict[str, int] = dict(attempts or {})
         self._effects: list[Effect] = []
         for s in workflow.stages:
             self._register(s, None)
@@ -276,6 +278,27 @@ class FlowState:
         elif action == "override":
             self.step(target).override()
             self._effects.append(Record("override", target, by, text))
+        self._advance()
+        return self._take()
+
+    def define(self, group: str, steps: list[Step]) -> list[Effect]:
+        """The steps of a :class:`Parallel` group, once they are known (a task graph accepted):
+        they replace the group's earlier ones. Only before the group has started – after that
+        its work is redone by sending a stage back, which resets it first. A step defined again
+        with an earlier id continues from its attempts."""
+        node = self.nodes.get(group)
+        if not isinstance(node, Parallel):
+            raise ActionError(f"{group!r} is not a parallel group")
+        if self.status(group) != StageStatus.PENDING:
+            raise ActionError(f"{group} has already started")
+        for st in node.steps:
+            self._forget(st.id)
+        node.steps = list(steps)
+        ids = {s.id for s in steps}
+        for st in steps:
+            if unknown := set(st.depends_on) - ids:
+                raise ValueError(f"{st.id} depends on {sorted(unknown)} outside {group}")
+            self._register(st, node)
         self._advance()
         return self._take()
 
@@ -449,7 +472,8 @@ class FlowState:
         assert isinstance(policy, AppendRound)
         rounds = self.rounds.setdefault(stage.id, [])
         rnd = policy.template(len(rounds) + 2)            # round 1 is the original work
-        at = next(i for i, c in enumerate(stage.children) if c.id == policy.before)
+        at = (len(stage.children) if policy.before is None
+              else next(i for i, c in enumerate(stage.children) if c.id == policy.before))
         stage.children.insert(at, rnd)
         self._register(rnd, stage)
         rounds.append(rnd.id)

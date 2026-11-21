@@ -287,13 +287,20 @@ class Flow:
         return (ch.status, tuple((k, n.status, n.cycle) for k, n in self.ce.nodes.items()),
                 tuple((k, r.status, r.sandbox_deleted) for k, r in self.ce.runs.items()))
 
+    def nid(self, node: str) -> str:
+        """A base id (``plan``, ``H-2``) means the current fix round's node; ``plan@2`` is
+        that round's."""
+        cur = self.ce.current(node) if "@" not in node else None
+        return cur.id if cur else node
+
     def status(self, node: str | None = None):
         if node:
-            return self.ce.nodes[node].status
+            return self.ce.nodes[self.nid(node)].status
         return {k: n.status for k, n in self.ce.nodes.items()}
 
     def run(self, node: str, role: str | None = None) -> Run:
         """The live run of ``node`` (for ``role``)."""
+        node = self.nid(node)
         live = [r for r in self.ce.runs.values() if r.node_id == node and r.status in LIVE_RUN
                 and (role is None or r.role == role)]
         assert len(live) == 1, f"expected one live run of {node}/{role}; got {live}"
@@ -306,6 +313,7 @@ class Flow:
                 and "/payload/" in a[1]]
 
     def runs(self, node: str, role: str | None = None) -> list[Run]:
+        node = self.nid(node)
         return [r for r in self.ce.runs.values() if r.node_id == node
                 and (role is None or r.role == role)]
 
@@ -314,7 +322,7 @@ class Flow:
         await self.settle()
 
     async def human(self, node: str, action: str, approver: str = "miles", **payload):
-        res = await self.ce.human_action(node, action, approver, payload)
+        res = await self.ce.human_action(self.nid(node), action, approver, payload)
         await self.settle()
         return res
 
@@ -381,7 +389,7 @@ class Flow:
             spec = (f"# {req} delta (cycle {r.cycle})\n\n## Current behaviour\nmissing\n\n"
                     "## Change\nadd it\n\n## Acceptance criteria\n- works\n")
             atts.append(await self.write(r, f"plan/specs/{req}.md", spec))
-        if "H-E1" in self.ce.nodes:
+        if self.cfg.environment is not None:
             atts.append(self.ce.latest_att("plan/environment.json") if keep_environment else
                         await self.write(r, "plan/environment.json", environment or ENVIRONMENT))
         return await self.report(r, atts)
@@ -389,7 +397,7 @@ class Flow:
     async def critique(self, verdict: str = "PASS"):
         r = self.run("plan", "critic")
         docs = ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json") + (
-            ("plan/environment.json",) if "H-E1" in self.ce.nodes else ())
+            ("plan/environment.json",) if self.cfg.environment is not None else ())
         plan = [self.ce.latest_att(p) for p in docs]
         findings = [] if verdict == "PASS" else [{
             "severity": "WARNING", "confidence": "HIGH", "title": "spec too thin",
@@ -439,21 +447,25 @@ class Flow:
 
     # ------------------------------------------------------------------ whole stages
     async def to_h2(self, tier: str | None = None, **plan_kw) -> None:
-        """Intake, H-1 (optionally at ``tier``), plan and a passing critique (R2: and oracle)."""
+        """Intake, H-1 (optionally at ``tier``), plan, a passing critique, H-E1 (approve the plan;
+        provisioning follows) and, R2+, the oracle."""
         await self.intake()
         await self.human("H-1", "accept", **({"tier": tier} if tier else {}))
         await self.plan(**plan_kw)
         await self.critique("PASS")
-        if "H-E1" in self.ce.nodes:
-            await self.human("H-E1", "approve")
+        await self.human("H-E1", "approve")
+        assert self.status("H-E1") == "ACCEPTED", self.status()
+        if "provision" in self.ce.nodes:
             assert self.status("provision") == "ACCEPTED", self.status()
         if "oracle" in self.ce.nodes:
             await self.oracle()
 
     async def to_build(self, tier: str | None = None, **plan_kw) -> None:
+        """To the build: H-2 (approve the oracle) where there is one."""
         await self.to_h2(tier, **plan_kw)
-        await self.human("H-2", "approve")
-        assert self.status("H-2") == "ACCEPTED", self.status()
+        if "H-2" in self.ce.nodes:
+            await self.human("H-2", "approve")
+            assert self.status("H-2") == "ACCEPTED", self.status()
 
 
 def scenario(**limits):

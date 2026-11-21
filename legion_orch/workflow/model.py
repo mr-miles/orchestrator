@@ -25,7 +25,6 @@ class NodeKind(StrEnum):
     BUILD = "build"
     INTEGRATION = "integration"
     RELEASE = "release"
-    SHIP = "ship"
     HUMAN = "human"
     RETROSPECTIVE = "retrospective"      # on demand, once the change has ended
 
@@ -152,9 +151,9 @@ class Resume(StrEnum):
 
 
 # Short aliases used throughout the engine (members compare and serialise as their strings).
-INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, SHIP, HUMAN = (
+INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, HUMAN = (
     NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
-    NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.SHIP, NodeKind.HUMAN)
+    NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.HUMAN)
 PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKind.PREFLIGHT
 H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
 H_ENV = "H-E1"                                              # approve the sandbox environment

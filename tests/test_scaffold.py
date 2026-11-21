@@ -102,14 +102,17 @@ async def test_the_scaffold_is_built_before_the_oracle_and_h2(f: Flow):
     assert "## Blank repository" in f.run("plan", "critic").template_vars["scaffold"]
     await f.critique("PASS")
     s, oracle, h2 = (f.ce.nodes[n] for n in ("build:T1", "oracle", "H-2"))
-    assert s.depends_on == ["plan"] and "build:T1" in oracle.depends_on and "build:T1" in h2.depends_on
-    assert f.ce.nodes["build:T2"].depends_on == ["H-2", "build:T1"]
-    assert list(f.ce.nodes).index("build:T1") == list(f.ce.nodes).index("plan") + 1
-    # released by the critique: no approval yet (G-B1 does not apply), and not a "first build"
+    order = list(f.ce.nodes)        # the scaffold opens the oracle stage, T2 the delivery
+    assert order.index("H-E1") < order.index("build:T1") < order.index("oracle") \
+        < order.index("H-2") < order.index("build:T2")
+    assert s.status == PENDING
+    await f.human("H-E1", "approve")
+    # built once the plan is approved: no oracle approval yet (G-B1 does not apply), and not a
+    # "first build"
     assert s.status == RUNNING and oracle.status == PENDING and h2.status == PENDING
     assert not ch.approvals.get("oracle") and ch.first_build_at is None
     impl = f.run("build:T1", "implementer")
-    assert f.ce.latest_att("plan/taskgraph.json") in impl.context_refs   # the critiqued plan
+    assert f.ce.latest_att("plan/taskgraph.json") in impl.context_refs   # the approved plan
     await f.implement("T1", files={"Makefile": "test:\n\ttrue\n"})
     await f.review("T1")
     assert s.status == ACCEPTED and ch.integration_head != ch.base_sha
@@ -139,11 +142,12 @@ async def test_at_r1_the_scaffold_still_precedes_h2(f: Flow):
     assert f.ce.change.tier == "R1" and "oracle" not in f.ce.nodes
     await f.plan(tasks=PLAN)
     await f.critique("PASS")
-    assert f.status("build:T1") == RUNNING and f.status("H-2") == PENDING
+    await f.human("H-E1", "approve")
+    assert f.status("build:T1") == RUNNING and f.status("build:T2") == PENDING
+    assert "H-2" not in f.ce.nodes                 # R1: no oracle to approve (automatic gate)
     await f.implement("T1")
     await f.review("T1")
-    assert f.status("H-2") == AWAITING_HUMAN and f.status("build:T2") == PENDING
-    await f.human("H-2", "approve")
+    assert f.status("build:T2") == RUNNING
     await f.implement("T2")
     await f.review("T2")
     assert f.ce.change.status == ChangeStatus.READY, f.ce.change.ship
@@ -155,7 +159,9 @@ async def test_with_the_environment_stage_the_scaffold_follows_provisioning(f: F
     await f.human("H-1", "accept", tier="R2")
     await f.plan(tasks=PLAN)
     await f.critique("PASS")
-    assert f.ce.nodes["build:T1"].depends_on == ["provision"] and f.status("build:T1") == PENDING
+    order = list(f.ce.nodes)
+    assert order.index("build:T1") == order.index("provision") + 1
+    assert f.status("build:T1") == PENDING
     await f.human("H-E1", "approve")
     assert f.status("provision") == ACCEPTED and f.status("build:T1") == RUNNING
 
@@ -166,17 +172,18 @@ async def test_restart_plan_drops_the_scaffold_and_builds_it_again(f: Flow):
     await f.human("H-1", "accept", tier="R2")
     await f.plan(tasks=PLAN)
     await f.critique("PASS")
+    await f.human("H-E1", "approve")
     await f.implement("T1")
     await f.review("T1")
     await f.oracle()
     ch = f.ce.change
-    await f.human("H-2", "revise", feedback="use a different test runner")
-    assert not f.ce.build_nodes() and ch.integration_head == ch.base_sha
+    await f.human("H-2", "restart", feedback="use a different test runner")
+    assert f.status("build:T1") == PENDING and ch.integration_head == ch.base_sha
     renamed = dict(SCAFFOLD, id="T3", title="scaffold with the other runner")
     await f.plan(tasks=[renamed, dict(GREET, depends_on=["T3"])])
     await f.critique("PASS")
-    assert "build:T1" not in f.ce.nodes["oracle"].depends_on
-    assert "build:T3" in f.ce.nodes["oracle"].depends_on and "build:T3" in f.ce.nodes["H-2"].depends_on
+    assert "build:T1" not in f.ce.nodes and "build:T3" in f.ce.nodes
+    await f.human("H-E1", "approve")
     assert f.status("build:T3") == RUNNING and f.status("oracle") == PENDING
 
 
@@ -226,7 +233,6 @@ async def test_in_a_blank_repository_the_setup_starts_with_the_scaffold(f: Flow)
     ver = f.ce.nodes["build:T1"].verification["1"].results
     assert (ver[0].command, ver[0].setup) == ("mise run setup", True)    # at the candidate
     await f.review("T1")
-    assert f.status("build:T1") == ACCEPTED
-    await f.human("H-2", "approve")
+    assert f.status("build:T1") == ACCEPTED       # R1: on to the tasks (no oracle to approve)
     later = f.run("build:T2", "implementer")
     assert f.steps(later)[-1] == ["mise-setup.sh", f.ce.change.setup_pin.blob]

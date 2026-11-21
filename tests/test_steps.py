@@ -1,12 +1,20 @@
-"""Step types (engine/steps.py): what each kind of node is made of – its agent, judges and
-verification – and what a phase's result means for it."""
+"""Step types (engine/steps.py): each kind of node as a composition – an agent, a sandbox plan,
+phases configured by policies, waits – and the StepRunner that moves a node through its phases."""
 from __future__ import annotations
 
-import pytest
 from engine_harness import Flow, scenario
 
-from legion_orch.workflow.engine.phases import Escalate, Ok, Rework
-from legion_orch.workflow.engine.steps import STEP_TYPES, AgentStep, step_for
+from legion_orch.workflow.engine.phases import Panel, Verify
+from legion_orch.workflow.engine.sandbox_plan import JUDGE
+from legion_orch.workflow.engine.steps import (
+    STEP_TYPES,
+    EnvironmentQuiescent,
+    NoOverlap,
+    OracleAccepted,
+    ReflectionsDone,
+    sandbox_plan,
+    step_for,
+)
 from legion_orch.workflow.model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -18,61 +26,96 @@ from legion_orch.workflow.model import (
     MERGING,
     ORACLE,
     PENDING,
+    PLAN,
     PREFLIGHT,
+    PROVISION,
+    READY,
     REVIEWING,
     REWORK,
     ROLE_FOR_KIND,
+    RUNNING,
     VERIFYING,
     CommandResult,
-    Feedback,
     Node,
     NodeKind,
     Oracle,
     Resume,
     Verification,
 )
-from legion_orch.workflow.roles import handler_for
 
 ORACLE_DOC = Oracle(acceptance_commands=["bun test acc"], integration_commands=["bun install"])
+CAND = "c" * 40
 
 
-# ---------------------------------------------------------------------------- composition
-def test_every_kind_has_a_step_type_and_agent_steps_are_the_roles_kinds():
+# ---------------------------------------------------------------------------- the declarations
+def shape(kind: NodeKind) -> list[str]:
+    return [type(p).__name__ for p in STEP_TYPES[kind].phases]
+
+
+def test_every_kind_is_a_list_of_phases():
     assert set(STEP_TYPES) == set(NodeKind)
-    agents = {k: s.role for k, s in STEP_TYPES.items() if isinstance(s, AgentStep)}
-    assert agents == ROLE_FOR_KIND
-    assert all(s.role is None for s in STEP_TYPES.values() if not isinstance(s, AgentStep))
+    assert {k: shape(k) for k in STEP_TYPES} == {
+        NodeKind.INTAKE: ["AgentRun"],
+        PLAN: ["AgentRun", "Panel"],
+        PROVISION: ["BuildImages"],
+        ORACLE: ["AgentRun"],
+        PREFLIGHT: ["Verify"],
+        BASELINE: ["AgentRun", "Verify"],
+        BUILD: ["AgentRun", "Verify", "Panel", "Merge"],
+        INTEGRATION: ["AgentRun", "Verify"],
+        NodeKind.RELEASE: ["AgentRun"],
+        NodeKind.RETROSPECTIVE: ["AgentRun"],
+        HUMAN: ["Approval"],
+    }
 
 
-def test_only_the_retrospective_runs_after_the_end_and_never_judges_the_head():
+def test_agent_steps_are_the_roles_kinds_and_only_they_have_a_sandbox_plan():
+    assert {k: s.role for k, s in STEP_TYPES.items() if s.role} == ROLE_FOR_KIND
+    assert all((s.role is None) == (s.sandbox is None) for s in STEP_TYPES.values())
+    for s in STEP_TYPES.values():
+        if s.role:
+            assert sandbox_plan(s.role) is s.sandbox
+    assert sandbox_plan("reviewer") is JUDGE and sandbox_plan("critic") is JUDGE
+
+
+def test_verifications_differ_only_in_their_policies():
+    verify = {k: s.phase(Verify) for k, s in STEP_TYPES.items() if s.phase(Verify)}
+    assert set(verify) == {PREFLIGHT, BASELINE, BUILD, INTEGRATION}
+    assert {k for k, v in verify.items() if v.expect_failures} == {PREFLIGHT, BASELINE}
+    assert {k for k, v in verify.items() if v.at_head} == {PREFLIGHT}
+    assert {k for k, v in verify.items() if v.on_rework} == {INTEGRATION}
+    assert {k for k, v in verify.items() if v.on_setup_failed} == {PREFLIGHT}
+    assert {k for k, v in verify.items() if v.notes} == {PREFLIGHT, BASELINE}
+
+
+def test_waits_and_resume_points():
+    assert {k: type(s.promote_when[0]) for k, s in STEP_TYPES.items() if s.promote_when} == {
+        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
+    assert {k: type(s.dispatch_when[0]) for k, s in STEP_TYPES.items() if s.dispatch_when} == {
+        BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone}
     assert [k for k, s in STEP_TYPES.items() if s.runs_after_end] == [NodeKind.RETROSPECTIVE]
-    for kind, s in STEP_TYPES.items():
-        assert s.judges_head == (s.role is not None and not s.runs_after_end
-                                 and handler_for(s.role).judges_head), kind
-
-
-def test_a_failed_build_run_resumes_in_rework_others_start_again():
     assert {k for k, s in STEP_TYPES.items() if s.rework_resume == Resume.REWORK} == {BUILD}
+    assert {k for k, s in STEP_TYPES.items() if s.judges_head} == {BASELINE, INTEGRATION,
+                                                                    NodeKind.RELEASE}
 
 
 @scenario()
 async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Flow):
     f.ce.change.panel = ["reviewer", "security"]
     judges = {k: s.judges(f.ce) for k, s in STEP_TYPES.items() if s.judges(f.ce)}
-    assert judges == {NodeKind.PLAN: ("critic",), BUILD: ("reviewer", "security")}
+    assert judges == {PLAN: ("critic",), BUILD: ("reviewer", "security")}
+    assert not STEP_TYPES[PLAN].phase(Panel).decides        # the critic's handler decides
 
 
 @scenario()
-async def test_each_verified_kind_runs_its_commands(f: Flow):
+async def test_each_verification_resolves_its_commands(f: Flow):
     f.ce.change.oracle = ORACLE_DOC
-    task = node(f, BUILD)
-    phases = {k: STEP_TYPES[k].verify(f.ce, task) for k in (BASELINE, PREFLIGHT, INTEGRATION)}
-    assert phases[BASELINE].commands == ("bun test acc", "bun install")
-    assert phases[PREFLIGHT].commands == ("bun test acc",)
-    assert phases[INTEGRATION].commands[:2] == ("bun test acc", "bun install")
-    assert {k for k, p in phases.items() if p.expect_failures} == {BASELINE, PREFLIGHT}
-    with pytest.raises(NotImplementedError):
-        STEP_TYPES[ORACLE].verify(f.ce, task)
+    n = Node(id="x", kind=BASELINE, title="x")
+    cmds = {k: STEP_TYPES[k].phase(Verify).commands_for(f.ce, n)
+            for k in (BASELINE, PREFLIGHT, INTEGRATION)}
+    assert cmds[BASELINE] == ("bun test acc", "bun install")
+    assert cmds[PREFLIGHT] == ("bun test acc",)
+    assert cmds[INTEGRATION][:2] == ("bun test acc", "bun install")
 
 
 def test_verification_is_recorded_per_task_cycle_or_per_node():
@@ -80,96 +123,163 @@ def test_verification_is_recorded_per_task_cycle_or_per_node():
         id = "T3"
     build = Node(id="T3", kind=BUILD, title="t", cycle=2)
     build.task = T()  # type: ignore[assignment]
-    assert step_for(build).verification_record(build) == ("tasks/T3/verification.json", "2")
+    assert Verify.record(build) == ("tasks/T3/verification.json", "2")
     for kind in (BASELINE, PREFLIGHT, INTEGRATION):
-        n = Node(id=f"{kind}-node", kind=kind, title="x")
-        path, key = step_for(n).verification_record(n)
+        path, key = Verify.record(Node(id=f"{kind}-node", kind=kind, title="x"))
         assert key == str(kind) and path.startswith("control/verification/")
 
 
-# ---------------------------------------------------------------------------- results
+def test_the_current_phase_follows_the_node_status():
+    build = STEP_TYPES[BUILD]
+    phase = {s: build.current(Node(id="T", kind=BUILD, title="t", status=s))
+             for s in (PENDING, READY, REWORK, RUNNING, VERIFYING, REVIEWING, MERGING, ACCEPTED,
+                       ESCALATED)}
+    assert {s: type(p).__name__ if p else None for s, p in phase.items()} == {
+        PENDING: None, READY: "AgentRun", REWORK: "AgentRun", RUNNING: "AgentRun",
+        VERIFYING: "Verify", REVIEWING: "Panel", MERGING: "Merge", ACCEPTED: None,
+        ESCALATED: None}
+
+
+# ---------------------------------------------------------------------------- the runner
 def node(f: Flow, kind: NodeKind, **kw) -> Node:
-    n = Node(**({"id": f"N-{kind}", "kind": kind, "title": "x", "status": VERIFYING,
-                 "candidate_sha": "c" * 40} | kw))
+    n = Node(**({"id": f"N-{kind}", "kind": kind, "title": "x", "status": RUNNING,
+                 "candidate_sha": CAND} | kw))
     f.ce.nodes[n.id] = n
     return n
 
 
-def ver(*rcs: int) -> Verification:
-    return Verification(sha="c" * 40, ok=not any(rcs),
-                        results=[CommandResult(command=f"cmd{i}", exit_code=rc)
-                                 for i, rc in enumerate(rcs)])
+def capture_spawns(f: Flow) -> list[str]:
+    spawned: list[str] = []
+
+    def spawn(coro):
+        spawned.append(coro.__qualname__)
+        coro.close()
+    f.ce.spawn = spawn
+    return spawned
+
+
+@scenario()
+async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f: Flow):
+    rt, n = f.ce._runner, node(f, BUILD)
+    f.ce.change.panel = ["reviewer"]
+    spawned = capture_spawns(f)
+    rt.step_done(n)
+    assert n.status == VERIFYING and spawned == ["Acceptance.verify_node"]
+    rt.step_done(n)
+    assert n.status == REVIEWING
+    rt.step_done(n)
+    assert n.status == MERGING and spawned[-1] == "Acceptance.merge_node"
+    rt.step_done(n)
+    assert n.status == ACCEPTED
+
+
+@scenario()
+async def test_an_empty_panel_is_passed_straight_to_the_merge(f: Flow):
+    rt, n = f.ce._runner, node(f, BUILD, status=VERIFYING)
+    f.ce.change.panel = []
+    capture_spawns(f)
+    rt.step_done(n)
+    assert n.status == MERGING
+
+
+@scenario()
+async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
+    rt, n = f.ce._runner, node(f, NodeKind.RELEASE)
+    rt.step_done(n)
+    assert n.status == ACCEPTED
+
+
+@scenario()
+async def test_promotion_enters_the_first_phase(f: Flow):
+    rt = f.ce._runner
+    capture_spawns(f)
+    gate, pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (HUMAN, PREFLIGHT, BUILD))
+    for n in (gate, pre, task):
+        rt.promote(n)
+    assert gate.status == AWAITING_HUMAN
+    assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
+    assert task.status == READY
+
+
+@scenario()
+async def test_after_a_restart_only_controller_work_resumes(f: Flow):
+    rt = f.ce._runner
+    prov, agent = Node(id="p", kind=PROVISION, title="p", status=RUNNING), node(f, BUILD)
+    work = rt.resume(prov)
+    assert work is not None and work.__qualname__ == "Provisioner.provision"
+    work.close()
+    assert rt.resume(agent) is None
+
+
+@scenario()
+async def test_an_agent_step_dispatches_only_when_ready(f: Flow):
+    n = node(f, BUILD, status=RUNNING)
+    assert f.ce._runner.dispatch(n, 4) == []                 # its agent's run is live
+
+
+# ---------------------------------------------------------------------------- what results mean
+def ver(*rcs: int, setup: int | None = None) -> Verification:
+    results = ([CommandResult(command="mise run setup", exit_code=setup, output="boom",
+                              setup=True)] if setup is not None else [])
+    results += [CommandResult(command=f"cmd{i}", exit_code=rc) for i, rc in enumerate(rcs)]
+    return Verification(sha=CAND, ok=all(r.exit_code == 0 for r in results), results=results)
+
+
+def conclude(f: Flow, n: Node, res: Verification) -> None:
+    step_for(n).phase(Verify).conclude(f.ce._runner, n, res, "att")
 
 
 @scenario()
 async def test_a_failing_integration_escalates_instead_of_reworking(f: Flow):
-    n = node(f, INTEGRATION)
-    rework = Rework([Feedback(cycle=1, source="verification", text="x")], "verification")
-    step_for(n).verified(f.ce._acceptance, n, ver(1, 0, 2), rework, "att")
+    n = node(f, INTEGRATION, status=VERIFYING)
+    conclude(f, n, ver(1, 0, 2))
     assert n.status == ESCALATED and n.escalation.kind == "integration_failed"
     assert "2 oracle command(s) failed" in n.escalation.reason and n.cycle == 1
 
 
 @scenario()
-async def test_a_passing_task_goes_to_its_panel_or_straight_to_merge(f: Flow):
-    n = node(f, BUILD)
-    f.ce.change.panel = ["reviewer"]
-    step_for(n).verified(f.ce._acceptance, n, ver(0), Ok(), "att")
-    assert n.status == REVIEWING
-    n.status, f.ce.change.panel = VERIFYING, []
-    step_for(n).verified(f.ce._acceptance, n, ver(0), Ok(), "att")
-    assert n.status in (MERGING, ESCALATED)        # the merge runs in the background
-
-
-@scenario()
 async def test_a_task_that_fails_verification_is_reworked(f: Flow):
-    n = node(f, BUILD)
-    step_for(n).verified(f.ce._acceptance, n, ver(1), Rework([], "verification"), "att")
+    n = node(f, BUILD, status=VERIFYING)
+    conclude(f, n, ver(1))
     assert (n.status, n.cycle) == (REWORK, 2)
 
 
 @scenario()
-async def test_a_baseline_and_a_preflight_pass_with_expected_failures(f: Flow):
+async def test_a_baseline_and_a_preflight_pass_with_expected_failures_and_note_passes(f: Flow):
+    f.ce.change.oracle = ORACLE_DOC
     for kind in (BASELINE, PREFLIGHT):
-        n = node(f, kind)
-        step_for(n).verified(f.ce._acceptance, n, ver(1, 0), Ok(), "att")
+        n = node(f, kind, status=VERIFYING)
+        conclude(f, n, ver(1, 0))
         assert n.status == ACCEPTED, kind
+    timeline = "\n".join(f.ce._timeline)
+    assert "acceptance command `cmd1` already passes before any build" in timeline
 
 
 @scenario()
 async def test_a_preflight_setup_failure_goes_back_to_the_oracle(f: Flow):
     oracle = node(f, ORACLE, id=ORACLE, status=ACCEPTED)
-    n = node(f, PREFLIGHT)
-    res = Verification(sha="c" * 40, results=[
-        CommandResult(command="mise run setup", exit_code=1, output="boom", setup=True)])
-    esc = Escalate("setup_failed", "G-V3: ...", Resume.VERIFYING)
-    step_for(n).verified(f.ce._acceptance, n, res, esc, "att")
+    n = node(f, PREFLIGHT, status=VERIFYING)
+    conclude(f, n, ver(setup=1))
     assert (oracle.status, oracle.cycle, n.status) == (REWORK, 2, PENDING)
     assert "BLOCKER (preflight)" in oracle.feedback[-1].text
     # without a cycle left, a human decides
     n.status, oracle.cycle = VERIFYING, f.cfg.limits.review_max_cycles
-    step_for(n).verified(f.ce._acceptance, n, res, esc, "att")
+    conclude(f, n, ver(setup=1))
     assert n.status == ESCALATED and n.escalation.kind == "setup_failed"
 
 
-# ---------------------------------------------------------------------------- scheduling
 @scenario()
-async def test_a_human_gate_waits_for_a_human_and_a_preflight_verifies_the_head(f: Flow):
-    gate = Node(id="H-x", kind=HUMAN, title="x")
-    step_for(gate).promote(f.ce._scheduler, gate)
-    assert gate.status == AWAITING_HUMAN
-    f.ce.change.oracle = ORACLE_DOC
-    pre = Node(id="preflight-x", kind=PREFLIGHT, title="x")
-    f.ce.nodes[pre.id] = pre
-    async with f.ce.lock:
-        step_for(pre).promote(f.ce._scheduler, pre)
-        assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
+async def test_a_baseline_setup_failure_escalates(f: Flow):
+    n = node(f, BASELINE, status=VERIFYING)
+    conclude(f, n, ver(setup=1))
+    assert n.status == ESCALATED and n.escalation.kind == "setup_failed"
 
 
+# ---------------------------------------------------------------------------- waits
 @scenario()
 async def test_the_retrospective_waits_for_the_last_reflections(f: Flow):
     retro = Node(id="retro-x", kind=NodeKind.RETROSPECTIVE, title="x")
-    s = f.ce._scheduler
-    assert step_for(retro).may_dispatch(s, retro)
+    wait = STEP_TYPES[NodeKind.RETROSPECTIVE].dispatch_when[0]
+    assert wait.holds(f.ce._scheduler, retro)
     f.ce._sandboxes.reflector.pending.add("sb")
-    assert not step_for(retro).may_dispatch(s, retro)
+    assert not wait.holds(f.ce._scheduler, retro)

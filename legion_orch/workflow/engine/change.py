@@ -17,9 +17,6 @@ from __future__ import annotations
 
 from ...store import DocCheck, DocVersion
 from ..model import (
-    H_REQUIREMENTS,
-    HUMAN,
-    INTAKE,
     LIVE_RUN,
     MERGING,
     RUNNING,
@@ -40,10 +37,11 @@ from .phases import PhaseContext
 from .provision import Provisioner
 from .reports import Reports
 from .runs import RunLifecycle
+from .runtime import FlowRuntime
 from .sandboxes import Sandboxes
 from .schedule import Scheduler
 from .services import EngineHost, Services
-from .steps import step_for
+from .steps import StepRunner
 
 
 class ChangeEngine(ChangeCore):
@@ -68,11 +66,17 @@ class ChangeEngine(ChangeCore):
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
                                     self._acceptance, self._provisioner)
+        self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
+                                  self._provisioner, self._scheduler)
+        self._acceptance.runner = self._scheduler.runner = self._runner
+        self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
+        self._gates.flow = self._scheduler.flow = self._flow
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
+        self._flow.load()
         self.seed_attention()
 
     def start(self, goal: str, base: str, *, blank_repo: bool = False,
@@ -82,9 +86,7 @@ class ChangeEngine(ChangeCore):
         self.st.change = Change(id=self.cid, goal=goal, base_sha=base, integration_head=base,
                                 blank_repo=blank_repo, setup_pin=setup_pin)
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nBase: `{base}`\n")
-        self.add_node(Node(id=INTAKE, kind=INTAKE, title="Intake: requirements & risk"))
-        self.add_node(Node(id=H_REQUIREMENTS, kind=HUMAN, title="Accept requirements & tier",
-                           depends_on=[INTAKE]))
+        self._flow.start()
         self.event("change", f"change {self.cid} started at {base[:12]}"
                    + (" (a blank repository: the plan starts with a scaffold task)" if blank_repo
                       else ""))
@@ -102,8 +104,10 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.verify_node(node.id))
             elif node.status == MERGING:
                 self.spawn(self._acceptance.merge_node(node.id))
-            elif node.status == RUNNING and (work := step_for(node).controller_work(self._scheduler)):
-                self.spawn(work)                    # provisioning, the ship check
+            elif node.status == RUNNING and (work := self._runner.resume(node)):
+                self.spawn(work)                    # provisioning
+        for gate in self._flow.evaluating():
+            self.spawn(self._flow.evaluate(gate))   # a gate's preconditions
         self._gates.resume_retries()
         self.save()
 
@@ -149,17 +153,20 @@ class ChangeEngine(ChangeCore):
     def delete_sandbox_later(self, name: str) -> None:
         self._sandboxes.delete_later(name)
 
-    def start_verification(self, node_id: str) -> None:
-        self._acceptance.start_verification(node_id)
+    def step_done(self, node: Node) -> None:
+        self._runner.step_done(node)
 
     def panel_complete(self, node: Node) -> None:
         self._acceptance.panel_complete(node)
 
-    def materialize_builds(self, taskgraph: dict) -> None:
-        self._graph.materialize_builds(taskgraph)
+    def define_tasks(self, plan: Node) -> list[str]:
+        return self._flow.define_tasks(plan)
 
-    def start_round(self, n: int) -> list[str]:
-        return self._graph.start_round(n)
+    # ------------------------------------------------------------------ the workflow
+    def sync(self) -> None:
+        self._flow.sync()
 
-    def reset_environment(self) -> None:
-        self._graph.reset_environment()
+    @property
+    def workflow(self) -> FlowRuntime:
+        """The stage rules' state: gates, actions, what waits (read by the API)."""
+        return self._flow

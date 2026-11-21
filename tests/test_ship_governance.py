@@ -16,6 +16,11 @@ SAT, UNSAT, UNEVAL = GateStatus.SATISFIED, GateStatus.UNSATISFIED, GateStatus.UN
 REASON = "reviewed by hand against the production incident log"
 
 
+def not_ready(f: Flow) -> bool:
+    """H-3 waits: its preconditions (the ship gates) are not all met; the change is still on."""
+    return f.ce.change.status == ChangeStatus.ACTIVE and f.status("H-3") == "AWAITING_HUMAN"
+
+
 async def ready_r1(f: Flow) -> None:
     await f.to_build()
     await f.implement()
@@ -42,10 +47,8 @@ async def test_gates_are_unevaluable_until_the_work_exists(f: Flow):
 async def test_a_changed_task_graph_makes_the_contract_stale(f: Flow):
     await ready_r1(f)
     f.ce.write_record("plan/taskgraph.json", {"tasks": TASKS + [TASKS[0] | {"id": "T9"}]})
-    await f.human("ship", "recheck")
-    g = f.ce.change.ship.gates["task_contract"]
+    g = (await evaluate(f.ce)).gates["task_contract"]
     assert g.status == UNSAT and "stale" in g.detail
-    assert f.ce.change.status == ChangeStatus.NOT_READY
 
 
 @scenario()
@@ -80,15 +83,15 @@ async def test_added_gate_must_be_satisfied(f: Flow):
     await f.implement()
     await f.review()
     g = f.ce.change.ship.gates["security_or_e2e_evaluator"]
-    assert g.added and g.status == UNEVAL and f.ce.change.status == ChangeStatus.NOT_READY
+    assert g.added and g.status == UNEVAL and not_ready(f)
     src = f.ce.latest_att("tasks/T1/evidence/cycle-1.md")
     await f.change_action("attest", kind="security-evaluation", verdict="fail", sources=[src])
-    await f.human("ship", "recheck")
+    await f.human("H-3", "recheck")
     assert f.ce.change.ship.gates["security_or_e2e_evaluator"].status == UNSAT
     res = await f.change_action("attest", approver="ana", kind="security-evaluation", verdict="pass",
                                 sources=[src])
     assert any("superseded" in w for w in res.warnings)
-    await f.human("ship", "recheck")
+    await f.human("H-3", "recheck")
     assert f.ce.change.status == ChangeStatus.READY
 
 
@@ -126,7 +129,10 @@ async def test_override_validation(f: Flow):
 # ====================================================================== attestations
 @scenario()
 async def test_attestation_validation(f: Flow):
-    await f.to_h2()                                     # build tasks exist, none started
+    await f.intake()                                    # build tasks exist, none started
+    await f.human("H-1", "accept")
+    await f.plan()
+    await f.critique()
     src = f.ce.latest_att("plan/spec.md")
     for payload, msg in [({"kind": "vibes", "verdict": "pass"}, "unknown attestation kind"),
                          ({"kind": "security-evaluation", "verdict": "maybe"}, "verdict must be"),
@@ -202,12 +208,12 @@ async def test_surface_drift_blocks_ship_until_reaffirmed(f: Flow):
     await f.integration()
     await f.human("H-3", "accept")
     g = f.ce.change.ship.gates["integration_or_real_interface_checks"]
-    assert g.status == UNSAT and "G-SF1" in g.detail and f.ce.change.status == ChangeStatus.NOT_READY
+    assert g.status == UNSAT and "G-SF1" in g.detail and not_ready(f)
     with pytest.raises(WorkflowError, match="unknown surface"):
         await f.change_action("approve_surface", surface="nope", reason=REASON)
     res = await f.change_action("approve_surface", surface="files", reason=REASON)
     assert res.surfaces == ["files"]
-    await f.human("ship", "recheck")
+    await f.human("H-3", "recheck")
     assert f.ce.change.status == ChangeStatus.READY, f.ce.change.ship.gates
 
 
@@ -253,7 +259,7 @@ async def test_higher_tier_gates_added_to_an_r1_change(f: Flow):
     await f.implement()
     await f.review()
     g = f.ce.change.ship.gates
-    assert f.ce.change.status == ChangeStatus.NOT_READY
+    assert not_ready(f)
     for gate in ("independent_baseline", "release_observation_plan", "rollback_or_forward_fix_evidence",
                  "protected_oracle", "protected_acceptance_tests", "integration_or_real_interface_checks",
                  "explicit_human_approval"):
@@ -269,7 +275,7 @@ async def test_higher_tier_gates_added_to_an_r1_change(f: Flow):
     with pytest.raises(WorkflowError, match="covers must list at least one task"):
         await attest("rollback-evidence", "pass", covers=[])  # not "everything"
     await attest("architecture-review", "fail")
-    await f.human("ship", "recheck")
+    await f.human("H-3", "recheck")
     g = f.ce.change.ship.gates
     assert g["independent_baseline"].status == UNSAT and "after execution" in g["independent_baseline"].detail
     assert g["release_observation_plan"].status == SAT and "waived" in g["release_observation_plan"].detail
@@ -279,7 +285,7 @@ async def test_higher_tier_gates_added_to_an_r1_change(f: Flow):
     assert arch.status == UNSAT and "attested fail" in arch.detail
     await attest("rollback-evidence", "pass")
     await attest("architecture-review", "pass")
-    await f.human("ship", "recheck")
+    await f.human("H-3", "recheck")
     g = f.ce.change.ship.gates
     rollback = g["rollback_or_forward_fix_evidence"]
     assert rollback.status == SAT and rollback.human_judgement
@@ -425,16 +431,16 @@ async def test_h3_attests_the_gates_only_a_human_can_satisfy_with_the_acceptance
     rows = {r.gate: r for r in governance.h3_attestations(f.ce)}
     assert rows["security_or_e2e_evaluator"].status == "attested"
     assert rows["security_or_e2e_evaluator"].kind == "e2e-evaluation"
-    # NOT_READY: the ship node shows it, and it needs you until a re-run finds the change READY
-    assert f.status("ship") == "FAILED" and f.ce.change.status == ChangeStatus.NOT_READY
+    # not ready: H-3 waits on its preconditions, and needs you until a recheck finds them met
+    assert not_ready(f)
     [item] = [i for i in attention.items(f.ce) if i.blocking]
-    assert item.kind == "not_ready" and item.node == "ship"
+    assert item.kind == "not_ready" and item.node == "H-3"
     assert item.detail == "rollback_or_forward_fix_evidence" and "1 gate not" in item.title
     assert not [i for i in attention.items(f.ce) if i.kind == "change_ended"]
     await f.change_action("attest", kind="rollback-evidence", verdict="pass",
                           sources=[f.ce.latest_att("integration/report.md")])
-    await f.human("ship", "recheck")
-    assert f.status("ship") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+    await f.human("H-3", "recheck")
+    assert f.status("H-3") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
     assert [i.kind for i in attention.items(f.ce)] == ["change_ended"]
     assert any("resolved" in e["message"] and "Not ready" in e["message"]
                for e in f.ce.timeline_events() if e["kind"] == "attention")

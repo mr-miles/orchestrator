@@ -1,5 +1,7 @@
-"""Fix rounds (WORKFLOW.md §5.10a): a late integration failure is fixed by new tasks planned on
-top of the integration head – plan (fix mode), critique, H-2, build, integration again."""
+"""Fix rounds (WORKFLOW.md §5.10a): a late integration failure sends Delivery back, and its policy
+appends a fix round – a Round stage whose nodes are suffixed ``@n``: plan (fix mode), critique,
+H-E1, the oracle again only if it changed, preflight, baseline, H-2, the new tasks – then
+integration runs again. (The harness resolves ``plan``, ``H-2`` … to the current round's node.)"""
 from __future__ import annotations
 
 import pytest
@@ -58,8 +60,10 @@ async def test_a_fix_round_adds_tasks_on_top_of_the_integration_head(f: Flow):
     assert ch.round == 2 and (rnd.number, rnd.head, rnd.approver) == (2, head, "miles")
     assert integ.verification["integration"].attestation in rnd.failure
     assert f.ce.latest("control/rounds/2.json") == 1
-    assert integ.status == PENDING and integ.cycle == 2 and "H-2" in integ.depends_on
-    assert f.status("H-2") == PENDING and f.status("build:T1") == ACCEPTED
+    assert integ.status == PENDING and integ.escalation is None
+    assert "plan@2" in f.ce.nodes and f.ce.nodes["plan@2"].round == 2
+    assert f.status("H-2") == PENDING and f.ce.nodes["H-2"].status == ACCEPTED   # round 1's stands
+    assert f.status("build:T1") == ACCEPTED
     # a fresh planner, told about the round
     plan = f.run("plan")
     note = plan.template_vars["fix_round"]
@@ -74,11 +78,12 @@ async def test_a_fix_round_adds_tasks_on_top_of_the_integration_head(f: Flow):
     await f.critique("PASS")
     t2 = f.ce.nodes["build:T2"]
     assert t2.round == 2 and t2.status == PENDING and f.ce.nodes["build:T1"].round == 1
-    assert "build:T2" in integ.depends_on
-    assert f.status("oracle") == ACCEPTED                     # unchanged: it stands
-    assert f.status("H-2") == AWAITING_HUMAN
+    assert f.status("H-E1") == AWAITING_HUMAN                 # the round's plan is approved
     h2 = {s.subject: s.status for s in governance.h2_status(f.ce)}
     assert h2["plan"] == ApprovalState.STALE and h2["oracle"] == ApprovalState.APPROVED
+    await f.human("H-E1", "approve")
+    assert f.status("oracle") == ACCEPTED                     # unchanged: it stands
+    assert f.status("H-2") == AWAITING_HUMAN
     await f.human("H-2", "approve")
     impl = f.run("build:T2", "implementer")
     assert impl.base_sha == head and rnd.first_build_at
@@ -111,6 +116,7 @@ async def test_the_round_must_append_tasks_and_the_round_budget_is_kept(f: Flow)
             assert any(e in v for v in out.violations), (e, out.violations)
     assert f.run("plan").id == r.id and (await f.plan(tasks=TASKS + [T2])).accepted
     await f.critique("PASS")
+    await f.human("H-E1", "approve")
     await f.human("H-2", "approve")
     await f.implement("T2")
     await f.review("T2")
@@ -134,19 +140,21 @@ async def test_revise_sends_the_round_back_and_restart_restarts_the_plan(f: Flow
     await f.plan(tasks=TASKS + [T2])
     await f.critique("PASS")
     assert "build:T2" in f.ce.nodes
-    res = await f.human("H-2", "revise", feedback="T2 must also fix the docs")
-    assert "goes back to the planner" in res.note
-    assert "build:T2" not in f.ce.nodes and "build:T2" not in f.ce.nodes["integration"].depends_on
-    plan = f.ce.nodes["plan"]
-    assert plan.status == RUNNING and plan.round == 2 and f.ce.change.round == 2
+    await f.human("H-E1", "revise", feedback="T2 must also fix the docs")
+    plan = f.ce.nodes["plan@2"]                        # the round's design starts over
+    assert plan.status == RUNNING and plan.cycle == 2 and f.ce.change.round == 2
+    assert f.status("build:T2") == PENDING and f.status("build:T1") == ACCEPTED
     assert "T2 must also fix the docs" in f.run("plan").template_vars["feedback"]
     await f.plan(tasks=TASKS + [T2])
     await f.critique("PASS")
-    assert f.status("H-2") == AWAITING_HUMAN
-    await f.human("H-2", "restart", feedback="start again from the requirements")
+    assert f.status("H-E1") == AWAITING_HUMAN
+    assert "send_back:stage:plan" in f.ce.workflow.actions("H-E1@2")
+    await f.human("H-E1", "send_back", stage="plan", feedback="start again from the requirements")
     ch = f.ce.change
-    assert ch.round == 1 and ch.rounds == [] and plan.round == 1
-    assert f.ce.build_nodes() == [] and ch.integration_head == ch.base_sha and ch.oracle_sha is None
+    assert ch.round == 1 and ch.rounds == [] and "plan@2" not in f.ce.nodes
+    assert f.status("plan") == RUNNING and f.ce.nodes["plan"].round == 1
+    assert [b.id for b in f.ce.build_nodes()] == ["build:T1"] and f.status("build:T1") == PENDING
+    assert ch.integration_head == ch.base_sha and ch.oracle_sha is None
 
 
 @scenario()
@@ -157,14 +165,16 @@ async def test_a_revised_oracle_runs_again_from_the_integration_head(f: Flow):
         {"id": "AC-2", "requirement": "REQ-1", "text": "greet.txt ends with a newline"}])
     assert (await f.plan(tasks=TASKS + [T2], oracle=oracle)).accepted
     await f.critique("PASS")
-    node = f.ce.nodes["oracle"]
-    assert node.status == RUNNING and node.cycle == 2
+    await f.human("H-E1", "approve")
+    node = f.ce.nodes["oracle@2"]                      # changed: the round's oracle runs
+    assert node.status == RUNNING
     run = f.run("oracle")
-    assert run.base_sha == head and run.branch.endswith("/oracle-r2")
+    assert run.base_sha == head and run.branch.endswith("-r2")
     await f.oracle({"tests/acceptance/test_greet.sh":
                     "grep -q hello src/greet.txt\ngrep -c '' src/greet.txt\n"})
     assert node.status == ACCEPTED and f.ce.change.oracle_sha == node.accepted_sha
     assert await f.ctl.git.is_ancestor(head, f.ce.change.integration_head)
+    assert f.status("H-2") == AWAITING_HUMAN
     h2 = {s.subject: s.status for s in governance.h2_status(f.ce)}
     assert h2["oracle"] == ApprovalState.STALE
     await f.human("H-2", "approve")
@@ -200,8 +210,9 @@ async def test_r3_reruns_the_baseline_and_needs_a_new_attestation(f: Flow):
     await f.human("integration", "plan_fix")
     await f.plan(tasks=TASKS + [T2])
     await f.critique("PASS")
-    base = f.ce.nodes["baseline"]
-    assert base.cycle == 2 and base.status == RUNNING
+    await f.human("H-E1", "approve")
+    base = f.ce.nodes["baseline@2"]                    # the round's baseline, at its head
+    assert base.status == RUNNING
     await _baseline(f)
     assert base.status == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
     row = next(s for s in views.h2_rows(f.ce) if s["subject"] == "independent-baseline")
@@ -220,9 +231,11 @@ async def test_a_change_in_a_fix_round_is_rebuilt_from_the_store(f: Flow):
     ctl2.load()
     ce2 = ctl2.changes[f.ce.cid]
     assert ce2.change.round == 2 and ce2.change.rounds[0].comment == "why"
-    assert ce2.nodes["build:T2"].round == 2 and ce2.nodes["plan"].round == 2
-    assert ce2.nodes["plan"].round_start_cycle == f.ce.nodes["plan"].round_start_cycle
-    assert ce2.nodes["H-2"].status == AWAITING_HUMAN and REWORK != ce2.nodes["plan"].status
+    assert ce2.nodes["build:T2"].round == 2 and ce2.nodes["plan@2"].round == 2
+    assert ce2.nodes["H-E1@2"].status == AWAITING_HUMAN and REWORK != ce2.nodes["plan@2"].status
+    # the workflow is rebuilt from its record: the same state, the same actions
+    assert ce2.workflow.to_json() == f.ce.workflow.to_json()
+    assert ce2.workflow.actions("H-E1@2") == f.ce.workflow.actions("H-E1@2")
 
 
 @scenario(environment={})
@@ -230,7 +243,9 @@ async def test_the_environment_stands_unless_the_round_changes_it(f: Flow):
     await _to_round(f)
     assert (await f.plan(tasks=TASKS + [T2], keep_environment=True)).accepted
     await f.critique("PASS")
-    assert f.status("H-E1") == ACCEPTED and f.status("provision") == ACCEPTED
+    build = f.ce.change.environment
+    await f.human("H-E1", "approve")
+    assert f.status("provision") == ACCEPTED and f.ce.change.environment == build
     assert f.status("H-2") == AWAITING_HUMAN
 
 
@@ -242,8 +257,11 @@ async def test_a_round_that_changes_the_environment_is_approved_and_provisioned_
     assert (await f.plan(tasks=TASKS + [T2], environment=changed)).accepted
     await f.critique("PASS")
     assert f.status("H-E1") == AWAITING_HUMAN and f.status("H-2") == PENDING
+    before = f.builder.built[:]
     await f.human("H-E1", "approve")
     assert f.status("provision") == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
+    assert f.ce.change.environment.spec != f.ce.nodes["provision"].id    # rebuilt from the round's
+    assert f.builder.recipes and len(f.builder.built) >= len(before)
 
 
 # ====================================================================== R3: baseline at H-2
@@ -256,14 +274,13 @@ async def test_r3_h2_lists_the_baseline_attestation_and_approves_it_in_one_step(
     assert row["subject"] == "independent-baseline" and row["status"] == "pending"
     assert row["sources"] == [f.ce.latest_att("baseline/report.md"), ver.attestation]
     assert [r["command"] for r in row["results"]] == [r.command for r in ver.results]
-    res = await f.human("H-2", "approve", subjects=["plan"])     # the baseline is still to decide
+    res = await f.human("H-2", "approve", subjects=["oracle"])   # the baseline is still to decide
     assert "independent-baseline" in res.pending and f.status("H-2") == AWAITING_HUMAN
     res = await f.human("H-2", "approve", subjects=["independent-baseline"])
-    assert res.approved == ["independent-baseline"] and "independent-baseline" not in res.pending
+    assert res.approved == ["independent-baseline"] and res.pending == []
     rec = f.ce.change.attestations["independent-baseline"]
     assert rec.verdict == "pass" and rec.sources == row["sources"]
-    res = await f.human("H-2", "approve")
-    assert res.pending == [] and f.status("H-2") == ACCEPTED
+    assert f.status("H-2") == ACCEPTED           # the oracle approved, its precondition met
 
 
 @scenario()
@@ -285,21 +302,23 @@ async def test_a_baseline_escalation_can_send_the_plan_back_to_the_planner(f: Fl
     await _baseline(f)
     base = f.ce.nodes["baseline"]
     assert base.status == ESCALATED and base.escalation.kind == "verify_unrunnable"
-    with pytest.raises(WorkflowError, match="feedback for the planner is required"):
+    with pytest.raises(WorkflowError, match="feedback is required"):
         await f.human("baseline", "revise_plan")
     plan_cycle, base_cycle = f.ce.nodes["plan"].cycle, base.cycle
     await f.human("baseline", "revise_plan", feedback="make every acceptance command self-contained")
     plan = f.ce.nodes["plan"]
     assert plan.cycle == plan_cycle + 1 and f.status("plan") == RUNNING
     assert any("self-contained" in fb.text for fb in plan.feedback)
-    assert base.escalation is None and base.status == PENDING and base.cycle == base_cycle + 1
+    assert base.escalation is None and base.status == PENDING
     assert f.status("oracle") == PENDING and f.ce.change.oracle_sha is None
     del f.runner.commands[cmd]
     await f.plan()
     await f.critique("PASS")
+    await f.human("H-E1", "approve")
     await f.oracle()
     await _baseline(f)
-    assert base.status == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
+    assert base.status == ACCEPTED and base.cycle == base_cycle + 1
+    assert f.status("H-2") == AWAITING_HUMAN
 
 
 @scenario()

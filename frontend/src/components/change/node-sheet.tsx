@@ -321,7 +321,7 @@ export function NodeSheet({
       {node.title} <StatusBadge status={node.status} />
     </>
   )
-  if (node?.kind === 'human' || node?.kind === 'ship')
+  if (node?.kind === 'human')
     return (
       <Dialog open onOpenChange={(o) => !o && onClose()}>
         <DialogContent className="flex max-h-[92vh] flex-col gap-0 p-0 sm:max-w-[min(80rem,calc(100%-4rem))]">

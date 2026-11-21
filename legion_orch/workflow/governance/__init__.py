@@ -12,6 +12,8 @@ Everything here works against :class:`~legion_orch.workflow.view.ChangeView` onl
 """
 from .approvals import (
     BASELINE_SUBJECT,
+    ENV_SPEC,
+    ENVIRONMENT_SUBJECT,
     BaselineSubject,
     SubjectStatus,
     approval_key,
@@ -21,8 +23,11 @@ from .approvals import (
     h2_status,
     h2_subjects,
     last_h2_approval_at,
+    oracle_subjects,
+    plan_subjects,
     stale_approvals,
     stale_environment,
+    subject_status,
 )
 from .attestations import (
     ATTESTATION_KINDS,
@@ -45,7 +50,8 @@ from .protected import (
 from .surfaces import pin_surfaces, surface_commands, surface_drift, surfaces
 
 __all__ = [
-    "BASELINE_SUBJECT", "BaselineSubject", "baseline_subject",
+    "BASELINE_SUBJECT", "BaselineSubject", "baseline_subject", "ENV_SPEC", "ENVIRONMENT_SUBJECT",
+    "oracle_subjects", "plan_subjects", "subject_status",
     "H3_GATES", "GateAttestation", "h3_attestations",
     "ATTESTATION_KINDS", "GovernanceError", "SubjectStatus", "all_approved_protected",
     "approval_key", "approve_subjects", "approved_protected_for", "baseline_warnings",

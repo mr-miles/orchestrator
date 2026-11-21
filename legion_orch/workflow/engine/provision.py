@@ -20,10 +20,10 @@ from ..environment import VERIFIER, EnvironmentSpec, Library, LibraryError
 from ..model import (
     ACCEPTED,
     H_ENV,
-    PROVISION,
     RUNNING,
     Change,
     EnvironmentBuild,
+    Node,
     Resume,
     RoleEnvironment,
 )
@@ -56,30 +56,30 @@ class Provisioner:
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
         self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
 
-    def _fail(self, reason: str, log: str = "") -> None:
+    def _fail(self, node: Node, reason: str, log: str = "") -> None:
         if log:
             self.c.write_record("control/logs/provision.log", log)
-        self.c.escalate(self.c.nodes[PROVISION], "provision_failed", f"G-PV1: {reason}"[:2000],
+        self.c.escalate(node, "provision_failed", f"G-PV1: {reason}"[:2000],
                         resume=Resume.READY, log_tail=log[-4000:] or None)
 
-    def _plan(self) -> ProvisionPlan | None:
+    def _plan(self, node: Node) -> ProvisionPlan | None:
         """Under the lock: the approved spec resolved into what to build, or None (escalated)."""
         c = self.c
         appr = c.change.approvals.get(H_ENV)
         version = appr.pins.get(c.p(ENV_SPEC)) if appr else None
         if version is None:
-            self._fail("no approved environment spec")
+            self._fail(node, "no approved environment spec")
             return None
         spec = EnvironmentSpec.model_validate(c.json_doc(ENV_SPEC, version))
         try:
             lib = Library.for_config(c.cfg, c.assets.schemas)
         except LibraryError as e:
-            self._fail(f"the environment library is invalid: {e}")
+            self._fail(node, f"the environment library is invalid: {e}")
             return None
         profiles, v = guards.environment(spec, lib, c.cfg, set(c.assets.roles),
                                          {n for n, r in c.assets.roles.items() if r.git != GitMode.NONE})
         if v:
-            self._fail("the approved spec no longer resolves against the library: " + "; ".join(v))
+            self._fail(node, "the approved spec no longer resolves against the library: " + "; ".join(v))
             return None
         env, sc = c.cfg.environment, c.cfg.sandbox
         plan = ProvisionPlan(spec=f"file:{c.p(ENV_SPEC)}@{version}")
@@ -95,18 +95,19 @@ class Provisioner:
                 driver_config=driver_config(c.cfg, prof.resources))
         return plan
 
-    async def provision(self) -> None:
+    async def provision(self, node_id: str) -> None:
+        """Provision for the node ``node_id`` (the plan's, or a fix round's)."""
         c = self.c
         async with c.lock:
-            node = c.nodes.get(PROVISION)
+            node = c.nodes.get(node_id)
             if node is None or node.status != RUNNING:
                 return
-            plan = self._plan()
+            plan = self._plan(node)
             if plan is None:
                 c.save()
                 return
             recipes = {r.tag: r for r in plan.recipes.values()}
-            c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}", PROVISION)
+            c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}", node.id)
         log: list[str] = []
         for role, env in sorted(plan.roles.items()):
             for key, entry in env.network.items():
@@ -116,17 +117,16 @@ class Provisioner:
         built = await build_images.run(self.ctx)
         if not isinstance(built, Ok):
             async with c.lock:
-                if c.nodes[PROVISION].status == RUNNING:
+                if node.status == RUNNING:
                     if log:
                         c.write_record("control/logs/provision.log", "\n".join(log))
-                    c.escalate(c.nodes[PROVISION], built.kind, built.question,
+                    c.escalate(node, built.kind, built.question,
                                resume=built.resume, log_tail=built.log_tail)
                     c.save()
             return
         images: dict[str, str | None] = built.value          # recipe tag -> image reference
         async with c.lock:
-            node = c.nodes.get(PROVISION)
-            if node is None or node.status != RUNNING:
+            if c.nodes.get(node_id) is not node or node.status != RUNNING:
                 return
             roles = {role: env.model_copy(update={"image": images[plan.recipes[role].tag]})
                      for role, env in plan.roles.items()}
@@ -146,38 +146,37 @@ class Provisioner:
                     if n.sandbox == sb:
                         stopped = stopped or n.sandbox_stopped
                         n.sandbox, n.sandbox_stopped = None, False
-                c.event("provision", f"released sandbox {sb}: not from this build", PROVISION)
+                c.event("provision", f"released sandbox {sb}: not from this build", node.id)
                 self.lifecycle.sandboxes.delete_later(sb, stopped)
             pin = c.change.setup_pin
             check = pin is not None and pin.source == H_ENV
             if check and c.setup_waits_for_scaffold():
                 check = False
                 c.event("provision", "the repository is blank: its setup is checked at the "
-                        "scaffold's verification (what it needs comes with the scaffold)", PROVISION)
+                        "scaffold's verification (what it needs comes with the scaffold)", node.id)
             if not check:
                 node.status = ACCEPTED
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
-                        PROVISION)
+                        node.id)
             c.save()
         if check:
-            await self._check_setup(sorted(roles))
+            await self._check_setup(node, sorted(roles))
 
-    async def _check_setup(self, roles: list[str]) -> None:
+    async def _check_setup(self, node: Node, roles: list[str]) -> None:
         """G-PV3: the approved mise.toml's setup task succeeds at the integration head in a fresh
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
         res = await Verify(()).verification(self.ctx, "provision", c.change.integration_head)
         async with c.lock:
-            node = c.nodes.get(PROVISION)
-            if node is None or node.status != RUNNING:
+            if c.nodes.get(node.id) is not node or node.status != RUNNING:
                 return
             r = res.results[0] if res.results else None
             if res.infra_error or r is None or r.exit_code != 0:
                 why = res.infra_error or (f"`{r.command}` exited {r.exit_code}" if r else "did not run")
-                self._fail(f"G-PV3: the repository's setup failed in the verifier: {why}",
+                self._fail(node, f"G-PV3: the repository's setup failed in the verifier: {why}",
                            r.output if r else "")
             else:
                 node.status = ACCEPTED
                 c.event("provision", "environment ready; the repository's setup ran in the "
-                        f"verifier ({', '.join(roles) or 'no roles'})", PROVISION)
+                        f"verifier ({', '.join(roles) or 'no roles'})", node.id)
             c.save()
