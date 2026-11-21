@@ -88,7 +88,7 @@ async def test_r3_has_no_release_step_and_the_release_gates_are_only_addable(f: 
     from legion_orch.workflow import risk
     from legion_orch.workflow.engine.runtime.workflow_tree import build_workflow
     from legion_orch.workflow.flow import walk
-    wf = build_workflow(3, environment=False, blank_repo=False)
+    wf = build_workflow(3, environment=False, blank_repo=False, publish=False)
     ids = [n.id for s in wf.stages for n in walk(s)]
     assert "release" not in ids and ids[-2:] == ["describe", "H-3"]
     assert not set(risk.RELEASE_GATES) & {g for gs in risk.GATES_BY_TIER.values() for g in gs}

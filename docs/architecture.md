@@ -38,6 +38,7 @@ flowchart TB
             agents["AgentRuns<br/><i>an agent's Work: run record, payload,<br/>commands; what the run did</i>"]
             reports["Reports<br/><i>agent writes and reports, shared guards</i>"]
             prov["Provisioner<br/><i>environment images, is it quiet,<br/>who waits for it</i>"]
+            pub["Publisher<br/><i>the accepted change on GitHub:<br/>branch, pull request, labels</i>"]
             life["RunLifecycle<br/><i>failure, timers, logs, retiring</i>"]
             gates["HumanGates<br/><i>decisions in: gates, escalations,<br/>change governance</i>"]
         end
@@ -350,6 +351,7 @@ own role's environment is.
 | DefineTasks | – | – | the accepted plan's build tasks defined by the workflow (`StepEvents.define_tasks`), under the lock |
 | Verify | READY (at the head) | the verification (`verification`) | recorded, then interpreted with its policies |
 | Merge | – | – | the guards and the merge, at once under the lock |
+| OpenPullRequest | – | the publisher's push, pull request and labels | published, or failed (an escalation) |
 | SyncWorkspace | – | the hub synced (one at a time per hub), what its base holds | based, kept, or unsynced (an escalation) |
 | BuildImages | READY | the provisioner's build and setup check | the provisioner's |
 | Approval | – | its checks evaluated | approved, still pending, or preconditions unmet |
@@ -475,6 +477,9 @@ classDiagram
     class DefineTasks
     class Merge
     class SyncWorkspace
+    class OpenPullRequest {
+        labels: tuple~PrLabels~
+    }
     class BuildImages
     class Approval {
         approves: Approves
@@ -529,6 +534,7 @@ classDiagram
     Phase <|-- DefineTasks
     Phase <|-- Merge
     Phase <|-- SyncWorkspace
+    Phase <|-- OpenPullRequest
     Phase <|-- BuildImages
     Phase <|-- Approval
     Approval *-- Approves
@@ -543,6 +549,7 @@ The table (`engine/steps/step_types.py`) – each kind is a list of phases:
 | Kind | Sandbox plan | Phases |
 | --- | --- | --- |
 | workspace | – | SyncWorkspace (the change's first step) |
+| publish | – | OpenPullRequest(risk label) – after H-3, when the source is on GitHub |
 | intake | base, kept until H-1 | Produce |
 | plan | base, kept until H-E1 | Produce → Critique(critic, G-C2) → DefineTasks |
 | provision | – | BuildImages (waits for a quiet environment) |

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ....config import Config
-from ....git import GitRemote
+from ....git import GitHub, GitRemote
 from ....sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
 from ....store import DocStore
 from ...assets import Assets
@@ -34,6 +34,8 @@ class Services:
     procs: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     # runs the work of every change within limits.max_parallel (agent runs, verifiers)
     dispatcher: Dispatcher = field(default_factory=lambda: Dispatcher(4))
+    # the workspaces' sources on GitHub: a finished change's branch and pull request
+    github: GitHub = field(default_factory=GitHub)
 
     def hub(self, workspace: str) -> GitRemote:
         """The hub of ``workspace`` (a configured workspace's name)."""

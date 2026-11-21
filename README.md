@@ -52,6 +52,7 @@ pip install -e '.[test]'
 (cd frontend && bun install && bun run build)    # the web UI, into legion_orch/server/static/dist
 cp orchestrator.example.yaml orchestrator.yaml   # set workspaces, decision_owners, sandbox image/providers
                                                  # (a workspace without a source starts from an empty repository)
+gh auth login                                     # a workspace on GitHub: accepted changes become PRs
 legion-orch -c orchestrator.yaml check            # validate the assets folder
 legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
 legion-orch -c orchestrator.yaml start "Add a /health endpoint" --workspace app   # or use the UI

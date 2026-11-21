@@ -325,6 +325,17 @@ export interface Stage {
   status: string
 }
 
+/** The change's pull request on GitHub, once published after H-3 (control/pr.json). */
+export interface PullRequestRecord {
+  url: string
+  number: number
+  /** the published branch: <publish_prefix><change-id> */
+  branch: string
+  head: string
+  labels: string[]
+  workspace: string
+}
+
 export interface ChangeState {
   project: string
   repo: string
@@ -346,6 +357,7 @@ export interface ChangeState {
   surfaces: Surface[]
   environment: EnvironmentSpec | null
   attestation_kinds: string[]
+  pull_request?: PullRequestRecord | null
 }
 
 export interface ChangeSummary {

@@ -84,6 +84,9 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "h3": [r.model_dump() for r in governance.h3_attestations(ce)] if ch and ch.tier else [],
             "surfaces": [s.model_dump() for s in governance.surfaces(ce)] if ch else [],
             "environment": environment_spec(ce),
+            # the change's pull request once published (control/pr.json)
+            "pull_request": ce.json_doc("control/pr.json") if ch and ce.latest("control/pr.json")
+            else None,
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}
 
 

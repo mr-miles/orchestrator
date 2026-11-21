@@ -7,6 +7,7 @@ Plan           (done when its stages are)
   Design       plan (planner ⇄ critic) ──────────────────────────────── ◆ H-E1 "approve the plan"
   Oracle       [provision] [scaffold] [oracle preflight] [baseline] ──── ◆ H-2 "approve the oracle"
 Delivery       tasks (DAG) ─ [integration] ─ describe ───────────────── ◆ H-3 "accept the change"
+[Publish]      publish (the source is on GitHub: the pull request, opened)
 ```
 
 A gate (◆) is a step that ends its stage: its work checks what it needs and waits for a human's
@@ -31,6 +32,7 @@ from ...model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
+    PUBLISH,
     WORKSPACE,
     NodeKind,
 )
@@ -52,6 +54,7 @@ NODES: dict[str, tuple[NodeKind, str]] = {
     H_SPEC: (HUMAN, "Approve the oracle"),
     INTEGRATION: (NodeKind.INTEGRATION, "Integration verification"),
     DESCRIBE: (NodeKind.DESCRIBE, "Describe: the pull request, reviewed"),
+    PUBLISH: (NodeKind.PUBLISH, "Publish: the pull request opened"),
     H_CHANGE: (HUMAN, "Accept the change"),
 }
 
@@ -95,7 +98,7 @@ def requirements_workflow() -> Workflow:
                            Step(H_REQUIREMENTS), feedback_to=INTAKE)])
 
 
-def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflow:
+def build_workflow(rank: int, *, environment: bool, blank_repo: bool, publish: bool) -> Workflow:
     """The change's tree. ``rank``: the tier's (risk.rank); stages without content are left out,
     and gates without a human decision at the tier left out (H-3 stays: its checks, the ship
     gates, hold at every tier – below R2 it passes by itself once they do)."""
@@ -113,7 +116,10 @@ def build_workflow(rank: int, *, environment: bool, blank_repo: bool) -> Workflo
                      Step(H_CHANGE, rejectable=True),
                      rework=AppendRound(round_template(rank, environment),
                                         before=INTEGRATION if rank >= 2 else DESCRIBE))
-    return Workflow([requirements, plan, delivery])
+    stages = [requirements, plan, delivery]
+    if publish:        # the source is on GitHub: the accepted change's pull request is opened
+        stages.append(Stage(stage_id("publish"), [Step(PUBLISH)]))
+    return Workflow(stages)
 
 
 def task_steps(taskgraph: dict, *, built: set[str] = frozenset()) -> tuple[list[Step], list[Step]]:

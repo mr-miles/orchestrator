@@ -35,6 +35,7 @@ from ...model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
+    PUBLISH,
     RELEASE,
     RETRO,
     REWORK,
@@ -60,11 +61,13 @@ from .phases import (
     DefineTasks,
     EscalateFailures,
     Merge,
+    OpenPullRequest,
     OracleCommands,
     OracleReworks,
     Panel,
     Phase,
     Produce,
+    RiskLabel,
     ShipGates,
     SyncWorkspace,
     TaskCommands,
@@ -254,6 +257,7 @@ STEP_TYPES: dict[NodeKind, StepType] = {
                        Verify(OracleCommands(), on_rework=EscalateFailures(
                            "integration_failed", "G-V1: {n} oracle command(s) failed at head"))),
     DESCRIBE: agent("describer", HEAD, Critique("pr-reviewer", "G-PR3")),
+    PUBLISH: StepType((OpenPullRequest((RiskLabel(),)),)),   # after H-3: the controller's
     RELEASE: agent("release", HEAD),               # in no tier's tree (live-system workflows)
     RETRO: agent("retrospective", HEAD, dispatch_when=(ReflectionsDone(),), runs_after_end=True),
 }

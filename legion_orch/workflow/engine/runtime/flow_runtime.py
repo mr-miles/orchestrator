@@ -99,7 +99,8 @@ class FlowRuntime:
     def _new_flow(self) -> FlowState:
         wf = (requirements_workflow() if self.tree is None
               else build_workflow(self.tree["rank"], environment=self.tree["environment"],
-                                  blank_repo=self.tree["blank_repo"]))
+                                  blank_repo=self.tree["blank_repo"],
+                                  publish=self.tree["publish"]))
         return FlowState(wf)
 
     def _apply(self, inp: list[Any], *, replay: bool = False) -> list:
@@ -155,10 +156,12 @@ class FlowRuntime:
         self._materialize()
 
     def _tree(self) -> dict[str, Any]:
-        """What the change's tree is built from: its tier, environment and repository."""
+        """What the change's tree is built from: its tier, environment and repository, and
+        whether its workspace's source is on GitHub (then it is published after H-3)."""
         ch = self.c.change
         return {"rank": risk.rank(ch.tier) if ch.tier else None,
-                "environment": self.c.cfg.environment is not None, "blank_repo": ch.blank_repo}
+                "environment": self.c.cfg.environment is not None, "blank_repo": ch.blank_repo,
+                "publish": self.c.svc.github.repo_of(self.c.git.source) is not None}
 
     # ------------------------------------------------------------------ queries
     def has(self, nid: str) -> bool:

@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
     from ..services.agent_runs import AgentRuns, Ended
     from ..services.provision import Provisioner
+    from ..services.publish import Published, Publisher
     from ..services.runs import RunLifecycle
     from .active import ActiveStep
     from .approvals import Approves
@@ -92,6 +93,7 @@ class PhaseContext:
     sandboxes: Sandboxes
     dispatcher: Dispatcher = None  # type: ignore[assignment]
     agents: AgentRuns = None  # type: ignore[assignment]
+    publisher: Publisher = None  # type: ignore[assignment]
 
 
 class _Again:
@@ -1110,6 +1112,84 @@ class SyncWorkspace(Phase):
                 f"{synced.base[:12]}" + (" (a blank repository: the plan starts with a "
                                           "scaffold task)" if synced.blank else ""),
                 active.node.id)
+        return Ok()
+
+
+# ---------------------------------------------------------------------------- publish
+class PrLabels(ABC):
+    """One family of a pull request's labels: which of them the change gets."""
+    prefix: ClassVar[str]
+    color: ClassVar[str]
+    description: ClassVar[str]
+
+    @abstractmethod
+    def names(self, c: ChangeCore) -> tuple[str, ...]:
+        """The family's labels the change's pull request has."""
+
+
+@dataclass(frozen=True)
+class RiskLabel(PrLabels):
+    """``risk:<tier>``, from the tier approved at H-1."""
+    prefix: ClassVar = "risk:"
+    color: ClassVar = "d93f0b"
+    description: ClassVar = "The change's risk tier (Legion)"
+
+    def names(self, c: ChangeCore) -> tuple[str, ...]:
+        return (f"risk:{c.change.tier}",) if c.change.tier else ()
+
+
+@dataclass(frozen=True, eq=False)
+class OpenPullRequest(Phase):
+    """After H-3: the change published – its integration branch pushed to the workspace's
+    source on GitHub as ``<publish_prefix><change-id>`` and a pull request opened from it, ready
+    for review, with the reviewed description, the change's id and its labels (``labels``: one
+    policy per family). Run again (a retry, a restart), it brings the pull request up to date.
+    A failure (authentication, a branch that moved, GitHub) escalates; a retry publishes
+    again."""
+    labels: tuple[PrLabels, ...]
+    statuses: ClassVar = frozenset({READY, RUNNING})
+    waits_in: ClassVar = frozenset()
+
+    def enter(self, active: ActivePhase) -> None:
+        active.move(READY)
+        self.start(active)
+
+    def start(self, active: ActivePhase) -> None:
+        if active.node.status in (READY, RUNNING):         # RUNNING: publishing (a restart)
+            active.run()
+
+    def recover(self, active: ActivePhase) -> None:
+        self.start(active)
+
+    def resume(self, active: ActivePhase, answered: bool) -> None:
+        self.start(active)                                   # published again
+
+    def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
+        return Resume.READY
+
+    def begin(self, active: ActivePhase) -> bool:
+        active.move(RUNNING)
+        return True
+
+    async def perform(self, active: ActivePhase) -> object:
+        """The pull request as published – or what kept it from being."""
+        from ....git import GitHubError
+        from ..services.publish import LabelSpec
+        specs = [LabelSpec(p.prefix, p.names(active.c), p.color, p.description)
+                 for p in self.labels]
+        try:
+            return await active.ctx.publisher.publish(specs)
+        except GitHubError as e:
+            return e
+
+    async def result(self, active: ActivePhase, done: object) -> PhaseResult:
+        from ....git import GitHubError
+        if isinstance(done, GitHubError):
+            return Escalate("publish_failed", str(done), Resume.READY)
+        published: Published = done                          # type: ignore[assignment]
+        active.ctx.publisher.record(published)
+        active.c.event("publish", f"pull request {published.url} ({published.branch} at "
+                       f"{published.head[:12]})", active.node.id)
         return Ok()
 
 

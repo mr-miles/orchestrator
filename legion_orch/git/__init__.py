@@ -2,6 +2,7 @@
 
 Self-contained: authentication is supplied by the host as ``authorize(request) -> GitGrant``.
 """
+from .github import GitHub, GitHubError, PullRequest
 from .http import GitEndpoint, GitGrant, make_git_endpoint
 from .remote import (
     GitError,
@@ -13,4 +14,5 @@ from .remote import (
 )
 
 __all__ = ["GitEndpoint", "GitError", "GitGrant", "GitRemote", "is_blank_tree", "make_git_endpoint",
-           "path_matches", "paths_overlap", "WorkspaceUnsynced"]
+           "path_matches", "paths_overlap", "WorkspaceUnsynced", "GitHub", "GitHubError",
+           "PullRequest"]

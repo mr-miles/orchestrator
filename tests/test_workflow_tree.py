@@ -40,7 +40,8 @@ def approved_by_a_human(rank: int):
 
 def run(rank: int, *, environment=True, blank_repo=False, steps=None,
         hold=("plan",)) -> ScriptedRuntime:
-    return ScriptedRuntime(build_workflow(rank, environment=environment, blank_repo=blank_repo),
+    return ScriptedRuntime(build_workflow(rank, environment=environment, blank_repo=blank_repo,
+                                          publish=False),
                            steps or {}, hold=set(hold),
                            needs_approval=approved_by_a_human(rank)).start()
 
@@ -58,7 +59,7 @@ def plan_accepted(rt: ScriptedRuntime, graph=GRAPH, n: int = 1) -> ScriptedRunti
 
 # ---------------------------------------------------------------------------- shapes
 def test_r3_with_an_environment_in_a_blank_repository():
-    wf = build_workflow(3, environment=True, blank_repo=True)
+    wf = build_workflow(3, environment=True, blank_repo=True, publish=False)
     assert ids(wf) == [
         "stage:requirements", "workspace", "intake", "H-1",
         "stage:plan",
@@ -72,19 +73,19 @@ def test_r3_with_an_environment_in_a_blank_repository():
 
 
 def test_r2_has_no_baseline():
-    wf = build_workflow(2, environment=False, blank_repo=False)
+    wf = build_workflow(2, environment=False, blank_repo=False, publish=False)
     assert ids(wf)[4:] == ["stage:plan", "stage:design", "plan", "H-E1",
                            "stage:oracle", "oracle", "preflight", "H-2",
                            "stage:delivery", TASKS, "integration", "describe", "H-3"]
 
 
 def test_low_tiers_have_no_oracle_stage_and_accept_the_change_automatically():
-    wf = build_workflow(1, environment=False, blank_repo=False)
+    wf = build_workflow(1, environment=False, blank_repo=False, publish=False)
     assert ids(wf) == ["stage:requirements", "workspace", "intake", "H-1", "stage:plan", "stage:design",
                        "plan", "H-E1", "stage:delivery", TASKS, "describe", "H-3"]
     assert wf.stages[-1].gate.id == "H-3"             # its step checks the ship gates
     # with an environment, provisioning still needs its own stage (without a gate)
-    wf = build_workflow(0, environment=True, blank_repo=False)
+    wf = build_workflow(0, environment=True, blank_repo=False, publish=False)
     oracle = next(n for s in wf.stages for n in walk(s) if n.id == "stage:oracle")
     assert [c.id for c in oracle.children] == ["provision"] and oracle.gate is None
 

@@ -65,6 +65,7 @@ def test_every_kind_is_a_list_of_phases():
         BUILD: ["Produce", "Verify", "Panel", "Merge"],
         INTEGRATION: ["Produce", "Verify"],
         NodeKind.DESCRIBE: ["Produce", "Critique"],
+        NodeKind.PUBLISH: ["OpenPullRequest"],
         NodeKind.RELEASE: ["Produce"],
         NodeKind.RETROSPECTIVE: ["Produce"],
     }

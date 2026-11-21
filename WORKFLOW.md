@@ -164,6 +164,7 @@ and its runs' git credentials reach its hub and no other. `legion/*` is the hub'
 | --- | --- |
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
+| `changes/<id>/control/pr.json` | the published pull request (§5.10c): url, number, branch, head, labels |
 | `changes/<id>/control/change.json` | change record: goal, workspace, base, tier, risk, approvals, oracle, integration head, ship result |
 | `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
 | `changes/<id>/control/nodes/<node>.json` | a node's detail (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox); one new version per transition, so the version history is the node's audit trail. Which nodes exist and their order come from the workflow's tree |
@@ -792,6 +793,24 @@ The last step before H-3: the description H-3 accepts with the change (published
 | G-PR1 | `delivery/pr.md` starts with the PR's title (`# <title>`, at most 120 characters) and has the sections `## Motivation`, `## Changes` and `## Verification`; every requirement of the change is cited by its id. |
 | G-PR2 | The review attests the latest version of `delivery/pr.md`; `REWORK` names at least one finding, each with evidence the report attests. |
 | G-PR3 | `REWORK` sends the description back to the describer with the findings, at most `critique_max_cycles` cycles (counted from the fix round's start); then a human decides (`critique_budget`). |
+
+### 5.10c `publish` – the pull request on GitHub (controller, no agent)
+
+When the workspace's `source` is on GitHub, a **Publish** stage follows Delivery (no gate): once
+H-3 accepts the change, its integration branch is pushed to the source as
+`<publish_prefix><change-id>` (default `agent/<change-id>`; `legion/*` is never pushed) and a pull
+request is opened from it against the base branch, **ready for review**: its title and body are
+the reviewed `delivery/pr.md`, followed by a footer the controller adds – `Legion change:
+<change-id>` and the risk tier. Its labels come from the step's label policies, one family
+each: today `risk:<tier>`. A label the repository lacks is created (an existing one's colour is
+left alone); each family's labels on the pull request are made exactly the wanted ones (a stale
+`risk:R1` goes when the tier is R2), and labels of other families – a human's included – stay.
+Run again (a retry, a restart), it finds the pull request and brings it up to date; the branch
+is never force-pushed. The result is `control/pr.json` (url, number, branch, head, labels) and
+the change is `READY`. A failure – `gh` not authenticated, a branch that moved on GitHub, an
+API error – escalates (`publish_failed`) with the standard actions; retry publishes again. `gh`
+runs with the host's authentication, never a sandbox's. A workspace whose source is not on
+GitHub has no Publish stage: the change ends at H-3.
 
 ### 5.10a Fix rounds
 
