@@ -326,9 +326,9 @@ slot; an agent's work whose slot comes once it is no longer ready is skipped, an
 | Phase | waits_in · uses | perform | result |
 | --- | --- | --- | --- |
 | Produce | READY, REWORK · its role | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
-| Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or its decision (`_decide`) |
-| Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then interpreted (`_interpret`) and its policies |
-| Merge | – · – | – | the guards and the merge, at once under the lock (`_merge`) |
+| Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews |
+| Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then interpreted with its policies |
+| Merge | – · – | – | the guards and the merge, at once under the lock |
 | BuildImages | READY · – | the provisioner's build and setup check | the provisioner's |
 | Approval | – · – | its checks evaluated | approved, still pending, or preconditions unmet |
 
