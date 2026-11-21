@@ -211,6 +211,7 @@ class ActiveStep:
     def recover(self, failed: Run | None = None) -> None:
         """After a restart: a run that was live failed with the controller (the step
         escalates); otherwise its current phase takes its work up again."""
+        self.runner.adopted(self.node)
         phase = self.current()
         if self.node.status == ESCALATED:        # its sandboxes stay stopped meanwhile
             self.lifecycle.sandboxes.suspend_when_idle(self._sandboxes())
