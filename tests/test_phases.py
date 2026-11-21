@@ -11,7 +11,6 @@ from legion_orch.workflow.engine.steps.phases import (
     Merge,
     Ok,
     Panel,
-    Phase,
     PhaseContext,
     Rework,
     Verify,
@@ -62,47 +61,63 @@ def cmd(command: str, rc: int = 0, *, setup: bool = False) -> CommandResult:
     return CommandResult(command=command, exit_code=rc, output=f"out of {command}", setup=setup)
 
 
-# ---------------------------------------------------------------------------- Verify.judge
-def test_passing_verification_is_ok():
+# ---------------------------------------------------------------------------- Verify's result
+async def verified(f: Flow, res: Verification, *commands: str, cycle: int = 1, **policies):
+    """What a verification's result is, as its phase concludes it for a task in VERIFYING:
+    recorded (its attestation on the node), then interpreted."""
+    node = task(f, cycle=cycle)
+    active = f.ce._runner.of(node).at(Verify(commands, **policies))
+    result = await active.result(res)
+    (record,) = node.verification.values()
+    return result, record.attestation
+
+
+@scenario()
+async def test_passing_verification_is_ok(f: Flow):
     res = ver(cmd("setup", setup=True), cmd("pytest"))
-    assert Verify(("pytest",)).interpret(res, 1, "att") == Ok(res)
+    assert (await verified(f, res, "pytest"))[0] == Ok(res)
 
 
-def test_failing_commands_are_rework_with_one_blocker_each():
+@scenario()
+async def test_failing_commands_are_rework_with_one_blocker_each(f: Flow):
     res = ver(cmd("setup", setup=True), cmd("pytest", 1), cmd("ruff", 2), cmd("mypy"))
-    result = Verify(("pytest", "ruff", "mypy")).interpret(res, 3, "file:v@1")
+    result, att = await verified(f, res, "pytest", "ruff", "mypy", cycle=3)
     assert isinstance(result, Rework) and result.source == "verification"
     assert [fb.text.split(":")[0] for fb in result.feedback] == ["BLOCKER", "BLOCKER"]
     assert "`pytest` exited 1" in result.feedback[0].text
-    assert all(fb.cycle == 3 and fb.attestations == ["file:v@1"] for fb in result.feedback)
+    assert all(fb.cycle == 3 and fb.attestations == [att] for fb in result.feedback)
 
 
-def test_an_infrastructure_error_escalates_to_verify_again():
-    result = Verify(("pytest",)).interpret(ver(infra="gateway down"), 1, None)
+@scenario()
+async def test_an_infrastructure_error_escalates_to_verify_again(f: Flow):
+    result, _ = await verified(f, ver(infra="gateway down"), "pytest")
     assert result == Escalate("verify_infra", "gateway down", Resume.VERIFYING)
 
 
-def test_a_missing_command_escalates_without_spending_a_cycle():
-    result = Verify(("bun test",)).interpret(ver(cmd("bun test", 127)), 1, None)
+@scenario()
+async def test_a_missing_command_escalates_without_spending_a_cycle(f: Flow):
+    result, _ = await verified(f, ver(cmd("bun test", 127)), "bun test")
     assert isinstance(result, Escalate) and result.kind == "verify_unrunnable"
     assert "`bun test`" in result.question and "out of bun test" in result.log_tail
     # a setup that is not found is the setup failing, not the image lacking a command
-    result = Verify((), expect_failures=True).interpret(ver(cmd("setup", 127, setup=True)), 1, None)
+    result, _ = await verified(f, ver(cmd("setup", 127, setup=True)), expect_failures=True)
     assert result.kind == "setup_failed"
 
 
-def test_expected_failures_are_ok_but_a_failed_setup_is_not():
-    phase = Verify(("pytest",), expect_failures=True)
+@scenario()
+async def test_expected_failures_are_ok_but_a_failed_setup_is_not(f: Flow):
     res = ver(cmd("setup", setup=True), cmd("pytest", 1))
-    assert phase.interpret(res, 1, None) == Ok(res)
-    result = phase.interpret(ver(cmd("mise run setup", 1, setup=True)), 1, None)
+    assert (await verified(f, res, "pytest", expect_failures=True))[0] == Ok(res)
+    result, _ = await verified(f, ver(cmd("mise run setup", 1, setup=True)), "pytest",
+                               expect_failures=True)
     assert isinstance(result, Escalate) and result.kind == "setup_failed"
     assert result.question.startswith("G-V3: the repository's setup `mise run setup` exited 1")
     assert result.resume == Resume.VERIFYING
 
 
-def test_a_failed_setup_in_a_build_fails_like_any_command():
-    result = Verify(("pytest",)).interpret(ver(cmd("mise run setup", 1, setup=True)), 1, "att")
+@scenario()
+async def test_a_failed_setup_in_a_build_fails_like_any_command(f: Flow):
+    result, _ = await verified(f, ver(cmd("mise run setup", 1, setup=True)), "pytest")
     assert isinstance(result, Rework) and "`mise run setup` exited 1" in result.feedback[0].text
 
 
@@ -153,27 +168,17 @@ def judged(node: Node, role: str, verdict: Verdict, *, sha: str = CAND, findings
         verdict=verdict, sha=sha, run=f"r-{role}", findings=list(findings), doc=f"file:{role}@1")
 
 
-class Running:
-    """A phase as it runs for a node, its node-reading methods called with it."""
-    def __init__(self, f: Flow, node: Node, phase: Phase):
-        self.active = f.ce._runner.of(node).at(phase)
-
-    def __getattr__(self, name):
-        method = getattr(self.active.phase, name)
-        return lambda *a: method(self.active, *a)
-
-
-def reviewing(f: Flow, node: Node, *roles: str) -> Running:
-    """A panel of ``roles`` as it runs for ``node``."""
-    return Running(f, node, Panel(roles))
+async def decided(f: Flow, node: Node, *roles: str):
+    """What a panel of ``roles`` concludes for ``node`` once every judge has finished (none
+    escalated): its decision from the node's reviews."""
+    return await f.ce._runner.of(node).at(Panel(roles)).result({})
 
 
 @scenario()
 async def test_the_panel_waits_for_every_judge(f: Flow):
     node = task(f)
-    panel = reviewing(f, node, "reviewer", "security")
     judged(node, "reviewer", Verdict.PASS)
-    assert panel.missing() == ["security"] and panel.decide() is None
+    assert await decided(f, node, "reviewer", "security") is None     # security: no review yet
 
 
 @scenario()
@@ -181,23 +186,22 @@ async def test_a_unanimous_pass_at_the_candidate_is_ok(f: Flow):
     node = task(f)
     judged(node, "reviewer", Verdict.PASS)
     judged(node, "security", Verdict.PASS)
-    assert reviewing(f, node, "reviewer", "security").decide() == Ok()
+    assert await decided(f, node, "reviewer", "security") == Ok()
     judged(node, "security", Verdict.PASS, sha=SHA)          # judged an older candidate
-    assert isinstance(reviewing(f, node, "reviewer", "security").decide(), Rework)
+    assert isinstance(await decided(f, node, "reviewer", "security"), Rework)
 
 
 @scenario()
 async def test_high_findings_are_rework_and_repeated_ones_escalate(f: Flow):
     node = task(f)
-    panel = reviewing(f, node, "reviewer")
     judged(node, "reviewer", Verdict.FAIL, findings=[finding("Unsafe eval")])
-    first = panel.decide()
+    first = await decided(f, node, "reviewer")
     assert isinstance(first, Rework) and first.source == "review"
     assert "Unsafe eval" in first.feedback[0].text
     assert first.feedback[-1].attestations == ["file:reviewer@1"]
     node.cycle = 2
     judged(node, "reviewer", Verdict.FAIL, findings=[finding("unsafe eval ")])
-    second = panel.decide()
+    second = await decided(f, node, "reviewer")
     assert isinstance(second, Escalate) and second.kind == "stale_loop"
     assert second.resume == Resume.REWORK_CYCLE and second.feedback
 
@@ -233,8 +237,9 @@ async def test_an_escalation_keeps_its_feedback_for_the_next_cycle(f: Flow):
 
 
 # ---------------------------------------------------------------------------- Merge
-def merging(f: Flow, node: Node) -> Running:
-    return Running(f, node, Merge())
+async def merged(f: Flow, node: Node):
+    """What the merge concludes for ``node`` (its guards, then the merge)."""
+    return await f.ce._runner.of(node).at(Merge()).result(None)
 
 
 @scenario()
@@ -242,7 +247,7 @@ async def test_merge_needs_verification_and_every_pass_at_the_candidate(f: Flow)
     node = task(f)
     judged(node, "reviewer", Verdict.PASS, sha=SHA)
     f.ce.change.panel = ["reviewer", "security"]           # the build's judges
-    result = await merging(f, node).merge()
+    result = await merged(f, node)
     assert isinstance(result, Escalate) and result.kind == "accept_guard"
     assert result.question.split("; ") == [
         "G-A1: no passing deterministic verification at candidate",
@@ -255,7 +260,7 @@ async def test_an_override_waives_the_panel_but_not_verification(f: Flow):
     from legion_orch.workflow.model import Override
     node = task(f, override=Override(approver="miles", reason="trusted", sha=CAND))
     f.ce.change.panel = ["reviewer"]
-    result = await merging(f, node).merge()
+    result = await merged(f, node)
     assert result.question == "G-A1: no passing deterministic verification at candidate"
 
 
@@ -265,7 +270,7 @@ async def test_merge_stops_when_the_integration_head_moved(f: Flow):
     node.verification["1"] = Verification(sha=CAND, ok=True)
     f.ce.change.integration_head = SHA                     # not where the branch is
     f.ce.change.panel = []
-    result = await merging(f, node).merge()
+    result = await merged(f, node)
     assert isinstance(result, Escalate) and result.kind == "head_moved"
     assert result.resume == Resume.MERGING
 

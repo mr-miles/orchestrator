@@ -111,7 +111,7 @@ async def test_judges_are_the_critic_for_the_plan_and_the_panel_for_a_task(f: Fl
 async def test_each_verification_resolves_its_commands(f: Flow):
     f.ce.change.oracle = ORACLE_DOC
     n = Node(id="x", kind=BASELINE, title="x")
-    cmds = {k: (v := STEP_TYPES[k].phase(Verify)).to_run(f.ce._runner.of(n).at(v))
+    cmds = {k: tuple(STEP_TYPES[k].phase(Verify).commands(f.ce, n))      # its command source
             for k in (BASELINE, PREFLIGHT, INTEGRATION)}
     assert cmds[BASELINE] == ("bun test acc", "bun install")
     assert cmds[PREFLIGHT] == ("bun test acc",)
@@ -122,16 +122,22 @@ async def test_each_verification_resolves_its_commands(f: Flow):
 async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
     class T:
         id = "T3"
+    f.ce.change.oracle = ORACLE_DOC
+
+    async def recorded(n: Node) -> tuple[str, str]:
+        """Where its verification's result is recorded: (its key on the node, the record)."""
+        n.status, n.candidate_sha = VERIFYING, CAND
+        f.ce.nodes[n.id] = n
+        await f.ce._runner.of(n).at(step_for(n).phase(Verify)).result(ver(0))
+        (key, v), = n.verification.items()
+        return key, v.attestation
     build = Node(id="T3", kind=BUILD, title="t", cycle=2)
     build.task = T()  # type: ignore[assignment]
-
-    def record(n: Node) -> tuple[str, str]:
-        verify = step_for(n).phase(Verify)
-        return verify.record(f.ce._runner.of(n).at(verify))
-    assert record(build) == ("tasks/T3/verification.json", "2")
+    key, att = await recorded(build)
+    assert key == "2" and "tasks/T3/verification.json" in att
     for kind in (BASELINE, PREFLIGHT, INTEGRATION):
-        path, key = record(Node(id=f"{kind}-node", kind=kind, title="x"))
-        assert key == str(kind) and path.startswith("control/verification/")
+        key, att = await recorded(Node(id=f"{kind}-node", kind=kind, title="x"))
+        assert key == str(kind) and "control/verification/" in att
 
 
 def test_every_phase_says_every_hook_and_what_its_readiness_needs():
@@ -180,11 +186,8 @@ async def report(f: Flow, n: Node, result=None, role: str = "implementer"):
     rt = f.ce._runner
     phase = rt.of(n).current()
     ended = Ended(run, Ok() if result is None else result)
-    if isinstance(phase.phase, Panel):                   # a judge's: collated by the panel
-        phase.phase.judged(phase, ended)
-        phase.conclude(await phase.phase.result(phase, {role: ended}))
-    else:
-        phase.conclude(phase.phase.ended(phase, ended))
+    done = {role: ended} if isinstance(phase.phase, Panel) else ended   # a panel collates its judges
+    phase.conclude(await phase.result(done))
     return run
 
 
@@ -337,7 +340,7 @@ async def conclude(f: Flow, n: Node, res: Verification) -> None:
     """The verification's result, as its phase's work hands it over."""
     rt = f.ce._runner
     phase = rt.of(n).at(step_for(n).phase(Verify))
-    phase.conclude(await phase.phase.result(phase, res))
+    phase.conclude(await phase.result(res))
 
 
 @scenario()

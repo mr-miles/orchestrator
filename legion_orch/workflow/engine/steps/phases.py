@@ -14,7 +14,7 @@ A phase knows three things, and nothing about which kind of node it serves:
   then – under the lock – its ``result`` says what that means. Every hook is abstract: each
   kind says them all itself;
 * **its result**: always ``result`` – from the work's record where it says it all
-  (``Verify.interpret``, ``Panel.decide``), the role handler's for an agent, and for a merge
+  (``Verify._interpret``, ``Panel._decide``), the role handler's for an agent, and for a merge
   the guarded merge itself (the guards and the merge hold at once).
 
 What varies between nodes is passed in as small policy objects – which commands to verify
@@ -184,6 +184,15 @@ class ActivePhase:
     def resume_after(self, escalation: Escalate) -> Resume:
         return self.phase.resume_after(self, escalation)
 
+    def begin(self) -> bool:
+        return self.phase.begin(self)
+
+    async def perform(self) -> object:
+        return await self.phase.perform(self)
+
+    async def result(self, done: object) -> PhaseResult | None | _Again:
+        return await self.phase.result(self, done)
+
     # ------------------------------------------------------------ its work, the same for all
     def ready(self) -> bool:
         """Its work may begin – the same for every kind, from what its phase declares: as the
@@ -200,18 +209,18 @@ class ActivePhase:
         slot given back meanwhile) the phase ``begin``s under the lock, ``perform``s its work
         outside it, and then – under the lock, unless its step or phase ended meanwhile – its
         ``result`` says what the work means, which is concluded."""
-        c, phase = self.c, self.phase
+        c = self.c
         while await self.wait_until(self.ready):
             async with c.lock:
                 if self.stale():
                     return
-                if phase.begin(self):
+                if self.begin():
                     c.save()
-            done = await phase.perform(self)
+            done = await self.perform()
             async with c.lock:
                 if self.stale():
                     return
-                result = await phase.result(self, done)
+                result = await self.result(done)
                 if result is AGAIN:
                     c.save()
                     continue
@@ -438,7 +447,7 @@ class Produce(Phase):
         run = active.c.runs.get(active.node.current_run) if active.node.current_run else None
         if active.node.status == RUNNING and run is not None and run.status == R_REPORTED \
                 and not run.concluded:
-            active.step.run(active, lambda a: self.conclude_later(a, run))
+            active.step.run(active, lambda a: self._conclude_later(a, run))
         else:
             self.start(active)
 
@@ -466,18 +475,18 @@ class Produce(Phase):
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None | _Again:
         if done is None or done is AGAIN or isinstance(done, Escalate):
             return done                                          # type: ignore[return-value]
-        return self.ended(active, done)                        # type: ignore[arg-type]
+        return self._ended(active, done)                        # type: ignore[arg-type]
 
-    async def conclude_later(self, active: ActivePhase, run: Run) -> None:
+    async def _conclude_later(self, active: ActivePhase, run: Run) -> None:
         """After a restart: what an agent's accepted report means, to the phase."""
         from ..services.agent_runs import Ended
         async with active.c.lock:
             if active.stale() or run.concluded or run.status != R_REPORTED:
                 return
-            active.conclude(self.ended(active, Ended(run, await active.ctx.agents.conclude(run))))
+            active.conclude(self._ended(active, Ended(run, await active.ctx.agents.conclude(run))))
             active.c.save()
 
-    def ended(self, active: ActivePhase, ended: Ended) -> PhaseResult | None:
+    def _ended(self, active: ActivePhase, ended: Ended) -> PhaseResult | None:
         """The agent's turn ended: its result is the phase's."""
         if ended.run is not None:
             ended.run.concluded = True
@@ -508,7 +517,7 @@ class Panel(Phase):
     uses: ClassVar = None                                   # each judge: its own role's
 
     def enter(self, active: ActivePhase) -> None:
-        roles = self.roles(active)
+        roles = self._roles(active)
         if not roles:                        # an empty panel: nothing to wait for
             active.step.advance(active)
             return
@@ -537,7 +546,7 @@ class Panel(Phase):
     async def perform(self, active: ActivePhase) -> object:
         """Every judge still to review this cycle, in parallel under the step's reservation:
         role -> what its work did (None: the step or phase ended first)."""
-        roles = self.missing(active)
+        roles = self._missing(active)
         done = await asyncio.gather(*(self._judge(active, role) for role in roles))
         return dict(zip(roles, done, strict=True))
 
@@ -548,25 +557,27 @@ class Panel(Phase):
         ended: dict[str, Ended | None] = done                    # type: ignore[assignment]
         if any(e is None for e in ended.values()):
             return None
+        for e in ended.values():
+            self._judged(active, e)                              # once: concluded as it ended
         if not self.decides:
             return next((e.result for e in ended.values() if e is not None), None)
         held = {role: e.result for role, e in ended.items()
                 if e is not None and isinstance(e.result, Escalate)}
-        return combined(held) if held else self.decide(active)
+        return combined(held) if held else self._decide(active)
 
-    def roles(self, active: ActivePhase) -> tuple[str, ...]:
+    def _roles(self, active: ActivePhase) -> tuple[str, ...]:
         """Its judges, for this change."""
         return _judges(self.judges, active.c)
 
-    def missing(self, active: ActivePhase) -> list[str]:
+    def _missing(self, active: ActivePhase) -> list[str]:
         """Its judges without a review at the node's cycle yet."""
         node = active.node
-        return [r for r in self.roles(active) if node.review(node.cycle, r) is None]
+        return [r for r in self._roles(active) if node.review(node.cycle, r) is None]
 
-    def decide(self, active: ActivePhase) -> PhaseResult | None:
+    def _decide(self, active: ActivePhase) -> PhaseResult | None:
         """None until every judge has reported (records the cycle's finding fingerprints)."""
         node = active.node
-        results = [node.review(node.cycle, r) for r in self.roles(active)]
+        results = [node.review(node.cycle, r) for r in self._roles(active)]
         if any(r is None for r in results):
             return None
         if all(r.verdict == Verdict.PASS and r.sha == node.candidate_sha for r in results):
@@ -603,7 +614,7 @@ class Panel(Phase):
                 if active.stale():
                     return None
                 ended = Ended(run, await active.ctx.agents.conclude(run))
-                self.judged(active, ended)
+                self._judged(active, ended)
                 c.save()
                 return ended
 
@@ -618,15 +629,15 @@ class Panel(Phase):
             if isinstance(done, Ended):
                 async with c.lock:
                     if not active.stale():
-                        self.judged(active, done)
+                        self._judged(active, done)
                         c.save()
             return done                                          # type: ignore[return-value]
         return None
 
-    def judged(self, active: ActivePhase, ended: Ended) -> None:
+    def _judged(self, active: ActivePhase, ended: Ended) -> None:
         """A judge's turn ended: its run is done and, accepted, its sandbox retired."""
         run = ended.run
-        if run is not None:
+        if run is not None and not run.concluded:
             run.concluded = True
             if run.status == R_REPORTED and not isinstance(ended.result, Escalate):
                 run.status = R_ACCEPTED
@@ -659,7 +670,7 @@ class Verify(Phase):
         # at the head (no producer): READY until dispatched, then VERIFYING
         return frozenset({READY, VERIFYING}) if self.at_head else frozenset({VERIFYING})
 
-    def interpret(self, res: Verification, cycle: int, att: str | None) -> PhaseResult:
+    def _interpret(self, res: Verification, cycle: int, att: str | None) -> PhaseResult:
         """What the recorded verification (``att``) means. A setup failure is escalated as
         ``setup_failed`` when failures are expected (nothing was built yet that could have
         caused it); otherwise it fails like any command."""
@@ -715,7 +726,7 @@ class Verify(Phase):
     async def perform(self, active: ActivePhase) -> Verification:
         node = active.node
         c = active.c
-        commands = self.to_run(active)
+        commands = self._to_run(active)
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
                 f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
                 node.id)
@@ -730,13 +741,13 @@ class Verify(Phase):
             return None
         c, res = active.c, done
         assert isinstance(res, Verification)
-        path, key = self.record(active)
+        path, key = self._record(active)
         att = c.write_record(path, res).attestation
         # The node keeps a compact copy (the stored record has the command output).
         node.verification[key] = res.model_copy(update={
             "attestation": att,
             "results": [r.model_copy(update={"output": ""}) for r in res.results]})
-        result = self.interpret(res, node.cycle, att)
+        result = self._interpret(res, node.cycle, att)
         if isinstance(result, Ok):
             for kind, text in self.notes(c, node, res) if self.notes else []:
                 c.event(kind, text, node.id)
@@ -745,12 +756,12 @@ class Verify(Phase):
             result = self.on_setup_failed(c, node, setup_failure(res), att, result)
         return result
 
-    def to_run(self, active: ActivePhase) -> tuple[str, ...]:
+    def _to_run(self, active: ActivePhase) -> tuple[str, ...]:
         """The commands it runs, for this change and node."""
         commands = self.commands
         return commands if isinstance(commands, tuple) else tuple(commands(active.c, active.node))
 
-    def record(self, active: ActivePhase) -> tuple[str, str]:
+    def _record(self, active: ActivePhase) -> tuple[str, str]:
         """Where the verification is stored, and its key on the node: a task's per cycle."""
         node = active.node
         if node.task:
@@ -839,7 +850,7 @@ class Merge(Phase):
         from ..services import cleanup
         c = active.c
         sha = node.candidate_sha
-        result = await self.merge(active)
+        result = await self._merge(active)
         if isinstance(result, Ok):
             node.accepted_sha = sha
             run = c.runs.get(node.current_run) if node.current_run else None
@@ -848,7 +859,7 @@ class Merge(Phase):
                     node.id)
         return result
 
-    async def merge(self, active: ActivePhase) -> PhaseResult:
+    async def _merge(self, active: ActivePhase) -> PhaseResult:
         """G-A1 for its step's judges, G-H1, then the merge (or the conflict's rework)."""
         c, node, judges = active.c, active.node, active.step.judges()
         sha = node.candidate_sha

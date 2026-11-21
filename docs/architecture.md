@@ -170,7 +170,7 @@ sequenceDiagram
     D-->>Ph: the commands' results → Verify judges them
     Ph->>SR: result Ok
     SR->>Ph: advance → Panel (REVIEWING): one judge's Work each, in parallel
-    D-->>Ph: each judge's turn ends – the panel waits for every one → Panel.decide
+    D-->>Ph: each judge's turn ends – the panel waits for every one, then decides
     Ph->>SR: result Ok
     SR->>Ph: advance → Merge (MERGING): G-A1, G-H1, G-A2
     Ph->>SR: result Ok: the last phase passed
@@ -326,9 +326,9 @@ slot; an agent's work whose slot comes once it is no longer ready is skipped, an
 | Phase | waits_in · uses | perform | result |
 | --- | --- | --- | --- |
 | Produce | READY, REWORK · its role | its agent's work (`RoleWork.perform`) | the role handler's, or the failure's escalation |
-| Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or `decide()` |
-| Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then `interpret` and its policies |
-| Merge | – · – | – | the guards and the merge, at once under the lock (`merge()`) |
+| Panel | – · – (each judge waits for its role's environment) | every judge still to review, in parallel | their escalations as one, or its decision (`_decide`) |
+| Verify | READY (at the head) · the verifier | the verification (`verification`) | recorded, then interpreted (`_interpret`) and its policies |
+| Merge | – · – | – | the guards and the merge, at once under the lock (`_merge`) |
 | BuildImages | READY · – | the provisioner's build and setup check | the provisioner's |
 | Approval | – · – | its checks evaluated | approved, still pending, or preconditions unmet |
 
@@ -429,8 +429,6 @@ classDiagram
     class Produce {
         source: RoleWork
         role: str
-        conclude_later(active, run) None
-        ended(active, ended) PhaseResult
     }
     class RoleWork {
         role: str
@@ -443,21 +441,12 @@ classDiagram
         on_rework: EscalateFailures
         on_setup_failed: SetupFailurePolicy
         notes: Notes
-        interpret(result, cycle, att) PhaseResult
-        to_run(active) tuple~str~
-        record(active) tuple~str~
     }
     class Panel {
         judges: JudgeSource
         decides: bool
-        roles(active) tuple~str~
-        missing(active) list~str~
-        decide(active) PhaseResult
-        judged(active, ended) None
     }
-    class Merge {
-        merge(active) PhaseResult
-    }
+    class Merge
     class BuildImages
     class Approval {
         subjects: Subjects

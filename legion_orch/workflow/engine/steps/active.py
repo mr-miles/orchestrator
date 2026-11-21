@@ -263,7 +263,9 @@ class ActiveStep:
     def judges(self) -> tuple[str, ...]:
         """Its panel's judges, for this change (none: it has no panel)."""
         panel = self.type.phase(Panel)
-        return panel.roles(self.at(panel)) if isinstance(panel, Panel) else ()
+        if not isinstance(panel, Panel):
+            return ()
+        return panel.judges if isinstance(panel.judges, tuple) else panel.judges(self.c)
 
     def may_work(self) -> bool:
         """The change is active (or the step runs after the end)."""
