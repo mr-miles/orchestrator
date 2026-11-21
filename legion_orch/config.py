@@ -256,6 +256,27 @@ def _notify_config(raw: dict | None) -> NotifyConfig:
 
 
 @dataclass
+class TelemetryConfig:
+    """Opt-in OpenTelemetry spans over OTLP/HTTP. Headers and credentials come only from the
+    standard OTEL_EXPORTER_OTLP_* environment variables, never from this file."""
+    # True forces telemetry on, False forces it off, None: on only when an OTLP endpoint
+    # environment variable (OTEL_EXPORTER_OTLP_[TRACES_]ENDPOINT) is set.
+    enabled: bool | None = None
+    # OTLP/HTTP base endpoint (e.g. http://localhost:4318); None: the OTEL_* environment decides.
+    endpoint: str | None = None
+    # service.name resource attribute; None: the exporter's default.
+    service_name: str | None = None
+    # Export timeout in seconds (>= 1).
+    timeout_s: int = 5
+
+    def __post_init__(self) -> None:
+        if self.endpoint is not None and not self.endpoint.startswith(("http://", "https://")):
+            raise ValueError("telemetry.endpoint must be an http(s) URL")
+        if self.timeout_s < 1:
+            raise ValueError("telemetry.timeout_s must be at least 1")
+
+
+@dataclass
 class Config:
     project: str
     workspaces: list[WorkspaceConfig]
@@ -270,6 +291,7 @@ class Config:
     environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
     retrospective: RetrospectiveConfig = field(default_factory=RetrospectiveConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     protected_paths: list[str] = field(default_factory=list)
     base_dir: Path = field(default_factory=Path.cwd)
 
@@ -342,6 +364,7 @@ def load_config(path: str | Path) -> Config:
         environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
         retrospective=_build(RetrospectiveConfig, raw.get("retrospective")),
         notify=_notify_config(raw.get("notify")),
+        telemetry=_build(TelemetryConfig, raw.get("telemetry")),
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )

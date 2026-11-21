@@ -85,3 +85,12 @@ notify:                          # what needs a decision, sent to people (WORKFL
   # - kind: command              # JSON on stdin: mail, chat, anything else
   #   argv: [/usr/local/bin/legion-notify]
   #   items: [gate, escalation, not_ready, change_ended, retrospective]
+telemetry:                       # opt-in OpenTelemetry spans over OTLP/HTTP; optional
+  # enabled: true forces telemetry on, false forces it off; omitted = on only when
+  # OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set.
+  # Needs the extra: uv sync --extra telemetry
+  # Headers and credentials only via OTEL_EXPORTER_OTLP_HEADERS, never in this file.
+  enabled: false
+  # endpoint: http://localhost:4318   # otel-front's OTLP/HTTP receiver
+  # service_name: legion-orchestrator
+  # timeout_s: 5
