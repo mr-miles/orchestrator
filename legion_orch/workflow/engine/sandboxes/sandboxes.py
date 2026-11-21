@@ -28,7 +28,7 @@ from ...setup import SETUP_COMMAND
 from ..base.auth import VerifierGrant
 from ..base.core import ChangeCore
 from ..base.work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
-from .plan import Environments, Plans
+from .plan import Environments, Holds, SandboxPlan
 from .reflect import Reflector
 
 
@@ -47,9 +47,9 @@ class AgentSession:
     """An agent run's sandbox: created for the run, or the node's kept one woken and given the
     new payload. On close the payload goes, and a sandbox kept for its session is paused."""
 
-    def __init__(self, sandboxes: Sandboxes, run: Run, fresh: bool,
+    def __init__(self, sandboxes: Sandboxes, run: Run, plan: SandboxPlan, fresh: bool,
                  stage: Callable[[RunStage, str], Awaitable[None]]):
-        self.sb, self.run, self.fresh, self.stage = sandboxes, run, fresh, stage
+        self.sb, self.run, self.plan, self.fresh, self.stage = sandboxes, run, plan, fresh, stage
         root = sandboxes.c.cfg.sandbox.root
         self.workdir, self.payload = f"{root}/work", f"{root}/payload"
         self._dir = sandboxes.c.run_dir(run.id)
@@ -75,7 +75,7 @@ class AgentSession:
         policy = c.svc.write_policy(self._dir / "policy.yaml", agent=True,
                                     network=env.network if env else None)
         run.sandbox_ref = await self.sb.create(run, payload, policy,
-                                               push=self.sb.plans.for_role(run.role).pushes)
+                                               push=self.plan.pushes)
         await self.stage(RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
 
     async def exec(self, argv: list[str], *, timeout: int, workdir: str | None) -> tuple[int, str]:
@@ -85,7 +85,7 @@ class AgentSession:
     async def close(self) -> None:
         shutil.rmtree(self._dir / "payload", ignore_errors=True)
         (self._dir / "policy.yaml").unlink(missing_ok=True)
-        if self.sb.plans.for_role(self.run.role).keeps_session:
+        if self.plan.keeps_session:
             await self.sb.pause(self.run)
 
 
@@ -149,8 +149,8 @@ class VerifierSession:
 
 
 class Sandboxes:
-    def __init__(self, core: ChangeCore, plans: Plans):
-        self.c, self.plans = core, plans
+    def __init__(self, core: ChangeCore, holds: Holds):
+        self.c, self._holds = core, holds
         self.environments: Environments | None = None    # set once the provisioner exists
         self.reflector = Reflector(core, self)
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
@@ -173,8 +173,7 @@ class Sandboxes:
         change is no longer active."""
         if not node.sandbox or self.c.change.status != "ACTIVE":
             return False
-        plan = self.plans.for_node(node)
-        return plan is not None and plan.held(self.c, node)
+        return self._holds.holds(node)
 
     def held(self) -> set[str]:
         return {n.sandbox for n in self.c.nodes.values() if self.holds(n)}

@@ -43,6 +43,7 @@ from ...view import RoleContext
 from ..base.common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from ..base.core import ChangeCore
 from ..base.work import AGENT, Command, Outcome, Session, Work
+from ..sandboxes.plan import SandboxPlan
 from ..sandboxes.sandboxes import AgentSession, Sandboxes, sandbox_env
 from .runs import RunLifecycle
 
@@ -146,7 +147,7 @@ class AgentRuns:
             return Escalate("approval", stale_env, resume)
         return None
 
-    def work(self, node: Node, role: str, judged_sha: str | None, *,
+    def work(self, node: Node, role: str, plan: SandboxPlan, judged_sha: str | None, *,
              wanted: Callable[[], bool], started: Callable[[Run], None]) -> tuple[Work, Prepared]:
         """The agent's work. It is prepared in its slot, under the lock: unless the step no
         longer ``wanted`` it, the run record is made (or a guard refuses it) and ``started`` is
@@ -157,16 +158,16 @@ class AgentRuns:
             async with self.c.lock:
                 if not wanted():
                     return False
-                run = self.prepare(node, role, judged_sha)
+                run = self.prepare(node, role, plan, judged_sha)
                 if isinstance(run, Escalate):
                     prepared.refused = run
                     return False
                 prepared.run = run
                 started(run)
                 self.c.save()
-            fresh = not (self.sandboxes.plans.for_role(role).keeps and any(
+            fresh = not (plan.keeps and any(
                 r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values()))
-            work.session = AgentSession(self.sandboxes, run, fresh,
+            work.session = AgentSession(self.sandboxes, run, plan, fresh,
                                         lambda stage, msg: self._stage(run, stage, msg))
             work.commands = [*await self.sandboxes.checkout(run, fresh),
                              AgentTurn("the agent's turn", AGENT, True, runs=self, of=run)]
@@ -257,11 +258,11 @@ class AgentRuns:
                          + (f" (evidence: {atts})" if atts else ""))
         return "\n".join(lines)
 
-    def prepare(self, node: Node, role: str, judged_sha: str | None = None) -> Run | Escalate:
+    def prepare(self, node: Node, role: str, plan: SandboxPlan,
+                judged_sha: str | None = None) -> Run | Escalate:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4), or return why it cannot
         run (its prompt does not render)."""
         ch = self.c.change
-        plan = self.sandboxes.plans.for_role(role)
         if plan.base_at_head(bool(node.base_sha)):
             node.base_sha = ch.integration_head
         if plan.at_head:
@@ -285,9 +286,9 @@ class AgentRuns:
                   write_scope=asg.write_scope, required_docs=asg.required_docs,
                   context_refs=asg.context, assignment=asg.for_agent(node))
         self._record_assets()
-        self._place_in_sandbox(run, node)
-        self._record_dispatch(run, node)
-        self._payload(run, rendered)
+        self._place_in_sandbox(run, node, plan)
+        self._record_dispatch(run, node, plan)
+        self._payload(run, rendered, plan)
         self.c.event("dispatch", f"{role} run {run_id} (cycle {run.cycle}, soul {run.soul}, "
                      f"pin {rendered.pin[7:19]})", node.id, run_id)
         return run
@@ -349,10 +350,10 @@ class AgentRuns:
         if not self.c.latest(path):
             self.c.write_record(path, {"sha": self.c.assets.sha, "files": self.c.assets.manifest()})
 
-    def _place_in_sandbox(self, run: Run, node: Node) -> None:
+    def _place_in_sandbox(self, run: Run, node: Node, plan: SandboxPlan) -> None:
         """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
         across the node's cycles."""
-        h, plan = handler_for(run.role), self.sandboxes.plans.for_role(run.role)
+        h = handler_for(run.role)
         if plan.keeps and node.sandbox:
             run.sandbox = node.sandbox
             run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
@@ -364,8 +365,8 @@ class AgentRuns:
             if judged and (judged.sandbox == run.sandbox or judged.id == run.id):
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
 
-    def _record_dispatch(self, run: Run, node: Node) -> None:
-        h, plan, ch = handler_for(run.role), self.sandboxes.plans.for_role(run.role), self.c.change
+    def _record_dispatch(self, run: Run, node: Node, plan: SandboxPlan) -> None:
+        h, ch = handler_for(run.role), self.c.change
         self.c.runs[run.id] = run
         node.runs.append(run.id)
         if not h.panel:                 # panel members run alongside; the node stays REVIEWING
@@ -380,7 +381,7 @@ class AgentRuns:
             if rnd and rnd.first_build_at is None:
                 rnd.first_build_at = now_iso()
 
-    def _payload(self, run: Run, rendered) -> None:
+    def _payload(self, run: Run, rendered, plan: SandboxPlan) -> None:
         d = self.c.run_dir(run.id) / "payload"
         d.mkdir(parents=True, exist_ok=True)
         (d / "soul.md").write_text(rendered.soul)
@@ -399,7 +400,7 @@ class AgentRuns:
             "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
             "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
         }
-        if found := self._resumable_session(run):
+        if found := self._resumable_session(run, plan):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
@@ -411,10 +412,10 @@ class AgentRuns:
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(text)
 
-    def _resumable_session(self, run: Run) -> tuple[str, str] | None:
+    def _resumable_session(self, run: Run, plan: SandboxPlan) -> tuple[str, str] | None:
         """For a role that keeps its session: the node's previous run in the same sandbox and
         its agent session, which this rework continues."""
-        if not self.sandboxes.plans.for_role(run.role).keeps_session:
+        if not plan.keeps_session:
             return None
         node = self.c.nodes[run.node_id]
         prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]

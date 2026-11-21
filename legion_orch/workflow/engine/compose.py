@@ -16,7 +16,7 @@ from .services.agent_runs import AgentRuns
 from .services.provision import Provisioner
 from .services.reports import Reports
 from .services.runs import RunLifecycle
-from .steps import StepPlans, StepRunner
+from .steps import StepHolds, StepRunner
 from .steps.phases import PhaseContext
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 def compose(ce: ChangeEngine) -> None:
     """Build ``ce``'s layers and wire them. The facade keeps ``_flow``, ``_gates``,
     ``_reports`` and ``_lifecycle``; the others are kept too, for tests only."""
-    sandboxes = Sandboxes(ce, StepPlans())
+    sandboxes = Sandboxes(ce, StepHolds(ce))
     lifecycle = RunLifecycle(ce, sandboxes)
     agents = AgentRuns(ce, lifecycle, sandboxes, roles=ce)
     phases = PhaseContext(ce, sandboxes, ce.svc.dispatcher, agents)

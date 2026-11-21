@@ -6,6 +6,8 @@ from __future__ import annotations
 from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import ImageRecipe, Tool
+from legion_orch.workflow.engine.sandboxes.plan import JUDGE  # noqa: E402
+from legion_orch.workflow.engine.steps import sandbox_plan  # noqa: E402
 from legion_orch.workflow.engine.steps.phases import (
     Escalate,
     Merge,
@@ -332,7 +334,7 @@ async def test_the_ship_gates_are_recorded_and_only_their_approval_gates_wait_fo
 async def test_an_agent_run_is_work_its_step_may_still_withdraw(f: Flow):
     node = task(f, status="READY")
     before = len(f.ce.runs)
-    work, prepared = ctx(f).agents.work(node, "reviewer", CAND, wanted=lambda: False,
+    work, prepared = ctx(f).agents.work(node, "reviewer", JUDGE, CAND, wanted=lambda: False,
                                         started=lambda run: None)
     outcome = await work.execute()
     assert outcome.skipped and prepared.run is None and len(f.ce.runs) == before
@@ -346,7 +348,7 @@ async def test_a_guard_that_stops_an_agent_run_is_its_result(f: Flow):
     def bad(role, variables):
         raise AssetError("bad")
     f.ce.assets.render_role = bad
-    work, prepared = ctx(f).agents.work(node, "release", None, wanted=lambda: True,
+    work, prepared = ctx(f).agents.work(node, "release", sandbox_plan("release"), None, wanted=lambda: True,
                                         started=lambda run: None)
     assert (await work.execute()).skipped
     assert prepared.run is None and prepared.refused.kind == "assets"
@@ -356,7 +358,7 @@ async def test_a_guard_that_stops_an_agent_run_is_its_result(f: Flow):
 async def test_an_agents_work_is_its_checkout_then_its_turn(f: Flow):
     node = task(f, id="R9", kind="release", status="READY")
     started = []
-    work, prepared = ctx(f).agents.work(node, "release", None, wanted=lambda: True,
+    work, prepared = ctx(f).agents.work(node, "release", sandbox_plan("release"), None, wanted=lambda: True,
                                         started=started.append)
     import asyncio
     running = asyncio.ensure_future(work.execute())

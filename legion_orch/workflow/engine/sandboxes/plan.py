@@ -90,12 +90,10 @@ class Environments(Protocol):
         """``role``'s sandboxes wait: its environment is being built again."""
 
 
-class Plans(Protocol):
-    """Which plan applies – the step types know (:class:`.steps.StepPlans`); the sandbox layer
-    and the agent runs are given it, so they never ask the step layer."""
+class Holds(Protocol):
+    """Whether a node still holds its kept sandbox for rework – its step's plan says (until a
+    gate passes, or until the node is accepted), so the step layer knows
+    (:class:`.steps.StepHolds`); the sandbox layer is given it, so it never asks."""
 
-    def for_role(self, role: str) -> SandboxPlan:
-        """Where a run of ``role`` works (a judge: :data:`JUDGE`)."""
-
-    def for_node(self, node: Node) -> SandboxPlan | None:
-        """The plan of the node's producer (None: it has no agent)."""
+    def holds(self, node: Node) -> bool:
+        """``node`` still keeps ``node.sandbox`` for its producer's rework."""

@@ -5,7 +5,7 @@ takes the runtime's calls (:mod:`.runner`). It tells the layer above only throug
 :class:`.StepEvents`."""
 from .active import ActiveStep
 from .runner import StepEvents, StepRunner
-from .step_types import GATE_TYPES, STEP_TYPES, StepPlans, StepType, sandbox_plan, step_for
+from .step_types import GATE_TYPES, STEP_TYPES, StepHolds, StepType, sandbox_plan, step_for
 
-__all__ = ["GATE_TYPES", "ActiveStep", "STEP_TYPES", "StepEvents", "StepPlans", "StepRunner", "StepType",
+__all__ = ["GATE_TYPES", "ActiveStep", "STEP_TYPES", "StepEvents", "StepHolds", "StepRunner", "StepType",
            "sandbox_plan", "step_for"]

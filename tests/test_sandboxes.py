@@ -137,7 +137,9 @@ async def prepare(f: Flow, run: Run, fresh: bool = True):
     payload = f.ce.run_dir(run.id) / "payload"
     payload.mkdir(parents=True, exist_ok=True)
     (f.ce.run_dir(run.id) / "policy.yaml").write_text("{}\n")
-    work = Work(AgentSession(sb(f), run, fresh, stage), await sb(f).checkout(run, fresh),
+    from legion_orch.workflow.engine.steps import sandbox_plan
+    work = Work(AgentSession(sb(f), run, sandbox_plan(run.role), fresh, stage),
+                await sb(f).checkout(run, fresh),
                 log=lambda cmd, r: f.ce._agents._log(run, cmd, r))
     return await work.execute()
 

@@ -278,11 +278,13 @@ def sandbox_plan(role: str) -> SandboxPlan:
     return _PRODUCERS.get(role, JUDGE)
 
 
-class StepPlans:
-    """The sandbox plans the step types declare, for the layers below (:class:`.Plans`)."""
+class StepHolds:
+    """Whether a node still holds its kept sandbox, as its step type's sandbox plan says – for
+    the sandbox layer (:class:`.Holds`)."""
 
-    def for_role(self, role: str) -> SandboxPlan:
-        return sandbox_plan(role)
+    def __init__(self, core: ChangeCore):
+        self.c = core
 
-    def for_node(self, node: Node) -> SandboxPlan | None:
-        return step_for(node).sandbox
+    def holds(self, node: Node) -> bool:
+        plan = step_for(node).sandbox
+        return plan is not None and plan.held(self.c, node)

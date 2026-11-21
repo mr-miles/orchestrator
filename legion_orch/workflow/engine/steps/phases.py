@@ -63,6 +63,7 @@ from ..base.common import _slug
 from ..base.core import ChangeCore
 from ..base.ids import in_round
 from ..base.work import COMMAND, PREPARE, SETUP, Outcome
+from ..sandboxes.plan import JUDGE, SandboxPlan
 
 if TYPE_CHECKING:
     from ..base.dispatch import Dispatcher, StepDispatcher
@@ -372,10 +373,13 @@ class BaselineWarnings(Notes):
 
 
 # ---------------------------------------------------------------------------- agent work
-async def agent_work(active: ActivePhase, role: str, *, wanted: Callable[[], bool],
+async def agent_work(active: ActivePhase, role: str, plan: SandboxPlan, *,
+                     wanted: Callable[[], bool],
                      judged_sha: str | None = None,
                      started: Callable[[Run], None] | None = None) -> Ended | _Again | None:
-    """An agent of ``role`` as a phase's work (a producer's, a judge's): whether the step may
+    """An agent of ``role`` working as ``plan`` says (where its working copy starts, whether it
+    keeps its sandbox and session, pushes a branch), as a phase's work (a producer's, a
+    judge's): whether the step may
     start it (G-B1, the environment), its :class:`.Work` (made by the change's agent runs: the
     run record, the working copy's preparation, the agent's turn) dispatched on the step's
     dispatcher, and what it did – the role handler's result after an accepted report (read
@@ -390,7 +394,7 @@ async def agent_work(active: ActivePhase, role: str, *, wanted: Callable[[], boo
         if refused := agents.preconditions(node, role):
             return Ended(None, refused)
     work, prepared = agents.work(
-        node, role, judged_sha,
+        node, role, plan, judged_sha,
         wanted=lambda: not active.stale() and wanted(),
         started=started or (lambda run: None))
     outcome = await active.dispatch.run(work)
@@ -452,7 +456,7 @@ class Produce(Phase):
                 if moved := c.head_moved(head):
                     return Escalate("head_moved", moved, Resume.READY)
         return await agent_work(
-            active, self.role, wanted=active.ready,
+            active, self.role, active.step.type.sandbox, wanted=active.ready,
             started=lambda run: active.step.move(RUNNING))        # its agent works
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None | _Again:
@@ -510,7 +514,7 @@ async def judge_work(active: ActivePhase, role: str) -> Ended | None:
     def wanted() -> bool:                                    # no review at the cycle yet
         return node.review(node.cycle, role) is None
     while await active.wait_until(wanted):
-        done = await agent_work(active, role, wanted=wanted, judged_sha=node.candidate_sha)
+        done = await agent_work(active, role, JUDGE, wanted=wanted, judged_sha=node.candidate_sha)
         if done is AGAIN:
             continue
         if isinstance(done, Ended):
