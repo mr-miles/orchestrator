@@ -4,7 +4,9 @@ The engine checks what every role shares (report shape, attestations, required d
 result) and then calls the handler registered for the run's role:
 
 * :meth:`RoleHandler.guards` – role-specific guards; returns violation strings,
-* :meth:`RoleHandler.on_done` – the transition after an accepted ``DONE`` report.
+* :meth:`RoleHandler.on_done` – what an accepted ``DONE`` report means: the handler records
+  its role's results and returns the phase's result (ok, rework or escalate; None: the phase
+  waits for more), which the phase applies. A handler never moves the step itself.
 
 Adding a role = assets (``roles.yaml``, soul, prompt, schemas) + one handler module here.
 """
@@ -15,6 +17,7 @@ from typing import Any
 
 from ..attest import Attestation
 from ..model import Finding, Node, Record, Run
+from ..results import Ok, PhaseResult
 from ..view import RoleContext
 
 
@@ -65,10 +68,9 @@ class RoleHandler:
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         return []
 
-    async def on_done(self, e: RoleContext, r: Report) -> None:
-        """Default: the agent's phase passed; the step goes on (accepted after its last
-        phase, which deletes its sandboxes)."""
-        e.step_done(r.node)
+    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult | None:
+        """Default: the agent's work passes its phase."""
+        return Ok()
 
 
 def brief_findings(findings: list[Finding]) -> list[Finding]:

@@ -26,6 +26,7 @@ from ..model import (
     AWAITING_HUMAN,
     LIVE_RUN,
     MERGING,
+    R_ACCEPTED,
     R_REPORTED,
     R_SUPERSEDED,
     READY,
@@ -44,6 +45,7 @@ from ..model import (
     Verdict,
     Verification,
 )
+from ..results import Escalate, Ok, PhaseResult, Rework
 from ..ship import evaluate
 from .common import _slug
 from .core import ChangeCore
@@ -57,35 +59,8 @@ if TYPE_CHECKING:
 EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
 
 
-# ---------------------------------------------------------------------------- results
-@dataclass(frozen=True)
-class Ok:
-    """The phase passed; ``value`` is what it produced (a merge's new head, a readiness
-    result, built images)."""
-    value: Any = None
-
-
-@dataclass(frozen=True)
-class Rework:
-    """The producer has to do its work again, with this feedback (within its cycle budget).
-    ``base``: the commit its next cycle starts from, if that moved (a merge conflict)."""
-    feedback: list[Feedback]
-    source: str
-    base: str | None = None
-
-
-@dataclass(frozen=True)
-class Escalate:
-    """A human decides; ``resume`` says where the node continues once they have. ``feedback``
-    is kept on the node for the producer's next cycle."""
-    kind: str
-    question: str
-    resume: Resume
-    log_tail: str | None = None
-    feedback: list[Feedback] = field(default_factory=list)
-
-
-PhaseResult = Ok | Rework | Escalate
+# the results every phase ends in, an agent's included (workflow/results.py)
+__all__ = ["Escalate", "Ok", "PhaseResult", "Rework"]
 
 
 @dataclass
@@ -95,15 +70,17 @@ class PhaseContext:
     sandboxes: Sandboxes
     dispatcher: Dispatcher | None = None
 
-    def rework(self, node: Node, feedback: list[Feedback], source: str) -> None:
-        """Evidence-driven rework within the cycle budget (G-RV5)."""
+    def rework(self, node: Node, feedback: list[Feedback], source: str,
+               budget_checked: bool = False) -> None:
+        """Evidence-driven rework within the cycle budget (G-RV5; ``budget_checked``: the
+        producer's own budget was checked already)."""
         c = self.c
         node.feedback += feedback
         limit = c.cfg.limits.review_max_cycles + node.extra_cycles
         cur = c.runs.get(node.current_run) if node.current_run else None
         if cur and cur.status == R_REPORTED:
             cur.status = R_SUPERSEDED
-        if node.cycle >= limit:
+        if not budget_checked and node.cycle >= limit:
             c.escalate(node, "cycle_budget",
                        f"G-RV5: {node.cycle} cycle(s) used without acceptance ({source})",
                        resume=Resume.REWORK_CYCLE)
@@ -116,17 +93,20 @@ class PhaseContext:
     def apply(self, node: Node, result: Rework | Escalate) -> None:
         """Under the lock: a rework or an escalation becomes the node's state."""
         if isinstance(result, Rework):
-            self.rework(node, result.feedback, result.source)
+            self.rework(node, result.feedback, result.source, result.budget_checked)
             if result.base and node.status == REWORK:
                 node.base_sha = result.base
         else:
             node.feedback += result.feedback
             self.c.escalate(node, result.kind, result.question, resume=result.resume,
-                            log_tail=result.log_tail)
+                            log_tail=result.log_tail, run=result.run,
+                            missing_decision=result.missing_decision)
 
 
 class Phase:
-    """The defaults: entered by becoming READY, nothing to dispatch, nothing to resume."""
+    """The defaults: entered by becoming READY, nothing to dispatch, nothing to resume.
+    Entering only sets the node's status (or, after a producer, starts the controller's own
+    work on its result); work that has to wait its turn starts in ``dispatch``."""
     #: the node statuses while this phase is the node's current one
     statuses: ClassVar[frozenset[NodeStatus]] = frozenset()
 
@@ -139,6 +119,14 @@ class Phase:
     def resume(self, rt: StepRunner, node: Node) -> Coroutine[Any, Any, None] | None:
         """The controller's work to start again after a restart, while the node is RUNNING."""
         return None
+
+    def reported(self, rt: StepRunner, node: Node, run: Run, result: PhaseResult | None) -> None:
+        """An agent's report in this phase was accepted; its role handler says what it means:
+        ok passes the phase, rework or escalate is applied, None waits for more."""
+        if isinstance(result, Ok):
+            rt.advance(node, self)
+        elif result is not None:
+            rt.ctx.apply(node, result)
 
 
 # ---------------------------------------------------------------------------- policies
@@ -259,8 +247,9 @@ class BaselineWarnings(Notes):
 # ---------------------------------------------------------------------------- agent work
 @dataclass(frozen=True, eq=False)
 class AgentRun(Phase):
-    """Dispatch the role's agent for the node (guards G-D1..G-D4, G-B1, G-H1); the run ends
-    with a report the role's handler judges, which then finishes the phase (``step_done``)."""
+    """Dispatch the role's agent for the node (guards G-D1..G-D4, G-B1, G-H1). The run ends
+    with a report; the role's handler records what it says and returns the phase's result
+    (:meth:`Phase.reported`)."""
     role: str
     statuses: ClassVar = frozenset({READY, REWORK, RUNNING})
 
@@ -271,9 +260,7 @@ class AgentRun(Phase):
 
     def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
         s, c, step = rt.scheduler, rt.c, rt.step(node)
-        if node.status not in (READY, REWORK) \
-                or not all(w.holds(s, node) for w in step.dispatch_when) \
-                or s.waits_for_environment(self.role):
+        if node.status not in (READY, REWORK) or s.waits_for_environment(self.role):
             return []
         if step.judges_head and s.branch_head and (moved := c.head_moved(s.branch_head)):
             c.escalate(node, "head_moved", moved, resume=Resume.READY)
@@ -322,6 +309,16 @@ class Panel(Phase):
                     runs.append(run)
         return runs
 
+    def reported(self, rt: StepRunner, node: Node, run: Run, result: PhaseResult | None) -> None:
+        """A judge reported: its run is done and its sandbox retired. An escalation stands;
+        otherwise the panel decides once every judge has reported – or, where a judge's own
+        handler decides (the critic), its result does."""
+        run.status = R_ACCEPTED
+        rt.lifecycle.sandboxes.delete_later(run.sandbox)
+        if self.decides and not isinstance(result, Escalate):
+            result = self.decide(node, rt.c)
+        super().reported(rt, node, run, result)
+
     def decide(self, node: Node, c: ChangeCore | None = None) -> PhaseResult | None:
         """None until every judge has reported (records the cycle's finding fingerprints)."""
         results = [node.review(node.cycle, r) for r in self.roles(c)]
@@ -359,7 +356,10 @@ class Verify(Phase):
     on_rework: EscalateFailures | None = None
     on_setup_failed: SetupFailurePolicy | None = None
     notes: Notes | None = None
-    statuses: ClassVar = frozenset({VERIFYING})
+    @property
+    def statuses(self) -> frozenset[NodeStatus]:  # type: ignore[override]
+        # at the head (no producer): READY until dispatched, then VERIFYING
+        return frozenset({READY, VERIFYING}) if self.at_head else frozenset({VERIFYING})
 
     def commands_for(self, c: ChangeCore | None, node: Node | None) -> tuple[str, ...]:
         if isinstance(self.commands, tuple):
@@ -374,8 +374,20 @@ class Verify(Phase):
         return f"control/verification/{_slug(node.id)}.json", str(node.kind)
 
     def enter(self, rt: StepRunner, node: Node, after: Phase | None) -> None:
+        """After a producer, its candidate is verified at once; at the head (nothing produced
+        it) the verification waits to be dispatched, like any step's first work."""
         if self.at_head:
+            node.status = READY
+            return
+        self._start(rt, node)
+
+    def dispatch(self, rt: StepRunner, node: Node, capacity: int) -> list[Run]:
+        if self.at_head and node.status == READY:
             node.candidate_sha = rt.c.change.integration_head
+            self._start(rt, node)
+        return []
+
+    def _start(self, rt: StepRunner, node: Node) -> None:
         node.status = VERIFYING
         rt.c.spawn(rt.acceptance.verify_node(node.id))
 

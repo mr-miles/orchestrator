@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from ..model import (
     ORACLE,
-    PENDING,
     REWORK,
     VERIFYING,
     CommandResult,
@@ -16,7 +15,6 @@ from .phases import (
     Escalate,
     Merge,
     Ok,
-    Panel,
     PhaseContext,
     Verify,
     setup_failed_text,
@@ -79,23 +77,10 @@ class Acceptance:
                      "it as missing_decision."))
             oracle.candidate_sha = None
             oracle.status = REWORK
-            node.status = PENDING        # runs again once the oracle is accepted
+            self.runner.enter(node)      # runs again once the oracle is accepted (its wait)
             c.event("rework", f"preflight: {what}: oracle rework cycle {oracle.cycle}", oracle.id)
             return
         self.ctx.apply(node, escalation)
-
-    def panel_complete(self, node: Node) -> None:
-        """Once every panel member has reported: merge on a unanimous PASS at the candidate,
-        otherwise rework with the HIGH findings (or escalate a stale loop, G-RV5)."""
-        panel = step_for(node).phase(Panel)
-        assert isinstance(panel, Panel)
-        result = panel.decide(node, self.c)
-        if result is None:
-            return
-        if isinstance(result, Ok):
-            self.runner.advance(node, panel)
-            return
-        self.ctx.apply(node, result)
 
     def rework(self, node: Node, feedback: list[Feedback], source: str) -> None:
         """Evidence-driven rework within the cycle budget (G-RV5)."""

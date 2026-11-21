@@ -798,7 +798,7 @@ async def test_reprovision_rebuilds_against_the_current_library(f: Flow):
     uv.write_text(uv.read_text() + "  UV_NO_PROGRESS: \"1\"\n")
     res = await f.change_action("reprovision", reason="the uv library entry gained a setting")
     assert "once running agents of mapped roles finish" in res.note
-    assert f.status("provision") == "PENDING"                 # the implementer is still live
+    assert f.status("provision") == "READY"                   # waits: the implementer is live
 
     await f.implement()                                       # verify, then the panel waits
     assert f.status("provision") == "ACCEPTED"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from engine_harness import Flow, scenario
 
-from legion_orch.workflow.engine.phases import Panel, Verify
+from legion_orch.workflow.engine.phases import Ok, Panel, Verify
 from legion_orch.workflow.engine.sandbox_plan import JUDGE
 from legion_orch.workflow.engine.steps import (
     STEP_TYPES,
@@ -89,10 +89,9 @@ def test_verifications_differ_only_in_their_policies():
 
 
 def test_waits_and_resume_points():
-    assert {k: type(s.promote_when[0]) for k, s in STEP_TYPES.items() if s.promote_when} == {
-        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
     assert {k: type(s.dispatch_when[0]) for k, s in STEP_TYPES.items() if s.dispatch_when} == {
-        BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone}
+        BUILD: NoOverlap, NodeKind.RETROSPECTIVE: ReflectionsDone,
+        PROVISION: EnvironmentQuiescent, PREFLIGHT: OracleAccepted}
     assert [k for k, s in STEP_TYPES.items() if s.runs_after_end] == [NodeKind.RETROSPECTIVE]
     assert {k for k, s in STEP_TYPES.items() if s.rework_resume == Resume.REWORK} == {BUILD}
     assert {k for k, s in STEP_TYPES.items() if s.judges_head} == {BASELINE, INTEGRATION,
@@ -148,6 +147,16 @@ def node(f: Flow, kind: NodeKind, **kw) -> Node:
     return n
 
 
+def report(f: Flow, n: Node, result=None, role: str = "implementer"):
+    """An agent's accepted report in the node's current phase, with its handler's result."""
+    from legion_orch.workflow.model import Run
+    run = Run(id=f"r{9100 + len(f.ce.runs)}", node_id=n.id, role=role, soul="s", cycle=n.cycle,
+              sandbox=f"sb-{len(f.ce.runs)}")
+    f.ce.runs[run.id] = run
+    f.ce._runner.reported(n, run, Ok() if result is None else result)
+    return run
+
+
 def capture_spawns(f: Flow) -> list[str]:
     spawned: list[str] = []
 
@@ -163,13 +172,17 @@ async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f
     rt, n = f.ce._runner, node(f, BUILD)
     f.ce.change.panel = ["reviewer"]
     spawned = capture_spawns(f)
-    rt.step_done(n)
+    report(f, n)                                         # the implementer's report
     assert n.status == VERIFYING and spawned == ["Acceptance.verify_node"]
-    rt.step_done(n)
+    rt.advance(n, rt.step(n).current(n))                 # verification passed
     assert n.status == REVIEWING
-    rt.step_done(n)
+    judge = report(f, n, result=None, role="reviewer")   # its handler records the review only
+    assert n.status == REVIEWING                         # the panel decides: no review yet
+    assert judge.status == "ACCEPTED"
+    assert judge.sandbox in f.ce._sandboxes.retiring     # the judge's sandbox goes
+    rt.advance(n, rt.step(n).current(n))                 # the panel passed
     assert n.status == MERGING and spawned[-1] == "Acceptance.merge_node"
-    rt.step_done(n)
+    rt.advance(n, rt.step(n).current(n))                 # merged
     assert n.status == ACCEPTED
 
 
@@ -178,27 +191,56 @@ async def test_an_empty_panel_is_passed_straight_to_the_merge(f: Flow):
     rt, n = f.ce._runner, node(f, BUILD, status=VERIFYING)
     f.ce.change.panel = []
     capture_spawns(f)
-    rt.step_done(n)
+    rt.advance(n, rt.step(n).current(n))
     assert n.status == MERGING
 
 
 @scenario()
 async def test_a_one_phase_agent_step_is_accepted_when_its_report_is(f: Flow):
-    rt, n = f.ce._runner, node(f, NodeKind.RELEASE)
-    rt.step_done(n)
+    n = node(f, NodeKind.RELEASE)
+    report(f, n, role="release")
     assert n.status == ACCEPTED
 
 
 @scenario()
-async def test_promotion_enters_the_first_phase(f: Flow):
+async def test_a_handlers_rework_or_escalation_is_applied_by_its_phase(f: Flow):
+    from legion_orch.workflow.engine.phases import Escalate, Rework
+    from legion_orch.workflow.model import Feedback, Resume
+    n = node(f, NodeKind.INTEGRATION)
+    report(f, n, Escalate("integration_failed", "FAIL", Resume.READY, run="r1"), "integration")
+    assert n.status == ESCALATED and n.escalation.run == "r1"
+    p = node(f, PLAN, status=REVIEWING)                  # the critic's verdict at the panel
+    fb = [Feedback(cycle=1, source="critique", text="thin")]
+    report(f, p, Rework(fb, "critique", budget_checked=True), "critic")
+    assert (p.status, p.cycle, p.feedback) == (REWORK, 2, fb)
+
+
+@scenario()
+async def test_entering_a_step_sets_its_first_phase_and_dispatch_starts_its_work(f: Flow):
     rt = f.ce._runner
-    capture_spawns(f)
+    spawned = capture_spawns(f)
     gate, pre, task = (Node(id=f"x-{k}", kind=k, title="x") for k in (HUMAN, PREFLIGHT, BUILD))
     for n in (gate, pre, task):
-        rt.promote(n)
-    assert gate.status == AWAITING_HUMAN
+        rt.enter(n)
+    assert gate.status == AWAITING_HUMAN and task.status == READY
+    assert pre.status == READY and spawned == []           # its verification waits its turn
+    f.ce.nodes[pre.id] = pre
+    async with f.ce.lock:
+        assert rt.dispatch(pre, 4) == []
     assert (pre.status, pre.candidate_sha) == (VERIFYING, f.ce.change.integration_head)
-    assert task.status == READY
+    assert spawned == ["Acceptance.verify_node"]
+
+
+@scenario()
+async def test_a_steps_first_work_waits_for_its_waits(f: Flow):
+    rt = f.ce._runner
+    capture_spawns(f)
+    oracle = node(f, ORACLE, id="oracle", status=REWORK)        # sent back by its preflight
+    pre = node(f, PREFLIGHT, status=READY)
+    assert rt.dispatch(pre, 4) == [] and pre.status == READY    # OracleAccepted does not hold
+    oracle.status = ACCEPTED
+    rt.dispatch(pre, 4)
+    assert pre.status == VERIFYING
 
 
 @scenario()
@@ -260,7 +302,7 @@ async def test_a_preflight_setup_failure_goes_back_to_the_oracle(f: Flow):
     oracle = node(f, ORACLE, id=ORACLE, status=ACCEPTED)
     n = node(f, PREFLIGHT, status=VERIFYING)
     conclude(f, n, ver(setup=1))
-    assert (oracle.status, oracle.cycle, n.status) == (REWORK, 2, PENDING)
+    assert (oracle.status, oracle.cycle, n.status) == (REWORK, 2, READY)   # waits for it
     assert "BLOCKER (preflight)" in oracle.feedback[-1].text
     # without a cycle left, a human decides
     n.status, oracle.cycle = VERIFYING, f.cfg.limits.review_max_cycles

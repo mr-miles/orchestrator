@@ -19,6 +19,7 @@ from ...store import DocCheck, DocVersion
 from ..model import (
     LIVE_RUN,
     MERGING,
+    R_REPORTED,
     RUNNING,
     VERIFYING,
     Change,
@@ -68,9 +69,10 @@ class ChangeEngine(ChangeCore):
                                     self._acceptance, self._provisioner)
         self._runner = StepRunner(self, self._phases, self._lifecycle, self._acceptance,
                                   self._provisioner, self._scheduler)
-        self._acceptance.runner = self._scheduler.runner = self._runner
+        self._acceptance.runner = self._scheduler.runner = self._reports.runner = self._runner
+        self._dispatcher.reports = self._reports
         self._flow = FlowRuntime(self, self._runner, self._lifecycle, self._acceptance)
-        self._gates.flow = self._scheduler.flow = self._flow
+        self._gates.flow = self._flow
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:
@@ -99,6 +101,9 @@ class ChangeEngine(ChangeCore):
             if run.status in LIVE_RUN:
                 self._lifecycle.fail_run(run, "controller restarted while the run was live",
                                          FailureSource.CONTROLLER)
+            elif run.status == R_REPORTED and not run.concluded:
+                # its agent's turn ended (with the controller): its report goes to its phase
+                self.spawn(self._reports.conclude_later(run.id))
         for node in self.nodes.values():
             if node.status == VERIFYING:
                 self.spawn(self._acceptance.verify_node(node.id))
@@ -152,12 +157,6 @@ class ChangeEngine(ChangeCore):
 
     def delete_sandbox_later(self, name: str) -> None:
         self._sandboxes.delete_later(name)
-
-    def step_done(self, node: Node) -> None:
-        self._runner.step_done(node)
-
-    def panel_complete(self, node: Node) -> None:
-        self._acceptance.panel_complete(node)
 
     def define_tasks(self, plan: Node) -> list[str]:
         return self._flow.define_tasks(plan)

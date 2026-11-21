@@ -332,6 +332,11 @@ and, at each level, the stages before them – nearest first; the UI's names map
 | an oracle, preflight or baseline escalation: **Revise the plan** (`revise_plan`) | Design |
 | an `integration_failed` escalation: **Plan a fix** (`plan_fix`) | Delivery: a fix round (§5.10a) |
 
+The state API returns, from the core, the actions each node offers now and the stages with
+their nodes; the UI renders them as they come – a **Send back: <stage>** for each stage offered
+(Requirements and Plan behind a confirmation, Delivery as **Plan a fix round**), override only
+where the step allows it – and draws each stage as a box around its nodes on the task graph.
+
 What sending a stage back does is the stage's **rework policy**. Requirements, Plan, Design and
 Oracle **start over**: everything in them, and every later stage built on them, goes back to
 pending and runs again, and the stage's first step gets the feedback. Delivery **appends a
@@ -356,6 +361,14 @@ PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
 `STARTING -> ACTIVE -> REPORTED -> (ACCEPTED | SUPERSEDED)`;
 `ACTIVE -> FAILED` on crash, timeout or `max_report_attempts` rejected reports.
 On `ACCEPTED` the run's sandbox is deleted.
+
+**A run ends when its agent's turn does.** The `report` tool checks a report as it is filed, so a
+rejected one can be fixed, and records an accepted one (`REPORTED`, with the instruction to end
+the turn) – but the workflow does not move until the agent ends its turn and its process exits:
+then the role's handler judges the report and the run's phase takes the result (a BLOCKED report
+escalates). A turn that ends without an accepted report fails the run. An agent still in its turn
+300 s after its report was accepted is stopped; a run whose turn ended while the controller was
+down is concluded after the restart, its report checked again.
 
 A live run's **stage** records how far its sandbox got: `PREPARING` (OpenShell is creating the
 sandbox) -> `LAUNCHING` (the payload is in place; the setup script clones the working copy and

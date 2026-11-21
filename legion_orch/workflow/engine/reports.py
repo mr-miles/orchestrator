@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
@@ -22,11 +23,14 @@ from ..model import (
     RunReport,
     RunStage,
 )
-from ..results import ReportOutcome
+from ..results import Escalate, PhaseResult, ReportOutcome
 from ..roles import Report, handler_for
 from ..view import RoleContext
 from .common import WorkflowError, log
 from .core import ChangeCore
+
+if TYPE_CHECKING:
+    from .steps import StepRunner
 from .runs import RunLifecycle
 from .steps import step_for
 
@@ -52,12 +56,19 @@ class _Admitted:
     violations: list[str] = field(default_factory=list)
 
 
+END_TURN = ("Accepted. End your turn now: the controller takes your work when your turn ends, "
+            "and nothing you do after this counts.")
+
+
 class Reports:
     """Everything an agent sends: document writes, progress and the final report. Role-specific
     guards and transitions are the role handlers' (workflow/roles/), given ``roles``."""
 
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, roles: RoleContext):
         self.c, self.lifecycle, self.roles = core, lifecycle, roles
+        self.runner: StepRunner = None  # type: ignore[assignment]   # set once the runner exists
+        # run -> its checked report, from its acceptance until the agent's turn ends
+        self._accepted: dict[str, Report | None] = {}
         self._report_locks: dict[str, asyncio.Lock] = {}     # serialise reports of one run
 
     def docs_write(self, run: Run, path: str, content: str, base_version: int | None,
@@ -216,12 +227,8 @@ class Reports:
                                        missing_decision=r.missing_decision, at=run.ended_at)
                 self.c.event("report", f"{run.role} reported {r.status}: {r.summary[:200]}",
                              node.id, run.id)
-                if r.status == ReportStatus.BLOCKED:
-                    self.c.escalate(node, "blocked", r.blocked_reason or "",
-                                    resume=step_for(node).rework_resume,
-                                    run=run.id, missing_decision=r.missing_decision)
-                else:   # role-specific transition (see workflow/roles/)
-                    await handler_for(run.role).on_done(self.roles, report)
+                # what it means is decided when the agent's turn ends (conclude)
+                self._accepted[run.id] = report
                 self.c.save()
         except Exception as e:
             log.exception("applying report of %s failed", run.id)
@@ -231,7 +238,55 @@ class Reports:
             with contextlib.suppress(Exception):
                 self.c.save()
             return ReportOutcome.reject("controller error while applying the report; escalated")
-        return ReportOutcome(accepted=True, next=node.status)
+        return ReportOutcome(accepted=True, next=node.status, instruction=END_TURN)
+
+    async def conclude(self, run: Run) -> None:
+        """The agent's turn ended (its process exited; the lock is held). After an accepted
+        report, its role handler judges what it means and the run's phase takes the result –
+        a BLOCKED report escalates. (Without one, the run already failed.) Any exception
+        restores the state and escalates."""
+        node = self.c.nodes.get(run.node_id)
+        if run.status != R_REPORTED or run.concluded or node is None or run.report is None:
+            return
+        try:
+            with self.c.st.transaction():
+                run.concluded = True
+                if run.report.status == ReportStatus.BLOCKED:
+                    result: PhaseResult | None = Escalate(
+                        "blocked", run.report.blocked_reason or "", step_for(node).rework_resume,
+                        run=run.id, missing_decision=run.report.missing_decision)
+                else:   # what the role's report means (see workflow/roles/)
+                    report = self._accepted.pop(run.id, None) or await self._recheck(run, node)
+                    result = await handler_for(run.role).on_done(self.roles, report)
+                self.runner.reported(node, run, result)          # the phase applies it
+                self.c.save()
+        except Exception as e:
+            log.exception("concluding run %s failed", run.id)
+            self.lifecycle.fail_run(run, f"controller error while applying the report: {e!r} "
+                                    "(external effects such as git merges may already exist)",
+                                    FailureSource.CONTROLLER)
+            with contextlib.suppress(Exception):
+                self.c.save()
+
+    async def conclude_later(self, run_id: str) -> None:
+        """After a restart: a run whose agent ended its turn after an accepted report while the
+        controller was down."""
+        async with self.c.lock:
+            run = self.c.runs.get(run_id)
+            if run is not None:
+                await self.conclude(run)
+                self.c.save()
+
+    async def _recheck(self, run: Run, node: Node) -> Report:
+        """The typed report again, from the run's record (the controller restarted since it
+        was accepted); raises if it no longer holds."""
+        parsed, v = await attest.check_all(run.report.attestations, [self.c.cfg.repo.name],
+                                           self.c.docs, self.c.git)
+        if not v:
+            v, report = await self._role_guards(run, node, parsed, run.report.data)
+        if v or report is None:
+            raise ValueError("the accepted report no longer holds: " + "; ".join(v))
+        return report
 
     def _reject_report(self, run: Run, node: Node, v: list[str]) -> ReportOutcome:
         run.violations.append(v)

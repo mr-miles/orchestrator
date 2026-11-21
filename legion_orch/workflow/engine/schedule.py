@@ -25,7 +25,7 @@ from .runs import RunLifecycle
 from .steps import StepRunner, step_for
 
 if TYPE_CHECKING:
-    from .runtime import FlowRuntime
+    pass
 
 
 class Scheduler:
@@ -36,7 +36,6 @@ class Scheduler:
         self.provisioner = provisioner
         self.branch_head: str | None = None      # G-H1: read once per tick
         self.runner: StepRunner = None  # type: ignore[assignment]   # set once the runner exists
-        self.flow: FlowRuntime = None  # type: ignore[assignment]     # … and the workflow
 
     async def tick(self) -> None:
         """Under the lock: promote nodes whose dependencies are accepted, fail timed-out runs
@@ -58,12 +57,6 @@ class Scheduler:
             # an ended change only runs a retrospective someone asked for
             if not active and not any(step_for(n).runs_after_end for n in c.nodes.values()):
                 return
-            if active:
-                for node in list(c.nodes.values()):
-                    # the workflow started its step; the scheduler starts the node
-                    if self.flow.should_start(node) \
-                            and all(w.holds(self, node) for w in step_for(node).promote_when):
-                        self.runner.promote(node)
             self.lifecycle.check_timeouts()
             # G-H1: the branch head, if a head-judging run may be dispatched this tick
             self.branch_head = (await c.git.integration_head(c.change.id)

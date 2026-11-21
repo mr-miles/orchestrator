@@ -3,7 +3,47 @@ agent's ``report`` (the MCP tool). Failures are raised, so a result always means
 except a report, whose outcome is either accepted or the list of violated guards."""
 from __future__ import annotations
 
-from .model import NodeStatus, Record
+from dataclasses import dataclass, field
+from typing import Any
+
+from .model import Feedback, NodeStatus, Record, Resume
+
+
+# ---------------------------------------------------------------------------- phase results
+# How every phase of a step ends (engine/phases.py), the agent's included: its role handler
+# (workflow/roles/) returns one for an accepted report, and the phase applies it.
+@dataclass(frozen=True)
+class Ok:
+    """The phase passed; ``value`` is what it produced (a merge's new head, a readiness
+    result, built images)."""
+    value: Any = None
+
+
+@dataclass(frozen=True)
+class Rework:
+    """The producer has to do its work again, with this feedback (within its cycle budget).
+    ``base``: the commit its next cycle starts from, if that moved (a merge conflict).
+    ``budget_checked``: the producer's own budget was checked already (the critique's, G-C2)."""
+    feedback: list[Feedback]
+    source: str
+    base: str | None = None
+    budget_checked: bool = False
+
+
+@dataclass(frozen=True)
+class Escalate:
+    """A human decides; ``resume`` says where the node continues once they have. ``feedback``
+    is kept on the node for the producer's next cycle; ``run``: the run it is about."""
+    kind: str
+    question: str
+    resume: Resume
+    log_tail: str | None = None
+    feedback: list[Feedback] = field(default_factory=list)
+    run: str | None = None
+    missing_decision: str | None = None
+
+
+PhaseResult = Ok | Rework | Escalate
 
 
 class ActionResult(Record):
@@ -32,6 +72,7 @@ class ReportOutcome(Record):
     next: NodeStatus | None = None
     dry_run: bool | None = None
     would_accept: bool | None = None
+    instruction: str | None = None          # what the agent does next (accepted: end the turn)
 
     @classmethod
     def reject(cls, *violations: str, attempts_left: int | None = None) -> ReportOutcome:

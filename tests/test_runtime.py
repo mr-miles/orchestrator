@@ -109,16 +109,15 @@ async def test_a_send_back_restarts_the_stage_with_its_feedback(f: Flow):
 
 
 @scenario()
-async def test_an_engine_rerun_of_a_done_step_is_started_by_the_scheduler(f: Flow):
-    """Within a step the engine may run its node again (reprovisioning); the core, which
-    sees the step done, is not asked."""
+async def test_a_started_step_is_in_its_first_phase_before_any_tick(f: Flow):
+    """The core starting a step enters its first phase at once (the runtime, through the step
+    runner); the scheduler only starts the work, when there is room."""
     await f.intake()
-    node = f.ce.nodes["intake"]
-    async with f.ce.lock:
-        node.status = PENDING
-        assert f.ce.workflow.should_start(node)              # done in the core, pending here
-        f.ce.nodes["H-1"].status = PENDING
-        assert not f.ce.workflow.should_start(f.ce.nodes["H-1"])    # a gate is never started
+    await f.ce.human_action("H-1", "accept", "miles", {})     # no settle: no tick has run
+    assert core(f, "plan") == "running" and f.status("plan") == "READY"
+    assert not f.runs("plan")
+    await f.settle()
+    assert f.runs("plan") and f.status("plan") == "RUNNING"
 
 
 # ---------------------------------------------------------------------------- persistence
@@ -136,3 +135,39 @@ async def test_the_core_is_rebuilt_exactly_from_its_record(f: Flow):
     same_core(f.ce, again)
     assert again.workflow.actions("H-E1") == f.ce.workflow.actions("H-E1")
     assert again.workflow.flow.attempt("intake") == 2        # attempts carried into the R2 tree
+
+
+# ---------------------------------------------------------------------------- the graph shown
+@scenario()
+async def test_each_node_depends_on_what_runs_just_before_it(f: Flow):
+    from engine_harness import TASKS
+    t2 = dict(TASKS[0], id="T2", title="two", depends_on=["T1"], files_modified=["src/two.txt"])
+    t3 = dict(TASKS[0], id="T3", title="three", files_modified=["src/three.txt"])
+    await f.intake()
+    await f.human("H-1", "accept", tier="R2")
+    await f.plan(tasks=[TASKS[0], t2, t3])
+    await f.critique()
+    dep = {k: n.depends_on for k, n in f.ce.nodes.items()}
+    assert dep["H-1"] == ["intake"] and dep["plan"] == ["H-1"] and dep["H-E1"] == ["plan"]
+    assert dep["oracle"] == ["H-E1"] and dep["H-2"] == ["preflight"]
+    assert dep["build:T1"] == ["H-2"] and dep["build:T2"] == ["build:T1"]
+    assert dep["build:T3"] == ["H-2"]
+    assert sorted(dep["integration"]) == ["build:T2", "build:T3"]     # the tasks' ends
+    assert dep["H-3"] == ["integration"]
+
+
+@scenario()
+async def test_the_stages_are_listed_with_their_nodes(f: Flow):
+    await f.intake()
+    await f.human("H-1", "accept", tier="R2")
+    await f.plan()
+    await f.critique()
+    stages = {s["id"]: s for s in views.workflow_state(f.ce)["stages"]}
+    assert list(stages) == ["stage:requirements", "stage:plan", "stage:design", "stage:oracle",
+                            "stage:delivery"]
+    assert stages["stage:design"]["nodes"] == ["plan", "H-E1"]
+    assert stages["stage:design"]["title"] == "Design" and stages["stage:design"]["depth"] == 1
+    assert stages["stage:plan"]["level"] == 1 and stages["stage:oracle"]["level"] == 0
+    assert stages["stage:plan"]["nodes"] == ["plan", "H-E1", "oracle", "preflight", "H-2"]
+    assert stages["stage:delivery"]["nodes"] == ["build:T1", "integration", "H-3"]
+    assert stages["stage:design"]["status"] == "running"

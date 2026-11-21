@@ -533,4 +533,58 @@ describe('the operator UI', () => {
     await userEvent.click(screen.getByRole('button', { name: /New change/ }))
     expect(await screen.findByRole('dialog', { name: 'Start a change' })).toBeTruthy()
   })
+
+  test('a gate sends back what the workflow offers, once there is feedback', async () => {
+    localStorage.setItem('approver', 'miles')
+    renderApp()
+    await push()
+    await userEvent.click(await screen.findByRole('button', { name: /H-1 · Accept requirements/ }))
+    const sheet = await screen.findByRole('dialog')
+    const back = within(sheet).getByRole('button', { name: 'Send back: Requirements' })
+    expect((back as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.type(within(sheet).getByLabelText(/Feedback/), 'also say goodbye')
+    await userEvent.click(back)
+    const confirm = await screen.findByRole('alertdialog')
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Send Requirements back' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url.endsWith('/nodes/H-1/action'))?.body).toMatchObject({
+        action: 'send_back',
+        payload: { stage: 'stage:requirements', feedback: 'also say goodbye' },
+      }),
+    )
+  })
+
+  test('an escalation offers exactly what the workflow offers on it', async () => {
+    const s = stateAtH1()
+    const state = {
+      ...s,
+      nodes: s.nodes.map((n) =>
+        n.id === 'intake'
+          ? {
+              ...n,
+              status: 'ESCALATED' as const,
+              escalation: { kind: 'run_failed', reason: 'the agent crashed', resume: 'READY' },
+            }
+          : n,
+      ),
+      workflow: {
+        ...s.workflow!,
+        actions: { intake: ['answer', 'retry', 'send_back:stage:requirements', 'abandon'] },
+      },
+    }
+    location.hash = '#c1/overview/intake'
+    renderApp()
+    await push(state)
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByRole('button', { name: 'Send back: Requirements' })).toBeTruthy()
+    expect(within(sheet).queryByRole('button', { name: 'Override accept' })).toBeNull()
+    expect(within(sheet).queryByRole('button', { name: 'Plan a fix round' })).toBeNull()
+  })
+
+  test('the task graph draws its stages around their nodes', async () => {
+    renderApp()
+    await push()
+    const graph = await screen.findByRole('img', { name: 'Task graph' })
+    expect(graph.querySelector('[aria-label="Stage Requirements: running"]')).toBeTruthy()
+  })
 })

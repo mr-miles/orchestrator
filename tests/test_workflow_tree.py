@@ -209,3 +209,10 @@ def test_a_task_defined_again_after_a_send_back_continues_its_attempts():
     plan_accepted(rt, graph={"tasks": GRAPH["tasks"][1:]})
     rt.act("H-E1", "approve").act("H-2", "approve")
     assert rt.attempt("build:T1") == 2
+
+
+def test_stage_titles():
+    from legion_orch.workflow.engine.workflow_tree import stage_title
+    assert stage_title("stage:design") == "Design"
+    assert stage_title("stage:oracle@2") == "Oracle (round 2)"
+    assert stage_title("stage:round@3") == "Round 3"

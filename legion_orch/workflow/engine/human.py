@@ -9,8 +9,6 @@ from ..flow import CHANGE
 from ..model import (
     ACCEPTED,
     AWAITING_HUMAN,
-    BASELINE,
-    BUILD,
     ESCALATED,
     FAILED,
     H_CHANGE,
@@ -18,12 +16,8 @@ from ..model import (
     H_REQUIREMENTS,
     H_SPEC,
     HUMAN,
-    INTEGRATION,
     LIVE_RUN,
     MERGING,
-    ORACLE,
-    PENDING,
-    PREFLIGHT,
     PROVISION,
     R_REPORTED,
     R_SUPERSEDED,
@@ -77,6 +71,7 @@ class HumanGates:
             node = self.c.nodes.get(node_id)
             if node is None:
                 raise WorkflowError(f"unknown node {node_id}")
+            action, payload = self._generic(node, action, payload)
             if action == "send_back" and node.status in (ESCALATED, AWAITING_HUMAN):
                 res = await self._send_back(node, payload.get("stage") or "", approver, payload)
             elif node.status == ESCALATED:
@@ -90,9 +85,31 @@ class HumanGates:
             res.status = node.status
             return res
 
+    # Today's names for the workflow's generic send-back (the CLI, links, older clients): the
+    # stage they send back, by gate (``*``: any node).
+    SEND_BACK_ALIASES = {
+        (H_REQUIREMENTS, "revise"): "requirements",
+        (H_ENV, "revise"): "design",
+        (H_SPEC, "revise"): "oracle",
+        (H_SPEC, "restart"): "plan",
+        ("*", "revise_plan"): "design",
+        ("*", "plan_fix"): "delivery",
+    }
+
+    def _generic(self, node: Node, action: str, payload: dict) -> tuple[str, dict]:
+        """An alias as the generic action it names."""
+        stage = self.SEND_BACK_ALIASES.get((base_id(node.id), action)) \
+            or self.SEND_BACK_ALIASES.get(("*", action))
+        if stage is None:
+            return action, payload
+        if action == "plan_fix" and not (node.escalation
+                                         and node.escalation.kind == "integration_failed"):
+            raise WorkflowError("plan_fix is only available when integration failed")
+        return "send_back", {**payload, "stage": stage}
+
     def _feedback_doc(self, node: Node, approver: str, text: str, kind: str) -> str:
         n = len([f for f in node.feedback if f.source == kind]) + 1
-        path = f"tasks/{node.task.id}/{kind}/{n}.md" if node.kind == BUILD \
+        path = f"tasks/{node.task.id}/{kind}/{n}.md" if node.task \
             else f"control/{kind}/{_slug(node.id)}-{n}.md"
         return self.c.write_record(path, f"# {kind} for {node.id}\n\nBy: {approver}\n\n{text}\n").attestation
 
@@ -104,17 +121,14 @@ class HumanGates:
             raise WorkflowError(f"action {action!r} not valid for {node.id} (one of {valid})")
         return await getattr(self, handler)(node, approver, payload)
 
-    # (gate, action) -> method(node, approver, payload). The gates' decisions; sending work back
-    # is the workflow's generic send_back – the older names stay as its aliases.
+    # (gate, action) -> method(node, approver, payload): what approving each gate decides (its
+    # subjects, the tier, the attestations), and H-3's reject and recheck. Sending work back is
+    # the workflow's generic send_back.
     GATE_ACTIONS = {
         (H_REQUIREMENTS, "accept"): "_accept_requirements",
         (H_REQUIREMENTS, "approve"): "_accept_requirements",
-        (H_REQUIREMENTS, "revise"): "_revise_requirements",
         (H_ENV, "approve"): "_approve_plan",
-        (H_ENV, "revise"): "_revise_plan_gate",
         (H_SPEC, "approve"): "_approve_oracle",
-        (H_SPEC, "revise"): "_revise_oracle",
-        (H_SPEC, "restart"): "_restart_plan",
         (H_CHANGE, "accept"): "_accept_change",
         (H_CHANGE, "approve"): "_accept_change",
         (H_CHANGE, "reject"): "_reject_change",
@@ -132,15 +146,19 @@ class HumanGates:
 
     async def _send_back(self, node: Node, stage: str, approver: str, payload: dict) -> ActionResult:
         """Send the work of ``stage`` back with feedback (``stage``: a stage id or name): the
-        stage's rework policy runs, and everything built on it starts over."""
-        text = (payload.get("feedback") or payload.get("answer") or "").strip()
-        if not text:
-            raise WorkflowError("feedback is required")
+        stage's rework policy runs, and everything built on it starts over. Delivery's appends a
+        fix round (§5.10a)."""
+        text = (payload.get("feedback") or payload.get("answer") or payload.get("comment")
+                or "").strip()
         if not stage.startswith("stage:"):
             stage = self._stage(node, stage)
         if f"send_back:{stage}" not in self.flow.actions(node.id):
             raise WorkflowError(f"{node.id} cannot send {stage} back (it may: "
                                 f"{[a for a in self.flow.actions(node.id) if a.startswith('send_back:')]})")
+        if base_id(stage) == "stage:delivery":
+            return await self._fix_round(node, stage, approver, text or None)
+        if not text:
+            raise WorkflowError("feedback is required")
         att = self._feedback_doc(node, approver, text, "feedback")
         node.escalation = None
         await self.flow.act(node.id, f"send_back:{stage}", approver, text, feedback_doc=att)
@@ -171,19 +189,6 @@ class HumanGates:
         self.flow.build_tree()
         await self.flow.act(node.id, "approve", approver)
         return ActionResult(tier=tier, panel=ch.panel)
-
-    async def _revise_requirements(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        return await self._send_back(node, "requirements", approver, payload)
-
-    async def _revise_plan_gate(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        return await self._send_back(node, "design", approver, payload)
-
-    async def _revise_oracle(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        return await self._send_back(node, "oracle", approver, payload)
-
-    async def _restart_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """Restart plan: the whole plan starts over – every fix round goes with it."""
-        return await self._send_back(node, "plan", approver, payload)
 
     async def _approve_subjects(self, node: Node, approver: str, payload: dict,
                                 gate_subjects: list[str], baseline: bool) -> ActionResult:
@@ -341,12 +346,8 @@ class HumanGates:
             res = self._end_change(node, approver, payload, "abandon")
             await self.flow.act(CHANGE, "abandon", approver)
             return res
-        if action == "override_accept":
+        if action in ("override_accept", "override"):
             return self._override_accept(node, approver, payload)
-        if action == "plan_fix":
-            return await self._plan_fix(node, approver, payload)
-        if action == "revise_plan":
-            return await self._revise_plan(node, approver, payload)
         if action not in ("retry", "answer"):
             raise WorkflowError(f"unknown escalation action {action!r}")
         if node.escalation and node.escalation.retrying:
@@ -378,23 +379,14 @@ class HumanGates:
         self._resume(node, resume)
         return ActionResult(status=node.status)
 
-    async def _revise_plan(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """An oracle, preflight or baseline escalation the plan caused (an oracle whose commands
-        cannot work, say): the design goes back to the planner with the human's feedback."""
-        if base_id(node.id) not in (ORACLE, PREFLIGHT, BASELINE):
-            raise WorkflowError("revise_plan is only available for an oracle, preflight or "
-                                "baseline escalation")
-        return await self._send_back(node, "design", approver, payload)
-
-    async def _plan_fix(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        """Plan a fix (§5.10a): integration failed late, so Delivery is sent back – its policy
+    async def _fix_round(self, node: Node, stage: str, approver: str,
+                         comment: str | None) -> ActionResult:
+        """Delivery sent back (§5.10a, from a failed integration: Plan a fix): its policy
         appends a fix round that plans new work on top of the integration head (planner,
         critique, H-E1, the oracle again if it changes, H-2, new build tasks), then integration
-        runs again. Accepted tasks are never reopened."""
+        runs again. Accepted tasks are never reopened. The round's record, with the failure, is
+        what the planner is told (``fix_round``)."""
         ch, limit = self.c.change, self.c.cfg.limits.fix_rounds
-        if node.kind != INTEGRATION or not node.escalation \
-                or node.escalation.kind != "integration_failed":
-            raise WorkflowError("plan_fix is only available when integration failed")
         if len(ch.rounds) >= limit:
             raise WorkflowError(f"limits.fix_rounds ({limit}) reached: answer, override at the "
                                 "gates or abandon the change")
@@ -405,15 +397,13 @@ class HumanGates:
              if a.startswith("file:")] + ([ver.attestation] if ver and ver.attestation
                                          and not ver.ok else [])))
         n = ch.round + 1
-        comment = (payload.get("comment") or payload.get("feedback") or "").strip() or None
         rec = FixRound(number=n, approver=approver, head=ch.integration_head, failure=failure,
                        comment=comment)
         rec.attestation = self.c.write_record(f"control/rounds/{n}.json", rec).attestation
         ch.round = n
         ch.rounds.append(rec)
-        # the round's record is what the planner is told (fix_round), not send-back feedback
         node.escalation = None
-        await self.flow.act(node.id, f"send_back:{self._stage(node, 'delivery')}", approver)
+        await self.flow.act(node.id, f"send_back:{stage}", approver)
         self.c.event("fix_round", f"{approver}: fix round {n} planned on top of "
                      f"{(ch.integration_head or '')[:12]}", node.id)
         return ActionResult(note=f"fix round {n}: the planner plans it on top of the integration head")
@@ -457,7 +447,7 @@ class HumanGates:
     def _override_accept(self, node: Node, approver: str, payload: dict) -> ActionResult:
         """Accept a build task without a full panel PASS. Deterministic verification at the
         candidate is still required (it is not waivable); the gate reports human judgement."""
-        if node.kind != BUILD:
+        if "override" not in self.flow.actions(node.id):     # the step allows it: build tasks
             raise WorkflowError("override is only available for build tasks")
         if not risk.valid_reason(payload.get("reason")):
             raise WorkflowError("override needs a reason of ≥24 chars and more than one word")
@@ -555,7 +545,7 @@ class HumanGates:
         reason = payload.get("reason")
         if not risk.valid_reason(reason):
             raise WorkflowError("a reason of ≥24 chars and more than one word is required")
-        prov.status = PENDING
+        self.flow.runner.enter(prov)       # its wait: no run or verification uses the build
         c.event("provision", f"{approver} requested reprovisioning: {reason}", prov.id)
         return ("provisioning again from the approved spec and the current library once running "
                 "agents of mapped roles finish; their new runs wait until then")

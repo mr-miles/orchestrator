@@ -180,6 +180,7 @@ export function OverviewTab({ state, selected }: { state: ChangeState; selected:
           <TaskGraph
             nodes={state.nodes}
             runs={state.runs}
+            stages={state.workflow?.stages}
             selected={selected}
             onSelect={nav.openNode}
           />

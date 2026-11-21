@@ -5,7 +5,7 @@ import json
 import shlex
 import shutil
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...config import agent_command
 from ...sandbox import (
@@ -19,11 +19,9 @@ from .. import attest, governance
 from ..assets import AssetError
 from ..model import (
     ACCEPTED,
-    BUILD,
     H_ENV,
     H_REQUIREMENTS,
     LIVE_RUN,
-    ORACLE,
     PLAN,
     REWORK,
     RUNNING,
@@ -41,6 +39,9 @@ from .provision import sandbox_env
 from .runs import RunLifecycle
 from .sandboxes import Sandboxes
 from .steps import sandbox_plan
+
+if TYPE_CHECKING:
+    from .reports import Reports
 
 
 @dataclass
@@ -75,6 +76,7 @@ class Dispatcher:
     def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes,
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
+        self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
 
     def _approval_fresh(self) -> list[str]:
         """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
@@ -140,16 +142,15 @@ class Dispatcher:
             self.c.escalate(node, "approval", stale_env,
                             resume=Resume.REWORK if node.status == REWORK else Resume.READY)
             return None
-        if node.kind == ORACLE or (node.kind == BUILD and not node.base_sha):
-            node.base_sha = ch.integration_head
         plan = sandbox_plan(role)
+        if plan.base_at_head(bool(node.base_sha)):
+            node.base_sha = ch.integration_head
         if plan.at_head:
             judged_sha = ch.integration_head
         run_id = self.c.host.next_run_id()
-        # a fix round's oracle starts from the integration head, not from round 1's oracle branch
-        again = f"-r{node.round}" if node.kind == ORACLE and node.round > 1 else ""
-        # only roles that push get a branch; the others check their commit out detached
-        branch = f"legion/{ch.id}/{_slug(node.id)}{again}" if plan.pushes else None
+        # only roles that push get a branch (one per node: a fix round's oracle is its own node,
+        # oracle@n, so its branch starts afresh); the others check their commit out detached
+        branch = f"legion/{ch.id}/{_slug(node.id)}" if plan.pushes else None
         asg = self._assignment(node, role, branch, judged_sha)
         try:
             rendered = self.c.assets.render_role(role, asg.variables)
@@ -255,7 +256,7 @@ class Dispatcher:
         if plan.keeps and node.sandbox is None:
             node.sandbox = run.sandbox
         # approved_spec_and_oracle compares with these (the scaffold precedes H-2, §5.3b)
-        if node.kind == BUILD and plan.pushes and not node.task.scaffold:
+        if node.task and plan.pushes and not node.task.scaffold:     # a build run
             if ch.first_build_at is None:
                 ch.first_build_at = now_iso()
             rnd = next((x for x in ch.rounds if x.number == node.round), None)
@@ -369,6 +370,9 @@ class Dispatcher:
                 self.c.event("agent", f"agent process exited ({rc})", run.node_id, run_id)
             run.stage = RunStage.EXITED
             self.lifecycle.archive_log(run)
+            # the agent's turn ended: control returns to the engine, and an accepted report
+            # goes to its phase
+            await self.reports.conclude(run)
             self.c.save()
         if sandbox_plan(run.role).keeps_session:
             await self.sandboxes.pause(run)

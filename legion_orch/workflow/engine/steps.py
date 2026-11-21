@@ -33,8 +33,10 @@ from ..model import (
     PLAN,
     PREFLIGHT,
     PROVISION,
+    READY,
     RELEASE,
     RETRO,
+    REWORK,
     Node,
     NodeKind,
     Resume,
@@ -57,6 +59,7 @@ from .phases import (
     Panel,
     Phase,
     PhaseContext,
+    PhaseResult,
     TaskCommands,
     TierPanel,
     Verify,
@@ -154,8 +157,7 @@ class DropEnvironment(Reset):
 class StepType:
     phases: tuple[Phase, ...]
     sandbox: SandboxPlan | None = None           # the producing agent's (None: no agent)
-    promote_when: tuple[Wait, ...] = ()          # before it starts
-    dispatch_when: tuple[Wait, ...] = ()         # before each run is dispatched
+    dispatch_when: tuple[Wait, ...] = ()         # before its work starts (each run, each try)
     runs_after_end: bool = False                 # dispatched once the change has ended
     rework_resume: Resume = Resume.READY         # where a failed or blocked run resumes
     on_reset: tuple[Reset, ...] = ()             # what a send-back resetting it undoes
@@ -198,12 +200,12 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
                 Panel(Judges(("critic",)), decides=False),          # the critic decides (G-C2)
                 on_reset=(RestartPlan(),)),
-    PROVISION: StepType((BuildImages(),), promote_when=(EnvironmentQuiescent(),),
+    PROVISION: StepType((BuildImages(),), dispatch_when=(EnvironmentQuiescent(),),
                         on_reset=(DropEnvironment(),)),
-    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC))),   # merges itself
+    ORACLE: agent("oracle", SandboxPlan(Checkout.BRANCH, UntilGate(H_SPEC), rebase=True)),  # merges itself
     PREFLIGHT: StepType((Verify(AcceptanceCommands(), expect_failures=True, at_head=True,
                                 on_setup_failed=OracleReworks(), notes=AlreadyPassing()),),
-                        promote_when=(OracleAccepted(),)),
+                        dispatch_when=(OracleAccepted(),)),
     BASELINE: agent("baseline", HEAD,
                     Verify(BaselineCommands(), expect_failures=True, notes=BaselineWarnings())),
     BUILD: agent("implementer", SandboxPlan(Checkout.BRANCH, UntilAccepted()),
@@ -234,7 +236,7 @@ def sandbox_plan(role: str) -> SandboxPlan:
 # ---------------------------------------------------------------------------- the runner
 class StepRunner:
     """Moves nodes through their step's phases. Phases call back into it (``advance``) when they
-    pass; role handlers do through ``RoleContext.step_done``."""
+    pass; an agent's accepted report reaches its phase through :meth:`reported`."""
 
     def __init__(self, core: ChangeCore, ctx: PhaseContext, lifecycle: RunLifecycle,
                  acceptance: Acceptance, provisioner: Provisioner, scheduler: Scheduler):
@@ -245,14 +247,22 @@ class StepRunner:
     def step(node: Node) -> StepType:
         return step_for(node)
 
-    def promote(self, node: Node) -> None:
-        """Its dependencies are accepted: enter its first phase."""
+    def enter(self, node: Node) -> None:
+        """The workflow started the node's step (or the engine runs it again): its first
+        phase."""
         self.step(node).phases[0].enter(self, node, None)
 
     def dispatch(self, node: Node, capacity: int) -> list[Run]:
-        """The runs (or controller work) its current phase starts now."""
-        phase = self.step(node).current(node)
-        return phase.dispatch(self, node, capacity) if phase else []
+        """The runs (or controller work) its current phase may start now: a step's first
+        work waits until its step type's ``dispatch_when`` hold."""
+        step = self.step(node)
+        phase = step.current(node)
+        if phase is None:
+            return []
+        if phase is step.phases[0] and node.status in (READY, REWORK) \
+                and not all(w.holds(self.scheduler, node) for w in step.dispatch_when):
+            return []
+        return phase.dispatch(self, node, capacity)
 
     def advance(self, node: Node, phase: Phase) -> None:
         """``phase`` passed: enter the next one, or accept the node after the last."""
@@ -263,11 +273,12 @@ class StepRunner:
         else:
             nxt.enter(self, node, phase)
 
-    def step_done(self, node: Node) -> None:
-        """The node's current phase passed (an agent's report was accepted)."""
+    def reported(self, node: Node, run: Run, result: PhaseResult | None) -> None:
+        """An agent's report was accepted (under the lock): its role handler's result goes to
+        the node's current phase, which applies it."""
         phase = self.step(node).current(node)
         assert phase is not None, f"{node.id} is not in a phase ({node.status})"
-        self.advance(node, phase)
+        phase.reported(self, node, run, result)
 
     def resume(self, node: Node) -> Coroutine[Any, Any, None] | None:
         """After a restart: the controller work of a RUNNING node to start again."""

@@ -70,6 +70,9 @@ class RunLifecycle:
     def live_runs(self) -> list[Run]:
         return [r for r in self.c.runs.values() if r.status in LIVE_RUN]
 
+    # an agent still in its turn this long after its report was accepted is stopped
+    END_TURN_GRACE_S = 300
+
     def check_timeouts(self) -> None:
         c, limit = self.c, self.c.cfg.limits.run_timeout_s
         now = datetime.now(UTC)
@@ -79,6 +82,14 @@ class RunLifecycle:
                 if proc and proc.returncode is None:
                     proc.kill()
                 self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
+        for run in c.runs.values():
+            proc = c.procs.get(run.id)
+            if run.status == R_REPORTED and not run.concluded and proc and proc.returncode is None \
+                    and run.ended_at \
+                    and (now - _parse_ts(run.ended_at)).total_seconds() > self.END_TURN_GRACE_S:
+                c.event("agent", f"the agent did not end its turn {self.END_TURN_GRACE_S}s after "
+                        "its accepted report: stopped", run.node_id, run.id)
+                proc.kill()                  # its exit concludes the run
 
     def release_sandboxes(self) -> bool:
         """Delete kept sandboxes whose hold has ended (their gate passed, or the change ended)
@@ -210,7 +221,7 @@ class RunLifecycle:
             if r.sandbox and not r.sandbox_deleted and r.status in (R_ACCEPTED, R_SUPERSEDED, R_FAILED):
                 sandboxes.add(r.sandbox)
         held = self.sandboxes.held()
-        for sb in sandboxes - held:
+        for sb in sandboxes - held - self.sandboxes.retiring:     # retiring already: a judge's
             if any(r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
                 continue
             stopped = False

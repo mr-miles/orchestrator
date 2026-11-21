@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .. import guards
 from ..model import Oracle
+from ..results import Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
 
@@ -19,7 +20,7 @@ class Baseline(RoleHandler):
         return guards.results_cover(r.data, orc.acceptance_commands
                                     + orc.integration_commands, "G-BL1")
 
-    async def on_done(self, e: RoleContext, r: Report) -> None:
+    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
         """The controller runs the same commands at the head itself (G-BL2 compares them)."""
         r.node.candidate_sha = r.sha
-        e.step_done(r.node)                 # verification next
+        return Ok()                         # verification next
