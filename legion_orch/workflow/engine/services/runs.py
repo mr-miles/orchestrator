@@ -183,24 +183,32 @@ class RunLifecycle:
         """Move the whole agent log into the store (agents cannot read control/logs/), in parts
         below the store's document size (``<run>.log``, ``<run>.2.log``, …), and record its
         digest. A log over ``LOG_LIMIT`` keeps its first and last halves."""
-        f = self.c.run_dir(run.id) / "agent.log"
-        if not f.exists():
+        text = self.store_log(run.id)
+        if text is None:
             return
+        run.session_id = agentlog.session_id(text) or run.session_id
+        if run.resumed_session and run.session_id and run.session_id != run.resumed_session:
+            self.c.event("agent", f"run {run.id} was to continue session {run.resumed_session} "
+                                  f"but ran in {run.session_id}: it started without that "
+                                  "session's history", run.node_id, run.id)
+        self.c.write_record(f"control/digests/{run.id}.json", agentlog.digest(text))
+
+    def store_log(self, log_id: str) -> str | None:
+        """Move a live log (an agent's, a verification's) into the store, as :meth:`archive_log`
+        describes; its text (None: there was none)."""
+        f = self.c.run_dir(log_id) / "agent.log"
+        if not f.exists():
+            return None
         data = f.read_bytes()
         if len(data) > self.LOG_LIMIT:
             half = self.LOG_LIMIT // 2
             data = (data[:half] + f"\n[legion: {len(data) - 2 * half} bytes omitted]\n".encode()
                     + data[-half:])
         text = data.decode(errors="replace")
-        run.session_id = agentlog.session_id(text) or run.session_id
-        if run.resumed_session and run.session_id and run.session_id != run.resumed_session:
-            self.c.event("agent", f"run {run.id} was to continue session {run.resumed_session} "
-                                  f"but ran in {run.session_id}: it started without that "
-                                  "session's history", run.node_id, run.id)
         for n, part in enumerate(split_lines(text, self.PART_BYTES), start=1):
-            self.c.write_record(log_part(run.id, n), part)
-        self.c.write_record(f"control/digests/{run.id}.json", agentlog.digest(text))
-        shutil.rmtree(self.c.run_dir(run.id), ignore_errors=True)
+            self.c.write_record(log_part(log_id, n), part)
+        shutil.rmtree(self.c.run_dir(log_id), ignore_errors=True)
+        return text
 
     def stored_log(self, run_id: str) -> str:
         """A run's whole archived log ('' if none)."""

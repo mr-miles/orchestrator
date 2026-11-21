@@ -87,6 +87,8 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             # the change's pull request once published (control/pr.json)
             "pull_request": ce.json_doc("control/pr.json") if ch and ce.latest("control/pr.json")
             else None,
+            # node -> the log of its verification running now (/api/runs/<log>/log)
+            "verifying": dict(ce.verifying),
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}
 
 

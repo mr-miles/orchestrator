@@ -56,6 +56,7 @@ class ChangeCore:
         self.procs = svc.procs
         self.st = StateStore(svc.docs, cid)
         self._timeline: list[str] = []                 # events not yet written to the store
+        self.verifying: dict[str, str] = {}            # node -> its live verification's log
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save

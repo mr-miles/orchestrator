@@ -65,7 +65,7 @@ export function install() {
   globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
 }
 
-const node = (n: Partial<Node> & Pick<Node, 'id' | 'kind' | 'title'>): Node => ({
+export const node = (n: Partial<Node> & Pick<Node, 'id' | 'kind' | 'title'>): Node => ({
   depends_on: [],
   status: 'PENDING',
   cycle: 1,

@@ -284,6 +284,7 @@ class Verification(Record):
     results: list[CommandResult] = []
     infra_error: str | None = None
     sandbox: str | None = None
+    log: str | None = None           # its log's id (the sandbox's name): /api/runs/<log>/log
     at: str = Field(default_factory=now_iso)
     attestation: str | None = None   # the stored verification record
 

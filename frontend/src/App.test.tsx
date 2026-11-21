@@ -11,6 +11,7 @@ import {
   FakeEventSource,
   fakeFetch,
   install,
+  node,
   run,
   stateAtH1,
   stateAtH2,
@@ -130,6 +131,34 @@ describe('the operator UI', () => {
     expect(await screen.findByText('pytest -q')).toBeTruthy()
     act(() => log.emit('end', { run: 'r0002' }))
     expect(log.readyState).toBe(FakeEventSource.CLOSED)
+  })
+
+  test("a node's verification opens its log, live while it runs", async () => {
+    location.hash = '#c1/overview/build:T1'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    const s = stateAtH1()
+    const t1 = node({
+      id: 'build:T1',
+      kind: 'build',
+      title: 'greet',
+      status: 'VERIFYING',
+      candidate_sha: 'a'.repeat(40),
+      verification: {
+        '1': { sha: 'b'.repeat(40), ok: false, results: [], log: 'lgv-old' },
+      },
+    })
+    await act(async () => {
+      es.open()
+      es.emit('state', { ...s, nodes: [...s.nodes, t1], verifying: { 'build:T1': 'lgv-now' } })
+    })
+    const sheet = await screen.findByRole('dialog')
+    await userEvent.click(within(sheet).getByRole('tab', { name: 'Verification' }))
+    expect(await within(sheet).findByText('sandbox lgv-now')).toBeTruthy()
+    const logs = within(sheet).getAllByRole('button', { name: /Log/ })
+    expect(logs).toHaveLength(2) // the live one, then cycle 1's
+    await userEvent.click(logs[0]!)
+    await waitFor(() => FakeEventSource.last('/api/runs/lgv-now/log/events'))
   })
 
   test('the bell shows what needs you across changes and opens it', async () => {

@@ -329,17 +329,37 @@ def build_app(ctl: Controller) -> Starlette:
         return browse.config_file(ctl, request.path_params["group"], q.get("path", ""),
                                   raw=q.get("download") == "1")
 
+    def find_log(log_id: str):
+        """The change a log is of, and what its viewers are told about it: an agent run's log,
+        or a verification's (its id the verifier sandbox's name)."""
+        try:
+            ce, run = ctl.find_run(log_id)
+        except WorkflowError:
+            ce, _ = ctl.find_verification_log(log_id)
+
+            def head() -> dict:
+                live = log_id in ce.verifying.values()
+                v = None if live else ctl.find_verification_log(log_id)[1]
+                return {"run": log_id, "status": "ACTIVE" if live else
+                        ("ACCEPTED" if v and v.ok else "FAILED"),
+                        "stage": "VERIFYING" if live else None, "failure": None, "live": live}
+            return ce, head
+        return ce, lambda: {
+            "run": run.id, "status": run.status, "stage": run.stage,
+            "failure": run.failure.model_dump(mode="json") if run.failure else None,
+            "live": run.status in LIVE_RUN}
+
     @api()
     async def run_log(request: Request):
-        """The agent log: plain text, or ``?format=entries`` – the run's stage and failure with
-        the log parsed into display entries (sandbox output and agent events)."""
-        ce, run = ctl.find_run(request.path_params["run_id"])
-        text = ce.log_tail(run.id, int_param(request, "lines", 300))
+        """The agent log (or a verification's): plain text, or ``?format=entries`` – the run's
+        stage and failure with the log parsed into display entries (sandbox output and agent
+        events)."""
+        log_id = request.path_params["run_id"]
+        ce, head = find_log(log_id)
+        text = ce.log_tail(log_id, int_param(request, "lines", 300))
         if request.query_params.get("format") != "entries":
             return PlainTextResponse(text)
-        return {"run": run.id, "status": run.status, "stage": run.stage,
-                "failure": run.failure.model_dump(mode="json") if run.failure else None,
-                "live": run.status in LIVE_RUN, "entries": agentlog.entries(text)}
+        return head() | {"entries": agentlog.entries(text)}
 
     def sse(gen) -> StreamingResponse:
         return StreamingResponse(gen, media_type="text/event-stream",
@@ -396,7 +416,8 @@ def build_app(ctl: Controller) -> Starlette:
         entries that changed (``from``: the first index that differs from what was sent; the
         client keeps entries before it), then ``end`` once the run has finished. The log grows
         without state changes, so it is re-read every ``SSE_TICK_S`` while the run is live."""
-        ce, run = ctl.find_run(request.path_params["run_id"])
+        log_id = request.path_params["run_id"]
+        ce, describe = find_log(log_id)
         lines = int_param(request, "lines", 5000)
 
         async def gen():
@@ -404,10 +425,8 @@ def build_app(ctl: Controller) -> Starlette:
             sent: list[dict] = []
             status = None
             while not ctl.stopping.is_set() and not await request.is_disconnected():
-                entries = agentlog.entries(ce.log_tail(run.id, lines))
-                head = {"run": run.id, "status": run.status, "stage": run.stage,
-                        "failure": run.failure.model_dump(mode="json") if run.failure else None,
-                        "live": run.status in LIVE_RUN}
+                entries = agentlog.entries(ce.log_tail(log_id, lines))
+                head = describe()
                 start = next((i for i, (a, b) in enumerate(zip(sent, entries, strict=False))
                               if a != b), min(len(sent), len(entries)))
                 if start < len(entries) or len(entries) != len(sent) or head != status:
@@ -415,7 +434,7 @@ def build_app(ctl: Controller) -> Starlette:
                                                "total": len(entries)})
                     sent, status = entries, head
                 if not head["live"]:
-                    yield event("end", {"run": run.id})
+                    yield event("end", {"run": log_id})
                     return
                 await ctl.wait_version(ctl.version, SSE_TICK_S)
         return sse(gen())

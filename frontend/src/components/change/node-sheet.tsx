@@ -89,8 +89,18 @@ function Findings({ findings }: { findings: Finding[] }) {
   )
 }
 
-function RunCard({ run }: { run: Run }) {
+/** Opens a log (an agent run's, a verification's) in the log sheet. */
+function LogButton({ log }: { log: string }) {
   const nav = useNav()
+  return (
+    <Button variant="outline" size="sm" onClick={() => nav.openLog(log)}>
+      <ScrollTextIcon data-icon="inline-start" />
+      Log
+    </Button>
+  )
+}
+
+function RunCard({ run }: { run: Run }) {
   return (
     <Card size="sm">
       <CardHeader>
@@ -112,10 +122,7 @@ function RunCard({ run }: { run: Run }) {
           {(run.prompt_pin ?? '').slice(7, 19)}
         </CardDescription>
         <CardAction>
-          <Button variant="outline" size="sm" onClick={() => nav.openLog(run.id)}>
-            <ScrollTextIcon data-icon="inline-start" />
-            Log
-          </Button>
+          <LogButton log={run.id} />
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
@@ -220,6 +227,7 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
   const runs = state.runs.filter((r) => r.node_id === node.id).reverse()
   const reviews = Object.entries(node.reviews ?? {})
   const verification = Object.entries(node.verification ?? {})
+  const verifying = state.verifying?.[node.id]
   return (
     <div className="space-y-4">
       <NodeActions node={node} state={state} />
@@ -229,7 +237,9 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
           {reviews.length > 0 && (
             <TabsTrigger value="reviews">Reviews ({reviews.length})</TabsTrigger>
           )}
-          {verification.length > 0 && <TabsTrigger value="verification">Verification</TabsTrigger>}
+          {(verification.length > 0 || verifying) && (
+            <TabsTrigger value="verification">Verification</TabsTrigger>
+          )}
           {node.feedback.length > 0 && (
             <TabsTrigger value="feedback">Feedback ({node.feedback.length})</TabsTrigger>
           )}
@@ -259,6 +269,20 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
           ))}
         </TabsContent>
         <TabsContent value="verification" className="space-y-3 pt-2">
+          {verifying && (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle className="flex flex-wrap items-center gap-2">
+                  Verifying <StatusBadge status="VERIFYING" />
+                  {node.candidate_sha && <Sha sha={node.candidate_sha} />}
+                </CardTitle>
+                <CardDescription className="font-mono text-xs">sandbox {verifying}</CardDescription>
+                <CardAction>
+                  <LogButton log={verifying} />
+                </CardAction>
+              </CardHeader>
+            </Card>
+          )}
           {verification.map(([k, v]) => (
             <Card key={k} size="sm">
               <CardHeader>
@@ -267,6 +291,11 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
                 </CardTitle>
                 {v.infra_error && (
                   <CardDescription className="text-destructive">{v.infra_error}</CardDescription>
+                )}
+                {v.log && (
+                  <CardAction>
+                    <LogButton log={v.log} />
+                  </CardAction>
                 )}
               </CardHeader>
               <CardContent className="space-y-1 font-mono text-xs">

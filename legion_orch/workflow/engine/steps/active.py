@@ -5,6 +5,7 @@ on the node; an active step holds only its reservation, and is made again after 
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,8 @@ from ..base.dispatch import StepDispatcher, Withdrawn
 from .node_states import WAITING, IllegalNodeTransition
 from .phases import ActivePhase, Approval, Merge, Phase, PhaseResult
 from .step_types import StepType, step_for
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .approvals import Approved
@@ -272,7 +275,31 @@ class ActiveStep:
                 await (work(bound) if work is not None else bound.task())
             except Withdrawn:                    # it ended while its work waited for a slot
                 pass
+            except Exception as e:               # the controller's own failure: a human decides
+                await self._failed(bound, e)
         self.c.spawn(task())
+
+    async def _failed(self, phase: ActivePhase, e: Exception) -> None:
+        """A phase's work raised: unless it counts no more, the step escalates
+        (``internal_error``, the controller's failure), so it is never left in its phase with
+        nothing running. A retry resumes in that phase where it can (verifying, reviewing,
+        merging again), else where the phase says."""
+        log.exception("%s %s: %s failed", self.c.cid, self.node.id, type(phase.phase).__name__)
+        async with self.c.lock:
+            if self.stale(phase):
+                return
+            esc = Escalate("internal_error", f"{type(phase.phase).__name__} failed: "
+                           f"{type(e).__name__}: {e}", None, source=FailureSource.CONTROLLER)
+            esc = dataclasses.replace(esc, resume=self._resume_in(phase, esc))
+            self.apply(esc)
+            self.c.save()
+
+    def _resume_in(self, phase: ActivePhase, esc: Escalate) -> Resume:
+        status = self.node.status
+        if status.value in Resume._value2member_map_ \
+                and self.type.phase_in(status) is phase.phase:
+            return Resume(status.value)
+        return phase.resume_after(esc)
 
     def may_work(self) -> bool:
         """The change is active (or the step runs after the end)."""
