@@ -12,6 +12,7 @@ from ....config import Config
 from ....git import GitHub, GitRemote
 from ....sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
 from ....store import DocStore
+from ....telemetry import Telemetry
 from ...assets import Assets
 from ...attention import AttentionItem
 from .auth import WorkloadAuth
@@ -36,6 +37,8 @@ class Services:
     dispatcher: Dispatcher = field(default_factory=lambda: Dispatcher(4))
     # the workspaces' sources on GitHub: a finished change's branch and pull request
     github: GitHub = field(default_factory=GitHub)
+    # optional OpenTelemetry tracing (off unless configured)
+    telemetry: Telemetry = field(default_factory=Telemetry.off)
 
     def hub(self, workspace: str) -> GitRemote:
         """The hub of ``workspace`` (a configured workspace's name)."""

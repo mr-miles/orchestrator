@@ -19,6 +19,7 @@ from ...sandbox import (
     make_runner,
 )
 from ...store import DocStore
+from ...telemetry import Telemetry
 from ...util import stop_process
 from ..assets import Assets
 from ..attention import AttentionItem
@@ -45,7 +46,8 @@ class Controller:
     """
 
     def __init__(self, cfg: Config, runner: Runner | None = None,
-                 builder: EnvironmentBuilder | None = None):
+                 builder: EnvironmentBuilder | None = None,
+                 telemetry: Telemetry | None = None):
         self.cfg = cfg
         cfg.state_dir.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(cfg.state_dir / "state.db", check_same_thread=False)
@@ -62,7 +64,8 @@ class Controller:
                                     max_push_bytes=cfg.limits.git_max_push_bytes)
                   for w in cfg.workspaces},
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
-            builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel))
+            builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel),
+            telemetry=telemetry or Telemetry.from_config(cfg))
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI streams)
@@ -190,6 +193,7 @@ class Controller:
             await asyncio.wait(waits, timeout=self.STOP_WAIT_S)
         for ce in self.changes.values():
             ce.flush_timeline(force=True)
+        await asyncio.to_thread(self.svc.telemetry.shutdown)
 
     REMIND_S = 60
 

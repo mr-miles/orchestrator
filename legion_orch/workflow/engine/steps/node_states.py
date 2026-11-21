@@ -16,6 +16,8 @@ else writes a status.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ...model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -58,12 +60,21 @@ class IllegalNodeTransition(RuntimeError):
 
 
 class NodeStates:
+    def __init__(self, observer: Callable[[Node, NodeStatus | None, NodeStatus], None] | None = None):
+        self._observer = observer        # told of each status change, after it
+
+    def _check(self, node: Node, to: NodeStatus) -> None:
+        if to not in TRANSITIONS[node.status]:
+            raise IllegalNodeTransition(f"{node.id}: {node.status} -> {to} is not a transition")
+
     def _move(self, node: Node, to: NodeStatus) -> None:
         if node.status == to:
             return
-        if to not in TRANSITIONS[node.status]:
-            raise IllegalNodeTransition(f"{node.id}: {node.status} -> {to} is not a transition")
+        self._check(node, to)
+        before = node.status
         node.status = to
+        if self._observer is not None:
+            self._observer(node, before, to)
 
     # ------------------------------------------------------------------ within a step
     def phase(self, node: Node, to: NodeStatus) -> None:
@@ -87,10 +98,12 @@ class NodeStates:
         """A human decides; ``resume`` says where the step continues once they have.
         ``expected``: a decision that is due, not a failure (a gate's approval):
         ``AWAITING_HUMAN`` instead of ``ESCALATED``."""
-        self._move(node, AWAITING_HUMAN if expected else ESCALATED)
+        target = AWAITING_HUMAN if expected else ESCALATED
+        self._check(node, target)
         node.escalation = Escalation(kind=kind, reason=reason, resume=resume, run=run,
                                      missing_decision=missing_decision, log_tail=log_tail,
                                      source=source)
+        self._move(node, target)
 
     def resume(self, node: Node, to: NodeStatus) -> None:
         """The escalation is resolved: the step goes on, in the phase ``to``."""

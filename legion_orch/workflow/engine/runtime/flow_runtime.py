@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ....telemetry import Subject
 from ... import guards, risk
 from ...flow import (
     CHANGE,
@@ -95,6 +96,11 @@ class FlowRuntime:
             self._apply(inp, replay=True)
         self.inputs = data["inputs"]
         self._materialize()             # the nodes in the tree's order, with its dependencies
+        self.c.trace.resume(list(self.c.runs), ended=self.flow.ended is not None)
+        self.c.trace.flow([(n.id, 'adopt', 'pending', str(self.status(n.id)))
+                           for st in self.flow.workflow.stages for n in walk(st)
+                           if self.status(n.id) in (StepStatus.RUNNING, StepStatus.ESCALATED)],
+                          self._describe)
 
     def _new_flow(self) -> FlowState:
         wf = (requirements_workflow() if self.tree is None
@@ -130,15 +136,40 @@ class FlowRuntime:
             return []
         raise ValueError(f"unknown workflow input {op!r}")
 
+    def _describe(self, nid: str) -> Subject | None:
+        """What a flow node is, for the tracer."""
+        node = self.flow.nodes.get(nid)
+        if node is None:
+            return None
+        parent = self.flow.parent.get(nid)
+        pid = parent.id if parent is not None else None
+        if isinstance(node, Stage):
+            return Subject('stage', pid, None, stage_title(nid))
+        if isinstance(node, Parallel):
+            return Subject('group', pid, None, None)
+        if nid in self.c.nodes:
+            kind = str(self.c.nodes[nid].kind)
+        elif nid.startswith('build:'):
+            kind = 'build'
+        elif base_id(nid) in NODES:
+            kind = str(NODES[base_id(nid)][0])
+        else:
+            kind = ''
+        return Subject('step', pid, kind, None)
+
     def _input(self, *inp: Any) -> list:
         """A new input: applied, and recorded for the replay."""
+        mark = len(self.flow.log)
         effects = self._apply(list(inp))
+        self.c.trace.flow(self.flow.log[mark:], self._describe,
+                          ended=self.flow.ended is not None)
         self.inputs.append(list(inp))
         return effects
 
     # ------------------------------------------------------------------ starting
     def start(self) -> None:
         """A new change: its requirements stage starts."""
+        self.c.trace.begin(self.c.change.workspace)
         self._materialize()
         self._carry_out(self._input("start"))
 
@@ -390,6 +421,7 @@ class FlowRuntime:
         self.runner.end(node)
 
     def _end(self, status: str) -> None:
+        self.c.trace.end(status)
         c = self.c
         if status == "completed":
             c.change.status = ChangeStatus.READY
@@ -447,6 +479,7 @@ class FlowRuntime:
         """Before a save: housekeeping, then the core's record."""
         if self.c.change is not None:
             self.housekeeping()
+            self.c.trace.runs(self.c.runs.values())
             self.save()
 
 
