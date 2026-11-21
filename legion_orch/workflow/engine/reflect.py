@@ -12,12 +12,16 @@ import asyncio
 import json
 import shlex
 import shutil
+from typing import TYPE_CHECKING
 
 from ...config import agent_command
 from ...sandbox import RUN_AGENT_SH, agentlog
 from ...util import stop_process
 from ..model import Run
 from .core import ChangeCore
+
+if TYPE_CHECKING:
+    from .sandboxes import Sandboxes
 
 PROMPT = """# Reflection on your work
 
@@ -102,8 +106,8 @@ def sandbox_skipped(c: ChangeCore, sandbox: str) -> bool:
 class Reflector:
     POLL_S = 1.0
 
-    def __init__(self, core: ChangeCore):
-        self.c = core
+    def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
+        self.c, self.sandboxes = core, sandboxes
         self.pending: set[str] = set()       # sandboxes whose reflection has not finished
 
     def _session_runs(self, sandbox: str) -> list[Run]:
@@ -163,9 +167,9 @@ class Reflector:
         proc = None
         try:
             if stopped:
-                await c.runner.start(sandbox)
-            await c.runner.upload(sandbox, payload)
-            proc = await c.runner.start_agent(sandbox, log_file)
+                await self.sandboxes.wake(sandbox)
+            await self.sandboxes.upload(sandbox, payload)
+            proc = await self.sandboxes.start_agent(sandbox, log_file)
             rc = await asyncio.wait_for(proc.wait(), cfg.reflect_timeout_s)
             text = log_file.read_text(errors="replace") if log_file.exists() else ""
             result = agentlog.agent_result(text)

@@ -1,7 +1,6 @@
 """Dispatch: prepare runs, render prompts, payloads and policies, launch sandboxes."""
 from __future__ import annotations
 
-import asyncio
 import json
 import shlex
 import shutil
@@ -11,16 +10,13 @@ from typing import Any
 from ...config import agent_command
 from ...sandbox import (
     AGENT_PREFIX,
-    SandboxError,
-    SandboxSpec,
     agentlog,
-    is_name_clash,
     payload_scripts,
 )
 from ...store import DocStoreError
 from ...util import now_iso
 from .. import attest, governance
-from ..assets import AssetError, GitMode
+from ..assets import AssetError
 from ..model import (
     ACCEPTED,
     BUILD,
@@ -38,12 +34,12 @@ from ..model import (
     RunStage,
 )
 from ..roles import handler_for
-from ..setup import SETUP_COMMAND
 from ..view import RoleContext
 from .common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
 from .core import ChangeCore
 from .provision import sandbox_env
 from .runs import RunLifecycle
+from .sandboxes import Sandboxes
 
 
 @dataclass
@@ -75,13 +71,9 @@ def assets_record(sha: str) -> str:
 class Dispatcher:
     """Turns a ready node into a run (guards G-D1..G-D4, G-B1) and starts its agent."""
 
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, roles: RoleContext):
-        self.c, self.lifecycle, self.roles = core, lifecycle, roles
-        # serialises stopping a kept sandbox with starting the next run in it
-        self._sandbox_locks: dict[str, asyncio.Lock] = {}
-
-    def _sandbox_lock(self, name: str) -> asyncio.Lock:
-        return self._sandbox_locks.setdefault(name, asyncio.Lock())
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, sandboxes: Sandboxes,
+                 roles: RoleContext):
+        self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
 
     def _approval_fresh(self) -> list[str]:
         """Guard G-B1: every H-2 subject (plan, each delta spec, oracle) approved and fresh."""
@@ -319,47 +311,6 @@ class Dispatcher:
                 self.c.event("sandbox", message, run.node_id, run.id)
                 self.c.save()
 
-    async def _prepare_steps(self, run: Run, fresh: bool) -> list[tuple[str, list[str], bool]]:
-        """The sandbox's preparation, one script per step: (what, argv, must succeed). A role
-        that pushes works on its branch – from its tip on the hub if earlier runs pushed it,
-        else from its base; every other role gets its commit checked out detached. Roles that
-        work with a commit then run the repository's setup (§5.3c)."""
-        role = self.c.assets.roles[run.role]
-        if not role.repo:
-            return []
-        p = f"{self.c.cfg.sandbox.root}/payload"
-        steps = [("clone the repository", ["bash", f"{p}/clone.sh"], True)] if fresh else []
-        if run.branch:
-            start = await self.c.git.ref_sha(f"refs/heads/{run.branch}") or run.base_sha
-            steps.append((f"check out branch {run.branch} at {start[:12]}",
-                          ["bash", f"{p}/branch.sh", run.branch, start], True))
-        else:
-            sha = run.judged_sha or run.base_sha
-            steps.append((f"check out {sha[:12]} (detached)", ["bash", f"{p}/checkout.sh", sha],
-                          True))
-        pin = self.c.change.setup_pin
-        if pin and role.git != GitMode.NONE and not self.c.setup_waits_for_scaffold():
-            steps.append((SETUP_COMMAND, ["bash", f"{p}/mise-setup.sh", pin.blob], False))
-        return steps
-
-    async def _prepare(self, run: Run, log_file, *, fresh: bool) -> None:
-        """Run the preparation steps in the sandbox, each logged to the run's agent log. A
-        failed checkout fails the launch; a failed setup is logged and the agent still starts
-        (it may work around it, and verification runs the setup again)."""
-        work = f"{self.c.cfg.sandbox.root}/work"
-        for what, argv, required in await self._prepare_steps(run, fresh):
-            timeout = (self.c.cfg.limits.setup_timeout_s if argv[1].endswith("mise-setup.sh")
-                       else 600)
-            rc, out = await self.c.runner.exec(run.sandbox, argv, timeout=timeout,
-                                               workdir=None if "clone.sh" in argv[1] else work)
-            with open(log_file, "a") as log:
-                log.write(f"[legion] {what}: exit {rc}\n{out}")
-                if rc and not required:
-                    log.write(f"[legion] {what} failed (exit {rc}): the working copy may lack "
-                              "its dependencies\n")
-            if rc and required:
-                raise SandboxError(f"{what} failed (exit {rc}): {out[-800:]}")
-
     async def launch(self, run_id: str) -> None:
         """PREPARING (OpenShell creates the sandbox) -> LAUNCHING (payload in place, setup script
         and agent starting) -> RUNNING (set by the agent's first MCP call) -> EXITED."""
@@ -371,26 +322,26 @@ class Dispatcher:
                 r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values())
             log_file = self.c.run_dir(run_id) / "agent.log"
             if reuse:
-                async with self._sandbox_lock(run.sandbox):
+                async with self.sandboxes.lock(run.sandbox):
                     node = self.c.nodes.get(run.node_id)
                     if node and node.sandbox == run.sandbox and node.sandbox_stopped:
                         await self._stage(run, RunStage.PREPARING, f"starting sandbox {run.sandbox}")
-                        await self.c.runner.start(run.sandbox)
+                        await self.sandboxes.wake(run.sandbox)
                         node.sandbox_stopped = False
                     await self._stage(run, RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
-                    await self.c.runner.upload(run.sandbox, payload)
-                    await self._prepare(run, log_file, fresh=False)
-                    proc = await self.c.runner.start_agent(run.sandbox, log_file)
+                    await self.sandboxes.upload(run.sandbox, payload)
+                    await self.sandboxes.prepare(run, log_file, fresh=False)
+                    proc = await self.sandboxes.start_agent(run.sandbox, log_file)
             else:
                 await self._stage(run, RunStage.PREPARING, f"creating sandbox {run.sandbox}")
                 env = sandbox_env(self.c.change, run.role)
                 policy = self.c.svc.write_policy(self.c.run_dir(run_id) / "policy.yaml",
                                                  network=env.network if env else None,
                                                  agent=True)
-                run.sandbox_ref = await self._create(run, payload, policy, push=h.pushes)
+                run.sandbox_ref = await self.sandboxes.create(run, payload, policy, push=h.pushes)
                 await self._stage(run, RunStage.LAUNCHING, f"sandbox {run.sandbox} created")
-                await self._prepare(run, log_file, fresh=True)
-                proc = await self.c.runner.start_agent(run.sandbox, log_file)
+                await self.sandboxes.prepare(run, log_file, fresh=True)
+                proc = await self.sandboxes.start_agent(run.sandbox, log_file)
         except Exception as e:
             shutil.rmtree(payload, ignore_errors=True)
             async with self.c.lock:
@@ -418,58 +369,7 @@ class Dispatcher:
             self.lifecycle.archive_log(run)
             self.c.save()
         if handler_for(run.role).keeps_session_until is not None:
-            await self._pause_sandbox(run)
-
-    def _should_pause(self, run: Run) -> bool:
-        node = self.c.nodes.get(run.node_id)
-        return (node is not None and node.sandbox == run.sandbox and not node.sandbox_stopped
-                and self.lifecycle.holds_sandbox(node)
-                and not any(r.sandbox == run.sandbox and r.status in LIVE_RUN
-                            for r in self.c.runs.values()))
-
-    async def _pause_sandbox(self, run: Run) -> None:
-        """Stop a kept sandbox until its node is reworked (best effort: if the runner cannot
-        stop it, it stays running and is reused as it is). Under the sandbox lock, so a rework
-        prepared meanwhile either finds it running (and this skips) or stopped (and starts it)."""
-        async with self._sandbox_lock(run.sandbox):
-            async with self.c.lock:
-                if not self._should_pause(run):
-                    return
-            try:
-                await self.c.runner.stop(run.sandbox)
-            except Exception as e:
-                async with self.c.lock:
-                    self.c.event("sandbox", f"could not stop {run.sandbox}; it stays running: {e}",
-                                 run.node_id, run.id)
-                    self.c.save()
-                return
-            async with self.c.lock:
-                node = self.c.nodes.get(run.node_id)
-                if node and node.sandbox == run.sandbox:
-                    node.sandbox_stopped = True
-                    self.c.event("sandbox", f"stopped {run.sandbox} until {node.id} is reworked",
-                                 run.node_id, run.id)
-                self.c.save()
-
-    async def _create(self, run: Run, payload, policy, *, push: bool, attempts: int = 3) -> str:
-        """Create the run's sandbox. If the gateway already has a sandbox of that name (another
-        controller on the same gateway), take a new name and try again."""
-        for attempt in range(attempts):
-            try:
-                return await self.c.runner.create(SandboxSpec(
-                    name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True, push=push,
-                    change=self.c.cid, task=run.node_id, role=run.role, run=run.id,
-                    env=sandbox_env(self.c.change, run.role)))
-            except Exception as e:
-                if not is_name_clash(e) or attempt == attempts - 1:
-                    raise
-                old, run.sandbox = run.sandbox, self.c.host.new_sandbox_name(AGENT_PREFIX)
-                node = self.c.nodes.get(run.node_id)
-                if node and node.sandbox == old:
-                    node.sandbox = run.sandbox
-                self.c.event("sandbox", f"name {old} is taken on the gateway; using {run.sandbox}",
-                             run.node_id, run.id)
-        raise AssertionError("unreachable")
+            await self.sandboxes.pause(run)
 
     def _exit_reason(self, run: Run, rc: int) -> tuple[str, FailureSource]:
         """Why a live run's process ended. The agent CLI's own result event means the agent ran

@@ -4,18 +4,16 @@ from __future__ import annotations
 import itertools
 import shutil
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from ...sandbox import agentlog
 from ...util import now_iso
 from ..model import (
-    ACCEPTED,
-    BUILD,
     LIVE_RUN,
     R_ACCEPTED,
     R_FAILED,
     R_REPORTED,
     R_SUPERSEDED,
-    ROLE_FOR_KIND,
     FailureSource,
     Node,
     Resume,
@@ -25,7 +23,10 @@ from ..model import (
 from ..roles import handler_for
 from .common import _parse_ts
 from .core import ChangeCore
-from .reflect import Reflector
+from .steps import step_for
+
+if TYPE_CHECKING:
+    from .sandboxes import Sandboxes
 
 
 def log_part(run_id: str, n: int) -> str:
@@ -62,10 +63,8 @@ class RunLifecycle:
     LOG_LIMIT = 64 * 1024 * 1024      # a larger log keeps its first and last 32 MiB
     PART_BYTES = 1024 * 1024         # per stored document (the store's limit is 2 MiB)
 
-    def __init__(self, core: ChangeCore):
-        self.c = core
-        self.reflector = Reflector(core)
-        self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
+    def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
+        self.c, self.sandboxes = core, sandboxes
         self._ended: set[str] = set()        # released because the change ended (tried once)
 
     def live_runs(self) -> list[Run]:
@@ -81,28 +80,13 @@ class RunLifecycle:
                     proc.kill()
                 self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
 
-    def holds_sandbox(self, node: Node) -> bool:
-        """The node's producer still keeps ``node.sandbox`` for rework: roles with
-        ``keeps_session_until`` until that gate is accepted, the implementer until its node is.
-        Nothing is held once the change is no longer active."""
-        if not node.sandbox or node.kind not in ROLE_FOR_KIND or self.c.change.status != "ACTIVE":
-            return False
-        h = handler_for(ROLE_FOR_KIND[node.kind])
-        if h.keeps_session_until is not None:
-            gate = self.c.nodes.get(h.keeps_session_until)
-            return gate is not None and gate.status != ACCEPTED
-        return h.reuses_sandbox and node.status != ACCEPTED
-
-    def _held(self) -> set[str]:
-        return {n.sandbox for n in self.c.nodes.values() if self.holds_sandbox(n)}
-
     def release_sandboxes(self) -> bool:
         """Delete kept sandboxes whose hold has ended (their gate passed, or the change ended)
         once no run uses them. Returns whether anything changed."""
         changed = False
         for node in self.c.nodes.values():
             sb = node.sandbox
-            if not sb or self.holds_sandbox(node) or any(
+            if not sb or self.sandboxes.holds(node) or any(
                     r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
                 continue
             stopped = node.sandbox_stopped
@@ -110,17 +94,17 @@ class RunLifecycle:
             if any(r.sandbox == sb and not r.sandbox_deleted for r in self.c.runs.values()):
                 self.c.event("sandbox", f"releasing {sb}: {node.id} is not reworked any more",
                              node.id)
-                self.delete_sandbox_later(sb, stopped)
+                self.sandboxes.delete_later(sb, stopped)
         if self.c.change.status != "ACTIVE":     # the change ended: no sandbox is needed any more
             for r in self.c.runs.values():
                 sb = r.sandbox
-                if (sb and not r.sandbox_deleted and sb not in self.retiring
+                if (sb and not r.sandbox_deleted and sb not in self.sandboxes.retiring
                         and sb not in self._ended and not any(x.sandbox == sb and x.status in LIVE_RUN
                                     for x in self.c.runs.values())):
                     self.c.event("sandbox", f"releasing {sb}: the change has ended",
                                  r.node_id, r.id)
                     self._ended.add(sb)
-                    self.delete_sandbox_later(sb)
+                    self.sandboxes.delete_later(sb)
                     changed = True
         return changed
 
@@ -134,30 +118,13 @@ class RunLifecycle:
             if r.status == R_REPORTED:
                 r.status = R_SUPERSEDED
             sb = r.sandbox
-            if (not sb or sb in retired or sb in self.retiring or r.sandbox_deleted
+            if (not sb or sb in retired or sb in self.sandboxes.retiring or r.sandbox_deleted
                     or sb == node.sandbox
                     or any(x.sandbox == sb and x.status in LIVE_RUN for x in self.c.runs.values())):
                 continue
             retired.add(sb)
             self.c.event("sandbox", f"releasing {sb}: {node.id} starts again", node.id, rid)
-            self.delete_sandbox_later(sb)
-
-    def delete_sandbox_later(self, name: str, stopped: bool = False) -> None:
-        """Delete a sandbox in the background (its work is done), after its agent has reflected
-        on the session (see :mod:`.reflect`; ``stopped``: the sandbox has to be started first)."""
-        self.retiring.add(name)
-        self.c.spawn(self._retire(name, stopped))
-
-    async def _retire(self, name: str, stopped: bool) -> None:
-        self.reflector.pending.add(name)
-        try:
-            try:
-                await self.reflector.reflect(name, stopped)
-            finally:
-                self.reflector.pending.discard(name)
-            await self.delete_sandbox(name)
-        finally:
-            self.retiring.discard(name)
+            self.sandboxes.delete_later(sb)
 
     def fail_run(self, run: Run, reason: str, source: FailureSource,
                  exit_code: int | None = None) -> None:
@@ -175,14 +142,14 @@ class RunLifecycle:
         tail = self.log_tail(run.id, 40)
         who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
         resume = (Resume.REVIEWING if handler_for(run.role).panel
-                  else Resume.REWORK if node.kind == BUILD else Resume.READY)
+                  else step_for(node).rework_resume)
         self.c.escalate(node, "run_failed", f"{who} ({label}): {reason}", resume=resume,
                         run=run.id, log_tail=tail, source=source)
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             # a failed run's sandbox is not kept for rework either: the retry starts afresh
             if node.sandbox == run.sandbox:
                 node.sandbox, node.sandbox_stopped = None, False
-            self.c.spawn(self.delete_sandbox(run.sandbox))
+            self.c.spawn(self.sandboxes.delete(run.sandbox))
 
     def archive_log(self, run: Run) -> None:
         """Move the whole agent log into the store (agents cannot read control/logs/), in parts
@@ -230,24 +197,9 @@ class RunLifecycle:
                 + self.c.doc(log_part(run_id, n)).content
         return "\n".join(text.splitlines()[-lines:])
 
-    async def delete_sandbox(self, name: str) -> bool:
-        """Delete a sandbox; False (and an event) if OpenShell refused."""
-        try:
-            await self.c.runner.delete(name)
-        except Exception as e:
-            self.c.event("sandbox", f"delete of {name} failed: {e}")
-            return False
-        async with self.c.lock:
-            for r in self.c.runs.values():
-                if r.sandbox == name:
-                    r.sandbox_deleted = True
-            self.c.event("sandbox", f"sandbox {name} deleted")
-            self.c.save()
-        return True
-
     def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
         """Mark the node's reported runs ACCEPTED and delete their sandboxes (principle 8),
-        except one a node still holds for rework (see :meth:`holds_sandbox`)."""
+        except one a node still holds for rework (see :meth:`.Sandboxes.holds`)."""
         sandboxes = set()
         for rid in node.runs:
             r = self.c.runs[rid]
@@ -257,7 +209,7 @@ class RunLifecycle:
                 r.status = R_ACCEPTED
             if r.sandbox and not r.sandbox_deleted and r.status in (R_ACCEPTED, R_SUPERSEDED, R_FAILED):
                 sandboxes.add(r.sandbox)
-        held = self._held()
+        held = self.sandboxes.held()
         for sb in sandboxes - held:
             if any(r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
                 continue
@@ -266,4 +218,4 @@ class RunLifecycle:
                 if n.sandbox == sb:
                     stopped = stopped or n.sandbox_stopped
                     n.sandbox, n.sandbox_stopped = None, False
-            self.delete_sandbox_later(sb, stopped)
+            self.sandboxes.delete_later(sb, stopped)

@@ -441,7 +441,7 @@ class HumanGates:
     async def _retry_after_removing(self, node_id: str, sandbox: str) -> None:
         """Retry: delete the failed run's sandbox first (a failed delete is reported and the
         retry goes ahead in a new sandbox), then resume where the escalation said."""
-        ok = await self.lifecycle.delete_sandbox(sandbox) if sandbox else True
+        ok = await self.lifecycle.sandboxes.delete(sandbox) if sandbox else True
         async with self.c.lock:
             node = self.c.nodes.get(node_id)
             esc = node.escalation if node else None

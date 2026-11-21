@@ -22,9 +22,7 @@ from ..model import (
     INTAKE,
     LIVE_RUN,
     MERGING,
-    PROVISION,
     RUNNING,
-    SHIP,
     VERIFYING,
     Change,
     FailureSource,
@@ -38,11 +36,14 @@ from .core import ChangeCore
 from .dispatch import Dispatcher
 from .graph import StageGraph
 from .human import HumanGates
+from .phases import PhaseContext
 from .provision import Provisioner
 from .reports import Reports
 from .runs import RunLifecycle
+from .sandboxes import Sandboxes
 from .schedule import Scheduler
 from .services import EngineHost, Services
+from .steps import step_for
 
 
 class ChangeEngine(ChangeCore):
@@ -56,10 +57,13 @@ class ChangeEngine(ChangeCore):
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
         self._graph = StageGraph(self)
-        self._lifecycle = RunLifecycle(self)
-        self._acceptance = Acceptance(self, self._lifecycle)
-        self._provisioner = Provisioner(self, self._lifecycle, self._acceptance)
-        self._dispatcher = Dispatcher(self, self._lifecycle, roles=self)
+        self._sandboxes = Sandboxes(self)
+        self._lifecycle = RunLifecycle(self, self._sandboxes)
+        self._phases = PhaseContext(self, self._sandboxes)
+        self._acceptance = Acceptance(self, self._lifecycle, self._phases)
+        self._provisioner = Provisioner(self, self._lifecycle, self._phases)
+        self._dispatcher = Dispatcher(self, self._lifecycle, self._sandboxes, roles=self)
+        self._phases.dispatcher = self._dispatcher
         self._reports = Reports(self, self._lifecycle, roles=self)
         self._gates = HumanGates(self, self._graph, self._acceptance, self._lifecycle)
         self._scheduler = Scheduler(self, self._graph, self._lifecycle, self._dispatcher,
@@ -98,10 +102,8 @@ class ChangeEngine(ChangeCore):
                 self.spawn(self._acceptance.verify_node(node.id))
             elif node.status == MERGING:
                 self.spawn(self._acceptance.merge_node(node.id))
-            elif node.kind == SHIP and node.status == RUNNING:
-                self.spawn(self._acceptance.ship())
-            elif node.kind == PROVISION and node.status == RUNNING:
-                self.spawn(self._provisioner.provision())
+            elif node.status == RUNNING and (work := step_for(node).controller_work(self._scheduler)):
+                self.spawn(work)                    # provisioning, the ship check
         self._gates.resume_retries()
         self.save()
 
@@ -145,7 +147,7 @@ class ChangeEngine(ChangeCore):
         self._lifecycle.accept_runs(node, roles)
 
     def delete_sandbox_later(self, name: str) -> None:
-        self._lifecycle.delete_sandbox_later(name)
+        self._sandboxes.delete_later(name)
 
     def start_verification(self, node_id: str) -> None:
         self._acceptance.start_verification(node_id)

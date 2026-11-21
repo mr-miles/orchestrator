@@ -1,35 +1,12 @@
 """Acceptance: verification, the review panel's decision, rework, merge and ship readiness."""
 from __future__ import annotations
 
-import contextlib
-import shlex
-import shutil
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-
-from ...sandbox import (
-    VERIFIER_PREFIX,
-    Runner,
-    SandboxError,
-    SandboxSpec,
-    is_name_clash,
-    payload_scripts,
-)
-from .. import governance
-from ..environment import VERIFIER
 from ..model import (
     ACCEPTED,
-    BASELINE,
-    BUILD,
     FAILED,
-    INTEGRATION,
     MERGING,
     ORACLE,
     PENDING,
-    PREFLIGHT,
-    R_REPORTED,
-    R_SUPERSEDED,
-    REVIEWING,
     REWORK,
     SHIP,
     VERIFYING,
@@ -37,213 +14,69 @@ from ..model import (
     CommandResult,
     Feedback,
     Node,
-    Oracle,
     ReadinessVerdict,
-    Resume,
-    Verdict,
-    Verification,
 )
-from ..setup import SETUP_COMMAND
-from ..ship import evaluate
 from . import cleanup
-from .auth import VerifierGrant
-from .common import _slug
 from .core import ChangeCore
-from .provision import sandbox_env
+from .phases import (
+    Escalate,
+    Evaluate,
+    Merge,
+    Ok,
+    Panel,
+    PhaseContext,
+    setup_failed_text,
+)
 from .runs import RunLifecycle
-
-EXIT_NOT_FOUND = 127   # bash: command not found (126, not executable, is often a fixable repo file)
-
-
-@dataclass
-class VerifierSandbox:
-    """A live verifier sandbox with the candidate checked out in <sandbox root>/work."""
-    name: str
-    runner: Runner
-    timeout_s: int
-    workdir: str
-    setup_script: str = ""
-
-    async def setup(self, pin: str, timeout_s: int) -> CommandResult:
-        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
-        rc, out = await self.runner.exec(self.name, ["bash", self.setup_script, pin],
-                                         workdir=self.workdir, timeout=timeout_s)
-        return CommandResult(command=SETUP_COMMAND, exit_code=rc, output=out[-4000:], setup=True)
-
-    async def run(self, cmd: str) -> CommandResult:
-        rc, out = await self.runner.exec(self.name, ["bash", "-lc", cmd], workdir=self.workdir,
-                                         timeout=self.timeout_s)
-        return CommandResult(command=cmd, exit_code=rc, output=out[-4000:])
+from .steps import step_for
 
 
 class Acceptance:
     """How a candidate becomes accepted work: deterministic verification (G-V1), the review
     panel's decision, rework within the cycle budget, the merge (G-A1, G-A2) – and, for the
-    change as a whole, the ship readiness check."""
+    change as a whole, the ship readiness check. The work is done by phases (:mod:`.phases`);
+    this says what their results mean for each kind of node."""
 
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle):
-        self.c, self.lifecycle = core, lifecycle
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, ctx: PhaseContext):
+        self.c, self.lifecycle, self.ctx = core, lifecycle, ctx
 
     def start_verification(self, node_id: str) -> None:
         """Run the node's deterministic verification in the background (node is VERIFYING)."""
         self.c.spawn(self.verify_node(node_id))
 
-    async def _verify(self, label: str, sha: str, commands: list[str]) -> Verification:
-        """G-V1: run commands at ``sha`` in a fresh verifier sandbox – after the repository's
-        setup (§5.3c), which stops the run if it fails (G-V3). Never raises. A name the gateway
-        already has (another controller) is replaced and the sandbox created again."""
-        result = Verification(sha=sha, sandbox=self.c.host.new_sandbox_name(VERIFIER_PREFIX))
-        if not commands and not self.c.change.setup_pin:
-            result.infra_error = "no commands to verify"
-            return result
-        for attempt in range(3):
-            try:
-                async with self._verifier_sandbox(result.sandbox, label, sha) as box:
-                    pin = self.c.change.setup_pin
-                    if pin:                    # §5.3c, G-V3: setup first; a failure stops here
-                        r = await box.setup(pin.blob, self.c.cfg.limits.setup_timeout_s)
-                        result.results.append(r)
-                    if not pin or result.results[-1].exit_code == 0:
-                        for cmd in commands:
-                            result.results.append(await box.run(cmd))
-                result.ok = all(r.exit_code == 0 for r in result.results)
-            except Exception as e:
-                if is_name_clash(e) and not result.results and attempt < 2:
-                    result.sandbox = self.c.host.new_sandbox_name(VERIFIER_PREFIX)
-                    continue
-                result.infra_error = str(e)
-            return result
-        return result
-
-    @contextlib.asynccontextmanager
-    async def _verifier_sandbox(self, name: str, label: str,
-                                sha: str) -> AsyncIterator[VerifierSandbox]:
-        """A non-agent sandbox with a read-only git grant, checked out at ``sha``. On exit the
-        grant is revoked and the sandbox and its payload are deleted, however the block ends."""
-        base = self.c.svc.tmp / "verify" / name
-        payload = base / "payload"
-        payload.mkdir(parents=True, exist_ok=True)
-        (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(self.c.git_url)}\n")
-        for script, text in payload_scripts().items():
-            (payload / script).write_text(text)
-        ref = None
-        try:
-            env = sandbox_env(self.c.change, VERIFIER)
-            policy = self.c.svc.write_policy(base / "policy.yaml", agent=False,
-                                             network=env.network if env else None)
-            if stale := governance.stale_environment(self.c):
-                raise SandboxError(stale)
-            ref = await self.c.runner.create(SandboxSpec(
-                name=name, payload_dir=payload, policy_file=policy, agent=False,
-                change=self.c.cid, task=label, role="verifier", run=name,
-                env=env))
-            self.c.svc.auth.register_verifier(
-                ref, VerifierGrant(id=f"verifier:{name}", change=self.c.cid, task=label))
-            root = self.c.cfg.sandbox.root
-            # the same steps as an agent's detached checkout: clone, then the commit
-            for step in (["clone.sh"], ["checkout.sh", sha]):
-                rc, out = await self.c.runner.exec(
-                    name, ["bash", f"{root}/payload/{step[0]}", *step[1:]], timeout=600,
-                    workdir=None if step[0] == "clone.sh" else f"{root}/work")
-                if rc != 0:
-                    raise SandboxError(f"verifier {step[0]} failed ({rc}): {out[-1500:]}")
-            yield VerifierSandbox(name, self.c.runner, self.c.cfg.limits.verify_timeout_s,
-                                  f"{root}/work", f"{root}/payload/mise-setup.sh")
-        finally:
-            if ref:
-                self.c.svc.auth.unregister_verifier(ref)
-            shutil.rmtree(base, ignore_errors=True)
-            if ref:
-                try:
-                    await self.c.runner.delete(name)
-                except Exception as e:
-                    self.c.event("sandbox", f"verifier delete failed: {e}")
-
     async def verify_node(self, node_id: str) -> None:
-        """Verify the node's candidate; then review (or merge), rework, or escalate."""
+        """Verify the node's candidate; its step type says what the result means (review or
+        merge, accept, rework, or escalate)."""
         c, node = self.c, self.c.nodes[node_id]
-        commands = (node.task.verification if node.kind == BUILD
-                    else c.baseline_commands() if node.kind == BASELINE
-                    else list((c.change.oracle or Oracle()).acceptance_commands)
-                    if node.kind == PREFLIGHT else c.oracle_commands())
+        step = step_for(node)
+        phase = step.verify(c, node)
         c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
-                f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
+                f"({'setup and ' if c.change.setup_pin else ''}{len(phase.commands)} command(s))",
                 node_id)
-        res = await self._verify(node_id, node.candidate_sha, commands)
+        res = await phase.verification(self.ctx, node_id, node.candidate_sha)
         async with c.lock:
             if node.status != VERIFYING:
                 return
-            att = c.write_record(f"tasks/{node.task.id}/verification.json" if node.kind == BUILD
-                                 else f"control/verification/{_slug(node_id)}.json", res).attestation
+            path, key = step.verification_record(node)
+            att = c.write_record(path, res).attestation
             # The node keeps a compact copy (the stored record has the command output).
-            key = {INTEGRATION: "integration", BASELINE: "baseline",
-                   PREFLIGHT: "preflight"}.get(node.kind, str(node.cycle))
             node.verification[key] = res.model_copy(update={
                 "attestation": att,
                 "results": [r.model_copy(update={"output": ""}) for r in res.results]})
-            fails = [r for r in res.results if r.exit_code != 0]
-            unrunnable = [r for r in fails if r.exit_code == EXIT_NOT_FOUND and not r.setup]
-            setup_failed = next((r for r in fails if r.setup), None)
-            if res.infra_error:
-                c.escalate(node, "verify_infra", res.infra_error, resume=Resume.VERIFYING)
-            elif unrunnable:
-                # G-V2: the verifier image lacks a command – the agent cannot fix that, so no
-                # rework cycle is spent; a human fixes the image and retries (re-verifies).
-                c.escalate(node, "verify_unrunnable",
-                           "G-V2: command(s) not found in the verifier sandbox: "
-                           + ", ".join(f"`{r.command}`" for r in unrunnable),
-                           resume=Resume.VERIFYING,
-                           log_tail="\n".join(r.output[-800:] for r in unrunnable))
-            elif setup_failed and node.kind in (PREFLIGHT, BASELINE):   # before any build
-                self._setup_failed(node, setup_failed, att)
-            elif node.kind == PREFLIGHT:
-                # G-PF1: the commands can be run here; before the build they are expected to
-                # fail, so an acceptance command that already passes is only noted
-                node.status = ACCEPTED
-                for r in res.results:
-                    if not r.setup and r.exit_code == 0:
-                        c.event("preflight", f"acceptance command `{r.command}` already passes "
-                                "before any build: it may not test the change", node_id)
-            elif node.kind == BASELINE:
-                # before any build, failures are expected: they are recorded, not reworked
-                # (G-BL2 flags at H-2 what already passes or differs from the agent's results)
-                node.status = ACCEPTED
-                self.lifecycle.accept_runs(node)
-                for w in governance.baseline_warnings(c):
-                    c.event("baseline", w, node_id)
-            elif not res.ok:
-                if node.kind == BUILD:
-                    self.rework(node, [Feedback(cycle=node.cycle, source="verification",
-                                                text=f"BLOCKER: `{r.command}` exited {r.exit_code}: "
-                                                     f"{r.output[-800:]}", attestations=[att])
-                                       for r in fails], "verification")
-                else:
-                    c.escalate(node, "integration_failed",
-                               f"G-V1: {len(fails)} oracle command(s) failed at head",
-                               resume=Resume.READY)
-            elif node.kind == BUILD:
-                if c.change.panel:
-                    node.status = REVIEWING
-                    c.event("review", f"verification passed; panel {c.change.panel}", node_id)
-                else:
-                    node.status = MERGING
-                    c.spawn(self.merge_node(node_id))
-            else:  # integration
-                node.status = ACCEPTED
-                self.lifecycle.accept_runs(node)
+            step.verified(self, node, res, phase.judge(res, node.cycle, att), att)
             c.save()
 
-    def _setup_failed(self, node: Node, r: CommandResult, att: str) -> None:
-        """G-V3: the repository's setup failed, so nothing after it ran. At preflight the oracle's
-        author is sent the output (one oracle cycle; fixing it may need the plan's environment,
-        which it then reports BLOCKED); at the baseline a human decides. (In a build or at integration the
-        tasks may have caused it: it fails like any command there.)"""
+    def setup_failed(self, node: Node, r: CommandResult, att: str, escalation: Escalate) -> None:
+        """G-V3 at preflight: the repository's setup failed, so nothing after it ran. The
+        oracle's author is sent the output (one oracle cycle; fixing it may need the plan's
+        environment, which it then reports BLOCKED); without a cycle left, a human decides. (At
+        the baseline a human decides; in a build or at integration the tasks may have caused
+        it: it fails like any command there.)"""
         c = self.c
-        what = (f"the repository's setup `{r.command}` exited {r.exit_code} in a fresh verifier "
-                "sandbox, so no acceptance command ran")
         oracle = c.nodes.get(ORACLE)
         limit = c.cfg.limits.review_max_cycles + (oracle.extra_cycles if oracle else 0)
-        if node.kind == PREFLIGHT and oracle is not None and oracle.cycle < limit:
+        if oracle is not None and oracle.cycle < limit:
+            what = setup_failed_text(r)
             oracle.cycle += 1
             oracle.feedback.append(Feedback(
                 cycle=oracle.cycle, source="verification", attestations=[att],
@@ -257,52 +90,23 @@ class Acceptance:
             node.status = PENDING        # runs again once the oracle is accepted
             c.event("rework", f"preflight: {what}: oracle rework cycle {oracle.cycle}", ORACLE)
             return
-        c.escalate(node, "setup_failed", f"G-V3: {what}", resume=Resume.VERIFYING,
-                   log_tail=r.output[-800:])
+        self.ctx.apply(node, escalation)
 
     def panel_complete(self, node: Node) -> None:
         """Once every panel member has reported: merge on a unanimous PASS at the candidate,
         otherwise rework with the HIGH findings (or escalate a stale loop, G-RV5)."""
-        c = self.c
-        results = [node.review(node.cycle, r) for r in c.change.panel]
-        if any(r is None for r in results):
+        result = Panel(tuple(self.c.change.panel)).decide(node)
+        if result is None:
             return
-        if all(r.verdict == Verdict.PASS and r.sha == node.candidate_sha for r in results):
+        if isinstance(result, Ok):
             node.status = MERGING
-            c.spawn(self.merge_node(node.id))
+            self.c.spawn(self.merge_node(node.id))
             return
-        high = [f for r in results for f in r.findings if f.high]
-        fps = sorted({f.fingerprint for f in high})
-        node.finding_history.append(fps)
-        fb = [Feedback(cycle=node.cycle, source="review",
-                       text=f"{f.severity} ({f.dimension or '?'}): {f.title} – fix: {f.fix[:500]}",
-                       attestations=f.attestations) for f in high]
-        fb.append(Feedback(cycle=node.cycle, source="review", text="full review documents",
-                           attestations=[r.doc for r in results if r.doc]))
-        if len(node.finding_history) >= 2 and fps and node.finding_history[-1] == node.finding_history[-2]:
-            node.feedback += fb
-            c.escalate(node, "stale_loop", "G-RV5: identical HIGH findings in two consecutive "
-                       "review cycles", resume=Resume.REWORK_CYCLE)
-            return
-        self.rework(node, fb, "review")
+        self.ctx.apply(node, result)
 
     def rework(self, node: Node, feedback: list[Feedback], source: str) -> None:
         """Evidence-driven rework within the cycle budget (G-RV5)."""
-        c = self.c
-        node.feedback += feedback
-        limit = c.cfg.limits.review_max_cycles + node.extra_cycles
-        cur = c.runs.get(node.current_run) if node.current_run else None
-        if cur and cur.status == R_REPORTED:
-            cur.status = R_SUPERSEDED
-        if node.cycle >= limit:
-            c.escalate(node, "cycle_budget",
-                       f"G-RV5: {node.cycle} cycle(s) used without acceptance ({source})",
-                       resume=Resume.REWORK_CYCLE)
-            return
-        node.cycle += 1
-        node.candidate_sha = None
-        node.status = REWORK
-        c.event("rework", f"{source}: rework cycle {node.cycle}", node.id)
+        self.ctx.rework(node, feedback, source)
 
     async def merge_node(self, node_id: str) -> None:
         """G-A1 (verification and every panel PASS at the candidate, unless overridden), then
@@ -311,48 +115,22 @@ class Acceptance:
         async with c.lock:
             node = c.nodes[node_id]
             sha = node.candidate_sha
-            ver = node.current_verification()
-            v = []
-            if not ver or not ver.ok or ver.sha != sha:
-                v.append("G-A1: no passing deterministic verification at candidate")
-            if not node.override:
-                for role in c.change.panel:
-                    r = node.review(node.cycle, role)
-                    if not r or r.verdict != Verdict.PASS or r.sha != sha:
-                        v.append(f"G-A1: no {role} PASS at candidate")
-            if v:
-                c.escalate(node, "accept_guard", "; ".join(v), resume=Resume.REWORK)
+            result = await Merge(tuple(c.change.panel)).run(self.ctx, node)
+            if not isinstance(result, Ok):
+                self.ctx.apply(node, result)
                 c.save()
                 return
-            if moved := c.head_moved(await c.git.integration_head(c.change.id)):
-                c.escalate(node, "head_moved", moved, resume=Resume.MERGING)
-                c.save()
-                return
-            ok, out = await c.git.merge(c.cid, sha, f"legion {c.change.id}: {node.title} "
-                                                    f"(cycle {node.cycle})")
-            if not ok:
-                head = await c.git.integration_head(c.change.id)
-                self.rework(node, [Feedback(
-                    cycle=node.cycle, source="merge",
-                    text=f"G-A2: merge conflict with integration; rebase onto {head} "
-                         f"and force-push your branch. Details: {out[-600:]}",
-                    attestations=[f"git:{c.cfg.repo.name}@{head}"])], "merge")
-                if node.status == REWORK:
-                    node.base_sha = head
-                c.save()
-                return
-            c.change.integration_head = out
             node.accepted_sha = sha
             node.status = ACCEPTED
             run = c.runs.get(node.current_run) if node.current_run else None
             await cleanup.delete_run_branch(c, run.branch if run else None, node_id)
-            c.event("accepted", f"merged {sha[:12]} -> integration {out[:12]}", node_id)
+            c.event("accepted", f"merged {sha[:12]} -> integration {result.value[:12]}", node_id)
             self.lifecycle.accept_runs(node)  # deletes the implementer sandbox (principle 8)
             c.save()
 
     async def ship(self) -> None:
         """The ship readiness check (workflow/ship.py); its verdict is the change's status."""
-        result = await evaluate(self.c)
+        result = (await Evaluate().run(self.ctx)).value
         c = self.c
         async with c.lock:
             result.attestation = c.write_record("control/ship/readiness.json", result).attestation
