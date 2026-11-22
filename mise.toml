@@ -1,6 +1,6 @@
 # Tooling and tasks for legion-orchestrator. `mise install` then `mise run <task>` (or `mise tasks`).
 # Python dependencies (including ruff, pytest, build) come from pyproject.toml via uv into .venv;
-# the web UI's from frontend/package.json via bun. CI (.github/workflows/ci.yml) runs the same.
+# the web UI's from frontend/package.json via bun. CI (.github/workflows/ci.yml) runs these tasks.
 
 [tools]
 python = "3.12"
@@ -16,8 +16,8 @@ _.python.venv = { path = ".venv", create = true }
 python.uv_venv_auto = true
 
 [tasks.install]
-description = "Install the package (editable) with test and dev extras into .venv"
-run = "uv pip install -q -e '.[test,dev]'"
+description = "Install the package (editable) with test and dev extras into .venv, as uv.lock pins them"
+run = "uv sync -q --locked --extra test --extra dev"
 
 [tasks.lint]
 description = "ruff, and asset/schema/library validation"
@@ -67,7 +67,11 @@ run = "bun run build"
 [tasks.package]
 description = "The release zip (dist/legion-orchestrator-<version>.zip): runs with uv alone"
 depends = ["ui:build"]
-run = "python scripts/package.py"
+run = "mise run -q package:zip"
+
+[tasks."package:zip"]
+description = "The release zip from the UI already built in static/dist (CI: the frontend job's); prints its path"
+run = "uv run --no-project python scripts/package.py --out dist"
 
 [tasks.check]
 description = "Everything CI runs"
