@@ -14,6 +14,9 @@ never run `a2a auth login`. You see and reach only this change's agents.
   `urn:air:legion:agent:<role>@<step>`, e.g. `urn:air:legion:agent:implementer@build:T2`.
   Every agent of a step in progress has one, also before its work starts (a message then starts
   it, so expect a slower answer) and after it reported. Your own card is `$LEGION_A2A_CARD`.
+- **Whom to ask**: `workflow_context()` (MCP) names the cards relevant to your work – the task
+  you build on, tasks touching nearby files, the oracle, the planner – and `step_status(node)`
+  shows any step's state before you message its agents.
 - **The orchestrator** is the controller itself, not a model, and it is the CLI's default agent
   (`$A2ACLI_AGENT_CARD`):
   - `a2a send "/list_cards"` lists the cards (`-o json` for details);

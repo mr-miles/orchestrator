@@ -499,7 +499,8 @@ class Run(Record):
     instructions: str = ""
     asked: list[str] = []
     reply: TaskReply | None = None
-    inbox_reminded: bool = False          # told once, ending its task, of unanswered messages
+    # messages (A2A task ids) it was reminded of, ending its task with them unanswered: each once
+    inbox_reminded: list[str] = []
 
 
 # ---------------------------------------------------------------------------- change records

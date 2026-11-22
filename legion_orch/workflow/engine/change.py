@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
+from .. import context
 from ..model import (
     LIVE_RUN,
     V_FINAL,
@@ -114,15 +115,30 @@ class ChangeEngine(ChangeCore):
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
                                                  blocked_reason, missing_decision, dry_run)
 
+    # ------------------------------------------------------------------ where a step stands
+    def step_status(self, node_id: str) -> dict:
+        """A step as it is now (workflow/context.py); WorkflowError for an unknown step."""
+        try:
+            return context.step_status(self, node_id)
+        except KeyError:
+            raise WorkflowError(f"unknown step {node_id}") from None
+
+    def workflow_context(self, node_id: str) -> dict:
+        """How a step fits the change (workflow/context.py)."""
+        try:
+            return context.workflow_context(self, node_id, self._flow.stages())
+        except KeyError:
+            raise WorkflowError(f"unknown step {node_id}") from None
+
     # ------------------------------------------------------------------ a run's A2A task
     def task_view(self, run: Run) -> dict:
         """The run's task as the agent's inbox shows it (services/run_tasks.py)."""
         return self._tasks.view(run)
 
     async def reply_task(self, run: Run, state: str, text: str,
-                         unanswered: list[str] = ()) -> dict:
+                         unanswered: list[tuple[str, str]] = ()) -> dict:
         """The agent's a2a_reply on its run's task: ends it, or is answered with what is
-        missing (an ask-again; once, the messages still waiting in its inbox)."""
+        missing (an ask-again; the messages still waiting in its inbox, each once)."""
         async with self.lock:
             return self._tasks.reply(run, state, text, list(unanswered))
 
