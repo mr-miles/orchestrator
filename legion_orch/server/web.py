@@ -7,6 +7,8 @@
 * ``server.agent_host:git_port``   – git smart-HTTP only (``/git/<repo>.git``).
 * ``server.agent_host:token_port`` – ``/oauth/token`` only (SPIFFE JWT-SVID → access token), for
   the OpenShell gateway supervisor.
+* ``server.agent_host:a2a_port``   – agent-to-agent (``/a2a/…``, see :mod:`.a2a`): the cards of
+  each change, for the a2a CLI in the sandboxes.
 """
 from __future__ import annotations
 
@@ -42,6 +44,7 @@ from ..util import bearer
 from ..workflow.engine import Controller, WorkflowError
 from ..workflow.model import LIVE_RUN
 from . import browse, views
+from .a2a import build_a2a_app
 from .browse import BrowseError
 from .mcp import build_mcp
 
@@ -118,7 +121,8 @@ async def build_servers(ctl: Controller, log_level: str = "info") -> list[uvicor
     return [cfg(build_app(ctl), s.host, s.port),
             cfg(await build_mcp_app(ctl), s.agent_host, s.mcp_port, **agent),
             cfg(build_git_app(ctl), s.agent_host, s.git_port, **agent),
-            cfg(build_token_app(ctl), s.agent_host, s.token_port, **agent)]
+            cfg(build_token_app(ctl), s.agent_host, s.token_port, **agent),
+            cfg(build_a2a_app(ctl), s.agent_host, s.a2a_port, **agent)]
 
 
 def request_shutdown(ctl: Controller, servers: list[uvicorn.Server]) -> None:
@@ -451,6 +455,20 @@ def build_app(ctl: Controller) -> Starlette:
         return await ce.human_action(request.path_params["node_id"], body.get("action", ""),
                                      body.get("approver", ""), body.get("payload") or {})
 
+    @api()
+    async def questions(request: Request):
+        ce = ctl.get(request.path_params["cid"])
+        return {"questions": [q.model_dump(mode="json") for q in ce.change.questions.values()]}
+
+    @api(write=True)
+    async def answer_question(request: Request, body: dict):
+        ce = ctl.get(request.path_params["cid"])
+        answer = body.get("answer")
+        if not isinstance(answer, str):
+            raise BadRequest("answer (text) is required")
+        return await ce.answer_question(request.path_params["qid"], answer,
+                                        body.get("approver", ""))
+
     @api(write=True)
     async def change_action(request: Request, body: dict):
         ce = ctl.get(request.path_params["cid"])
@@ -477,6 +495,8 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/changes/{cid}/events", change_events),
+        Route("/api/changes/{cid}/questions", questions),
+        Route("/api/changes/{cid}/questions/{qid}/answer", answer_question, methods=["POST"]),
         Route("/api/events", all_events),
         Route("/api/workspaces", list_workspaces),
         Route("/api/workspaces/{ws}/git/refs", git_refs),

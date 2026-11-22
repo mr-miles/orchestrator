@@ -6,6 +6,7 @@ start an agent at all (G-B1, the environment) is the phase's question (:meth:`pr
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import shlex
 from collections.abc import Callable
@@ -20,14 +21,16 @@ from ....sandbox import (
 )
 from ....store import DocStoreError
 from ....util import now_iso
-from ... import attest, governance
-from ...assets import AssetError
+from ... import attest, cards, governance
+from ...assets import AssetError, GitMode
 from ...model import (
     ACCEPTED,
     H_ENV,
     H_REQUIREMENTS,
     LIVE_RUN,
     PLAN,
+    R_ACCEPTED,
+    R_FAILED,
     R_REPORTED,
     REWORK,
     CommandResult,
@@ -40,10 +43,10 @@ from ...model import (
 from ...results import Escalate, PhaseResult
 from ...roles import handler_for
 from ...view import RoleContext
-from ..base.common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, _slug, write_skills
+from ..base.common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, WorkflowError, _slug, write_skills
 from ..base.core import ChangeCore
 from ..base.work import AGENT, Command, Outcome, Session, Work
-from ..sandboxes.plan import SandboxPlan
+from ..sandboxes.plan import Checkout, SandboxPlan
 from ..sandboxes.sandboxes import AgentSession, Sandboxes, sandbox_env
 from .runs import RunLifecycle
 
@@ -93,6 +96,26 @@ class Ended:
     result: PhaseResult | None
 
 
+CONSULT_PROMPT = """# A message before your work starts
+
+You are the `{role}` agent of `{node}` in change {change}. Your work on this step has not
+started yet, but `{sender}` – another agent of this change – sent you this message over A2A:
+
+<message from="{sender}">
+{text}
+</message>
+
+Answer it. Read what you need – your assignment (get_assignment), the documents, the repository
+checkout – but change nothing: no commits, no document writes, no report. Your answer is your
+final message, sent back to `{sender}` verbatim. If you cannot answer yet, say so and why.
+
+When the step gets to your work, it continues this session: what you learn now stays with you.
+Your instructions for that work, as they stand now (do not start on them in this turn):
+
+{prompt}
+"""
+
+
 @dataclass
 class AgentTurn(Command):
     """The agent's turn: start the agent and await its process (its timers stop it: the run
@@ -114,7 +137,10 @@ class AgentTurn(Command):
         async with c.lock:
             c.procs.pop(run.id, None)
             run.exit_code = rc
-            if run.status in LIVE_RUN:
+            if run.consult:                 # an A2A turn: its answer is its final message
+                run.status, run.ended_at = (R_ACCEPTED if rc == 0 else R_FAILED), now_iso()
+                c.event("a2a", f"consult turn exited ({rc})", run.node_id, run.id)
+            elif run.status in LIVE_RUN:
                 reason, source = runs._exit_reason(run, rc)
                 runs.lifecycle.fail_run(run, reason, source, exit_code=rc)
             else:
@@ -132,6 +158,68 @@ class AgentRuns:
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
+
+    # ------------------------------------------------------------------ A2A: an early start
+    async def consult(self, node_id: str, role: str, sender: str, text: str) -> str:
+        """A message for a step agent that has not started: start it – its sandbox, its soul
+        and skills, its assignment as it stands, read-only – for one turn that answers, then
+        stop the sandbox. It is the role's agent: later messages resume this session, and the
+        role's run, when the step gets to it, continues in this sandbox and session."""
+        answerer = self.sandboxes.answerer
+        async with answerer.lock(node_id, role):
+            if self.lifecycle.agent_state(node_id, role) != "absent":   # started meanwhile
+                return await answerer.answer_locked(node_id, role, sender, text)
+            async with self.c.lock:
+                run, plan = self._consult_run(node_id, role, sender, text)
+                self.c.event("a2a", f"{role}@{node_id} has not started: starting it "
+                                    f"(run {run.id}, sandbox {run.sandbox}) to answer {sender}",
+                             node_id, run.id)
+                self.c.save()
+            work = Work(session=AgentSession(self.sandboxes, run, plan, True,
+                                             lambda stage, msg: self._stage(run, stage, msg)),
+                        commands=[*await self.sandboxes.checkout(run, True),
+                                  AgentTurn("the agent's turn", AGENT, True, runs=self, of=run)])
+            work.log = lambda cmd, r: self._log(run, cmd, r)
+            out = await work.execute()
+            async with self.c.lock:
+                if run.status in LIVE_RUN:          # never got to its turn
+                    run.status, run.ended_at = R_FAILED, now_iso()
+                self.sandboxes.suspend_when_idle({run.sandbox})     # stopped, not deleted
+                self.c.save()
+            result = agentlog.agent_result(self.lifecycle.stored_log(run.id))
+            if out.error or result is None or result.is_error or not result.message.strip():
+                raise WorkflowError(f"{role}@{node_id} could not answer: "
+                                    + (out.error or f"no answer (exit {run.exit_code})"))
+            async with self.c.lock:
+                self.c.event("a2a", f"{role}@{node_id} answered {sender}", node_id, run.id)
+                self.c.save()
+            return result.message.strip()
+
+    def _consult_run(self, node_id: str, role: str, sender: str, text: str) -> tuple[Run, SandboxPlan]:
+        """The record of a consult (under the lock): the role's run as it would be now, in a new
+        sandbox (pushing roles get the push provider their run will need), not one of the node's
+        runs, with nothing to write and nothing to report."""
+        node, ch = self.c.nodes[node_id], self.c.change
+        pushes = self.c.assets.roles[role].git == GitMode.COMMIT
+        plan = SandboxPlan(Checkout.BRANCH if pushes else Checkout.BASE)
+        at = node.candidate_sha or ch.integration_head or ch.base_sha
+        asg = self._assignment(node, role, None, None if pushes else at)
+        try:
+            rendered = self.c.assets.render_role(role, asg.variables)
+        except AssetError as e:
+            raise WorkflowError(f"{role}@{node_id}: {e}") from None
+        run = Run(id=self.c.host.next_run_id(), node_id=node.id, role=role, cycle=node.cycle,
+                  soul=node.task.soul if node.task and role == "implementer"
+                  else self.c.assets.roles[role].soul, base_sha=node.base_sha or ch.base_sha,
+                  judged_sha=None if pushes else at, prompt_pin=rendered.pin,
+                  assets_sha=self.c.assets.sha, assignment=asg.for_agent(node),
+                  context_refs=asg.context, consult=True,
+                  sandbox=self.c.host.new_sandbox_name(AGENT_PREFIX))
+        self.c.runs[run.id] = run
+        prompt = CONSULT_PROMPT.format(role=role, node=node_id, change=ch.id, sender=sender,
+                                       text=text, prompt=rendered.prompt)
+        self._payload(run, dataclasses.replace(rendered, prompt=prompt), plan)
+        return run, plan
 
     # ------------------------------------------------------------------ for the phase
     def preconditions(self, node: Node, role: str) -> Escalate | None:
@@ -165,8 +253,8 @@ class AgentRuns:
                 prepared.run = run
                 started(run)
                 self.c.save()
-            fresh = not (plan.keeps and any(
-                r.sandbox == run.sandbox and r.id != run.id for r in self.c.runs.values()))
+            fresh = not any(r.sandbox == run.sandbox and r.id != run.id
+                            for r in self.c.runs.values())
             work.session = AgentSession(self.sandboxes, run, plan, fresh,
                                         lambda stage, msg: self._stage(run, stage, msg))
             work.commands = [*await self.sandboxes.checkout(run, fresh),
@@ -355,16 +443,37 @@ class AgentRuns:
         """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
         across the node's cycles."""
         h = handler_for(run.role)
+        early = self._consulted(node, run.role)
         if plan.keeps and node.sandbox:
             run.sandbox = node.sandbox
-            run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
-                                    if r.sandbox == node.sandbox and r.sandbox_ref), None)
+        elif early is not None:        # started early to answer a message (A2A): its agent
+            run.sandbox = early.sandbox
         else:
             run.sandbox = self.c.host.new_sandbox_name(AGENT_PREFIX)
+            self._retire_earlier(node, run.role, run.sandbox)
+        run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
+                                if r.sandbox == run.sandbox and r.sandbox_ref), None)
         if h.judge and node.current_run:
             judged = self.c.runs.get(node.current_run)
             if judged and (judged.sandbox == run.sandbox or judged.id == run.id):
                 raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
+
+    def _consulted(self, node: Node, role: str) -> Run | None:
+        """The role's agent started early on this node (a consult) whose sandbox its run
+        continues: the latest consult of the role, unless a run of the role came since."""
+        runs = [r for r in self.c.runs.values() if r.node_id == node.id and r.role == role
+                and r.sandbox and not r.sandbox_deleted]
+        return runs[-1] if runs and runs[-1].consult else None
+
+    def _retire_earlier(self, node: Node, role: str, keep: str) -> None:
+        """A new sandbox for the role (a judge's next cycle): the role's earlier ones on the
+        node – kept stopped for A2A – are retired (once nothing live uses them)."""
+        for sb in {r.sandbox for r in self.c.runs.values()
+                   if r.node_id == node.id and r.role == role and r.sandbox != keep
+                   and r.sandbox and not r.sandbox_deleted and r.sandbox != node.sandbox}:
+            if sb not in self.sandboxes.retiring and not any(
+                    x.sandbox == sb and x.status in LIVE_RUN for x in self.c.runs.values()):
+                self.sandboxes.delete_later(sb)
 
     def _record_dispatch(self, run: Run, node: Node, plan: SandboxPlan) -> None:
         h, ch = handler_for(run.role), self.c.change
@@ -401,6 +510,14 @@ class AgentRuns:
             "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
             "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
         }
+        # A2A (server/a2a.py): run-agent.sh registers the change's AI Catalog with the a2a CLI;
+        # its default agent is the change's orchestrator
+        a2a = self.c.cfg.server.a2a_url
+        orchestrator = cards.card_url(a2a, cards.ORCHESTRATOR)
+        env |= {"LEGION_A2A_CATALOG": cards.catalog_url(a2a),
+                "LEGION_A2A_ORCHESTRATOR": orchestrator,
+                "LEGION_A2A_CARD": cards.card_id(run.role, run.node_id),
+                "A2ACLI_AGENT_CARD": orchestrator}
         if found := self._resumable_session(run, plan):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session
@@ -416,11 +533,15 @@ class AgentRuns:
     def _resumable_session(self, run: Run, plan: SandboxPlan) -> tuple[str, str] | None:
         """For a role that keeps its session: the node's previous run in the same sandbox and
         its agent session, which this rework continues."""
-        if not plan.keeps_session:
-            return None
+        consults = [r for r in self.c.runs.values() if r.consult and r.node_id == run.node_id
+                    and r.role == run.role and r.sandbox == run.sandbox and r.id != run.id]
         node = self.c.nodes[run.node_id]
         prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]
         prev = [r for r in prev if r.role == run.role and r.sandbox == run.sandbox]
+        if consults and (not prev or consults[-1].created_at >= prev[-1].created_at):
+            prev = consults                  # it continues the agent started early (A2A)
+        elif not plan.keeps_session:
+            return None
         if not prev:
             return None
         sid = prev[-1].session_id or agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000))

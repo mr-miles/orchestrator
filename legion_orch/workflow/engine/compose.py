@@ -35,6 +35,7 @@ def compose(ce: ChangeEngine) -> None:
     sandboxes.environments = provisioner          # whether a role's environment is built
     reports = Reports(ce, lifecycle, roles=ce)
     agents.reports = reports
+    lifecycle.agents = agents                     # an A2A message may start an agent early
     runner = StepRunner(ce, phases, lifecycle, provisioner)
     gates = HumanGates(ce, lifecycle, runner)
     flow = FlowRuntime(ce, runner, lifecycle)

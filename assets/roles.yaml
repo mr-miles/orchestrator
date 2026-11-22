@@ -1,6 +1,6 @@
 intake:
   soul: intake-analyst
-  skills: [harness-contract, docstore-protocol, attestation-format, risk-signals, blocked-protocol]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, risk-signals, blocked-protocol]
   write: ["intake/"]
   required_docs: ["intake/requirements.md", "intake/risk.json"]
   git: none
@@ -8,7 +8,7 @@ intake:
   repo: true
 planner:
   soul: architect-planner
-  skills: [harness-contract, docstore-protocol, attestation-format, taskgraph-schema, sandbox-environment, blocked-protocol, language-preferences]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, taskgraph-schema, sandbox-environment, blocked-protocol, language-preferences]
   write: ["plan/"]
   required_docs: ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]
   git: none
@@ -16,7 +16,7 @@ planner:
   repo: true
 critic:
   soul: plan-critic
-  skills: [harness-contract, docstore-protocol, attestation-format, pre-mortem, finding-format, language-preferences]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, pre-mortem, finding-format, language-preferences]
   write: ["critique/"]
   required_docs: ["critique/cycle-{{cycle}}.md"]
   git: none
@@ -24,7 +24,7 @@ critic:
   repo: true
 oracle:
   soul: test-engineer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
   write: ["oracle/"]
   required_docs: ["oracle/tests.md"]
   git: commit
@@ -32,7 +32,7 @@ oracle:
   repo: true
 baseline:
   soul: baseline-verifier
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol]
   write: ["baseline/"]
   required_docs: ["baseline/report.md"]
   git: head
@@ -41,7 +41,7 @@ baseline:
 implementer:
   soul: "{{task_soul}}"
   souls_allowed: [senior-developer, backend-engineer, frontend-engineer]
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
   write: ["tasks/{{task_id}}/evidence/"]
   required_docs: ["tasks/{{task_id}}/evidence/cycle-{{cycle}}.md"]
   git: commit
@@ -49,7 +49,7 @@ implementer:
   repo: true
 reviewer:
   soul: code-reviewer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, language-preferences]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format, language-preferences]
   write: ["tasks/{{task_id}}/reviews/reviewer-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md"]
   git: candidate
@@ -57,7 +57,7 @@ reviewer:
   repo: true
 security:
   soul: security-reviewer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, security-checklist]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format, security-checklist]
   write: ["tasks/{{task_id}}/reviews/security-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/security-cycle-{{cycle}}.md"]
   git: candidate
@@ -65,7 +65,7 @@ security:
   repo: true
 integration:
   soul: integration-verifier
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format]
   write: ["integration/"]
   required_docs: ["integration/report.md"]
   git: head
@@ -73,7 +73,7 @@ integration:
   repo: true
 describer:
   soul: pr-writer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
   write: ["delivery/pr.md"]
   required_docs: ["delivery/pr.md"]
   git: head
@@ -81,7 +81,7 @@ describer:
   repo: true
 pr-reviewer:
   soul: pr-reviewer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format]
   write: ["delivery/reviews/pr-reviewer-"]
   required_docs: ["delivery/reviews/pr-reviewer-cycle-{{cycle}}.md"]
   git: head
@@ -89,7 +89,7 @@ pr-reviewer:
   repo: true
 release:
   soul: release-planner
-  skills: [harness-contract, docstore-protocol, attestation-format]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format]
   write: ["release/"]
   required_docs: ["release/plan.md", "release/rollback.md"]
   git: none
@@ -97,7 +97,7 @@ release:
   repo: true
 architecture:
   soul: architecture-reviewer
-  skills: [harness-contract, docstore-protocol, attestation-format, git-protocol, finding-format, architecture-checklist]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format, architecture-checklist]
   write: ["tasks/{{task_id}}/reviews/architecture-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md"]
   git: candidate
@@ -105,7 +105,7 @@ architecture:
   repo: true
 retrospective:
   soul: retrospective-analyst
-  skills: [harness-contract, docstore-protocol, attestation-format]
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format]
   write: ["retro/"]
   required_docs: ["retro/report.md"]
   git: none

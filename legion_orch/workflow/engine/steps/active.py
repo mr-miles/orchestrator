@@ -79,6 +79,7 @@ class ActiveStep:
         is wanted again); anything else enters its first phase."""
         node, step = self.node, self.type
         node.approved = False                    # a gate is asked again
+        node.agent_roles = step.agent_roles(self.c)   # their A2A cards, for the whole step
         if node.runs or node.status != PENDING:
             node.cycle += 1
             node.candidate_sha = node.accepted_sha = None

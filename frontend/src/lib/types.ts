@@ -362,6 +362,32 @@ export interface ChangeState {
   pull_request?: PullRequestRecord | null
   /** node -> the log of its verification running now */
   verifying?: Record<string, string>
+  /** agent-to-agent: the change's cards and its agents' questions to the humans */
+  a2a?: { cards: A2ACard[]; questions: AgentQuestion[] }
+}
+
+/** An A2A card: the change's orchestrator, or a step agent (``<role>@<node>``) with a sandbox. */
+export interface A2ACard {
+  id: string
+  node: string | null
+  role: string | null
+  title: string
+  sandbox: string | null
+  stopped: boolean
+}
+
+/** A question an agent asked the decision owners (A2A ``ask_human``). */
+export interface AgentQuestion {
+  id: string
+  node: string
+  role: string
+  run: string | null
+  question: string
+  asked_at: string
+  answer: string | null
+  answered_by: string | null
+  answered_at: string | null
+  withdrawn: string | null
 }
 
 export interface ChangeSummary {
@@ -386,7 +412,7 @@ export interface AttentionItem {
   change: string
   goal: string
   node: string | null
-  kind: 'gate' | 'escalation' | 'not_ready' | 'change_ended' | 'retrospective'
+  kind: 'gate' | 'escalation' | 'not_ready' | 'question' | 'change_ended' | 'retrospective'
   detail: string
   title: string
   reason: string

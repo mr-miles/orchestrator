@@ -26,7 +26,8 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("serve", help="run the controller, MCP endpoint, git remote and web UI")
     sub.add_parser("check", help="validate config and the assets folder")
     so = sub.add_parser("setup-openshell", help="one-time workspace setup: import the "
-                        "controller's provider profiles (legion-mcp, legion-git, legion-git-push) "
+                        "controller's provider profiles (legion-mcp, legion-a2a, legion-git, "
+                        "legion-git-push) "
                         "and create their providers")
     so.add_argument("--out", default="legion-provider-profiles",
                     help="directory for the rendered profiles (<id>.yaml)")

@@ -46,10 +46,11 @@ async def test_planner_keeps_sandbox_and_session_through_critique_until_h_e1(f: 
     assert second.id != first.id and second.sandbox == sb    # same sandbox, started again
     assert sb in f.runner.restarted and f.runner.created.count(sb) == 1
     assert resume_of(f.runner.run_envs[-1]) == sid           # the rework continues the session
-    assert critic.sandbox in f.runner.deleted
+    assert critic.sandbox in f.runner.stopped and critic.sandbox not in f.runner.deleted
 
     give_session(f, second)
     await f.plan()
+    assert critic.sandbox in f.runner.deleted          # replaced by the next cycle's critic
     await f.critique("PASS")
     assert sb not in f.runner.deleted                      # H-E1 can still send the plan back
     await f.human("H-E1", "approve")

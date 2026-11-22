@@ -15,6 +15,7 @@ import { docPath } from '@/lib/api'
 import { humanize, isLive, nodeLabel, PROGRESS_ORDER, statusColor } from '@/lib/status'
 import type { ChangeState, Node } from '@/lib/types'
 import { StatusDot } from '../status'
+import { AgentQuestions } from './a2a'
 import { useNav } from './nav'
 import { TaskGraph } from './task-graph'
 
@@ -189,6 +190,7 @@ export function OverviewTab({ state, selected }: { state: ChangeState; selected:
           <ProgressBar state={state} />
         </CardContent>
       </Card>
+      <AgentQuestions state={state} />
       {ended && <RetrospectiveCard state={state} />}
       <Card>
         <CardHeader>

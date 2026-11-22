@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from ....store import DocVersion
 from ....telemetry import Telemetry
 from ....util import now_iso
-from ... import attention, attest, governance
+from ... import attention, attest, cards, governance
 from ...attention import AttentionItem
 from ...model import (
     ACCEPTED,
@@ -63,6 +63,7 @@ class ChangeCore:
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
+        self._cards: set[str] = set()                  # A2A card ids as of the last save
         self._saved = asyncio.Event()                  # set (and replaced) on every save
 
     # ------------------------------------------------------------------ state
@@ -112,6 +113,7 @@ class ChangeCore:
         self.before_save()
         self._stamp_statuses()
         self._update_attention()
+        self._update_cards()
         self.st.save()
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.notify()
@@ -140,6 +142,7 @@ class ChangeCore:
         restart neither re-stamps nor re-raises (nobody is notified again for old items)."""
         self._statuses = {nid: n.status for nid, n in self.nodes.items()}
         self._attention = {i.key: i for i in attention.items(self)}
+        self._cards = {c.id for c in cards.cards(self)}
 
     def _stamp_statuses(self) -> None:
         now = now_iso()
@@ -161,6 +164,21 @@ class ChangeCore:
                        item.node)
             self.host.attention(item, raised=False)
         self._attention = cur
+
+    # ------------------------------------------------------------------ A2A cards
+    def a2a_cards(self) -> list[cards.StepCard]:
+        return cards.cards(self)
+
+    def _update_cards(self) -> None:
+        """Record each A2A card's registration and removal (they follow the sandboxes)."""
+        cur = {c.id: c for c in cards.cards(self)}
+        for cid in sorted(cur.keys() - self._cards):
+            card = cur[cid]
+            self.event("a2a", f"card registered: {cid}"
+                       + (f" (sandbox {card.sandbox})" if card.sandbox else ""), card.node)
+        for cid in sorted(self._cards - cur.keys()):
+            self.event("a2a", f"card removed: {cid}", cid.partition("@")[2] or None)
+        self._cards = set(cur)
 
     def head_moved(self, branch_head: str) -> str | None:
         """G-H1: the integration branch is written only by the controller. If it is not at the

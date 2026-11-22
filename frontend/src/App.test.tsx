@@ -161,6 +161,41 @@ describe('the operator UI', () => {
     await waitFor(() => FakeEventSource.last('/api/runs/lgv-now/log/events'))
   })
 
+  test("an agent's question is answered from the overview as the approver", async () => {
+    localStorage.setItem('approver', 'miles')
+    calls = fakeFetch({
+      '/api/changes/c1/questions/t-1/answer': { id: 't-1', answer: 'Yes' },
+      '/api/changes': CHANGES,
+    })
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    const q = {
+      id: 't-1',
+      node: 'plan',
+      role: 'critic',
+      run: 'r0003',
+      question: 'May the greeting be in French?',
+      asked_at: '2026-11-22T10:00:00.000000Z',
+      answer: null,
+      answered_by: null,
+      answered_at: null,
+      withdrawn: null,
+    }
+    await act(async () => {
+      es.open()
+      es.emit('state', { ...stateAtH1(), a2a: { cards: [], questions: [q] } })
+    })
+    expect(await screen.findByText('May the greeting be in French?')).toBeTruthy()
+    await userEvent.type(screen.getByRole('textbox', { name: 'Answer to critic@plan' }), 'Yes')
+    await userEvent.click(screen.getByRole('button', { name: 'Answer' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/questions/t-1/answer')?.body).toEqual({
+        answer: 'Yes',
+        approver: 'miles',
+      }),
+    )
+  })
+
   test('the bell shows what needs you across changes and opens it', async () => {
     renderApp()
     const es = await push()

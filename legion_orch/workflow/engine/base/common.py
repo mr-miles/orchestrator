@@ -24,6 +24,16 @@ class WorkflowError(Exception):
     """A refused human/API action (shown to the operator)."""
 
 
+class AgentBusy(WorkflowError):
+    """An A2A answer was asked of a step whose agent is running (or about to): its inbox takes
+    the message instead."""
+
+
+class NoAgent(WorkflowError):
+    """A step has no agent session to answer with any more (its sandbox was deleted, or is
+    being retired)."""
+
+
 def _slug(node_id: str) -> str:
     """A node id as a path or branch component (``build:T1`` -> ``build-t1``, ``oracle@2`` ->
     ``oracle-2``: ``@`` would end a ``file:<path>@<version>`` attestation)."""

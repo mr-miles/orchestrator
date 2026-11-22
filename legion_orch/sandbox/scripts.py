@@ -76,6 +76,19 @@ if [ -n "${LEGION_RESUME_SESSION:-}" ]; then
     unset LEGION_RESUME_SESSION
   fi
 fi
+# local development only: emulate the gateway's credential for the a2a CLI (A2ACLI_AUTH: --auth)
+[ -z "${LEGION_ACCESS_TOKEN:-}" ] || export A2ACLI_AUTH="Bearer $LEGION_ACCESS_TOKEN"
+# A2A: register the change's AI Catalog (its agents' cards) with the a2a CLI, if the image has it
+if [ -n "${LEGION_A2A_CATALOG:-}" ]; then
+  if ! command -v a2a >/dev/null 2>&1; then
+    echo "[legion] no a2a CLI on PATH: A2A catalog not registered"
+  elif a2a catalog update legion >/dev/null 2>&1 \
+       || a2a catalog add legion "$LEGION_A2A_CATALOG" >/dev/null 2>&1; then
+    echo "[legion] registered A2A catalog legion ($LEGION_A2A_CATALOG)"
+  else
+    echo "[legion] could not register A2A catalog $LEGION_A2A_CATALOG" >&2
+  fi
+fi
 echo "[legion] starting the agent in $PWD"
 exec bash -lc "$LEGION_AGENT_COMMAND"
 """

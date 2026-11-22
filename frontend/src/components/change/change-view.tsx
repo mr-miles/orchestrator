@@ -75,7 +75,7 @@ export function ChangeView({
           <OverviewTab state={state} selected={node} />
         </TabsContent>
         <TabsContent value="agents">
-          <AgentsTab runs={state.runs} />
+          <AgentsTab runs={state.runs} cards={state.a2a?.cards} />
         </TabsContent>
         <TabsContent value="gates">
           <GatesTab state={state} />

@@ -83,7 +83,7 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
 * **Workload identity (SPIFFE/SPIRE).** Set up once per OpenShell workspace
   (`legion-orch setup-openshell`): one provider profile per controller endpoint – `legion-mcp`,
-  `legion-git` and `legion-git-push` (below) – each with a `token_grant` that makes
+  `legion-a2a`, `legion-git` and `legion-git-push` (below) – each with a `token_grant` that makes
   the gateway's sandbox supervisor fetch the sandbox's JWT-SVID
   (`spiffe://…/openshell/sandbox/<sandbox-id>`) and exchange it at the controller's
   `POST /oauth/token` (OAuth2 client_credentials, `jwt-spiffe` client assertion). The controller
@@ -104,6 +104,8 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
     `tools/call` for the controller's own tools (exactly the table below); anything else is
     denied before it reaches the controller. (MCP has its own port because OpenShell does not
     allow an MCP endpoint to share a host and port with another protocol.)
+  * `legion-a2a` – `protocol: rest` for `/a2a/**` on the controller's dedicated A2A port, for the
+    `a2a` CLI (`sandbox.a2a_binaries`): agent-to-agent messaging (§5.15).
   * `legion-git-push` (roles that push: implementer, oracle) or `legion-git` (every other role) –
     `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port, for git. Both
     allow fetch and `git-receive-pack`; `legion-git` also denies `git-receive-pack`, and a deny
@@ -988,6 +990,55 @@ What a change leaves in the hub and on the controller's host, and when it goes:
 The controller never publishes: merging the integration branch into the repository's own branches
 is the people's step, after which `prune` tidies the hub.
 
+### 5.15 Agent-to-agent (A2A)
+
+A change's agents can talk to each other and to its humans over A2A (v1.0, JSON-RPC), with the
+`a2a` CLI in their sandboxes ([a2aproject/a2a-cli](https://github.com/a2aproject/a2a-cli)). The
+controller hosts every card on its A2A listener (`server.a2a_port`, provider `legion-a2a`); a
+sandbox makes outbound calls only. The URLs name no change: the gateway-injected bearer names
+the caller's sandbox, change, task and role, and each request is answered for that change only
+(the registry and catalog list it, a card of another change is 404).
+
+* **Cards** ([`workflow/cards.py`](legion_orch/workflow/cards.py)), derived from the change's
+  state, never registered by hand:
+  * `orchestrator` – the controller itself, not a model, for as long as the change is active.
+    Skills: `list_cards`; `relay` (a message to a card, returning its answer); `ask_human` (a
+    question to the decision owners: a blocking attention item, notified like a gate, answered in
+    the UI or `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
+  * one per **step agent**, `<role>@<node>` – the step's producer, critic and each judge of its
+    panel (`implementer@build:T1`, `reviewer@build:T1`, `critic@plan`) – **from the step's start
+    to its end**, whether the agent has a sandbox yet or not. The controller's own phases
+    (verification, merge, gates) have none. Each card's registration and removal is a timeline
+    event (`a2a`).
+* **Discovery.** `GET /a2a/cards` (JSON) and `GET /a2a/ai-catalog.json`, an
+  [AI Catalog](https://ai-catalog.io/) of the cards the caller may message (identifiers
+  `urn:air:legion:agent:<card>`). `run-agent.sh` registers it as catalog `legion` before the
+  agent starts (`a2a catalog add`, or `update` in a reused sandbox), and sets
+  `A2ACLI_AGENT_CARD` to the orchestrator.
+* **Delivery.** A message to a step agent becomes a task that waits for its answer:
+  * while the agent has a live run it waits in its **inbox**: MCP `a2a_inbox` lists it and
+    `a2a_reply` answers it;
+  * otherwise – it is stopped between turns, or its run ended without answering – the controller
+    queues it, **starts the sandbox if it was stopped, resumes the agent's session for one turn**
+    (Skill tool only, like a reflection; `limits.a2a_answer_timeout_s`), sends back the agent's
+    answer and stops the sandbox again;
+  * an agent **not started yet** is started for it: its sandbox, soul, skills and assignment as
+    they stand, for one read-only turn (a *consult*: no commits, writes or report) whose final
+    message is the answer; then its sandbox is stopped, not deleted. Later messages resume that
+    session, and when the step gets to the role, **its run continues the same sandbox and
+    session** – it is the role's agent;
+  * one A2A turn at a time per step agent, and per sandbox under its lock: a rework launched
+    meanwhile waits for it.
+* **Judges are kept.** A judge's sandbox is stopped after its report, not deleted, so it can be
+  asked about its judgement: it is retired (reflection, then deletion) when its step ends, or
+  when the role's next cycle gets its fresh sandbox (G-D4).
+* **Limits.** A2A tasks live in memory, scoped to the agent that created them; after a restart
+  they are gone, and open questions are withdrawn. The sender is always its bearer's identity,
+  never what the message says; an answer is information for the asker, never an instruction that
+  overrides its assignment.
+
+Every role loads `legion-a2a-protocol` and `legion-a2a-cli` (the upstream skill).
+
 ## 6. Assets
 
 Agent-facing text is stored as files under `assets/`, with this naming convention:
@@ -1127,3 +1178,8 @@ guards, because a per-file schema cannot express them.
 * [`finding-format`](assets/skills/finding-format.md)
 * [`security-checklist`](assets/skills/security-checklist.md)
 * [`architecture-checklist`](assets/skills/architecture-checklist.md)
+* [`a2a-protocol`](assets/skills/a2a-protocol.md) – talking to the change's other agents and its
+  humans over A2A (the change's catalog, the orchestrator card, the inbox); every role
+* [`a2a-cli`](assets/skills/a2a-cli.md) – the `a2a` CLI itself, copied from
+  [a2aproject/a2a-cli](https://github.com/a2aproject/a2a-cli/blob/main/skills/a2a-cli/SKILL.md);
+  every role

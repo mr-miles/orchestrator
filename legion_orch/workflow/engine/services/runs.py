@@ -26,6 +26,7 @@ from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
+    from .agent_runs import AgentRuns
 
 
 def log_part(run_id: str, n: int) -> str:
@@ -65,6 +66,7 @@ class RunLifecycle:
     def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
         self.c, self.sandboxes = core, sandboxes
         self._ended: set[str] = set()        # released because the change ended (tried once)
+        self.agents: AgentRuns = None  # type: ignore[assignment]   # set once it exists (A2A)
 
     def live_runs(self) -> list[Run]:
         return [r for r in self.c.runs.values() if r.status in LIVE_RUN]
@@ -127,6 +129,14 @@ class RunLifecycle:
                     self.sandboxes.delete_later(sb)
                     changed = True
         return changed
+
+    def _consulted(self, node: Node, roles: set[str] | None = None) -> set[str]:
+        """Sandboxes of the node's agents started early (A2A consults) that no run of the
+        node took over: they go with the step."""
+        taken = {self.c.runs[r].sandbox for r in node.runs if r in self.c.runs}
+        return {r.sandbox for r in self.c.runs.values()
+                if r.consult and r.node_id == node.id and (not roles or r.role in roles)
+                and r.sandbox and not r.sandbox_deleted and r.sandbox not in taken}
 
     def retire_runs(self, node: Node) -> None:
         """The node starts again with a new run in a new sandbox (an escalation resumed): its
@@ -210,6 +220,25 @@ class RunLifecycle:
         shutil.rmtree(self.c.run_dir(log_id), ignore_errors=True)
         return text
 
+    # ------------------------------------------------------------------ A2A (sandboxes/answer.py)
+    def agent_state(self, node_id: str, role: str) -> str | None:
+        """A step agent as an A2A recipient: "live" (a run is in its turn: deliver to its
+        inbox), "idle" (its sandbox exists, stopped or not: a resumed turn answers), "absent"
+        (its step is in progress but its agent has not started: a consult starts it) or None
+        (no card: the step is not in progress)."""
+        answerer = self.sandboxes.answerer
+        has_card = any(c.node == node_id and c.role == role for c in self.c.a2a_cards())
+        if answerer.session_run(node_id, role) is None:
+            return "absent" if has_card else None
+        return "live" if answerer.live(node_id, role) else "idle"
+
+    async def answer(self, node_id: str, role: str, sender: str, text: str) -> str:
+        """The step agent answers: in a resumed turn of its session, or – not started yet – in
+        its first turn (a consult, :meth:`AgentRuns.consult`), which its run later continues."""
+        if self.agent_state(node_id, role) == "absent":
+            return await self.agents.consult(node_id, role, sender, text)
+        return await self.sandboxes.answerer.answer(node_id, role, sender, text)
+
     def stored_log(self, run_id: str) -> str:
         """A run's whole archived log ('' if none)."""
         parts = []
@@ -245,6 +274,7 @@ class RunLifecycle:
                 r.status = R_ACCEPTED
             if r.sandbox and not r.sandbox_deleted and r.status in (R_ACCEPTED, R_SUPERSEDED, R_FAILED):
                 sandboxes.add(r.sandbox)
+        sandboxes |= self._consulted(node, roles)
         held = self.sandboxes.held()
         for sb in sandboxes - held - self.sandboxes.retiring:     # retiring already: a judge's
             if any(r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):

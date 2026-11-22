@@ -47,6 +47,8 @@ class ServerConfig:
     mcp_port: int = 8766
     git_port: int = 8767
     token_port: int = 8768
+    # Agent-to-agent (A2A v1.0, JSON-RPC): the change's orchestrator card and its steps' cards.
+    a2a_port: int = 8769
     # Largest MCP request the OpenShell gateway will inspect (mcp.max_body_bytes in the policy and
     # provider profile). The gateway drops bigger requests without a response (the agent sees a
     # connection reset), so the controller itself refuses requests over half of this with a 413;
@@ -79,6 +81,10 @@ class ServerConfig:
         return self._public(self.git_port) + "/git"
 
     @property
+    def a2a_url(self) -> str:
+        return self._public(self.a2a_port) + "/a2a"
+
+    @property
     def token_url(self) -> str:
         return f"{self.token_scheme}://{self.token_host}:{self.token_port}/oauth/token"
     # Optional token required for human actions in the web UI (header X-Operator-Token).
@@ -95,6 +101,8 @@ class LimitsConfig:
     run_timeout_s: int = 3600
     setup_timeout_s: int = 900    # mise run setup after a checkout (§5.3c)
     verify_timeout_s: int = 1800
+    # an A2A answer from a step whose agent is not running (a resumed turn, §A2A)
+    a2a_answer_timeout_s: int = 900
     # git transport: largest accepted request (push) and concurrent git-http-backend processes
     git_max_push_bytes: int = 256 * 1024 * 1024
     git_max_concurrency: int = 8
@@ -119,6 +127,8 @@ class SandboxConfig:
     providers: list[str] = field(default_factory=list)
     # Binaries in the agent image allowed to call the controller's MCP endpoint
     agent_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/claude"])
+    # Binaries allowed to reach the controller's A2A endpoint (the a2a CLI, github.com/a2aproject/a2a-cli)
+    a2a_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/a2a"])
     # Binaries allowed to reach the controller's git remote. git's HTTP traffic is sent by its
     # remote helper: /usr/lib/git-core on Debian/Ubuntu, /usr/libexec/git-core on Fedora/RHEL/Alpine.
     git_binaries: list[str] = field(default_factory=lambda: [
@@ -190,9 +200,9 @@ class IdentityConfig:
     dev_spire: bool | None = None        # in-process SPIRE stand-in; defaults to runner == local
 
 
-# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates and escalations,
-# and the inbox's ended changes and retrospective reports.
-ATTENTION_KINDS = ("gate", "escalation", "not_ready", "change_ended", "retrospective")
+# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates, escalations and
+# agents' questions (A2A ask_human), and the inbox's ended changes and retrospective reports.
+ATTENTION_KINDS = ("gate", "escalation", "not_ready", "question", "change_ended", "retrospective")
 SINK_KINDS = ("webhook", "ntfy", "command")
 
 
@@ -222,7 +232,7 @@ class NotifyConfig:
     # Base URL of the operator UI, for links to the item (e.g. https://legion.example/).
     ui_url: str | None = None
     # Item kinds to notify: gate and escalation (blocking), change_ended, retrospective (inbox).
-    items: list[str] = field(default_factory=lambda: ["gate", "escalation", "not_ready"])
+    items: list[str] = field(default_factory=lambda: ["gate", "escalation", "not_ready", "question"])
     # Repeat a blocking item while it is still waiting (seconds; 0 = never). Inbox items are
     # sent once.
     remind_after_s: int = 3600
@@ -368,9 +378,10 @@ def load_config(path: str | Path) -> Config:
         protected_paths=list(raw.get("protected_paths") or []),
         base_dir=base,
     )
-    ports = [cfg.server.port, cfg.server.mcp_port, cfg.server.git_port, cfg.server.token_port]
+    ports = [cfg.server.port, cfg.server.mcp_port, cfg.server.git_port, cfg.server.token_port,
+             cfg.server.a2a_port]
     if len(set(ports)) != len(ports):
-        raise ValueError(f"server ports must be distinct (operator, mcp, git, token): {ports}")
+        raise ValueError(f"server ports must be distinct (operator, mcp, git, token, a2a): {ports}")
     if not (cfg.sandbox.workspace or "").strip():
         raise ValueError("sandbox.workspace must name an OpenShell workspace")
     if cfg.identity.dev_spire is None:

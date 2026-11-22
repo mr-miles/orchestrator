@@ -61,7 +61,8 @@ def _config(tmp_path, port):
         assets_dir: {ROOT / 'assets'}
         workflow_doc: {ROOT / 'WORKFLOW.md'}
         server: {{host: 127.0.0.1, port: {port}, agent_host: 127.0.0.1, public_host: 127.0.0.1,
-                  mcp_port: {_free_port()}, git_port: {_free_port()}, token_port: {_free_port()}}}
+                  mcp_port: {_free_port()}, git_port: {_free_port()}, token_port: {_free_port()},
+                  a2a_port: {_free_port()}}}
         limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
         retrospective: {{auto: false}}    # the scripted agents play no retrospective
         sandbox:
@@ -602,7 +603,7 @@ def test_agent_listeners_keep_idle_connections_open(tmp_path):
         f = await Flow.create(tmp_path)
         f.cfg.server.agent_keep_alive_s = 1            # short, to see the setting take effect
         servers = await build_servers(f.ctl)
-        assert [s.config.timeout_keep_alive for s in servers[1:]] == [1, 1, 1]
+        assert [s.config.timeout_keep_alive for s in servers[1:]] == [1, 1, 1, 1]
         mcp = servers[1]
         mcp.config.port = port = _free_port()
         task = asyncio.create_task(mcp.serve())

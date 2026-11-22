@@ -162,6 +162,9 @@ class Reports:
         """Phase 1 (lock held): count the attempt (not for a dry run), check limits and shape,
         normalise the attestations (here and in review findings) to fully qualified form."""
         run = self.c.runs[run_id]
+        if run.consult:
+            return ReportOutcome.reject("this turn only answers an A2A message: your answer is "
+                                        "your final message; your work on the step comes later")
         if run.status not in LIVE_RUN:
             return ReportOutcome.reject(f"run is {run.status}")
         if not dry_run:

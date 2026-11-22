@@ -18,8 +18,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { isLive, STAGE_TEXT } from '@/lib/status'
-import type { Run } from '@/lib/types'
+import type { A2ACard, Run } from '@/lib/types'
 import { StageBadge, StatusBadge } from '../status'
+import { AgentCards } from './a2a'
 import { useNav } from './nav'
 
 function LiveRun({ run }: { run: Run }) {
@@ -61,7 +62,7 @@ function LiveRun({ run }: { run: Run }) {
   )
 }
 
-export function AgentsTab({ runs }: { runs: Run[] }) {
+export function AgentsTab({ runs, cards = [] }: { runs: Run[]; cards?: A2ACard[] }) {
   const nav = useNav()
   const live = runs.filter(isLive)
   return (
@@ -80,6 +81,7 @@ export function AgentsTab({ runs }: { runs: Run[] }) {
           </EmptyHeader>
         </Empty>
       )}
+      <AgentCards cards={cards} />
       <Card>
         <CardHeader>
           <CardTitle>All runs</CardTitle>

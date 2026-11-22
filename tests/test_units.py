@@ -456,7 +456,8 @@ def test_templates_render(tmp_path):
     create = calls[0]
     assert create[:2] == ["sandbox", "create"]
     for flag in (["--name", "lg-r0001-0123456789"], ["--from", "reg/agent:1"],
-                 ["--provider", "legion-mcp"], ["--provider", "legion-git"],
+                 ["--provider", "legion-mcp"], ["--provider", "legion-a2a"],
+                 ["--provider", "legion-git"],
                  ["--provider", "claude-code"],
                  ["--label", "legion.task=build.T1"],
                  ["--upload", f"{tmp_path / 'payload'}:/sandbox"]):
@@ -473,7 +474,7 @@ def test_templates_render(tmp_path):
     assert r.cli == ["openshell", "--workspace", "team-ml", "-g", "prod"]
     cmds = setup_commands(cfg, "profiles")
     assert [c[5:] for c in cmds] == [
-        step for pid in ("legion-mcp", "legion-git", "legion-git-push")
+        step for pid in ("legion-mcp", "legion-a2a", "legion-git", "legion-git-push")
         for step in (["profile", "import", "-f", f"profiles/{pid}.yaml"],
                      ["provider", "create", "--name", pid, "--type", pid, "--runtime-credentials"])]
     assert spec_to_args({"a_b": None, "c": False, "d": True, "e": [1, 2], "f": {"k": "v:1"}}) == \
@@ -489,8 +490,8 @@ def test_templates_render(tmp_path):
 
 def test_generated_policies_and_provider_profiles(tmp_path):
     """Controller access is one provider profile per endpoint, not sandbox policy rules: legion-mcp
-    (agent CLI → MCP), legion-git (git, fetch only: receive-pack denied) and legion-git-push (git,
-    fetch and push). Sandbox policies have no controller rule."""
+    (agent CLI → MCP), legion-a2a (a2a CLI → A2A), legion-git (git, fetch only: receive-pack
+    denied) and legion-git-push (git, fetch and push). Sandbox policies have no controller rule."""
     import yaml as _y
 
     from legion_orch.sandbox import provider_profiles, render_policy, setup_commands
@@ -500,16 +501,20 @@ def test_generated_policies_and_provider_profiles(tmp_path):
     ver = _y.safe_load(render_policy(cfg, agent=False))
     assert agent["network_policies"] == ver["network_policies"] == {}
     profs = provider_profiles(cfg, list(MCP_TOOLS))
-    assert list(profs) == ["legion-mcp", "legion-git", "legion-git-push"]
+    assert list(profs) == ["legion-mcp", "legion-a2a", "legion-git", "legion-git-push"]
     assert all(p["id"] == pid for pid, p in profs.items())
-    [mcp], [git], [push] = (profs[p]["endpoints"] for p in profs)
-    assert mcp["protocol"] == "mcp" and git["protocol"] == push["protocol"] == "rest"
+    [mcp], [a2a], [git], [push] = (profs[p]["endpoints"] for p in profs)
+    assert mcp["protocol"] == "mcp" and git["protocol"] == push["protocol"] == a2a["protocol"] == "rest"
+    assert (a2a["host"], a2a["port"]) == ("host.openshell.internal", 8769)
+    assert {(r["allow"]["method"], r["allow"]["path"]) for r in a2a["rules"]} == \
+        {("GET", "/a2a/**"), ("POST", "/a2a/**")}
     assert (mcp["host"], mcp["port"], mcp["path"]) == ("host.openshell.internal", 8766, "/mcp")
     assert (git["host"], git["port"]) == ("host.openshell.internal", 8767)   # one port per protocol
     calls = [r["allow"] for r in mcp["rules"] if r["allow"]["method"] == "tools/call"]
     assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
     # each endpoint only for the binaries that use it
     assert profs["legion-mcp"]["binaries"] == cfg.sandbox.agent_binaries
+    assert profs["legion-a2a"]["binaries"] == cfg.sandbox.a2a_binaries == ["/usr/local/bin/a2a"]
     assert profs["legion-git"]["binaries"] == profs["legion-git-push"]["binaries"] == cfg.sandbox.git_binaries
     # the same allows; deny rules win over every allow, so only legion-git denies push
     assert git["rules"] == push["rules"]

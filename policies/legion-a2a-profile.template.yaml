@@ -1,0 +1,36 @@
+# Provider profile `legion-a2a`, imported once per workspace (`legion-orch setup-openshell`) and
+# attached to every agent sandbox (not verifiers). It lets the a2a-cli in the sandbox reach the
+# controller's A2A endpoint: the change's orchestrator card and the cards of its steps that have
+# a running sandbox. The gateway exchanges the sandbox's SPIFFE JWT-SVID at the controller and
+# injects the returned task-scoped bearer; the controller shows a caller only its own change.
+id: ${PROFILE_ID}
+display_name: Legion controller A2A
+description: Controller agent-to-agent (A2A) endpoint with a task-scoped token obtained from the sandbox's SPIFFE JWT-SVID
+category: other
+credentials:
+  - name: access_token
+    description: Short-lived controller token (client_credentials, jwt-spiffe client assertion)
+    required: false
+    auth_style: bearer
+    header_name: Authorization
+    token_grant:
+      grant_type: client_credentials
+      token_endpoint: ${TOKEN_ENDPOINT}
+      audience: ${TOKEN_AUDIENCE}
+      jwt_svid_audience: ${SVID_AUDIENCE}
+      client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+      scopes: [${SCOPE}]
+      cache_ttl_seconds: ${TOKEN_CACHE_TTL}
+endpoints:
+  - host: ${A2A_HOST}
+    port: ${A2A_PORT}
+    protocol: rest
+    enforcement: enforce
+    rules:
+      - allow:
+          method: GET
+          path: "/a2a/**"
+      - allow:
+          method: POST
+          path: "/a2a/**"
+binaries: ${A2A_BINARIES}

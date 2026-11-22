@@ -342,9 +342,12 @@ async def test_critique_rework_loop_and_budget_escalation(f: Flow):
     first = f.run("plan", "critic")
     await f.critique("REWORK")
     assert plan.status == RUNNING and plan.cycle == 2 and plan.feedback[-1].source == "critique"
-    assert plan.reviews["1:critic"].verdict == "REWORK" and first.sandbox in f.runner.deleted
+    assert plan.reviews["1:critic"].verdict == "REWORK"
+    # the critic's sandbox is kept, stopped, for A2A questions until a fresh one replaces it
+    assert first.sandbox in f.runner.stopped and first.sandbox not in f.runner.deleted
     assert f.ce.runs[plan.runs[0]].status == R_SUPERSEDED   # the reworked plan's planner run
     await f.plan()
+    assert first.sandbox in f.runner.deleted                # the next cycle's critic is fresh
     await f.critique("REWORK")                              # second REWORK: budget spent
     assert plan.status == ESCALATED and plan.escalation.resume == Resume.CRITIQUE_BUDGET
     await f.human("plan", "answer", answer="the spec is fine as it is")
