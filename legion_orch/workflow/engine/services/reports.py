@@ -51,8 +51,9 @@ class _Admitted:
     violations: list[str] = field(default_factory=list)
 
 
-END_TURN = ("Accepted. End your turn now: the controller takes your work when your turn ends, "
-            "and nothing you do after this counts.")
+END_TURN = ("Accepted: recorded. Now end your task with a2a_reply(task_id=<your run id>, text, "
+            "state) – completed after DONE, input-required after BLOCKED – then end your turn: "
+            "the controller takes your work when it ends, and nothing you do after that counts.")
 
 
 class Reports:

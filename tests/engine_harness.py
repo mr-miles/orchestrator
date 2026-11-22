@@ -357,10 +357,15 @@ class Flow:
                      blocked_reason=None, missing_decision=None, summary="done"):
         out = await self.ce.handle_report(run.id, status, summary, list(atts), data,
                                           blocked_reason, missing_decision)
-        if out.accepted and exit_agent:
+        if out.accepted and exit_agent:               # report records; the reply ends the task
+            await self.reply(run, "input-required" if status == "BLOCKED" else "completed")
             self.ctl.svc.procs[run.id].exit(0)
         await self.settle()
         return out
+
+    async def reply(self, run: Run, state: str = "completed", text: str = "done") -> dict:
+        """The agent ends (or pauses) its run's task (MCP a2a_reply)."""
+        return await self.ce.reply_task(run, state, text)
 
     def commit(self, run: Run, files: dict[str, str], *, push: bool = True,
                base: str | None = None) -> str:

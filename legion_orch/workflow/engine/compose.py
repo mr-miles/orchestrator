@@ -16,6 +16,7 @@ from .services.agent_runs import AgentRuns
 from .services.provision import Provisioner
 from .services.publish import Publisher
 from .services.reports import Reports
+from .services.run_tasks import RunTasks
 from .services.runs import RunLifecycle
 from .services.verification import Verifications
 from .steps import StepHolds, StepRunner
@@ -40,6 +41,7 @@ def compose(ce: ChangeEngine) -> None:
     verifications = Verifications(ce, sandboxes, ce.svc.dispatcher, lifecycle, ce.svc.verify_cap)
     agents.verifications = verifications          # G-V0: judges see verified candidates only
     phases.verifications = verifications
+    agents.tasks = tasks = RunTasks(ce, lifecycle)   # a run is the orchestrator's A2A task
     runner = StepRunner(ce, phases, lifecycle, provisioner)
     gates = HumanGates(ce, lifecycle, runner)
     flow = FlowRuntime(ce, runner, lifecycle)
@@ -47,6 +49,7 @@ def compose(ce: ChangeEngine) -> None:
     gates.flow = flow
     ce._flow, ce._gates, ce._reports, ce._lifecycle = flow, gates, reports, lifecycle
     ce._verifications = verifications             # fronted: pushes, agents' requests, the API
+    ce._tasks = tasks                             # fronted: the agent's inbox and replies
     # not the facade's: for tests that drive a layer directly
     ce._sandboxes, ce._agents, ce._phases, ce._provisioner, ce._runner = (
         sandboxes, agents, phases, provisioner, runner)

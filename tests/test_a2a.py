@@ -1,7 +1,7 @@
 """Agent-to-agent (A2A): the change's orchestrator card and one card per step agent with a
 sandbox, served on the A2A listener; the gateway-injected bearer scopes a caller to its change.
 
-A message to a running agent waits in its inbox (MCP a2a_inbox / a2a_reply); to one that is not
+A message to a running agent waits in its inbox (MCP inbox / a2a_reply); to one that is not
 running – its sandbox stopped between turns – the controller queues it, starts the sandbox,
 resumes the agent's session for one turn, sends back its answer and stops the sandbox again."""
 from __future__ import annotations
@@ -165,7 +165,7 @@ async def test_a_message_to_a_stopped_agent_starts_it_resumes_its_session_and_st
 async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
     planner, critic = await to_critique(f)
     hub = A2AHub.of(f.ctl)
-    assert {"a2a_inbox", "a2a_reply"} <= set(MCP_TOOLS)
+    assert {"inbox", "a2a_reply"} <= set(MCP_TOOLS)
     async with client(f) as c:
         res = await rpc(c, "critic@plan", send("Is the spec's REQ-1 section final?"),
                         token(f, planner))                          # the idle planner asks
@@ -196,14 +196,12 @@ async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: 
     give_session(f, t1)
     f.runner.reflection_text = "greet.txt holds the greeting."
     async with client(f) as c:
-        res = await rpc(c, "orchestrator",
-                        send(data={"skill": "relay", "to": "implementer@build:T1",
-                                   "text": "Where does the greeting live?"}),
+        res = await rpc(c, "implementer@build:T1", send("Where does the greeting live?"),
                         token(f, other))
         await asyncio.sleep(0.2)
         assert A2AHub.of(f.ctl).pending(f.ce.cid, "implementer@build:T1")   # waits: T1 is live
         await f.implement("T1")                                  # reports without answering
-        t = await task_when(c, "orchestrator", res["task"]["id"], token(f, other))
+        t = await task_when(c, "implementer@build:T1", res["task"]["id"], token(f, other))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
     assert answer_text(t) == "greet.txt holds the greeting."
     assert any("Where does the greeting live?" in p for _, p in f.runner.reflected)
@@ -298,12 +296,10 @@ async def test_an_agent_not_started_is_started_to_answer_and_its_run_continues_i
 
 
 @scenario()
-async def test_relay_and_unknown_skills_are_refused(f: Flow):
+async def test_unknown_skills_are_refused_and_relay_is_gone(f: Flow):
     planner, critic = await to_critique(f)
     async with client(f) as c:
-        for body in (send("/relay intake@intake hello", wait=True),
-                     send("/relay critic@plan hi", wait=True),          # its own card
-                     send("hello", wait=True)):
+        for body in (send("/relay planner@plan hi", wait=True), send("hello", wait=True)):
             res = await rpc(c, "orchestrator", body, token(f, critic))
             assert res["task"]["status"]["state"] == "TASK_STATE_REJECTED", res
 
