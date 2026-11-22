@@ -2,6 +2,9 @@
 
 * The **orchestrator** card – the controller itself, not a model: it lists the change's cards
   and asks a human – registered for as long as the change is active.
+* The **resolver** card – an agent, the change's own (not a step's), for as long as the change
+  is active: escalations are routed to it, and agents ask it when they are stuck. Started on its
+  first message, stopped between messages.
 * One card per **step agent** – a role of a step (``implementer@build:T1``,
   ``reviewer@build:T1``, ``security@build:T1``) – from the step's start to its end, whether its
   agent has a sandbox yet or not: a message to an agent not started starts it (and its run
@@ -22,10 +25,14 @@ from .model import ACCEPTED, FAILED, PENDING, ChangeStatus
 from .view import ChangeView
 
 ORCHESTRATOR = "orchestrator"
+RESOLVER = "resolver"            # the change's resolver: its node id and role (not a step)
 
 
 def card_id(role: str, node: str) -> str:
-    """A step agent's card id: ``<role>@<node>``, e.g. ``reviewer@build:T1``."""
+    """A card's id: ``<role>@<node>`` for a step agent (``reviewer@build:T1``); the change's
+    own agents by name (``orchestrator``, ``resolver``)."""
+    if role == node and role in (ORCHESTRATOR, RESOLVER):
+        return role
     return f"{role}@{node}"
 
 
@@ -78,6 +85,11 @@ def cards(e: ChangeView) -> list[StepCard]:
     for r in e.runs.values():                 # in creation order: the latest sandbox wins
         if r.sandbox and r.sandbox_ref and not r.sandbox_deleted:
             latest[(r.node_id, r.role)] = r
+    res = latest.get((RESOLVER, RESOLVER))    # the change's resolver: for the whole change
+    out.append(StepCard(id=RESOLVER, node=RESOLVER, role=RESOLVER,
+                        title=f"Resolver of change {ch.id}: escalations and stuck agents",
+                        sandbox=res.sandbox if res else None,
+                        stopped=bool(res) and res.sandbox_stopped))
     for nid, node in e.nodes.items():
         if not in_progress(node.status):
             continue

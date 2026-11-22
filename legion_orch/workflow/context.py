@@ -132,8 +132,10 @@ def workflow_context(e: RoleContext, node_id: str, stages: list[dict]) -> dict[s
                    and any(d["node"] == c.node for d in out["task"]["builds_on"])
                    else "it touches nearby files" if c.node in related
                    else "the oracle: acceptance tests" if c.role == "oracle"
-                   else "the plan" if c.role == "planner" else "another step"}
-                  for c in ask if c.node in related or c.role in ("oracle", "planner")]
+                   else "the plan" if c.role == "planner"
+                   else "stuck on a guard, the oracle or the plan" if c.role == "resolver"
+                   else "another step"}
+                  for c in ask if c.node in related or c.role in ("oracle", "planner", "resolver")]
     out["ask"].insert(0, {"card": card_views.ORCHESTRATOR, "state": "orchestrator",
                           "why": "list_cards, ask_human"})
     return out

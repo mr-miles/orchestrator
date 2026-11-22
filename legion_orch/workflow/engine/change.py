@@ -24,11 +24,12 @@ from ..model import (
     AgentQuestion,
     Change,
     FailureSource,
+    ResolverProposal,
     Run,
     VerificationRun,
 )
 from ..results import ActionResult, ReportOutcome
-from .base.common import WorkflowError
+from .base.common import WorkflowError, _slug
 from .base.core import ChangeCore
 from .base.shared import EngineHost, Services
 from .compose import compose
@@ -114,6 +115,56 @@ class ChangeEngine(ChangeCore):
                             missing_decision: str | None, dry_run: bool = False) -> ReportOutcome:
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
                                                  blocked_reason, missing_decision, dry_run)
+
+    # ------------------------------------------------------------------ the resolver
+    def escalation_brief(self, node_id: str) -> dict | None:
+        """What the resolver is told of an escalation (None: the step is not escalated)."""
+        node = self.nodes.get(node_id)
+        if node is None or node.status != "ESCALATED" or node.escalation is None:
+            return None
+        esc = node.escalation
+        return {"node": node.id, "title": node.title, "escalation": {
+                    "kind": esc.kind, "reason": esc.reason, "at": esc.at, "run": esc.run,
+                    "missing_decision": esc.missing_decision,
+                    "log_tail": (esc.log_tail or "")[-4000:],
+                    "source": str(esc.source) if esc.source else None},
+                "actions": self._flow.actions(node_id),
+                "step": self.step_status(node_id)}
+
+    async def propose(self, node_id: str, escalation_at: str, proposal: dict,
+                      run: str | None = None) -> str | None:
+        """The resolver's proposal for the escalation of ``node_id`` raised at
+        ``escalation_at``: recorded on it (and as control/proposals/…). Returns why it was not
+        taken – None when it was. A proposal for an escalation already decided is stale."""
+        async with self.lock:
+            node = self.nodes.get(node_id)
+            esc = node.escalation if node else None
+            if esc is None or node.status != "ESCALATED" or esc.at != escalation_at:
+                self.event("resolver", f"proposal for {node_id} is stale: its escalation was "
+                                       "decided first", node_id)
+                self.save()
+                return "stale"
+            actions = self._flow.actions(node_id)
+            action = proposal.get("action")
+            if action not in actions:
+                return f"action must be one of {', '.join(actions)} (got {action!r})"
+            payload = proposal.get("payload") or {}
+            if not isinstance(payload, dict):
+                return "payload must be a JSON object"
+            atts = [a for a in proposal.get("attestations") or [] if isinstance(a, str)]
+            n = len(self.docs.list(self.p(f"control/proposals/{_slug(node_id)}-"))) + 1
+            p = ResolverProposal(action=action, payload=payload,
+                                 rationale=str(proposal.get("rationale") or "")[:4000],
+                                 attestations=atts, run=run)
+            rec = self.write_record(f"control/proposals/{_slug(node_id)}-{n}.json",
+                                    p.model_dump(mode="json") | {"node": node_id,
+                                                                 "escalation_at": esc.at})
+            p.record = rec.attestation
+            esc.proposal = p
+            self.event("resolver", f"proposes {action} for {node_id}: {p.rationale[:200]}",
+                       node_id, run)
+            self.save()
+            return None
 
     # ------------------------------------------------------------------ where a step stands
     def step_status(self, node_id: str) -> dict:

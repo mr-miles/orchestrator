@@ -291,6 +291,8 @@ def step_for(node: Node) -> StepType:
 
 
 _PRODUCERS = {s.role: s.sandbox for s in STEP_TYPES.values() if s.role and s.sandbox}
+# the change's resolver is no step's: one sandbox for the change, at the base (its consults)
+_PRODUCERS["resolver"] = BASE
 
 
 def sandbox_plan(role: str) -> SandboxPlan:

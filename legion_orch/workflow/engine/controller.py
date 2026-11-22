@@ -79,6 +79,8 @@ class Controller:
         self._loop_task: asyncio.Task | None = None
         self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
                                  self._notified)
+        # told of every escalation (the A2A hub routes it to the change's resolver)
+        self.escalation_listeners: list = []
 
     # The pieces the HTTP layer reads.
     @property
@@ -109,6 +111,10 @@ class Controller:
             self.notifier.raised(item)
         else:
             self.notifier.resolved(item)
+
+    def escalated(self, cid: str, node_id: str) -> None:
+        for listener in list(self.escalation_listeners):
+            listener(cid, node_id)
 
     def _notified(self, item: AttentionItem, event: str, sink: str, error: str | None) -> None:
         ce = self.changes.get(item.change)

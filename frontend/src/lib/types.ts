@@ -76,6 +76,18 @@ export interface Escalation {
   log_tail?: string | null
   source?: FailureSource | null
   retrying?: boolean
+  /** the resolver's proposal: one of the node's human actions; a human applies it */
+  proposal?: ResolverProposal | null
+}
+
+export interface ResolverProposal {
+  action: string
+  payload: Record<string, unknown>
+  rationale: string
+  attestations: string[]
+  at: string
+  run?: string | null
+  record?: string | null
 }
 
 export interface TaskContract {

@@ -83,6 +83,9 @@ class EngineHost(Protocol):
     def attention(self, item: AttentionItem, raised: bool) -> None:
         """An attention item (§2.2) was raised or resolved: notify the decision owners."""
 
+    def escalated(self, cid: str, node_id: str) -> None:
+        """A step escalated (a failure, not a gate's due decision): its resolver is asked."""
+
     def next_run_id(self) -> str: ...
 
     def new_sandbox_name(self, prefix: str) -> str:

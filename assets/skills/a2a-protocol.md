@@ -17,6 +17,9 @@ never run `a2a auth login`. You see and reach only this change's agents.
 - **Whom to ask**: `workflow_context()` (MCP) names the cards relevant to your work – the task
   you build on, tasks touching nearby files, the oracle, the planner – and `step_status(node)`
   shows any step's state before you message its agents.
+- **The resolver** (card `resolver`) is the change's agent for getting unstuck: ask it before
+  you report BLOCKED on a guard, a protected path or the oracle. It investigates and answers;
+  every escalation also goes to it, and it proposes a decision for a human.
 - **The orchestrator** is the controller itself, not a model, and it is the CLI's default agent
   (`$A2ACLI_AGENT_CARD`):
   - `a2a send "/list_cards"` lists the cards (`-o json` for details);

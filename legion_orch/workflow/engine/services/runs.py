@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from ....sandbox import agentlog
 from ....util import now_iso
+from ...cards import RESOLVER
 from ...model import (
     LIVE_RUN,
     R_ACCEPTED,
@@ -237,7 +238,8 @@ class RunLifecycle:
     async def answer(self, node_id: str, role: str, sender: str, text: str) -> str:
         """The step agent answers: in a resumed turn of its session, or – not started yet – in
         its first turn (a consult, :meth:`AgentRuns.consult`), which its run later continues."""
-        if self.agent_state(node_id, role) == "absent":
+        if self.agent_state(node_id, role) == "absent" or role == RESOLVER:
+            # (the resolver investigates on every message: always a full turn of its own)
             return await self.agents.consult(node_id, role, sender, text)
         return await self.sandboxes.answerer.answer(node_id, role, sender, text)
 

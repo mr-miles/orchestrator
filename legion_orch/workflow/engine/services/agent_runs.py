@@ -36,6 +36,7 @@ from ...model import (
     CommandResult,
     FailureSource,
     Node,
+    NodeKind,
     Resume,
     Run,
     RunStage,
@@ -114,6 +115,22 @@ CONTINUE_PROMPT = """The orchestrator, on your task `{task}`:
 {message}
 
 Your inbox (`inbox()`) has the task and any messages for you.
+"""
+
+RESOLVER_PROMPT = """# A message for the resolver
+
+From `{sender}`:
+
+<message from="{sender}">
+{text}
+</message>
+
+Answer it in your final message (an escalation: end with your proposal, as your instructions
+say). Investigate with your tools and ask other agents over A2A; change nothing.
+
+Your instructions:
+
+{prompt}
 """
 
 CONSULT_PROMPT = """# A message before your work starts
@@ -275,17 +292,19 @@ class AgentRuns:
         role's run, when the step gets to it, continues in this sandbox and session."""
         answerer = self.sandboxes.answerer
         async with answerer.lock(node_id, role):
-            if self.lifecycle.agent_state(node_id, role) != "absent":   # started meanwhile
-                return await answerer.answer_locked(node_id, role, sender, text)
+            if self.lifecycle.agent_state(node_id, role) != "absent" and role != cards.RESOLVER:
+                return await answerer.answer_locked(node_id, role, sender, text)   # started
             async with self.c.lock:
                 run, plan = self._consult_run(node_id, role, sender, text)
                 self.c.event("a2a", f"{role}@{node_id} has not started: starting it "
                                     f"(run {run.id}, sandbox {run.sandbox}) to answer {sender}",
                              node_id, run.id)
                 self.c.save()
-            work = Work(session=AgentSession(self.sandboxes, run, plan, True,
+            fresh = not any(r.sandbox == run.sandbox and r.id != run.id
+                            for r in self.c.runs.values())
+            work = Work(session=AgentSession(self.sandboxes, run, plan, fresh,
                                              lambda stage, msg: self._stage(run, stage, msg)),
-                        commands=[*await self.sandboxes.checkout(run, True),
+                        commands=[*await self.sandboxes.checkout(run, fresh),
                                   AgentTurn("the agent's turn", AGENT, True, runs=self, of=run)])
             work.log = lambda cmd, r: self._log(run, cmd, r)
             out = await work.execute()
@@ -307,7 +326,7 @@ class AgentRuns:
         """The record of a consult (under the lock): the role's run as it would be now, in a new
         sandbox (pushing roles get the push provider their run will need), not one of the node's
         runs, with nothing to write and nothing to report."""
-        node, ch = self.c.nodes[node_id], self.c.change
+        node, ch = self._node_of(node_id), self.c.change
         pushes = self.c.assets.roles[role].git == GitMode.COMMIT
         plan = SandboxPlan(Checkout.BRANCH if pushes else Checkout.BASE)
         at = node.candidate_sha or ch.integration_head or ch.base_sha
@@ -316,18 +335,36 @@ class AgentRuns:
             rendered = self.c.assets.render_role(role, asg.variables)
         except AssetError as e:
             raise WorkflowError(f"{role}@{node_id}: {e}") from None
+        kept = None
+        if role == cards.RESOLVER:                     # its one sandbox, for the whole change
+            kept = next((r for r in reversed(list(self.c.runs.values()))
+                         if r.role == role and r.node_id == node_id and r.sandbox
+                         and not r.sandbox_deleted), None)
         run = Run(id=self.c.host.next_run_id(), node_id=node.id, role=role, cycle=node.cycle,
                   soul=node.task.soul if node.task and role == "implementer"
                   else self.c.assets.roles[role].soul, base_sha=node.base_sha or ch.base_sha,
                   judged_sha=None if pushes else at, prompt_pin=rendered.pin,
                   assets_sha=self.c.assets.sha, assignment=asg.for_agent(node),
                   context_refs=asg.context, consult=True,
-                  sandbox=self.c.host.new_sandbox_name(AGENT_PREFIX))
+                  sandbox=kept.sandbox if kept else self.c.host.new_sandbox_name(AGENT_PREFIX),
+                  sandbox_ref=kept.sandbox_ref if kept else None)
         self.c.runs[run.id] = run
-        prompt = CONSULT_PROMPT.format(role=role, node=node_id, change=ch.id, sender=sender,
-                                       text=text, prompt=rendered.prompt)
+        template = RESOLVER_PROMPT if role == cards.RESOLVER else CONSULT_PROMPT
+        prompt = template.format(role=role, node=node_id, change=ch.id, sender=sender,
+                                 text=text, prompt=rendered.prompt)
         self._payload(run, dataclasses.replace(rendered, prompt=prompt), plan)
         return run, plan
+
+    def _node_of(self, node_id: str) -> Node:
+        """A step's node, or – the change's resolver, no step's – a stand-in to render its
+        assignment against."""
+        node = self.c.nodes.get(node_id)
+        if node is not None:
+            return node
+        if node_id == cards.RESOLVER:
+            return Node(id=cards.RESOLVER, kind=NodeKind.HUMAN, title="Resolver",
+                        agent_roles=[cards.RESOLVER])
+        raise WorkflowError(f"unknown step {node_id}")
 
     # ------------------------------------------------------------------ for the phase
     def preconditions(self, node: Node, role: str) -> Escalate | None:
@@ -628,7 +665,8 @@ class AgentRuns:
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
         for name, text in payload_scripts().items():
             (d / name).write_text(text)
-        for rel, text in handler_for(run.role).payload_files(self.roles, self.c.nodes[run.node_id],
+        for rel, text in handler_for(run.role).payload_files(self.roles,
+                                                             self._node_of(run.node_id),
                                                              run).items():
             f = d / rel
             f.parent.mkdir(parents=True, exist_ok=True)
@@ -639,8 +677,8 @@ class AgentRuns:
         its agent session, which this rework continues."""
         consults = [r for r in self.c.runs.values() if r.consult and r.node_id == run.node_id
                     and r.role == run.role and r.sandbox == run.sandbox and r.id != run.id]
-        node = self.c.nodes[run.node_id]
-        prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs]
+        node = self.c.nodes.get(run.node_id)
+        prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs] if node else []
         prev = [r for r in prev if r.role == run.role and r.sandbox == run.sandbox]
         if consults and (not prev or consults[-1].created_at >= prev[-1].created_at):
             prev = consults                  # it continues the agent started early (A2A)
