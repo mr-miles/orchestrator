@@ -18,6 +18,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 
 from legion_orch.config import load_config
@@ -279,16 +280,35 @@ class Flow:
     # ------------------------------------------------------------------ driving
     async def settle(self, timeout: float = 20) -> None:
         """Wait until nothing changes and every pending task waits legitimately: on an agent
-        process that has not exited, on its step's waits, or for a slot."""
-        last = None
-        for _ in range(int(timeout / 0.02)):
-            await asyncio.sleep(0.02)
+        process that has not exited, on its step's waits, or for a slot.
+
+        Event-driven: it looks again as soon as a task finishes or the controller's version
+        moves (each save), and otherwise every ``POLL`` s (work in threads and subprocesses
+        shows as a pending task, so a quiet engine is one whose tasks all wait). Settled: the
+        same quiet state twice, a few loop turns apart."""
+        loop = asyncio.get_running_loop()
+        deadline, last = loop.time() + timeout, None
+        while loop.time() < deadline:
+            for _ in range(self.TURNS):            # let ready callbacks and wake-ups run
+                await asyncio.sleep(0)
             pending = [t for t in self.ctl._tasks if not t.done()]
             state = (self._fingerprint(), len(pending))
-            if len(pending) <= self.waiting() and state == last:
+            quiet = len(pending) <= self.waiting()
+            if quiet and state == last:
                 return
             last = state
+            if quiet:
+                continue                           # look again after a few loop turns
+            bumped = asyncio.ensure_future(self.ctl._bumped.wait())
+            try:
+                await asyncio.wait([*pending, bumped], timeout=self.POLL,
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                bumped.cancel()
         raise AssertionError(f"engine did not settle; nodes={self.status()}")
+
+    POLL = 0.02     # the longest it waits for a sign of progress before looking again
+    TURNS = 10      # event-loop turns between two looks at a quiet engine
 
     def waiting(self) -> int:
         """Tasks that wait legitimately (across the controller's changes)."""
@@ -541,5 +561,5 @@ def scenario(**limits):
             asyncio.run(go())
         test.__signature__ = inspect.Signature(
             [inspect.Parameter("tmp_path", inspect.Parameter.POSITIONAL_OR_KEYWORD)])
-        return test
+        return pytest.mark.scenario(test)
     return wrap
