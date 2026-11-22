@@ -10,19 +10,23 @@
   ``limits.max_parallel`` counts it, and posts the agent's answer as its reply. A running agent
   reads its inbox itself (MCP ``inbox()``).
 
-(A step's own work is still launched by its phases; that moves here next.)
+* The workflow's own work: a phase posts it (:meth:`publish_work`) and the runner launches it –
+  placement, the working copy, the turns – in the step's dispatcher slot, and returns how it
+  went; the phase decides what it means.
 """
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .....bus import CardsPublished, CardsWithdrawn, ItemAdded
 from .... import cards
-from ....model import Node
+from ....model import Node, Run
 from ...base.common import NoAgent, WorkflowError
 from ...base.core import ChangeCore
 from ...base.dispatch import Dispatcher
+from ...sandboxes.plan import SandboxPlan
 from ...sandboxes.sandboxes import Sandboxes
 from ..runs import RunLifecycle
 
@@ -85,6 +89,23 @@ class AgentRunner:
         self.c.emit(CardsWithdrawn(self.c.cid, node_id))
         self.c.event("a2a", f"cards removed: {node_id or 'all of the change'}",
                      node_id if node_id in self.c.nodes else None)
+
+    # ------------------------------------------------------------------ the workflow's work
+    async def publish_work(self, node: Node, role: str, plan: SandboxPlan,
+                           judged_sha: str | None, *, wanted: Callable[[], bool],
+                           started: Callable[[Run], None], dispatch):
+        """A step's work for its ``role`` agent – its run's task, in the agent's inbox: the
+        runner places it (``placement.py``), prepares its working copy and runs its turns, in
+        the step's own dispatcher slot (``dispatch``: the step's reservation – work in flight
+        goes first). Returns how it went – (outcome, prepared) – for the phase to interpret
+        (the meaning – a report's, a failure's – is the workflow's)."""
+        work, prepared = self.agents.work(node, role, plan, judged_sha, wanted=wanted,
+                                          started=started)
+        outcome = await dispatch.run(work)
+        async with self.c.lock:
+            if prepared.run is not None:
+                self.agents.finish(prepared.run, outcome)     # however the work ended
+        return outcome, prepared
 
     # ------------------------------------------------------------------ inbox events
     def item_added(self, card_id: str) -> None:

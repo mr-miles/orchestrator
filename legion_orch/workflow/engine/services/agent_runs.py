@@ -52,6 +52,7 @@ from ..base.core import ChangeCore
 from ..base.work import AGENT, Command, Outcome, Session, Work
 from ..sandboxes.plan import Checkout, SandboxPlan
 from ..sandboxes.sandboxes import AgentSession, Sandboxes, sandbox_env
+from .agents.placement import Placement
 from .runs import RunLifecycle
 
 if TYPE_CHECKING:
@@ -218,6 +219,7 @@ class AgentRuns:
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
         self.verifications: Verifications | None = None      # set once it exists (G-V0)
         self.tasks: RunTasks | None = None                   # set once it exists
+        self.placement = Placement(core, sandboxes, lifecycle)   # where each agent works
 
     # ------------------------------------------------------------------ the run's task
     def ask_again_after(self, run: Run, rc: int) -> str | None:
@@ -532,7 +534,7 @@ class AgentRuns:
                   write_scope=asg.write_scope, required_docs=asg.required_docs,
                   context_refs=asg.context, assignment=asg.for_agent(node))
         self._record_assets()
-        self._place_in_sandbox(run, node, plan)
+        self.placement.place(run, node, plan, judge=handler_for(role).judge)
         self._record_dispatch(run, node, plan)
         self._payload(run, rendered, plan)
         self.c.event("dispatch", f"{role} run {run_id} (cycle {run.cycle}, soul {run.soul}, "
@@ -597,42 +599,6 @@ class AgentRuns:
         if not self.c.latest(path):
             self.c.write_record(path, {"sha": self.c.assets.sha, "files": self.c.assets.manifest()})
 
-    def _place_in_sandbox(self, run: Run, node: Node, plan: SandboxPlan) -> None:
-        """Guard G-D4: judges always get a fresh sandbox; only roles that keep theirs reuse it
-        across the node's cycles."""
-        h = handler_for(run.role)
-        early = self._consulted(node, run.role)
-        if plan.keeps and node.sandbox:
-            run.sandbox = node.sandbox
-        elif early is not None:        # started early to answer a message (A2A): its agent
-            run.sandbox = early.sandbox
-        else:
-            run.sandbox = self.c.host.new_sandbox_name(AGENT_PREFIX)
-            self._retire_earlier(node, run.role, run.sandbox)
-        run.sandbox_ref = next((r.sandbox_ref for r in self.c.runs.values()
-                                if r.sandbox == run.sandbox and r.sandbox_ref), None)
-        if h.judge and node.current_run:
-            judged = self.c.runs.get(node.current_run)
-            if judged and (judged.sandbox == run.sandbox or judged.id == run.id):
-                raise RuntimeError("G-D4 violated: judge would share a sandbox with judged run")
-
-    def _consulted(self, node: Node, role: str) -> Run | None:
-        """The role's agent started early on this node (a consult) whose sandbox its run
-        continues: the latest consult of the role, unless a run of the role came since."""
-        runs = [r for r in self.c.runs.values() if r.node_id == node.id and r.role == role
-                and r.sandbox and not r.sandbox_deleted]
-        return runs[-1] if runs and runs[-1].consult else None
-
-    def _retire_earlier(self, node: Node, role: str, keep: str) -> None:
-        """A new sandbox for the role (a judge's next cycle): the role's earlier ones on the
-        node – kept stopped for A2A – are retired (once nothing live uses them)."""
-        for sb in {r.sandbox for r in self.c.runs.values()
-                   if r.node_id == node.id and r.role == role and r.sandbox != keep
-                   and r.sandbox and not r.sandbox_deleted and r.sandbox != node.sandbox}:
-            if sb not in self.sandboxes.retiring and not any(
-                    x.sandbox == sb and x.status in LIVE_RUN for x in self.c.runs.values()):
-                self.sandboxes.delete_later(sb)
-
     def _record_dispatch(self, run: Run, node: Node, plan: SandboxPlan) -> None:
         h, ch = handler_for(run.role), self.c.change
         self.c.runs[run.id] = run
@@ -662,7 +628,7 @@ class AgentRuns:
         write_skills(d / SKILLS_DIR, rendered.skills)
         (d / "mcp.json").write_text(self._mcp_json())
         env = self._env(run)
-        if found := self._resumable_session(run, plan):
+        if found := self.placement.resumable_session(run, plan):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session
         (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
@@ -674,23 +640,6 @@ class AgentRuns:
             f = d / rel
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_text(text)
-
-    def _resumable_session(self, run: Run, plan: SandboxPlan) -> tuple[str, str] | None:
-        """For a role that keeps its session: the node's previous run in the same sandbox and
-        its agent session, which this rework continues."""
-        consults = [r for r in self.c.runs.values() if r.consult and r.node_id == run.node_id
-                    and r.role == run.role and r.sandbox == run.sandbox and r.id != run.id]
-        node = self.c.nodes.get(run.node_id)
-        prev = [self.c.runs[r] for r in node.runs if r != run.id and r in self.c.runs] if node else []
-        prev = [r for r in prev if r.role == run.role and r.sandbox == run.sandbox]
-        if consults and (not prev or consults[-1].created_at >= prev[-1].created_at):
-            prev = consults                  # it continues the agent started early (A2A)
-        elif not plan.keeps_session:
-            return None
-        if not prev:
-            return None
-        sid = prev[-1].session_id or agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000))
-        return (prev[-1].id, sid) if sid else None
 
     async def _stage(self, run: Run, stage: RunStage, message: str) -> None:
         async with self.c.lock:
