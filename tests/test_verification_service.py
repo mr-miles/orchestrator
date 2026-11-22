@@ -26,6 +26,7 @@ async def push(f: Flow, files: dict[str, str] | None = None) -> tuple[object, st
     r = f.run("build:T1", "implementer")
     sha = f.commit(r, files or {"src/greet.txt": "hello\n"})
     await f.ctl.git_pushed(GitGrant(r.id, f"refs/heads/{r.branch}", "app"))
+    await asyncio.sleep(0.05)                 # the verification service takes the Pushed event
     return r, sha
 
 

@@ -33,9 +33,7 @@ class StubHost:
 
     def attention(self, item, raised): ...
 
-    def publish_cards(self, cid, cards): ...
 
-    def remove_cards(self, cid, node_id): ...
 
 
     def next_run_id(self):

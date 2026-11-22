@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from ....bus import Escalated, Event
 from ....store import DocVersion
 from ....telemetry import Telemetry
 from ....util import now_iso
@@ -65,7 +66,7 @@ class ChangeCore:
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
-        self._escalated: list[str] = []                # nodes escalated since the last save
+        self._outbox: list[Event] = []                 # events to publish once saved (bus.py)
         self._saved = asyncio.Event()                  # set (and replaced) on every save
 
     # ------------------------------------------------------------------ state
@@ -116,9 +117,9 @@ class ChangeCore:
         self._stamp_statuses()
         self._update_attention()
         self.st.save()
-        escalated, self._escalated = self._escalated, []
-        for nid in escalated:
-            self.escalated(nid)                    # the resolver is asked (services/resolver.py)
+        outbox, self._outbox = self._outbox, []
+        for event in outbox:                       # after the commit: what it raised (bus.py)
+            self.svc.bus.publish(event)
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.notify()
         self.host.changed()
@@ -132,8 +133,9 @@ class ChangeCore:
         """Return at the change's next save: what a phase waits for may hold now."""
         await self._saved.wait()
 
-    def escalated(self, node_id: str) -> None:
-        """Hook: a step escalated (the facade asks the resolver)."""
+    def emit(self, event: Event) -> None:
+        """Raise an event (the caller holds the lock): published once the change has saved."""
+        self._outbox.append(event)
 
     def before_save(self) -> None:
         """Hook: the workflow's own record, saved with the change."""
@@ -156,7 +158,7 @@ class ChangeCore:
             if self._statuses.get(nid) != n.status:
                 n.status_since = now
                 if n.status == ESCALATED and n.escalation is not None:
-                    self._escalated.append(nid)
+                    self.emit(Escalated(self.cid, nid))
         self._statuses = {nid: n.status for nid, n in self.nodes.items()}
 
     def _update_attention(self) -> None:

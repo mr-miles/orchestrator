@@ -407,6 +407,7 @@ def drift_check(f: Flow):
 async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Flow):
     """The cards the workflow pushed (publish as a step starts, withdraw as it ends) are, after
     every step, exactly the cards its state implies; a catalog subscribing later gets the same."""
+    from legion_orch.bus import CardsPublished
     from legion_orch.server.a2a import Catalog
     hub, check = drift_check(f)
     check("start")
@@ -421,8 +422,9 @@ async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Fl
     await f.plan()
     await f.critique("PASS")
     check("critique pass")
-    late = Catalog()
-    f.ctl.subscribe_cards(late)                       # a catalog subscribing later (a restart)
+    late = Catalog()                                  # a catalog subscribing later (a restart)
+    f.ctl.bus.subscribe(CardsPublished, lambda e: late.publish(e.cid, list(e.cards)))
+    f.ctl.replay_cards()
     assert sorted(c.id for c in late.cards(f.ce.cid)) == sorted(c.id for c in f.ce.a2a_cards())
 
 

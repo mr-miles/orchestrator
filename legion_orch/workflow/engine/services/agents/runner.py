@@ -1,9 +1,10 @@
 """The agent runner: what the workflow talks to about agents (~/plans/inbox-runner.md).
 
-* The workflow tells it when the change and its steps open and close: it publishes and
-  withdraws their agents' cards (to the A2A catalog, through the host).
-* The A2A inbox tells it when something waits on an agent (:meth:`item_added`), and the
-  agent's own run tells it when its turn ends (:meth:`turn_ended`): for an agent not running
+* The workflow tells it when the change and its steps open and close.
+* Cards travel on the bus (``CardsPublished`` / ``CardsWithdrawn``, after the change saves);
+  the A2A catalog subscribes.
+* The A2A inbox's ``ItemAdded`` (a bus event) tells it when something waits on an agent – also
+  when a run's turns end with messages left in its inbox: for an agent not running
   it takes the waiting messages one by one – a consult if it has not started (always for the
   resolver), else a resumed turn of its session – each in a dispatcher slot, so
   ``limits.max_parallel`` counts it, and posts the agent's answer as its reply. A running agent
@@ -16,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from .....bus import CardsPublished, CardsWithdrawn, ItemAdded
 from .... import cards
 from ....model import Node
 from ...base.common import NoAgent, WorkflowError
@@ -45,6 +47,7 @@ class AgentRunner:
         self.c, self.lifecycle, self.agents = core, lifecycle, agents
         self.sandboxes, self.dispatcher = sandboxes, dispatcher
         self._busy: set[str] = set()          # cards whose messages are being answered
+        core.svc.bus.subscribe(ItemAdded, lambda e: self.item_added(e.card), cid=core.cid)
 
     # ------------------------------------------------------------------ the workflow tells it
     def open_change(self) -> None:
@@ -64,21 +67,22 @@ class AgentRunner:
         self._remove(node_id)
 
     def republish(self) -> None:
-        """A catalog subscribed (a restart): every card the workflow has open, again."""
+        """A catalog subscribed (a restart): every card the workflow has open, again – at once
+        (no change is being saved)."""
         cs = cards.cards(self.c)
         if cs:
-            self.c.host.publish_cards(self.c.cid, cs)
+            self.c.svc.bus.publish(CardsPublished(self.c.cid, tuple(cs), replay=True))
 
     def _publish(self, new: list) -> None:
         if not new:
             return
-        self.c.host.publish_cards(self.c.cid, new)
+        self.c.emit(CardsPublished(self.c.cid, tuple(new)))
         for card in new:
             self.c.event("a2a", f"card registered: {card.id}",
                          card.node if card.node in self.c.nodes else None)
 
     def _remove(self, node_id: str | None) -> None:
-        self.c.host.remove_cards(self.c.cid, node_id)
+        self.c.emit(CardsWithdrawn(self.c.cid, node_id))
         self.c.event("a2a", f"cards removed: {node_id or 'all of the change'}",
                      node_id if node_id in self.c.nodes else None)
 
@@ -92,10 +96,6 @@ class AgentRunner:
             return                             # it reads its inbox itself; turn_ended follows
         self._busy.add(card_id)
         self.c.host.spawn(self._answer_all(card))
-
-    def turn_ended(self, node_id: str, role: str) -> None:
-        """A run's turn ended: what it left unanswered is answered in turns of its own."""
-        self.item_added(cards.card_id(role, node_id))
 
     async def _answer_all(self, card) -> None:
         try:

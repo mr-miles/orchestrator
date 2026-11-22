@@ -648,6 +648,34 @@ stateDiagram-v2
 | Dispatcher | Runs opaque work (`can_start()`, `execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |
 | Sandboxes | One owner (`Sandboxes`): locks, sessions, the preparation's commands, pause, hold, suspension, retirement | `tests/test_sandboxes.py` |
 | UI | Renders the actions the core offers and the stages it lists; knows no node kinds for actions | `frontend/src/App.test.tsx` |
+| Events | Notifications between components travel on the bus (§5a), never as callbacks set up in `compose`; a change's events are published only after it saves; queries and requests with a reply stay direct calls | `tests/test_bus.py` (after-commit, scoping, failures; every event has a subscriber) |
+| A2A artefacts | The card catalog and the inbox are the A2A layer's (`server/a2a.py`, `server/inbox.py`), in memory; the engine raises events for them and reads them only through `EngineHost`'s inbox calls | `tests/test_a2a.py` (the catalog never drifts from the workflow), the import contracts |
+
+## 5a. Events: the bus
+
+Components tell each other what happened on one in-process bus (`legion_orch/bus.py`,
+`Controller.bus`). Whoever makes something happen **publishes** an event, and whoever needs to
+know **subscribes**, without either naming the other.
+
+| Event | Published by | Subscribed by |
+| --- | --- | --- |
+| `CardsPublished` / `CardsWithdrawn` | the agent runner, as the change and its steps open and close (and a replay when a catalog subscribes) | the A2A catalog |
+| `ItemAdded` | the A2A inbox: something waits on an agent (also when a run ends with messages left) | the agent runner: a turn, in a dispatcher slot, if the agent is not running |
+| `TurnEnded` | an agent's run, when its turns are over | the A2A inbox: anything left is announced again (`ItemAdded`) |
+| `Escalated` | a change, as it saves a step turning `ESCALATED` | the resolver (unless `resolver.enabled` is off) |
+| `Pushed` | the git remote, after a run pushed its branch | the change's verification service: verify the tip |
+
+Rules:
+- **After the commit.** An event a change raises under its lock (`ChangeCore.emit`) is queued and
+  published after `save()`, so no subscriber sees state that may roll back. Events from outside a
+  change's lock (the inbox, the git remote, a replay) are published at once.
+- **Subscribers never break publishers.** A plain handler runs at once, so a catalog is current
+  when `publish` returns, with its failure caught and logged. A coroutine handler runs as a
+  background task.
+- **Scope.** A change's components subscribe for that change (`cid=`); the A2A layer for all.
+- **Not on the bus:** queries ("what is this agent doing", "what waits in this inbox") and
+  requests with a reply ("deliver this message and await the answer"). These stay direct calls:
+  `EngineHost.deliver`, `inbox_messages`, `reply_message`, `fail_message`, `follow_up`.
 
 ## 6. Testing each layer
 

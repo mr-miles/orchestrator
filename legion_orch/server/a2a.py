@@ -14,9 +14,9 @@ identity names.
 This module is **transport**: the A2A SDK, these routes, the caller's identity, and rendering.
 What it carries is the engine's:
 
-* the **catalog** of cards – pushed by the workflow (``EngineHost.publish_cards`` /
-  ``remove_cards``), kept only here, in memory (:class:`Catalog`); cards say who an agent is,
-  never its state;
+* the **catalog** of cards – kept only here, in memory (:class:`Catalog`), from the bus's
+  ``CardsPublished`` / ``CardsWithdrawn`` (the workflow raises them as steps open and close);
+  cards say who an agent is, never its state;
 * the **messages** – a message to a card is handed to the engine's inboxes
   (``ChangeEngine.deliver``, ``engine/services/inbox.py``), which deliver it and return the
   reply; this module turns it into the A2A task's state. The one call the engine makes back is
@@ -67,6 +67,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from ..bus import CardsPublished, CardsWithdrawn, ItemAdded, TurnEnded
 from ..identity import WorkloadBinding
 from ..util import bearer
 from ..workflow.cards import card_id, card_url, identifier, ordered
@@ -189,9 +190,13 @@ class A2AHub:
     def __init__(self, ctl: Controller):
         self.ctl = ctl
         self.catalog = Catalog()
-        self.inbox = Inbox(ctl.item_added)                    # tells the engine what waits
+        # the inbox tells the engine (the agent runner) what waits on an agent
+        self.inbox = Inbox(lambda cid, card: ctl.bus.publish(ItemAdded(cid, card)))
         ctl.a2a = self                                        # the engine's A2A counterpart
-        ctl.subscribe_cards(self.catalog)                     # the workflow pushes its cards
+        ctl.bus.subscribe(CardsPublished, lambda e: self.catalog.publish(e.cid, list(e.cards)))
+        ctl.bus.subscribe(CardsWithdrawn, lambda e: self.catalog.remove(e.cid, e.node))
+        ctl.bus.subscribe(TurnEnded, lambda e: self.inbox.turn_ended(e.cid, card_id(e.role, e.node)))
+        ctl.replay_cards()                                    # the cards open already
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
 
     # ------------------------------------------------------------------ cards
