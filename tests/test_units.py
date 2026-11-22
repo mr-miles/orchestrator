@@ -20,6 +20,31 @@ DOC = (ROOT / "WORKFLOW.md").read_text()
 GUARD_ID_RE = re.compile(r"\|\s*((?:G|H)-[A-Z]+[0-9]+|H-[0-9]+)\s*\|")
 
 
+
+class StubHost:
+    """An EngineHost that does nothing: for a ChangeCore on its own."""
+
+    def spawn(self, coro, on_error=None):
+        coro.close()
+
+    def changed(self): ...
+
+    def touch(self): ...
+
+    def attention(self, item, raised): ...
+
+    def publish_cards(self, cid, cards): ...
+
+    def remove_cards(self, cid, node_id): ...
+
+    def escalated(self, cid, node_id): ...
+
+    def next_run_id(self):
+        return "r0001"
+
+    def new_sandbox_name(self, prefix):
+        return f"{prefix}-stub"
+
 def test_workflow_doc_guard_ids_match_code():
     assert set(GUARD_ID_RE.findall(DOC)) == set(guards.GUARDS)
 
@@ -256,8 +281,7 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
     svc = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None,
                                 assets=None, runner=None, lock=None, procs={})
-    host = types.SimpleNamespace(touch=lambda: None, changed=lambda: None)
-    ce = Reports(ChangeCore(svc, host, "c1"), lifecycle=None, roles=None)   # writes need neither
+    ce = Reports(ChangeCore(svc, StubHost(), "c1"), lifecycle=None, roles=None)  # writes need neither
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
     assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
@@ -743,7 +767,7 @@ def test_transition_rollback_keeps_identity():
     from legion_orch.workflow.model import Change, Node, Run
     svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
                                 lock=None, procs={})
-    ce = ChangeCore(svc, types.SimpleNamespace(), "c1")
+    ce = ChangeCore(svc, StubHost(), "c1")
     ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")

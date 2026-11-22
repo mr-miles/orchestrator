@@ -1,27 +1,27 @@
-"""The A2A cards of a change, derived from its state alone (like :mod:`.attention`).
+"""The A2A cards of a change: who its agents are, and their ids and URLs.
 
-* The **orchestrator** card – the controller itself, not a model: it lists the change's cards
-  and asks a human – registered for as long as the change is active.
-* The **resolver** card – an agent, the change's own (not a step's), for as long as the change
-  is active: escalations are routed to it, and agents ask it when they are stuck. Started on its
-  first message, stopped between messages.
-* One card per **step agent** – a role of a step (``implementer@build:T1``,
-  ``reviewer@build:T1``, ``security@build:T1``) – from the step's start to its end, whether its
-  agent has a sandbox yet or not: a message to an agent not started starts it (and its run
-  continues that agent later), one to a stopped agent resumes its session for one turn (see
-  ``engine/sandboxes/answer.py``).
+A card says only who an agent is – id, step, role, title – fixed for the card's life; what its
+agent is doing is the step's state (``step_status``) and its tasks'. So cards are **published**:
 
-Verifiers run no agent and have no card. Nothing is registered or removed by hand: the cards
-follow the steps (``Node.agent_roles``, set when a step starts) and their runs' sandbox records,
-so they survive restarts; the engine records each card's coming and going as an event.
+* the change's own – the **orchestrator** (the controller itself, not a model: it lists the
+  cards and asks a human) and the **resolver** (the change's agent for escalations and stuck
+  agents) – when the change starts, until it ends;
+* one per **step agent** – a role of a step (``implementer@build:T1``, ``reviewer@build:T1``) –
+  when the step starts (``ActiveStep.start``), until it ends (accepted, sent back, ended, or its
+  node dropped by a fix round). A message to an agent not started starts it; to a stopped one,
+  resumes its session (``engine/services/inbox.py``).
+
+They are pushed to the A2A catalog (``server/a2a.py``) as a side effect of the workflow
+(``EngineHost.publish_cards`` / ``remove_cards``) – a view of it, not part of the change's
+record; a catalog that subscribes is given every change's cards again (a restart). The engine
+itself goes by :func:`cards` (the same view), never by the catalog. Verifiers run no
+agent and have no card; nor do the controller's own phases.
 """
 from __future__ import annotations
 
 from urllib.parse import quote
 
-from pydantic import BaseModel
-
-from .model import ACCEPTED, FAILED, PENDING, ChangeStatus
+from .model import Card, Node
 from .view import ChangeView
 
 ORCHESTRATOR = "orchestrator"
@@ -53,52 +53,52 @@ def identifier(card: str) -> str:
     return f"urn:air:legion:agent:{card}"
 
 
-class StepCard(BaseModel):
-    id: str                       # "orchestrator", or <role>@<node>
-    node: str | None = None       # None: the orchestrator
-    role: str | None = None
-    title: str
-    sandbox: str | None = None    # its agent's sandbox (None: not started yet)
-    stopped: bool = False         # its sandbox is stopped (a message starts it)
-
-    @property
-    def state(self) -> str:
-        if self.node is None:
-            return "orchestrator"
-        return "not started" if self.sandbox is None else "stopped" if self.stopped else "running"
+def step_cards(node: Node) -> list[Card]:
+    """The cards a step publishes when it starts: one per agent role (producer, critic, each
+    judge of its panel)."""
+    return [Card(id=card_id(role, node.id), node=node.id, role=role,
+                 title=f"{role} of {node.id}: {node.title}") for role in node.agent_roles]
 
 
-def in_progress(status: str) -> bool:
-    """A step between its start and its end (escalated and waiting steps included)."""
-    return status not in (PENDING, ACCEPTED, FAILED)
+def change_cards(change_id: str) -> list[Card]:
+    """The change's own cards, published for its whole life."""
+    return [Card(id=ORCHESTRATOR, title=f"Orchestrator of change {change_id}"),
+            Card(id=RESOLVER, node=RESOLVER, role=RESOLVER,
+                 title=f"Resolver of change {change_id}: escalations and stuck agents")]
 
 
-def cards(e: ChangeView) -> list[StepCard]:
-    """The change's cards: the orchestrator first, then – for each step in progress, in node
-    order – one per agent role of the step, from the step's start to its end, whether the agent
-    has a sandbox yet or not (a message to one that has none starts it)."""
+def cards(e: ChangeView) -> list[Card]:
+    """The cards the workflow publishes, as it stands now: the change's own while it is
+    active, and each step in progress's (one per agent role recorded when it started). What the
+    engine itself goes by; the A2A catalog is built from the same cards as they are pushed."""
     ch = e.change
-    if ch is None or ch.status != ChangeStatus.ACTIVE:
+    if ch is None or ch.status != "ACTIVE":
         return []
-    out = [StepCard(id=ORCHESTRATOR, title=f"Orchestrator of change {ch.id}")]
-    latest: dict[tuple[str, str], object] = {}
-    for r in e.runs.values():                 # in creation order: the latest sandbox wins
-        if r.sandbox and r.sandbox_ref and not r.sandbox_deleted:
-            latest[(r.node_id, r.role)] = r
-    res = latest.get((RESOLVER, RESOLVER))    # the change's resolver: for the whole change
-    out.append(StepCard(id=RESOLVER, node=RESOLVER, role=RESOLVER,
-                        title=f"Resolver of change {ch.id}: escalations and stuck agents",
-                        sandbox=res.sandbox if res else None,
-                        stopped=bool(res) and res.sandbox_stopped))
-    for nid, node in e.nodes.items():
-        if not in_progress(node.status):
-            continue
-        roles = node.agent_roles or list(dict.fromkeys(role for (n, role) in latest if n == nid))
-        for role in roles:
-            r = latest.get((nid, role))
-            stopped = bool(r) and (r.sandbox_stopped or (node.sandbox == r.sandbox
-                                                         and node.sandbox_stopped))
-            out.append(StepCard(id=card_id(role, nid), node=nid, role=role,
-                                title=f"{role} of {nid}: {node.title}",
-                                sandbox=r.sandbox if r else None, stopped=stopped))
+    out = change_cards(ch.id)
+    for node in e.nodes.values():
+        if node.status not in ("PENDING", "ACCEPTED", "FAILED"):
+            out += step_cards(node)
     return out
+
+
+def ordered(e: ChangeView, published: list[Card]) -> list[Card]:
+    """``published`` cards in order: the change's own first, then the steps' in node order."""
+    order = {nid: i for i, nid in enumerate(e.nodes)}
+    own = {ORCHESTRATOR: -2, RESOLVER: -1}
+    return sorted(published,
+                  key=lambda c: (own.get(c.id, order.get(c.node or "", len(order))), c.id))
+
+
+def agent_state(e: ChangeView, card: Card) -> str:
+    """Not in the card: whether its agent has a sandbox, running or stopped (for views only –
+    "orchestrator" for the controller's card)."""
+    if card.node is None:
+        return "orchestrator"
+    runs = [r for r in e.runs.values() if r.node_id == card.node and r.role == card.role
+            and r.sandbox and r.sandbox_ref and not r.sandbox_deleted]
+    if not runs:
+        return "not started"
+    r, node = runs[-1], e.nodes.get(card.node)
+    stopped = r.sandbox_stopped or (node is not None and node.sandbox == r.sandbox
+                                    and node.sandbox_stopped)
+    return "stopped" if stopped else "running"

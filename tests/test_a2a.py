@@ -17,6 +17,7 @@ from legion_orch.identity import WorkloadBinding
 from legion_orch.server import MCP_TOOLS, A2AHub, build_a2a_app, build_app
 from legion_orch.server.views import change_state
 from legion_orch.workflow import attention
+from legion_orch.workflow.cards import agent_state
 from legion_orch.workflow.model import Run
 
 V = {"A2A-Version": "1.0"}
@@ -87,10 +88,12 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         assert ids == ["orchestrator", "resolver", "planner@plan"]    # not its own card
         cards = {x.id: x for x in f.ce.a2a_cards()}
         assert set(cards) == {"orchestrator", "resolver", "planner@plan", "critic@plan"}
-        assert cards["planner@plan"].stopped and not cards["critic@plan"].stopped   # still shown
+        assert agent_state(f.ce, cards["planner@plan"]) == "stopped"     # still published
+        assert agent_state(f.ce, cards["critic@plan"]) == "running"
+        assert "stopped" not in cards["planner@plan"].model_dump()        # no state in a card
         events = [e for e in f.ce.timeline().splitlines() if '"a2a"' in e]
         assert any("card registered: intake@intake" in e for e in events)
-        assert any("card removed: intake@intake" in e for e in events)
+        assert any("cards removed: intake" in e for e in events)
 
         # the card, at its own URL (as the a2a CLI fetches a URL with a path) and well-known
         card = (await c.get("/a2a/planner@plan", headers=token(f, critic))).json()
@@ -126,7 +129,7 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
             ("urn:air:legion:agent:resolver", "application/a2a-agent-card+json"),
             ("urn:air:legion:agent:planner@plan", "application/a2a-agent-card+json")]
         assert cat["entries"][2]["url"].endswith("/a2a/planner@plan")
-        assert "stopped" in cat["entries"][2]["tags"]
+        assert cat["entries"][2]["tags"] == ["planner", "plan"]           # who, not how it is
         env = next(e for e in f.runner.run_envs if "LEGION_ROLE=critic" in e)
         assert "LEGION_A2A_CATALOG=http://host.openshell.internal:8769/a2a/ai-catalog.json" \
             in env.replace("'", "")
@@ -135,9 +138,8 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         # the orchestrator's registry, through A2A
         res = await rpc(c, "orchestrator", send("/list_cards", wait=True), token(f, critic))
         listed = res["task"]["artifacts"][0]["parts"][0]["data"]["cards"]
-        assert [(x["id"], x["state"]) for x in listed] == [("orchestrator", "orchestrator"),
-                                                           ("resolver", "absent"),
-                                                           ("planner@plan", "idle")]
+        assert [x["id"] for x in listed] == ["orchestrator", "resolver", "planner@plan"]
+        assert all("state" not in x for x in listed)
 
 
 @scenario()
@@ -254,8 +256,8 @@ async def test_every_agent_of_a_step_has_a_card_from_the_steps_start(f: Flow):
     assert panel                                            # the tier's judges
     cards = {c.id: c for c in f.ce.a2a_cards()}
     assert {f"{r}@build:T1" for r in ["implementer", *panel]} <= set(cards)
-    assert cards[f"{panel[0]}@build:T1"].state == "not started"
-    assert cards["implementer@build:T1"].state == "running"
+    assert agent_state(f.ce, cards[f"{panel[0]}@build:T1"]) == "not started"
+    assert agent_state(f.ce, cards["implementer@build:T1"]) == "running"
     assert not [c for c in cards if c.endswith("@plan")]    # an ended step has none
     await f.implement()
     judges = [f.run("build:T1", r) for r in panel]
@@ -288,7 +290,7 @@ async def test_an_agent_not_started_is_started_to_answer_and_its_run_continues_i
     assert "What will you check first?" in payload["prompt.md"] and "change nothing" in payload["prompt.md"]
     await f.settle()
     assert early.sandbox in f.runner.stopped and early.sandbox not in f.runner.deleted
-    assert {c.id: c for c in f.ce.a2a_cards()}[f"{judge}@build:T1"].state == "stopped"
+    assert agent_state(f.ce, {c.id: c for c in f.ce.a2a_cards()}[f"{judge}@build:T1"]) == "stopped"
     # a consult cannot report
     out = await f.ce.handle_report(early.id, "DONE", "x", [], {}, None, None)
     assert not out.accepted

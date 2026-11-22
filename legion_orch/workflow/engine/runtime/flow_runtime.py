@@ -245,6 +245,7 @@ class FlowRuntime:
         for stage in self.flow.workflow.stages:
             before = run(stage, before)
         for nid in [k for k, n in c.nodes.items() if k not in self.flow.nodes and n.kind != RETRO]:
+            c.remove_cards(nid)                  # its step is gone with it
             del c.nodes[nid]
         order = wanted + [k for k in c.nodes if k not in wanted]
         for k in order:
@@ -428,6 +429,7 @@ class FlowRuntime:
             c.event("change", "every stage is done: the change is accepted and ready")
         elif c.change.status == ChangeStatus.ACTIVE:
             c.change.status = ChangeStatus.ABANDONED
+        c.remove_cards()                         # the change is over: every card goes
 
     # ------------------------------------------------------------------ on a save
     def housekeeping(self) -> None:

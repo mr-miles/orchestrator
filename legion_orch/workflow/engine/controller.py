@@ -81,6 +81,7 @@ class Controller:
                                  self._notified)
         # told of every escalation (the A2A hub routes it to the change's resolver)
         self.escalation_listeners: list = []
+        self.card_sinks: list = []          # card catalogs (the A2A listener's): pushed to
 
     # The pieces the HTTP layer reads.
     @property
@@ -111,6 +112,21 @@ class Controller:
             self.notifier.raised(item)
         else:
             self.notifier.resolved(item)
+
+    def publish_cards(self, cid: str, cards: list) -> None:
+        for sink in list(self.card_sinks):
+            sink.publish(cid, cards)
+
+    def remove_cards(self, cid: str, node_id: str | None) -> None:
+        for sink in list(self.card_sinks):
+            sink.remove(cid, node_id)
+
+    def subscribe_cards(self, sink) -> None:
+        """A card catalog (the A2A listener's) subscribes: it is given every change's cards as
+        the workflow publishes them now, then each publish and removal as it happens."""
+        self.card_sinks.append(sink)
+        for ce in self.changes.values():
+            ce.republish_cards()
 
     def escalated(self, cid: str, node_id: str) -> None:
         for listener in list(self.escalation_listeners):
