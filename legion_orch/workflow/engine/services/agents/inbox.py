@@ -35,14 +35,18 @@ A run is an A2A task: the orchestrator's, on the agent's card, in the agent's on
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from ....util import now_iso
-from ... import cards
-from ...model import LIVE_RUN, R_FAILED, R_REPORTED, FailureSource, Run, TaskReply
-from ..base.common import AgentBusy, NoAgent
-from ..base.core import ChangeCore
-from .runs import RunLifecycle
+from .....util import now_iso
+from .... import cards
+from ....model import LIVE_RUN, R_FAILED, R_REPORTED, FailureSource, Run, TaskReply
+from ...base.common import AgentBusy, NoAgent
+from ...base.core import ChangeCore
+from ..runs import RunLifecycle
+
+# a turn of an agent not running, answering a message: (node, role, sender, text) -> its answer
+Turn = Callable[[str, str, str, str], Awaitable[str]]
 
 STATES = ("completed", "input-required", "failed", "rejected")
 
@@ -196,8 +200,8 @@ class Inboxes:
 
     WAIT_S = 5.0                     # longest wait between looks at a recipient's state
 
-    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, tasks: RunTasks):
-        self.c, self.lifecycle, self.tasks = core, lifecycle, tasks
+    def __init__(self, core: ChangeCore, lifecycle: RunLifecycle, tasks: RunTasks, turn: Turn):
+        self.c, self.lifecycle, self.tasks, self.turn = core, lifecycle, tasks, turn
         self._messages: dict[str, dict[str, InboxItem]] = {}       # card -> task id -> item
         self._questions: dict[str, dict[str, QuestionBack]] = {}   # sender card -> asked
 
@@ -301,7 +305,6 @@ class Inboxes:
             if item.reply.done():
                 return item.reply.result()
             try:
-                return "completed", await self.lifecycle.answer(node, role, item.sender,
-                                                                item.text)
+                return "completed", await self.turn(node, role, item.sender, item.text)
             except AgentBusy:                        # a run started meanwhile: its inbox
                 await asyncio.sleep(0.2)
