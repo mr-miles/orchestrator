@@ -128,23 +128,22 @@ class AgentRunner:
                     return                     # a run started: it reads them
                 task_id, sender, text = waiting[0]
                 try:
-                    answer = await self.turn(card.node, card.role, sender, text)
+                    answer = await self.turn(card.node, card.role, sender, text, task_id)
                 except (NoAgent, WorkflowError) as e:
                     self.c.host.fail_message(self.c.cid, card.id, task_id, str(e))
-                else:
+                else:              # (no effect if it replied with a2a_reply already)
                     self.c.host.reply_message(self.c.cid, card.id, task_id, "completed", answer)
                 await asyncio.sleep(0)             # its sender takes it out of the inbox
         finally:
             self._busy.discard(card.id)
 
     # ------------------------------------------------------------------ turns
-    async def turn(self, node_id: str, role: str, sender: str, text: str) -> str:
-        """An agent not running answers ``text``: a consult when it has not started (always,
-        for the resolver: it investigates on every message), else one resumed turn of its
-        session – in a dispatcher slot, like every sandbox."""
-        if self.lifecycle.agent_state(node_id, role) == "absent" or role == cards.RESOLVER:
-            run = lambda: self.agents.consult(node_id, role, sender, text)  # noqa: E731
-        else:
-            run = lambda: self.sandboxes.answerer.answer(node_id, role, sender, text)  # noqa: E731
+    async def turn(self, node_id: str, role: str, sender: str, text: str,
+                   task_id: str | None = None) -> str:
+        """An agent not running answers ``text`` (the message's ``task_id``) in a turn of its
+        own – a consult: started if it has not, else resumed in place (``AgentRuns.consult``) –
+        in a dispatcher slot, like every sandbox. Its final message, the answer if it did not
+        reply with ``a2a_reply`` itself."""
         ready = lambda: self.sandboxes.environment_built(role)  # noqa: E731
-        return await self.dispatcher.run(_TurnWork(ready, run))
+        return await self.dispatcher.run(_TurnWork(
+            ready, lambda: self.agents.consult(node_id, role, sender, text, task_id)))

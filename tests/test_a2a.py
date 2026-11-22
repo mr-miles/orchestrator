@@ -2,8 +2,9 @@
 sandbox, served on the A2A listener; the gateway-injected bearer scopes a caller to its change.
 
 A message to a running agent waits in its inbox (MCP inbox / a2a_reply); to one that is not
-running – its sandbox stopped between turns – the controller queues it, starts the sandbox,
-resumes the agent's session for one turn, sends back its answer and stops the sandbox again."""
+running the controller gives it a turn of its own – a consult run: started if it has not, else
+resumed in place in its sandbox (only the Skill tool and MCP, under the sandbox's lock) – which
+answers with a2a_reply or its final message; the sandbox is stopped again afterwards."""
 from __future__ import annotations
 
 import asyncio
@@ -147,21 +148,25 @@ async def test_a_message_to_a_stopped_agent_starts_it_resumes_its_session_and_st
     planner, critic = await to_critique(f)
     sb = planner.sandbox
     assert f.ce.nodes["plan"].sandbox_stopped and sb in f.runner.stopped
-    f.runner.reflection_text = "The oracle checks greet.txt only."
     stops = f.runner.stopped.count(sb)
     async with client(f) as c:
         res = await rpc(c, "planner@plan", send("What does the oracle check?"),
                         token(f, critic))
+        turn = await consult_answers(f, "planner", "plan", "The oracle checks greet.txt only.",
+                                     f"session-{planner.id}")
         t = await task_when(c, "planner@plan", res["task"]["id"], token(f, critic))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
     assert answer_text(t) == "The oracle checks greet.txt only."
+    assert turn.sandbox == sb and turn.id not in f.ce.nodes["plan"].runs   # in place, a consult
     assert sb in f.runner.restarted                                  # started for the turn
-    name, prompt = f.runner.reflected[-1]
-    assert name == sb and "`critic@plan`" in prompt and "What does the oracle check?" in prompt
-    assert f"session-{planner.id}" in f.runner.run_envs[-1]          # its own session resumed
+    prompt = f.runner.uploaded[sb]["prompt.md"]
+    assert "`critic@plan`" in prompt and "What does the oracle check?" in prompt
+    assert res["task"]["id"] in prompt                                # a2a_reply(task_id=...)
+    env = next(e for e in reversed(f.runner.run_envs) if f"LEGION_RUN_ID={turn.id}" in e)
+    assert f"session-{planner.id}" in env and "--tools Skill" in env  # its session; no edits
+    await f.settle()
     assert f.runner.stopped.count(sb) == stops + 1                   # and stopped again
     assert f.ce.nodes["plan"].sandbox_stopped
-    assert any(f.ce.latest(f"control/logs/{planner.id}-a2a{n}.log") for n in (1, 2))
     # the rework still finds it stopped, starts it, and resumes the same session
     await f.critique("REWORK")
     assert f.run("plan").sandbox == sb
@@ -193,23 +198,25 @@ async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
 @scenario()
 async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: Flow):
     """T2's implementer asks T1's while it works; T1 reports without answering: its sandbox is
-    kept (stopped) for rework, so one resumed turn of its session answers."""
+    kept (stopped) for rework, so a turn of its own, in place, answers."""
     t2 = dict(TASKS[0], id="T2", title="part", files_modified=["src/part.txt"],
               verification=["test -f src/part.txt"])
     await f.to_build(tasks=[TASKS[0], t2])
     t1, other = f.run("build:T1", "implementer"), f.run("build:T2", "implementer")
     give_session(f, t1)
-    f.runner.reflection_text = "greet.txt holds the greeting."
     async with client(f) as c:
         res = await rpc(c, "implementer@build:T1", send("Where does the greeting live?"),
                         token(f, other))
         await asyncio.sleep(0.2)
         assert A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "implementer@build:T1")   # waits: T1 is live
         await f.implement("T1")                                  # reports without answering
+        turn = await consult_answers(f, "implementer", "build:T1",
+                                     "greet.txt holds the greeting.", f"session-{t1.id}")
         t = await task_when(c, "implementer@build:T1", res["task"]["id"], token(f, other))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
     assert answer_text(t) == "greet.txt holds the greeting."
-    assert any("Where does the greeting live?" in p for _, p in f.runner.reflected)
+    assert turn.sandbox == t1.sandbox
+    assert "Where does the greeting live?" in f.runner.uploaded[t1.sandbox]["prompt.md"]
 
 
 @scenario()
@@ -218,15 +225,18 @@ async def test_a_judge_that_reported_is_kept_stopped_and_answers_from_its_sessio
     message resumes its session."""
     planner, critic = await to_critique(f)
     give_session(f, critic)
-    f.runner.reflection_text = "No blockers: the spec covers REQ-1."
     async with client(f) as c:
         res = await rpc(c, "critic@plan", send("Any blockers?"), token(f, planner))
         await asyncio.sleep(0.2)
         await f.critique("REWORK")           # it reports without answering; the plan reworks
-        assert critic.sandbox not in f.runner.deleted and critic.sandbox in f.runner.stopped
+        turn = await consult_answers(f, "critic", "plan", "No blockers: the spec covers REQ-1.",
+                                     f"session-{critic.id}")
+        assert turn.sandbox == critic.sandbox                     # in place
         t = await task_when(c, "critic@plan", res["task"]["id"], token(f, planner))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]
     assert answer_text(t) == "No blockers: the spec covers REQ-1."
+    await f.settle()
+    assert critic.sandbox not in f.runner.deleted and critic.sandbox in f.runner.stopped
     await f.plan()                            # the next cycle's critic gets a fresh sandbox
     second = f.run("plan", "critic")
     assert second.sandbox != critic.sandbox and critic.sandbox in f.runner.deleted

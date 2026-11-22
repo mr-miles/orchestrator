@@ -102,7 +102,7 @@ the layers above it (the import contracts in `pyproject.toml`, checked by `lint-
 | --- | --- |
 | `runtime/` | `FlowRuntime`, the stage tree, `HumanGates` (decisions in) |
 | `steps/` | `StepRunner` and `StepEvents`, `ActiveStep`, the step and gate types, the phases, the node states |
-| `services/` | `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the end-of-change cleanup |
+| `services/` | `AgentRunner` (the workflow's one counterpart for agents: cards, work, A2A turns, placement; `services/agents/`), `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the resolver, the end-of-change cleanup |
 | `sandboxes/` | `Sandboxes` and their sessions, sandbox plans (given as `Plans`), reflections |
 | `base/` | `ChangeCore`, `StateStore`, `Services`, node ids, the `Dispatcher` and `Work` |
 
@@ -142,6 +142,7 @@ The participants, left to right:
 | **StepRunner**, **ActiveStep** | Steps | `engine/steps/` (`runner.py`, `active.py`, `node_states.py`, `step_types.py`) | The runner takes the runtime's calls and does what spans steps (a send-back's undoing, retries after a restart, housekeeping); each node's step as it runs is an `ActiveStep`: moving the node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
 | **Phases** | Orchestrator layer of a step | `engine/steps/phases.py` (their services, `engine/services/`: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
 | **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.can_start()` and `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
+| **AgentRunner** | Services | `engine/services/agents/` (`runner.py`, `placement.py`, `tasks.py`) | The workflow's one counterpart for agents: publishing and withdrawing a step's cards (bus events the A2A layer's catalog follows), publishing a phase's work, and – when the inbox reports a message (`ItemAdded`) for an agent that is not running – giving it a turn of its own (`AgentRuns.consult`: started, or resumed in place) in a dispatcher slot. Owns the placement policy: which sandbox and session a run continues (G-D4). |
 | **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/services/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
 
 A build task, end to end:

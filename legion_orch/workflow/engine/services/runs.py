@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from ....sandbox import agentlog
 from ....util import now_iso
+from ... import cards
 from ...model import (
     LIVE_RUN,
     R_ACCEPTED,
@@ -73,12 +74,19 @@ class RunLifecycle:
     # an agent still in its turn this long after its report was accepted is stopped
     END_TURN_GRACE_S = 300
 
+    def time_limit(self, run: Run) -> int:
+        """A run's time limit: an answer to an A2A message (a consult; not the resolver's,
+        which investigates) ``a2a_answer_timeout_s``, any other run ``run_timeout_s``."""
+        lim = self.c.cfg.limits
+        return (lim.a2a_answer_timeout_s if run.consult and run.role != cards.RESOLVER
+                else lim.run_timeout_s)
+
     def deadline(self, run: Run) -> float | None:
         """Seconds until the run's agent is stopped (its timer): the run timeout while it is
         live, the end-of-turn grace once its report was accepted; None: no limit applies."""
         now = datetime.now(UTC)
         if run.status in LIVE_RUN or open_task(run):     # working, or yet to end its task
-            due = self.c.cfg.limits.run_timeout_s - (now - _parse_ts(run.created_at)).total_seconds()
+            due = self.time_limit(run) - (now - _parse_ts(run.created_at)).total_seconds()
         elif run.status == R_REPORTED and (run.reply or run.ended_at):
             since = run.reply.at if run.reply else run.ended_at
             due = self.END_TURN_GRACE_S - (now - _parse_ts(since)).total_seconds()
@@ -94,7 +102,7 @@ class RunLifecycle:
         if proc is None or proc.returncode is not None or (self.deadline(run) or 0) > 0:
             return False
         if run.status in LIVE_RUN:
-            limit = self.c.cfg.limits.run_timeout_s
+            limit = self.time_limit(run)
             self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
         elif run.status == R_REPORTED:
             self.c.event("agent", f"the agent did not end its turn {self.END_TURN_GRACE_S}s after "
