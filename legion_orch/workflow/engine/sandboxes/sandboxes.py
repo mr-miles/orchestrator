@@ -6,6 +6,7 @@ deletion. When to do which is the run policy's business (:mod:`.runs`, :mod:`.ag
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shlex
 import shutil
 from collections.abc import Awaitable, Callable
@@ -49,8 +50,11 @@ class AgentSession:
     new payload. On close the payload goes, and a sandbox kept for its session is paused."""
 
     def __init__(self, sandboxes: Sandboxes, run: Run, plan: SandboxPlan, fresh: bool,
-                 stage: Callable[[RunStage, str], Awaitable[None]]):
+                 stage: Callable[[RunStage, str], Awaitable[None]], *, held: bool = False):
+        """``held``: the caller holds the sandbox's lock for the whole turn (an agent answering
+        in place: a rework launched meanwhile waits for it)."""
         self.sb, self.run, self.plan, self.fresh, self.stage = sandboxes, run, plan, fresh, stage
+        self.held = held
         root = sandboxes.c.cfg.sandbox.root
         self.workdir, self.payload = f"{root}/work", f"{root}/payload"
         self._dir = sandboxes.c.run_dir(run.id)
@@ -62,7 +66,7 @@ class AgentSession:
     async def open(self) -> None:
         c, run, payload = self.sb.c, self.run, self._dir / "payload"
         if not self.fresh:
-            async with self.sb.lock(run.sandbox):
+            async with contextlib.nullcontext() if self.held else self.sb.lock(run.sandbox):
                 node = c.nodes.get(run.node_id)
                 if self.sb.stopped(run.sandbox):    # kept for rework, or stopped after an A2A turn
                     await self.stage(RunStage.PREPARING, f"starting sandbox {run.sandbox}")

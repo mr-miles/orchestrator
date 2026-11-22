@@ -71,6 +71,7 @@ class FakeRunner(Runner):
         self.mcp_configs: list[str] = []                 # mcp.json of every agent payload
         self.fail_stop = False
         self.payloads: dict[str, dict[str, str]] = {}    # sandbox -> payload files at create
+        self.uploaded: dict[str, dict[str, str]] = {}    # sandbox -> its latest uploaded payload
         self._reflecting: dict[str, str] = {}             # sandbox -> reflection prompt
         self.reflected: list[tuple[str, str]] = []        # (sandbox, prompt) of each reflection
         self.reflection_skills: dict[str, list[str]] = {}  # sandbox -> skills its reflection got
@@ -102,6 +103,8 @@ class FakeRunner(Runner):
     async def upload(self, name, payload_dir):
         self.uploads.append(name)
         self.run_envs.append(_run_env(payload_dir))
+        self.uploaded[name] = {str(f.relative_to(payload_dir)): f.read_text()
+                               for f in Path(payload_dir).rglob("*") if f.is_file()}
         if (Path(payload_dir) / "mcp.json").exists():
             self.mcp_configs.append((Path(payload_dir) / "mcp.json").read_text())
         if "LEGION_REQUIRE_SESSION" in self.run_envs[-1]:          # a reflection turn
