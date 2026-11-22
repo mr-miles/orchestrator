@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from .runtime.flow_runtime import FlowRuntime
     from .runtime.human import HumanGates
     from .services.reports import Reports
+    from .services.run_tasks import RunTasks
     from .services.runs import RunLifecycle
     from .services.verification import Verifications
 
@@ -58,6 +59,7 @@ class ChangeEngine(ChangeCore):
         self._reports: Reports
         self._lifecycle: RunLifecycle
         self._verifications: Verifications
+        self._tasks: RunTasks
         compose(self)                # its layers (compose.py); it fronts only these four
 
     # ------------------------------------------------------------------ controller
@@ -111,6 +113,18 @@ class ChangeEngine(ChangeCore):
                             missing_decision: str | None, dry_run: bool = False) -> ReportOutcome:
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
                                                  blocked_reason, missing_decision, dry_run)
+
+    # ------------------------------------------------------------------ a run's A2A task
+    def task_view(self, run: Run) -> dict:
+        """The run's task as the agent's inbox shows it (services/run_tasks.py)."""
+        return self._tasks.view(run)
+
+    async def reply_task(self, run: Run, state: str, text: str,
+                         unanswered: list[str] = ()) -> dict:
+        """The agent's a2a_reply on its run's task: ends it, or is answered with what is
+        missing (an ask-again; once, the messages still waiting in its inbox)."""
+        async with self.lock:
+            return self._tasks.reply(run, state, text, list(unanswered))
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:

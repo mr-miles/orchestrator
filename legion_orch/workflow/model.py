@@ -437,6 +437,13 @@ class RunFailure(Record):
     exit_code: int | None = None
 
 
+class TaskReply(Record):
+    """How the agent ended (or paused) its run's task: ``a2a_reply`` on the orchestrator's task."""
+    state: str                            # completed | input-required | failed | rejected
+    text: str = ""
+    at: str = Field(default_factory=now_iso)
+
+
 class Run(Record):
     id: str
     node_id: str
@@ -486,6 +493,13 @@ class Run(Record):
     # of the node's runs, it never reports; the role's run continues its sandbox and session
     consult: bool = False
     verification_requests: int = 0        # verifications it asked for (MCP), against its limit
+    # its A2A task (the orchestrator's, id = the run id): the rendered assignment is its first
+    # message (the prompt pin covers it), the orchestrator's asks-again follow it, the agent's
+    # reply ends it
+    instructions: str = ""
+    asked: list[str] = []
+    reply: TaskReply | None = None
+    inbox_reminded: bool = False          # told once, ending its task, of unanswered messages
 
 
 # ---------------------------------------------------------------------------- change records

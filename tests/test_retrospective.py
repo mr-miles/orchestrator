@@ -302,7 +302,8 @@ async def test_a_retrospective_runs_on_demand_once_the_change_has_ended(f: Flow)
         assert f"retro/{rel}" in files, rel
     assert not any(k.startswith("retro/docs/control/logs/") for k in files)
     assert json.loads(files["retro/prompt-check.json"])[impl.id]["status"] == "exact"
-    assert "why was the build slow?" in files["prompt.md"]
+    assert "why was the build slow?" in run.instructions      # its task's first message
+    assert "inbox()" in files["prompt.md"]
     with pytest.raises(WorkflowError, match="already"):
         await f.change_action("retrospective")
     doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
@@ -377,7 +378,7 @@ async def test_abandoning_records_the_reason_and_runs_the_retrospective(f: Flow)
     run = f.run("retrospective")
     files = f.runner.payloads[run.sandbox]
     assert json.loads(files["retro/change.json"])["ended"]["reason"] == ch.ended.reason
-    assert "`change.json` `ended`" in files["prompt.md"]
+    assert "`change.json` `ended`" in run.instructions
 
 
 @scenario()

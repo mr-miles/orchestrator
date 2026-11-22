@@ -304,7 +304,7 @@ async def test_an_answer_to_an_integration_failure_reaches_the_next_run(f: Flow)
     assert f.ce.nodes["integration"].escalation.kind == "integration_failed"
     del f.runner.commands["sh tests/acceptance/test_greet.sh"]
     await f.human("integration", "answer", answer="the greeting test needs LANG=C")
-    prompt = f.runner.payloads[f.run("integration").sandbox]["prompt.md"]
+    prompt = f.run("integration").instructions                   # its task's first message
     assert "the greeting test needs LANG=C" in prompt
 
 

@@ -21,6 +21,7 @@ from ...model import (
 )
 from ...results import Escalate
 from ...roles import handler_for
+from ..base.auth import open_task
 from ..base.common import _parse_ts
 from ..base.core import ChangeCore
 
@@ -78,10 +79,11 @@ class RunLifecycle:
         """Seconds until the run's agent is stopped (its timer): the run timeout while it is
         live, the end-of-turn grace once its report was accepted; None: no limit applies."""
         now = datetime.now(UTC)
-        if run.status in LIVE_RUN:
+        if run.status in LIVE_RUN or open_task(run):     # working, or yet to end its task
             due = self.c.cfg.limits.run_timeout_s - (now - _parse_ts(run.created_at)).total_seconds()
-        elif run.status == R_REPORTED and run.ended_at:
-            due = self.END_TURN_GRACE_S - (now - _parse_ts(run.ended_at)).total_seconds()
+        elif run.status == R_REPORTED and (run.reply or run.ended_at):
+            since = run.reply.at if run.reply else run.ended_at
+            due = self.END_TURN_GRACE_S - (now - _parse_ts(since)).total_seconds()
         else:
             return 0.0                       # failed or superseded: its agent stops now
         return max(due, 0.0)

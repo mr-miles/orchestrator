@@ -1025,7 +1025,7 @@ the caller's sandbox, change, task and role, and each request is answered for th
 * **Cards** ([`workflow/cards.py`](legion_orch/workflow/cards.py)), derived from the change's
   state, never registered by hand:
   * `orchestrator` – the controller itself, not a model, for as long as the change is active.
-    Skills: `list_cards`; `relay` (a message to a card, returning its answer); `ask_human` (a
+    Skills: `list_cards`; `ask_human` (a
     question to the decision owners: a blocking attention item, notified like a gate, answered in
     the UI or `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
   * one per **step agent**, `<role>@<node>` – the step's producer, critic and each judge of its
@@ -1039,7 +1039,7 @@ the caller's sandbox, change, task and role, and each request is answered for th
   agent starts (`a2a catalog add`, or `update` in a reused sandbox), and sets
   `A2ACLI_AGENT_CARD` to the orchestrator.
 * **Delivery.** A message to a step agent becomes a task that waits for its answer:
-  * while the agent has a live run it waits in its **inbox**: MCP `a2a_inbox` lists it and
+  * while the agent has a live run it waits in its **inbox**: MCP `inbox` lists it and
     `a2a_reply` answers it;
   * otherwise – it is stopped between turns, or its run ended without answering – the controller
     queues it, **starts the sandbox if it was stopped, resumes the agent's session for one turn**
@@ -1061,6 +1061,19 @@ the caller's sandbox, change, task and role, and each request is answered for th
   overrides its assignment.
 
 Every role loads `legion-a2a-protocol` and `legion-a2a-cli` (the upstream skill).
+
+* **A run is a task too.** Every run is the orchestrator's task on its agent's card, in the same
+  inbox (`inbox()`; task id = the run id): its first message is the rendered assignment (the
+  prompt pin covers it – `prompt.md` only says where to look); a rework is a new task in the
+  step's context. `report(...)` **records** – documents, attestations, data – and ends nothing;
+  the agent ends the task with `a2a_reply(task_id, text, state)`: `completed` after an accepted
+  DONE report, `input-required` after an accepted BLOCKED one (the step escalates), `failed` to
+  give up (the run fails). The reply is always taken: one the record does not support, or a turn
+  that ends with the task still open, is answered by the orchestrator with what is missing – the
+  next message on the task, in another turn of the same run if the agent had ended its turn –
+  each using one report attempt (G-R6). Ending the task with messages still in the inbox is
+  answered once with the list. A peer message's reply is `completed` (an answer),
+  `input-required` (a question back: the sender continues on the same task) or `rejected`.
 
 ## 6. Assets
 

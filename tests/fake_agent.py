@@ -45,6 +45,10 @@ def call(name, **args):
     text = res["content"][0]["text"] if res.get("content") else "null"
     if res.get("isError"):
         raise RuntimeError(f"{name}: {text}")
+    if name == "report" and not args.get("dry_run"):
+        out = json.loads(text)
+        if out.get("accepted"):
+            ACCEPTED.append(args["status"])          # how the task is ended (a2a_reply)
     if "structuredContent" in res and res["structuredContent"] is not None:
         sc = res["structuredContent"]
         return sc.get("result", sc) if isinstance(sc, dict) and set(sc) == {"result"} else sc
@@ -76,8 +80,13 @@ def commit_push(msg, branch):
     return git("rev-parse", "HEAD")
 
 
+ACCEPTED: list[str] = []
+
+
 def main():
-    a = call("get_assignment")
+    work = call("inbox")["tasks"][0]                    # the orchestrator's task: the assignment
+    assert work["from"] == "orchestrator" and work["kind"] == "work", work
+    a = work["assignment"]
     role, cycle = a["role"], a["cycle"]
     call("progress", message=f"{role} starting cycle {cycle}", percent=5)
     if role == "intake":
@@ -248,9 +257,19 @@ def main():
              blocked_reason="fake agent has no script", missing_decision=f"how to act as {role}")
 
 
+def end_task():
+    """report(...) recorded the results; the task is ended with a2a_reply (the state the
+    accepted report supports)."""
+    if ACCEPTED:
+        state = "input-required" if ACCEPTED[-1] == "BLOCKED" else "completed"
+        out = call("a2a_reply", task_id=os.environ["LEGION_RUN_ID"], text="done", state=state)
+        assert out["ok"], out
+
+
 if __name__ == "__main__":
     try:
         main()
+        end_task()
     except Exception as e:
         print("fake agent error:", e, file=sys.stderr)
         raise
