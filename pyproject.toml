@@ -10,6 +10,7 @@ dependencies = ["mcp>=2.3", "starlette>=1.0", "uvicorn>=0.30", "pyyaml>=6", "jso
 test = [
     "pytest>=8",
     "pytest-cov>=5",
+    "pytest-xdist>=3.6",
     "httpx>=0.27",
     "hypothesis>=6",
     "opentelemetry-sdk>=1.27",
@@ -34,6 +35,12 @@ packages = ["legion_orch", "legion_orch.store", "legion_orch.git", "legion_orch.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# every scenario makes git repositories, sandboxes and a state store: keep only failed tests'
+# directories (a full run's would otherwise fill a small /tmp)
+tmp_path_retention_policy = "failed"
+# independent tests (their own temp directories, free ports): one worker per CPU – CI's and
+# mise's plain `pytest -q` included; `-n 0` runs serially (e.g. to debug one test)
+addopts = "-n auto"
 
 [tool.ruff]
 line-length = 110
