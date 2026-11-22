@@ -264,6 +264,7 @@ def end_task():
         state = "input-required" if ACCEPTED[-1] == "BLOCKED" else "completed"
         out = call("a2a_reply", task_id=os.environ["LEGION_RUN_ID"], text="done", state=state)
         assert out["ok"], out
+        assert out["inbox"] == [], out                  # what is left: nothing (its task ended)
 
 
 if __name__ == "__main__":

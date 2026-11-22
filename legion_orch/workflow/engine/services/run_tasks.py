@@ -71,7 +71,7 @@ class RunTasks:
         if new and state in ("completed", "input-required") and state == self.wanted(run):
             run.inbox_reminded += [tid for tid, _ in new]
             n = len(unanswered)
-            msg = (f"{n} task{'s' if n != 1 else ''} in your inbox – check with inbox(), answer "
+            msg = (f"{n} task{'s' if n != 1 else ''} in your inbox (listed in `inbox`) – answer "
                    "with a2a_reply, then end your task again.")
             run.asked.append(msg)
             self.c.event("agent", f"asked to answer {len(new)} message(s) first",

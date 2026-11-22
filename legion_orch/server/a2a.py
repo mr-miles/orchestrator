@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 import weakref
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,7 +48,16 @@ from a2a.server.request_handlers.response_helpers import agent_card_to_dict
 from a2a.server.routes.common import DefaultServerCallContextBuilder
 from a2a.server.routes.jsonrpc_dispatcher import JsonRpcDispatcher
 from a2a.server.tasks import InMemoryTaskStore, TaskUpdater
-from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentInterface,
+    AgentSkill,
+    Message,
+    Role,
+    SendMessageConfiguration,
+    SendMessageRequest,
+)
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -130,6 +140,21 @@ class InboxItem:
                 "text": self.text, "at": self.at}
 
 
+@dataclass
+class QuestionBack:
+    """A card answered a message with a question (input-required): the sender's to answer."""
+    task_id: str
+    card: str                          # who asks
+    question: str
+    at: str = field(default_factory=now_iso)
+
+    def view(self) -> dict:
+        return {"task_id": self.task_id, "from": self.card, "kind": "question",
+                "state": "input-required", "text": self.question, "at": self.at,
+                "how": "answer with a2a_reply(task_id, text): it continues your conversation "
+                       "with " + self.card}
+
+
 class Undeliverable(Exception):
     """The recipient cannot answer any more (its sandbox is gone)."""
 
@@ -166,6 +191,7 @@ class A2AHub:
         self.ctl = ctl
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
         self.inbox: dict[tuple[str, str], dict[str, InboxItem]] = {}
+        self.questions: dict[tuple[str, str], dict[str, QuestionBack]] = {}   # sender -> asked
 
     # ------------------------------------------------------------------ cards
     def url(self, card: str) -> str:
@@ -247,6 +273,37 @@ class A2AHub:
                 del self._dispatchers[(cid, card)]
 
     # ------------------------------------------------------------------ delivery
+    # ------------------------------------------------------------------ questions back
+    def asked_back(self, cid: str, sender: str, task_id: str, card: str, question: str) -> None:
+        """``card`` answered the task ``sender`` sent it with a question (input-required): it
+        is in the sender's inbox until the sender replies on that task."""
+        self.questions.setdefault((cid, sender), {})[task_id] = QuestionBack(
+            task_id, card, question)
+
+    def answered_back(self, cid: str, sender: str, task_id: str) -> None:
+        self.questions.get((cid, sender), {}).pop(task_id, None)
+
+    def questions_for(self, cid: str, card: str) -> list[QuestionBack]:
+        return list(self.questions.get((cid, card), {}).values())
+
+    async def answer_back(self, ce: ChangeEngine, caller: WorkloadBinding, task_id: str,
+                          text: str) -> bool:
+        """The sender answers a question back (its a2a_reply on that task): the controller
+        sends its text as the next message on the task, to the card that asked – as the
+        sender would with ``a2a send --task-id``."""
+        q = self.questions.get((ce.cid, sender_name(caller)), {}).get(task_id)
+        card = self.find(ce, q.card) if q else None
+        if q is None or card is None:
+            return False
+        handler = self.dispatcher(ce, card).request_handler
+        msg = Message(message_id=uuid.uuid4().hex, role=Role.ROLE_USER, task_id=task_id,
+                      parts=[new_text_part(text)])
+        ctx = ServerCallContext(user=CallerUser(caller),
+                                state={"caller": caller, "headers": {"A2A-Version": "1.0"}})
+        await handler.on_message_send(SendMessageRequest(
+            message=msg, configuration=SendMessageConfiguration(return_immediately=True)), ctx)
+        return True
+
     def pending(self, cid: str, card: str) -> list[InboxItem]:
         return list(self.inbox.get((cid, card), {}).values())
 
@@ -350,9 +407,13 @@ class StepExecutor(_Executor):
         if not body:
             await up.reject(_text(up, "empty message"))
             return
+        sender = sender_name(caller)
+        self.hub.answered_back(self.ce.cid, sender, task_id)    # a follow-up: its answer
         await up.start_work(_text(up, f"delivered to {self.card.id}; waiting for its answer"))
-        await finish(up, self.card.id, *await self.hub.deliver(self.ce, self.card, caller, body,
-                                                               task_id))
+        state, answer = await self.hub.deliver(self.ce, self.card, caller, body, task_id)
+        if state == "input-required":                            # a question back: the sender's
+            self.hub.asked_back(self.ce.cid, sender, task_id, self.card.id, answer)
+        await finish(up, self.card.id, state, answer)
 
 
 HELP = ("Name a skill: a data part {\"skill\": \"list_cards\" | \"ask_human\", …} or text "

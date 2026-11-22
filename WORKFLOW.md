@@ -1072,10 +1072,13 @@ Every role loads `legion-a2a-protocol` and `legion-a2a-cli` (the upstream skill)
   that ends with the task still open, is answered by the orchestrator with what is missing – the
   next message on the task, in another turn of the same run if the agent had ended its turn –
   each using one report attempt (G-R6). Ending the task with messages still in the inbox is
-  answered with "N tasks in your inbox – check with inbox()" – again only when one arrived since
+  answered with "N tasks in your inbox" – every `a2a_reply` returns what is still in the inbox, so
+  the agent sees them at once – again only when one arrived since
   it was last told, so it cannot loop; what is left is answered in a turn of its own after the
   run. A peer message's reply is `completed` (an answer),
-  `input-required` (a question back: the sender continues on the same task) or `rejected`.
+  `input-required` (a question back: it is in the sender's inbox, kind `question`, and the
+  sender's `a2a_reply` on it is the next message of the same task) or `rejected`. So the inbox
+  holds every task waiting on the agent: its work, messages to answer, questions back.
 * **Where work stands.** MCP `step_status(node?)` – a step's status, cycle and budget left, its
   candidate's verification, the panel's verdicts so far, an escalation, its agents' cards – and
   `workflow_context()` – the goal and tier, the stages and where the step is, the task's place in
