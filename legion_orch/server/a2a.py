@@ -11,12 +11,17 @@ Every card is hosted here, by the controller – sandboxes make outbound calls o
 The URLs name no change: each request is answered for the caller's own change, which its
 identity names.
 
-The cards are those of :mod:`legion_orch.workflow.cards`: the change's **orchestrator** – this
-module, deterministic, no model: ``list_cards`` and ``ask_human`` – and one per
-**step** whose agent has a sandbox. A message to a step becomes a task that waits for its
-agent's answer: delivered to its inbox (MCP ``inbox`` / ``a2a_reply``) while it has a live
-run, otherwise answered in one resumed turn of its session, its sandbox started first if it was
-stopped (``engine/sandboxes/answer.py``).
+This module is **transport**: the A2A SDK, these routes, the caller's identity, and rendering.
+What it carries is the engine's:
+
+* the **catalog** of cards – pushed by the workflow (``EngineHost.publish_cards`` /
+  ``remove_cards``), kept only here, in memory (:class:`Catalog`); cards say who an agent is,
+  never its state;
+* the **messages** – a message to a card is handed to the engine's inboxes
+  (``ChangeEngine.deliver``, ``engine/services/inbox.py``), which deliver it and return the
+  reply; this module turns it into the A2A task's state. The one call the engine makes back is
+  :meth:`A2AHub.follow_up` (a question back answered: the next message on its task);
+* the **orchestrator** card's skills – deterministic, no model: ``list_cards``, ``ask_human``.
 
 Every request carries the bearer the OpenShell gateway injects (``legion-a2a`` provider
 profile): it names the calling sandbox's change, task and role, and a caller sees and reaches
@@ -28,10 +33,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import uuid
 import weakref
-from dataclasses import dataclass, field
 from typing import Any
 
 from a2a.auth.user import User
@@ -65,9 +68,9 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from ..identity import WorkloadBinding
-from ..util import bearer, now_iso
-from ..workflow.cards import ORCHESTRATOR, RESOLVER, card_id, card_url, identifier, ordered
-from ..workflow.engine import AgentBusy, ChangeEngine, Controller, NoAgent, WorkflowError
+from ..util import bearer
+from ..workflow.cards import card_id, card_url, identifier, ordered
+from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Card
 
 log = logging.getLogger("legion.a2a")
@@ -124,59 +127,6 @@ class CallerContext(DefaultServerCallContextBuilder):
 
     def build_user(self, request: Request) -> User:
         return CallerUser(request.state.caller)
-
-
-@dataclass
-class InboxItem:
-    """A message waiting for a running step's agent (MCP ``inbox``)."""
-    task_id: str
-    node: str
-    sender: str
-    sender_role: str
-    text: str
-    at: str = field(default_factory=now_iso)
-    reply: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
-
-    def view(self) -> dict:
-        return {"task_id": self.task_id, "from": self.sender, "from_role": self.sender_role,
-                "text": self.text, "at": self.at}
-
-
-@dataclass
-class QuestionBack:
-    """A card answered a message with a question (input-required): the sender's to answer."""
-    task_id: str
-    card: str                          # who asks
-    question: str
-    at: str = field(default_factory=now_iso)
-
-    def view(self) -> dict:
-        return {"task_id": self.task_id, "from": self.card, "kind": "question",
-                "state": "input-required", "text": self.question, "at": self.at,
-                "how": "answer with a2a_reply(task_id, text): it continues your conversation "
-                       "with " + self.card}
-
-
-def parse_proposal(answer: str) -> tuple[dict | None, str]:
-    """The resolver's proposal from its answer: the last fenced JSON block with a "proposal"
-    (None, and why: it proposed none, or none could be read)."""
-    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", answer, re.S)
-    for raw in reversed(blocks):
-        try:
-            doc = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(doc, dict) and "proposal" in doc:
-            p = doc["proposal"]
-            if p is None:
-                return None, str(doc.get("why") or "the resolver proposes nothing")
-            if isinstance(p, dict) and isinstance(p.get("action"), str):
-                return p, ""
-    return None, "no proposal block in its answer: " + answer.strip()[:300]
-
-
-class Undeliverable(Exception):
-    """The recipient cannot answer any more (its sandbox is gone)."""
 
 
 def message_input(context: RequestContext) -> tuple[str, list[dict]]:
@@ -238,11 +188,9 @@ class A2AHub:
     def __init__(self, ctl: Controller):
         self.ctl = ctl
         self.catalog = Catalog()
-        ctl.escalation_listeners.append(self.escalated)       # every escalation: the resolver
         ctl.subscribe_cards(self.catalog)                     # the workflow pushes its cards
+        ctl.a2a = self                                        # it carries follow-ups
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
-        self.inbox: dict[tuple[str, str], dict[str, InboxItem]] = {}
-        self.questions: dict[tuple[str, str], dict[str, QuestionBack]] = {}   # sender -> asked
 
     # ------------------------------------------------------------------ cards
     def url(self, card: str) -> str:
@@ -322,65 +270,19 @@ class A2AHub:
                 del self._dispatchers[(cid, card)]
 
     # ------------------------------------------------------------------ delivery
-    # ------------------------------------------------------------------ the resolver
-    RESOLVE_TRIES = 3            # an invalid proposal is returned with the reason this often
-
-    def escalated(self, cid: str, node_id: str) -> None:
-        """A step escalated: the orchestrator asks the change's resolver (in the background;
-        a human may decide first – the proposal is then stale)."""
-        ce = self.ctl.changes.get(cid)
-        if ce is not None and self.find(ce, RESOLVER) is not None:
-            self.ctl.spawn(self.resolve(ce, node_id))
-
-    async def resolve(self, ce: ChangeEngine, node_id: str) -> None:
-        brief = ce.escalation_brief(node_id)
-        card = self.find(ce, RESOLVER)
-        if brief is None or card is None:
-            return
-        at = brief["escalation"]["at"]
-        me = WorkloadBinding(sandbox="controller", change=ce.cid, task=ORCHESTRATOR,
-                             role=ORCHESTRATOR)
-        text = (f"Step `{node_id}` escalated. Diagnose it and propose one of its `actions`:\n\n"
-                f"```json\n{json.dumps(brief, indent=1)}\n```")
-        for attempt in range(1, self.RESOLVE_TRIES + 1):
-            tid = f"esc-{node_id}-{at}-{attempt}"
-            try:
-                _, answer = await self.deliver(ce, card, me, text, tid)
-            except (Undeliverable, WorkflowError) as e:
-                ce.event("resolver", f"could not ask the resolver about {node_id}: {e}", node_id)
-                return
-            proposal, why = parse_proposal(answer)
-            if proposal is None:
-                ce.event("resolver", f"no proposal for {node_id}: {why}", node_id)
-                return
-            err = await ce.propose(node_id, at, proposal)
-            if err is None or err == "stale":
-                return
-            text = (f"Your proposal for `{node_id}` was not taken: {err}. Send it again as the "
-                    "fenced JSON block your instructions describe.")
-
-    # ------------------------------------------------------------------ questions back
-    def asked_back(self, cid: str, sender: str, task_id: str, card: str, question: str) -> None:
-        """``card`` answered the task ``sender`` sent it with a question (input-required): it
-        is in the sender's inbox until the sender replies on that task."""
-        self.questions.setdefault((cid, sender), {})[task_id] = QuestionBack(
-            task_id, card, question)
-
-    def answered_back(self, cid: str, sender: str, task_id: str) -> None:
-        self.questions.get((cid, sender), {}).pop(task_id, None)
-
-    def questions_for(self, cid: str, card: str) -> list[QuestionBack]:
-        return list(self.questions.get((cid, card), {}).values())
-
-    async def answer_back(self, ce: ChangeEngine, caller: WorkloadBinding, task_id: str,
-                          text: str) -> bool:
-        """The sender answers a question back (its a2a_reply on that task): the controller
-        sends its text as the next message on the task, to the card that asked – as the
-        sender would with ``a2a send --task-id``."""
-        q = self.questions.get((ce.cid, sender_name(caller)), {}).get(task_id)
-        card = self.find(ce, q.card) if q else None
-        if q is None or card is None:
-            return False
+    # ------------------------------------------------------------------ the engine's transport
+    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
+        """``sender``'s reply to a question back, as the next message on its A2A task (to the
+        card that asked) – what the sender would do with ``a2a send --task-id``."""
+        ce = self.ctl.changes[cid]
+        run = next(r for r in reversed(list(ce.runs.values()))
+                   if card_id(r.role, r.node_id) == sender and r.sandbox_ref)
+        caller = WorkloadBinding(sandbox=run.sandbox_ref, change=cid, task=run.node_id,
+                                 role=run.role)
+        asked = next(q for q in ce.questions_back(sender) if q.task_id == task_id)
+        card = self.find(ce, asked.card)
+        if card is None:
+            raise WorkflowError(f"{asked.card} is no longer an agent of this change")
         handler = self.dispatcher(ce, card).request_handler
         msg = Message(message_id=uuid.uuid4().hex, role=Role.ROLE_USER, task_id=task_id,
                       parts=[new_text_part(text)])
@@ -388,58 +290,6 @@ class A2AHub:
                                 state={"caller": caller, "headers": {"A2A-Version": "1.0"}})
         await handler.on_message_send(SendMessageRequest(
             message=msg, configuration=SendMessageConfiguration(return_immediately=True)), ctx)
-        return True
-
-    def pending(self, cid: str, card: str) -> list[InboxItem]:
-        return list(self.inbox.get((cid, card), {}).values())
-
-    def reply(self, cid: str, card: str, task_id: str, text: str,
-              state: str = "completed") -> bool:
-        item = self.inbox.get((cid, card), {}).pop(task_id, None)
-        if item is None or item.reply.done():
-            return False
-        item.reply.set_result((state, text))
-        return True
-
-    async def deliver(self, ce: ChangeEngine, card: Card, sender: WorkloadBinding, text: str,
-                      task_id: str) -> tuple[str, str]:
-        """``text`` from ``sender`` to the step agent of ``card``; its answer. While the step has a live
-        run the message waits in its inbox; when it has none (also once a run ends without
-        answering) one resumed turn of its session answers. Raises :class:`Undeliverable` once
-        the step has no sandbox."""
-        node, role = card.node, card.role
-        box = self.inbox.setdefault((ce.cid, card.id), {})
-        item = InboxItem(task_id, card.id, sender_name(sender), sender.role, text)
-        try:
-            while True:
-                state = ce.agent_state(node, role)
-                if state is None:
-                    raise Undeliverable(f"{card.id} has no sandbox any more")
-                if state == "live":
-                    if task_id not in box and not item.reply.done():
-                        box[task_id] = item
-                        ce.event("a2a", f"message from {item.sender} waits in {card.id}'s "
-                                        "inbox", node)
-                    saved = asyncio.ensure_future(ce.next_save())
-                    try:
-                        await asyncio.wait({item.reply, saved}, timeout=self.WAIT_S,
-                                           return_when=asyncio.FIRST_COMPLETED)
-                    finally:
-                        saved.cancel()
-                    if item.reply.done():
-                        return item.reply.result()
-                    continue
-                box.pop(task_id, None)              # idle: its agent answers in a turn
-                if item.reply.done():
-                    return item.reply.result()
-                try:
-                    return "completed", await ce.a2a_answer(node, role, item.sender, text)
-                except AgentBusy:                   # a run started meanwhile: its inbox
-                    await asyncio.sleep(0.2)
-                except NoAgent as e:
-                    raise Undeliverable(str(e)) from None
-        finally:
-            box.pop(task_id, None)
 
 
 def _text(updater: TaskUpdater, text: str):
@@ -470,7 +320,7 @@ class _Executor(AgentExecutor):
         text, data = message_input(context)
         try:
             await self.run(up, task.id, caller, text, data)
-        except (Undeliverable, WorkflowError) as e:
+        except WorkflowError as e:                    # NoAgent: it can no longer answer
             await up.failed(_text(up, str(e)))
 
     async def cancel(self, context: RequestContext, event_queue) -> None:
@@ -493,12 +343,9 @@ class StepExecutor(_Executor):
         if not body:
             await up.reject(_text(up, "empty message"))
             return
-        sender = sender_name(caller)
-        self.hub.answered_back(self.ce.cid, sender, task_id)    # a follow-up: its answer
         await up.start_work(_text(up, f"delivered to {self.card.id}; waiting for its answer"))
-        state, answer = await self.hub.deliver(self.ce, self.card, caller, body, task_id)
-        if state == "input-required":                            # a question back: the sender's
-            self.hub.asked_back(self.ce.cid, sender, task_id, self.card.id, answer)
+        state, answer = await self.ce.deliver(self.card.id, sender_name(caller), caller.role,
+                                              body, task_id)
         await finish(up, self.card.id, state, answer)
 
 

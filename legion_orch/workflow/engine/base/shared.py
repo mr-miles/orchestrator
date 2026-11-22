@@ -89,8 +89,9 @@ class EngineHost(Protocol):
     def remove_cards(self, cid: str, node_id: str | None) -> None:
         """A step's cards (or, ``None``, all of the change's) are withdrawn from the catalog."""
 
-    def escalated(self, cid: str, node_id: str) -> None:
-        """A step escalated (a failure, not a gate's due decision): its resolver is asked."""
+    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
+        """Send ``sender``'s reply to a question back as the next message on its A2A task (the
+        A2A layer carries it, as the sender would with ``a2a send --task-id``)."""
 
     def next_run_id(self) -> str: ...
 

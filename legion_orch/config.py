@@ -154,6 +154,13 @@ class SandboxConfig:
 
 
 @dataclass
+class ResolverConfig:
+    # Send every escalation to the change's resolver agent (WORKFLOW.md §5.16), which proposes
+    # a decision for a human; off: escalations wait for a human with no proposal.
+    enabled: bool = True
+
+
+@dataclass
 class RetrospectiveConfig:
     # Before an agent's sandbox is deleted because its work is done, resume its session for one
     # reflection turn (what cost it time, guidance that was missing or wrong), stored in
@@ -304,6 +311,7 @@ class Config:
     identity: IdentityConfig = field(default_factory=IdentityConfig)
     environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
     retrospective: RetrospectiveConfig = field(default_factory=RetrospectiveConfig)
+    resolver: ResolverConfig = field(default_factory=ResolverConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     protected_paths: list[str] = field(default_factory=list)
@@ -377,6 +385,7 @@ def load_config(path: str | Path) -> Config:
         identity=_build(IdentityConfig, raw.get("identity")),
         environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
         retrospective=_build(RetrospectiveConfig, raw.get("retrospective")),
+        resolver=_build(ResolverConfig, raw.get("resolver")),
         notify=_notify_config(raw.get("notify")),
         telemetry=_build(TelemetryConfig, raw.get("telemetry")),
         protected_paths=list(raw.get("protected_paths") or []),

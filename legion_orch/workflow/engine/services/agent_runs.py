@@ -54,8 +54,8 @@ from ..sandboxes.sandboxes import AgentSession, Sandboxes, sandbox_env
 from .runs import RunLifecycle
 
 if TYPE_CHECKING:
+    from .inbox import RunTasks
     from .reports import Reports
-    from .run_tasks import RunTasks
     from .verification import Verifications
 
 
@@ -158,7 +158,7 @@ class AgentTurn(Command):
     """The agent's turns: start the agent and await its process (its timers stop it: the run
     timeout while its task is open, the end-of-turn grace after it ended it). A turn that ends
     with the run's task still open – no accepted report, or no reply ending the task – is asked
-    again (services/run_tasks.py): the agent's session is resumed for another turn of the same
+    again (services/inbox.py): the agent's session is resumed for another turn of the same
     run, with the orchestrator's message. Then the run's record is completed (exit code, a live
     run failed with why, the log archived)."""
     runs: AgentRuns | None = None
