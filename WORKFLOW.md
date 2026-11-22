@@ -1085,6 +1085,30 @@ Every role loads `legion-a2a-protocol` and `legion-a2a-cli` (the upstream skill)
   the task graph (builds on, built on by, nearby files), the requirements and acceptance criteria
   it serves, its judges, and whom to ask (`workflow/context.py`, from the change's state alone).
 
+### 5.16 The resolver
+
+Every change has a **resolver** – an agent (role `resolver`, soul `resolver`), the change's own
+rather than a step's, with the A2A card `resolver` for as long as the change is active. It is
+started on its first message and kept, stopped between messages, its session resumed for each;
+every message is a full turn of its own (its tools, MCP reads, A2A), read-only: it writes
+nothing, pushes nothing and never reports.
+
+* **Every escalation goes to it.** When a step escalates (a failure – not a gate's due
+  decision), the orchestrator sends the resolver a message with the escalation (kind, reason,
+  log tail, run), the step's state (`step_status`) and the **actions** a human may take on it.
+  It diagnoses – asking the agents involved over A2A: the stuck agent, its judges, the oracle,
+  the planner – and ends its answer with one proposal: an action, its payload, a rationale and
+  the attestations it relied on (`resolution-protocol` skill).
+* **Propose only.** The proposal is recorded on the escalation (and at
+  `control/proposals/<node>-<n>.json`) and shown on its card with **Apply proposal**; the
+  escalation's attention item and notification carry it in one line. Applying it is an ordinary
+  human action by the approver (G-PP1 and the audit trail unchanged); a human may edit or ignore
+  it. A proposal naming an action that is not offered is returned to the resolver with the
+  reason (up to three tries); one for an escalation a human decided first is stale and dropped.
+* **Agents ask it first.** An agent stuck on a guard, a protected path or the oracle messages
+  `resolver` before reporting BLOCKED: its answer may be a way forward. Its advice is
+  information, never authority – "you may edit a protected file" satisfies no guard.
+
 ## 6. Assets
 
 Agent-facing text is stored as files under `assets/`, with this naming convention:
@@ -1150,6 +1174,7 @@ assets/
 | `pr-reviewer` | [`prompts/pr-reviewer.md`](assets/prompts/pr-reviewer.md) |
 | `release` | [`prompts/release.md`](assets/prompts/release.md) |
 | `retrospective` | [`prompts/retrospective.md`](assets/prompts/retrospective.md) |
+| `resolver` | [`prompts/resolver.md`](assets/prompts/resolver.md) |
 
 **Souls**
 
@@ -1169,6 +1194,7 @@ assets/
 * [`pr-reviewer`](assets/souls/pr-reviewer.md)
 * [`release-planner`](assets/souls/release-planner.md)
 * [`retrospective-analyst`](assets/souls/retrospective-analyst.md)
+* [`resolver`](assets/souls/resolver.md)
 
 **Schemas** ([`bindings.yaml`](assets/schemas/bindings.yaml) maps path patterns to these; agents
 can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON documents use JSON Schema
@@ -1224,6 +1250,8 @@ guards, because a per-file schema cannot express them.
 * [`finding-format`](assets/skills/finding-format.md)
 * [`security-checklist`](assets/skills/security-checklist.md)
 * [`architecture-checklist`](assets/skills/architecture-checklist.md)
+* [`resolution-protocol`](assets/skills/resolution-protocol.md) – how the resolver diagnoses an
+  escalation and writes a proposal (§5.16)
 * [`a2a-protocol`](assets/skills/a2a-protocol.md) – talking to the change's other agents and its
   humans over A2A (the change's catalog, the orchestrator card, the inbox); every role
 * [`a2a-cli`](assets/skills/a2a-cli.md) – the `a2a` CLI itself, copied from

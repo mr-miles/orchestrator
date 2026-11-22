@@ -135,7 +135,9 @@ class Notifier:
         root, topic = sink.url.rstrip("/").rsplit("/", 1)
         prefix = {RAISED: "", REMINDER: "Still waiting: ", RESOLVED: "Resolved: "}[body["event"]]
         msg = {"topic": topic, "title": f"{prefix}{body['title']}",
-               "message": "\n".join(x for x in (f"{body['change']}: {body['goal']}", body["reason"])
+               "message": "\n".join(x for x in (f"{body['change']}: {body['goal']}", body["reason"],
+                                                  f"Resolver proposes {body['proposal']}"
+                                                  if body.get("proposal") else "")
                                     if x),
                "priority": 4 if body["blocking"] and body["event"] != RESOLVED else 3,
                "tags": ["warning"] if body["blocking"] else ["inbox_tray"]}

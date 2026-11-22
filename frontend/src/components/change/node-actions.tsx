@@ -162,6 +162,59 @@ function Escalated({ node, state }: { node: Node; state: ChangeState }) {
             <b>Decision needed:</b> {e.missing_decision}
           </p>
         )}
+        {e.proposal && (
+          <Alert>
+            <AlertTitle>
+              Resolver proposes: <code>{e.proposal.action}</code>
+            </AlertTitle>
+            <AlertDescription className="space-y-2">
+              <p className="whitespace-pre-wrap">{e.proposal.rationale}</p>
+              {Object.keys(e.proposal.payload).length > 0 && (
+                <Pre>{JSON.stringify(e.proposal.payload, null, 2)}</Pre>
+              )}
+              {e.proposal.attestations.length > 0 && (
+                <p className="font-mono text-xs">{e.proposal.attestations.join(' · ')}</p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {e.proposal.action === 'abandon' ? (
+                  <ConfirmButton
+                    title="Abandon the change?"
+                    description="The resolver proposes abandoning the change."
+                    confirm="Abandon"
+                    onConfirm={() =>
+                      act.node(node.id, 'abandon', e.proposal?.payload ?? {}, 'Change abandoned')
+                    }
+                  >
+                    Apply proposal
+                  </ConfirmButton>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      act.node(
+                        node.id,
+                        e.proposal?.action ?? '',
+                        e.proposal?.payload ?? {},
+                        "Applied the resolver's proposal",
+                      )
+                    }
+                  >
+                    Apply proposal
+                  </Button>
+                )}
+                {typeof e.proposal.payload.answer === 'string' && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setAnswer(String(e.proposal?.payload.answer ?? ''))}
+                  >
+                    Edit as my answer
+                  </Button>
+                )}
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
         {e.run && (
           <Button variant="link" className="h-auto p-0" onClick={() => nav.openLog(e.run ?? '')}>
             Agent log of {e.run}
