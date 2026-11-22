@@ -37,6 +37,11 @@ description = "Unit, git access-control and end-to-end workflow tests"
 depends = ["install"]
 run = "pytest -q"
 
+[tasks."test:fast"]
+description = "Unit and scenario tests: everything but end-to-end (the quick local run)"
+depends = ["install"]
+run = "pytest -q -m 'not e2e'"
+
 [tasks.cov]
 description = "Tests with branch coverage (term report with missed lines)"
 depends = ["install"]
