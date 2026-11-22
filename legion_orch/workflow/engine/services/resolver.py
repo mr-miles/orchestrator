@@ -44,6 +44,10 @@ class Resolver:
     def __init__(self, core: ChangeCore, actions: Callable[[str], list[str]]):
         self.c, self.actions = core, actions
 
+    def escalated(self, event):
+        """The bus: a step escalated – asked unless the resolver is off (``resolver.enabled``)."""
+        return self.resolve(event.node) if self.c.cfg.resolver.enabled else None
+
     def brief(self, node_id: str) -> dict | None:
         """What the resolver is told of an escalation (None: the step is not escalated)."""
         node = self.c.nodes.get(node_id)

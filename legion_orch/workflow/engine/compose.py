@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ...bus import Escalated, Pushed
 from .runtime.flow_runtime import FlowRuntime
 from .runtime.human import HumanGates
 from .sandboxes.sandboxes import Sandboxes
@@ -53,8 +54,9 @@ def compose(ce: ChangeEngine) -> None:
     # the workflow's one counterpart for agents: cards, inboxes, turns (services/agents/)
     agent_runner = AgentRunner(ce, lifecycle, agents, sandboxes, ce.svc.dispatcher)
     phases.agent_runner = flow.agent_runner = ce._agent_runner = agent_runner
-    agents.turn_ended = agent_runner.turn_ended   # what a run left unanswered gets a turn
-    ce._resolver = Resolver(ce, flow.actions)     # every escalation goes to it
+    ce._resolver = resolver = Resolver(ce, flow.actions)   # every escalation goes to it
+    ce.svc.bus.subscribe(Escalated, resolver.escalated, cid=ce.cid)
+    ce.svc.bus.subscribe(Pushed, lambda e: ce.pushed(e.run, e.sha), cid=ce.cid)
     # not the facade's: for tests that drive a layer directly
     ce._sandboxes, ce._agents, ce._phases, ce._provisioner, ce._runner = (
         sandboxes, agents, phases, provisioner, runner)

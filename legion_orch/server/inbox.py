@@ -109,6 +109,12 @@ class Inbox:
         """The sender answered its question back (the A2A layer sends it on)."""
         self._questions.get((cid, sender), {}).pop(task_id, None)
 
+    def turn_ended(self, cid: str, card: str) -> None:
+        """``card``'s run is over: what it left waiting is announced again (the agent runner
+        answers it in turns of their own)."""
+        if any(not i.reply.done() for i in self.pending(cid, card)):
+            self.tell(cid, card)
+
     def fail(self, cid: str, card: str, task_id: str, why: str) -> None:
         """The recipient can no longer answer: the message fails with why."""
         item = self._messages.get((cid, card), {}).get(task_id)

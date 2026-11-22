@@ -120,12 +120,6 @@ class ChangeEngine(ChangeCore):
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
                                                  blocked_reason, missing_decision, dry_run)
 
-    # ------------------------------------------------------------------ the resolver
-    def escalated(self, node_id: str) -> None:
-        """A step escalated (ChangeCore, on a save): its resolver is asked, in the background."""
-        if self.cfg.resolver.enabled:
-            self.host.spawn(self._resolver.resolve(node_id))
-
     # ------------------------------------------------------------------ where a step stands
     def step_status(self, node_id: str) -> dict:
         """A step as it is now (workflow/context.py); WorkflowError for an unknown step."""
@@ -156,11 +150,6 @@ class ChangeEngine(ChangeCore):
     def republish_cards(self) -> None:
         """A card catalog subscribed (a restart): the cards the workflow has open, again."""
         self._agent_runner.republish()
-
-    def item_added(self, card_id: str) -> None:
-        """The A2A inbox: something waits on ``card_id``'s agent (the runner answers it if the
-        agent is not running)."""
-        self._agent_runner.item_added(card_id)
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:

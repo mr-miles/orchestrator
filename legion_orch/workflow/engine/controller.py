@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 
+from ...bus import Bus, Pushed
 from ...config import Config
 from ...git import GitRemote
 from ...identity import WorkloadBinding
@@ -58,6 +59,7 @@ class Controller:
         if unhandled:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
         self.changes: dict[str, ChangeEngine] = {}
+        self.bus = Bus(self.spawn)          # notifications between components (bus.py)
         self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of)
         runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
         self.svc = Services(
@@ -65,7 +67,7 @@ class Controller:
             hubs={w.name: GitRemote(cfg.state_dir / "git", w.name, w.source, w.base_branch,
                                     max_push_bytes=cfg.limits.git_max_push_bytes)
                   for w in cfg.workspaces},
-            assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
+            assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp", bus=self.bus,
             builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel),
             verify_cap=PriorityCap(cfg.limits.max_parallel_verifications),
             telemetry=telemetry or Telemetry.from_config(cfg))
@@ -79,7 +81,6 @@ class Controller:
         self._loop_task: asyncio.Task | None = None
         self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
                                  self._notified)
-        self.card_sinks: list = []          # card catalogs (the A2A listener's): pushed to
         self.a2a = None                     # the A2A transport (server/a2a.py), once it is up
 
     # The pieces the HTTP layer reads.
@@ -112,14 +113,6 @@ class Controller:
         else:
             self.notifier.resolved(item)
 
-    def publish_cards(self, cid: str, cards: list) -> None:
-        for sink in list(self.card_sinks):
-            sink.publish(cid, cards)
-
-    def remove_cards(self, cid: str, node_id: str | None) -> None:
-        for sink in list(self.card_sinks):
-            sink.remove(cid, node_id)
-
     # ---- the A2A layer's inbox and transport (server/inbox.py, server/a2a.py)
     def _a2a(self):
         if self.a2a is None:
@@ -142,16 +135,11 @@ class Controller:
     async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
         await self._a2a().follow_up(cid, sender, task_id, text)
 
-    def item_added(self, cid: str, card: str) -> None:
-        """The A2A inbox: something waits on ``card``'s agent."""
-        ce = self.changes.get(cid)
-        if ce is not None:
-            ce.item_added(card)
 
-    def subscribe_cards(self, sink) -> None:
-        """A card catalog (the A2A listener's) subscribes: it is given every change's cards as
-        the workflow publishes them now, then each publish and removal as it happens."""
-        self.card_sinks.append(sink)
+
+    def replay_cards(self) -> None:
+        """Every change publishes again the cards it has open (a catalog subscribed late: the
+        controller started)."""
         for ce in self.changes.values():
             ce.republish_cards()
 
@@ -346,7 +334,7 @@ class Controller:
             return
         sha = await ce.git.ref_sha(f"refs/heads/{run.branch}")
         if sha:
-            await ce.pushed(run.id, sha)
+            self.bus.publish(Pushed(ce.cid, run.id, sha))   # the verification service verifies it
 
     def a2a_caller(self, token: str | None) -> tuple[ChangeEngine, WorkloadBinding] | None:
         """The change and agent (sandbox, task, role) an A2A request's bearer comes from."""
