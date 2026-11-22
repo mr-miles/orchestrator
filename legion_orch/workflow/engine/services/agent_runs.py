@@ -52,6 +52,7 @@ from .runs import RunLifecycle
 
 if TYPE_CHECKING:
     from .reports import Reports
+    from .verification import Verifications
 
 
 @dataclass
@@ -158,6 +159,7 @@ class AgentRuns:
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
+        self.verifications: Verifications | None = None      # set once it exists (G-V0)
 
     # ------------------------------------------------------------------ A2A: an early start
     async def consult(self, node_id: str, role: str, sender: str, text: str) -> str:
@@ -233,6 +235,16 @@ class AgentRuns:
                 return Escalate("approval", "; ".join(stale), resume)
         if sandbox_env(ch, role) and (stale_env := governance.stale_environment(self.c)):
             return Escalate("approval", stale_env, resume)
+        if h.judge and node.task and node.candidate_sha and self.verifications is not None:
+            # G-V0: judges see verified code only – a passing verification of the candidate
+            # under the key as it is now (a setup pin or verifier image changed since: again)
+            svc = self.verifications
+            got = svc.result(svc.key(node.candidate_sha, node.task.verification))
+            if got is None or got.state != "passed":
+                return Escalate("unverified", f"G-V0: candidate {node.candidate_sha[:12]} has no "
+                                "passing verification under the current setup and verifier "
+                                "image: verify it again (retry) before it is judged",
+                                Resume.VERIFYING)
         return None
 
     def work(self, node: Node, role: str, plan: SandboxPlan, judged_sha: str | None, *,

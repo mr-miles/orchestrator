@@ -62,6 +62,9 @@ export interface Verification {
   attestation?: string | null
   /** its log's id (the verifier sandbox's name), served as a run's: /api/runs/<log>/log */
   log?: string | null
+  /** the verification service's run, and whether it was verified already (as it was pushed) */
+  run?: string | null
+  cached?: boolean
 }
 
 export interface Escalation {

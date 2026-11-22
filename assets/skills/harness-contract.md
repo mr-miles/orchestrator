@@ -16,7 +16,8 @@ You follow `read-before-write -> evidence-before-action -> minimal diff -> verif
 - Keep changes strictly inside your scope. Never edit files outside `files_modified`, never touch
   protected paths, never write documents outside your write scope.
 - Verification is part of the work. Run the commands you were given and record their exit codes
-  before you report.
+  before you report. The controller also verifies every tip you push (`verification_status`
+  over MCP): a failure there is what review will start from, so fix it first.
 - If you run a command in the background (`Monitor`, or `Bash` with `run_in_background`), its
   exit code is unknown until its completion notice arrives. Wait for that notice before you
   record the result or report; never report while a task you started is still running. Stop

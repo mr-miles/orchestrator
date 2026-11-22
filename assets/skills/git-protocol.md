@@ -18,6 +18,10 @@ description: "Working copy, commits, pushing your branch, rebasing, and what jud
   attest the checked-out sha from their assignment.
 - Evidence and reports are documents (`docs_write`), never files committed to the repository: a
   commit outside `files_modified` fails G-B3.
+- **Every push is verified.** The controller runs your task's `verification` commands at each
+  tip you push, in a fresh verifier sandbox, once per commit: check the result with
+  `verification_status()` (MCP) and read a failure with `verification_evidence(id)` before you
+  report. Your report's candidate is then usually verified already.
 - Attest the pushed `git rev-parse HEAD` as `git:{{repo_name}}@<sha>`. The controller checks it is
   the tip of `{{branch}}` on its remote (G-B2) – report only after the push succeeded.
 - If asked to rebase (feedback says "rebase onto <sha>"), `git fetch origin` then

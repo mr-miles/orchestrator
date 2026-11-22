@@ -123,6 +123,7 @@ class ActiveStep:
         or a new run in a new sandbox."""
         node = self.node
         point = node.escalation.resume if node.escalation else Resume.READY
+        node.reverify = True     # a human decided: the step's next verification is a fresh one
         if point == Resume.CRITIQUE_BUDGET:            # one more critique cycle: rework the plan
             node.extra_cycles += 1
             node.cycle += 1

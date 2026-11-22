@@ -16,7 +16,6 @@ from legion_orch.workflow.engine.steps.phases import (
     PhaseContext,
     Rework,
     Verify,
-    verification,
 )
 from legion_orch.workflow.model import (
     BUILD,
@@ -125,11 +124,20 @@ async def test_a_failed_setup_in_a_build_fails_like_any_command(f: Flow):
     assert isinstance(result, Rework) and "`mise run setup` exited 1" in result.feedback[0].text
 
 
-# ---------------------------------------------------------------------------- Verify.verification
+# ---------------------------------------------------------------------------- the verification service
+async def verification(f: Flow, commands: tuple[str, ...], *, force: bool = False):
+    """Commands at SHA through the verification service; its full record (command output)."""
+    from legion_orch.workflow.model import Verification
+    svc = f.ce._verifications
+    run = await svc.verify(svc.key(SHA, commands), "test", 0, force=force)
+    full = f.ce.verification_record(run.id)
+    return Verification.model_validate(full) if full else run.result
+
+
 @scenario()
 async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
     before = list(f.runner.created)
-    res = await verification(ctx(f), "T9", SHA, (), dispatch=f.ce.svc.dispatcher)
+    res = await verification(f, ())
     assert res.infra_error == "no commands to verify" and f.runner.created == before
 
 
@@ -137,11 +145,12 @@ async def test_nothing_to_verify_is_an_infrastructure_error(f: Flow):
 async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: Flow):
     from legion_orch.workflow.model import SetupPin
     f.ce.change.setup_pin = SetupPin(blob="b" * 40, source="base")
-    res = await verification(ctx(f), "T9", SHA, ("first", "second"), dispatch=f.ce.svc.dispatcher)
+    res = await verification(f, ("first", "second"))
     assert [r.command for r in res.results][1:] == ["first", "second"] and res.ok
     assert res.results[0].setup
     f.runner.commands["b" * 40] = (1, "no setup task")
-    res = await verification(ctx(f), "T9", SHA, ("first", "second"), dispatch=f.ce.svc.dispatcher)
+    assert (await verification(f, ("first", "second"))).ok     # the key's result: not run again
+    res = await verification(f, ("first", "second"), force=True)   # a new attempt (a human's)
     assert len(res.results) == 1 and not res.ok
     assert len(f.runner.deleted) == 2                        # every verifier is removed
 
@@ -150,14 +159,14 @@ async def test_commands_run_in_order_after_the_setup_and_not_after_it_fails(f: F
 async def test_a_taken_verifier_name_is_replaced(f: Flow):
     before = list(f.runner.created)
     f.runner.clash = 1
-    res = await verification(ctx(f), "T9", SHA, ("pytest",), dispatch=f.ce.svc.dispatcher)
+    res = await verification(f, ("pytest",))
     assert res.ok and f.runner.created == [*before, res.sandbox]
 
 
 @scenario()
 async def test_a_verifier_that_cannot_start_is_reported_not_raised(f: Flow):
     f.runner.fail_create = "verifier"
-    res = await verification(ctx(f), "T9", SHA, ("pytest",), dispatch=f.ce.svc.dispatcher)
+    res = await verification(f, ("pytest",))
     assert not res.ok and "quota" in res.infra_error
 
 

@@ -32,7 +32,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from ....sandbox import VERIFIER_PREFIX
 from ... import governance
 from ...model import (
     DEFINING,
@@ -63,8 +62,8 @@ from ...ship import evaluate
 from ..base.common import WorkflowError, _slug
 from ..base.core import ChangeCore
 from ..base.ids import in_round
-from ..base.work import COMMAND, PREPARE, SETUP, Outcome
 from ..sandboxes.plan import JUDGE, SandboxPlan
+from ..services.verification import HEAD_CHECK, STEP, record_path
 
 if TYPE_CHECKING:
     from ..base.dispatch import Dispatcher, StepDispatcher
@@ -73,6 +72,7 @@ if TYPE_CHECKING:
     from ..services.provision import Provisioner
     from ..services.publish import Published, Publisher
     from ..services.runs import RunLifecycle
+    from ..services.verification import Verifications
     from .active import ActiveStep
     from .approvals import Approves
     from .runner import StepEvents
@@ -94,6 +94,7 @@ class PhaseContext:
     dispatcher: Dispatcher = None  # type: ignore[assignment]
     agents: AgentRuns = None  # type: ignore[assignment]
     publisher: Publisher = None  # type: ignore[assignment]
+    verifications: Verifications = None  # type: ignore[assignment]
 
 
 class _Again:
@@ -865,7 +866,7 @@ class Verify(Phase):
         self.start(active)                                     # verified again
 
     def resume(self, active: ActivePhase, answered: bool) -> None:
-        self.start(active)                                     # verified again
+        self.start(active)                                     # verified again (ActiveStep.resume)
 
     def resume_after(self, active: ActivePhase, escalation: Escalate) -> Resume:
         return active.step.rework_resume
@@ -878,14 +879,35 @@ class Verify(Phase):
         return True
 
     async def perform(self, active: ActivePhase) -> Verification:
-        node = active.node
-        c = active.c
+        """The verification service's result for the candidate and these commands: a commit
+        verified already (as it was pushed, say) is not verified again. Its live log shows on
+        the node while it runs. A new verification follows on in the step's slot (work in flight
+        goes first), within the verification cap."""
+        node, c = active.node, active.c
         commands = self._to_run(active)
-        c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
-                f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))",
-                node.id)
-        return await verification(active.ctx, node.id, node.candidate_sha, commands,
-                                  dispatch=active.dispatch)
+        svc = active.ctx.verifications
+        async with c.lock:
+            key = svc.key(node.candidate_sha, commands)
+            force, node.reverify = node.reverify, False
+            known = None if force else svc.result(key)
+            c.event("verify", f"deterministic verification of {node.candidate_sha[:12]} "
+                    f"({'setup and ' if c.change.setup_pin else ''}{len(commands)} command(s))"
+                    + (f": verified already ({known.id})" if known else ""), node.id)
+
+        def live(sandbox: str) -> None:
+            c.verifying[node.id] = sandbox                # its log, live (the UI shows it)
+            c.host.touch()
+        try:
+            run = await svc.verify(key, f"step:{node.id}",
+                                   HEAD_CHECK if self.at_head else STEP, node=node.id,
+                                   on_sandbox=live, force=force, dispatch=active.dispatch)
+        finally:
+            async with c.lock:
+                c.verifying.pop(node.id, None)
+        full = c.json_doc(record_path(run.id)) if c.latest(record_path(run.id)) else None
+        res = Verification.model_validate(full) if full else (run.result or Verification(
+            sha=node.candidate_sha, infra_error=f"verification {run.id}: {run.state}"))
+        return res.model_copy(update={"run": run.id, "cached": known is not None})
 
     async def result(self, active: ActivePhase, done: object) -> PhaseResult | None:
         """The verification is recorded, then interpreted; on a pass its notes are recorded, and
@@ -921,62 +943,6 @@ class Verify(Phase):
         if node.task:
             return f"tasks/{node.task.id}/verification.json", str(node.cycle)
         return f"control/verification/{_slug(node.id)}.json", str(node.kind)
-
-
-async def verification(ctx: PhaseContext, label: str, sha: str, commands: tuple[str, ...], *,
-                       dispatch: StepDispatcher | Dispatcher) -> Verification:
-    """A verification of ``sha``: the repository's setup and ``commands`` in a fresh verifier
-    sandbox, as work for ``dispatch`` (a step's). Never raises (other than
-    :class:`.Withdrawn`, its step having ended). A name the gateway already has (another
-    controller) is replaced and the sandbox created again."""
-    c = ctx.c
-    name = c.host.new_sandbox_name(VERIFIER_PREFIX)
-    if not commands and not c.change.setup_pin:
-        return Verification(sha=sha, sandbox=name, infra_error="no commands to verify")
-    work = ctx.sandboxes.verifier_work(name, label, sha, commands)
-    log = c.run_dir(name) / "agent.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-
-    def write(text: str) -> None:
-        with open(log, "a") as f:
-            f.write(text)
-        c.host.touch()                                  # a live log's viewers read it again
-    def ran(cmd, r) -> None:
-        out = r.output if not r.output or r.output.endswith("\n") else r.output + "\n"
-        write(f"{out}[legion] {cmd.label}: exit {r.exit_code}\n")
-    work.begun, work.log = (lambda cmd: write(f"[legion] {cmd.label} …\n")), ran
-    write(f"[legion] verifying {sha[:12]} for {label} in {name}: "
-          f"{len(work.commands)} step(s)\n")
-    c.verifying[label] = name                           # its log, live (the UI shows it)
-    try:
-        res = verification_of(sha, await dispatch.run(work))
-        if res.infra_error:
-            write(f"[legion] {res.infra_error}\n")
-        write(f"[legion] verification {'passed' if res.ok else 'failed'}\n")
-    finally:
-        async with c.lock:
-            if c.verifying.get(label) == name:
-                del c.verifying[label]
-            stored = ctx.agents.lifecycle.store_log(name) is not None
-            c.save()
-    res.log = name if stored else None
-    return res
-
-
-def verification_of(sha: str, outcome: Outcome) -> Verification:
-    """The verification record of a verifier's work: the setup's and the commands' results; a
-    sandbox that could not be made ready (created, cloned, checked out) is an infrastructure
-    error."""
-    res = Verification(sha=sha, sandbox=outcome.sandbox,
-                       results=outcome.results(SETUP, COMMAND))
-    stop = outcome.stopped
-    if outcome.error:
-        res.infra_error = outcome.error
-    elif stop is not None and stop.command.kind == PREPARE:
-        res.infra_error = (f"verifier {stop.command.label} failed ({stop.result.exit_code}): "
-                           f"{stop.result.output[-1500:]}")
-    res.ok = res.infra_error is None and all(r.exit_code == 0 for r in res.results)
-    return res
 
 
 def setup_failure(res: Verification) -> CommandResult | None:

@@ -101,6 +101,9 @@ def test_a_failing_setup_escalates_the_baseline(tmp_path):
         f = await Flow.create(tmp_path)
         await f.to_h2(tier="R3")
         f.runner.commands[f.ce.change.setup_pin.blob] = (1, "network unreachable\n")
+        # the preflight verified the same commands at this head: what broke since is outside
+        # the verification's key (the network), so it would be reused – forget it here
+        f.ce.change.verifications.clear()
         r = f.run("baseline")
         doc = await f.write(r, "baseline/report.md", "results")
         await f.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {"results": [
