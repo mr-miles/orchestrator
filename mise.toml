@@ -1,73 +1,92 @@
-# Build, lint and test the backend and the frontend with the mise tasks (mise.toml: the same
-# tools and commands as a local `mise run check`), then assemble the release zip.
-name: CI
+# Tooling and tasks for legion-orchestrator. `mise install` then `mise run <task>` (or `mise tasks`).
+# Python dependencies (including ruff, pytest, build) come from pyproject.toml via uv into .venv;
+# the web UI's from frontend/package.json via bun. CI (.github/workflows/ci.yml) runs these tasks.
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+[tools]
+python = "3.12"
+uv = "0.13"
+bun = "1.4"
 
-permissions:
-  contents: read
+[env]
+# Project virtualenv, created with uv on first use and activated for every task.
+# `run` and `openshell:setup` use $LEGION_CONFIG (default orchestrator.yaml).
+_.python.venv = { path = ".venv", create = true }
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+[settings]
+python.uv_venv_auto = true
 
-jobs:
-  frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v2          # installs python, uv, buned)
-      - name: Typecheck, lint, format check, tests
-        run: mise run ui:check
-      - name: Build
-        run: mise run ui:build
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ui-dist
-          path: legion_orch/server/static/dist
-          if-no-files-found: error
-          retention-days: 7
+[tasks.install]
+description = "Install the package (editable) with test and dev extras into .venv, as uv.lock pins them"
+run = "uv sync -q --locked --extra test --extra dev"
 
-  backend:
-    name: Backend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v2
-      - name: Lint (ruff, the assets and the environment library)
-        run: mise run lint
-      - name: Tests (in parallel: pytest addopts -n auto)
-        run: mise run test
+[tasks.lint]
+description = "ruff, and asset/schema/library validation"
+depends = ["install"]
+run = [
+  "ruff check legion_orch tests scripts",
+  "legion-orch -c orchestrator.example.yaml check",
+]
 
-  package:
-    name: Release zip
-    needs: [frontend, backend]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v2
-      - uses: actions/download-artifact@v8
-        with:
-          name: ui-dist
-          path: legion_orch/server/static/dist
-      - name: Build the zip
-        id: zip
-        run: echo "path=$(mise run -q package:zip)" >> "$GITHUB_OUTP
-      - name: Smoke test from a clean unpack, with uv only
-        run: |
-          work="$RUNNER_TEMP/unpacked"
-          mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }
-          cd "$work"/legion-orchestrator-*
-          test -f legion_orch/server/static/dist/index.html
-          uv run legion-orch -c orchestrator.example.yaml check
-          uv run python -c "from legion_orch.server import web; asse').is_file()"
-      - uses: actions/upload-artifact@v7
-        with:
-          path: ${{ steps.zip.outputs.path }}
-          archive: false
-          if-no-files-found: error
+[tasks.fix]
+description = "Apply ruff's safe fixes"
+depends = ["install"]
+run = "ruff check legion_orch tests scripts --fix"
+
+[tasks.test]
+description = "Unit, git access-control and end-to-end workflow tests"
+depends = ["install"]
+run = "pytest -q"
+
+[tasks.cov]
+description = "Tests with branch coverage (term report with missed lines)"
+depends = ["install"]
+run = "pytest -q --cov=legion_orch --cov-branch --cov-report=term-missing:skip-covered"
+
+[tasks.build]
+description = "Build sdist and wheel into dist/"
+depends = ["install"]
+run = "uv build"
+
+[tasks."ui:install"]
+description = "Install the web UI's dependencies (bun, from frontend/bun.lock)"
+dir = "frontend"
+run = "bun install --frozen-lockfile"
+
+[tasks."ui:check"]
+description = "Web UI: typecheck, lint, format check and tests"
+depends = ["ui:install"]
+dir = "frontend"
+run = "bun run check"
+
+[tasks."ui:build"]
+description = "Build the web UI into legion_orch/server/static/dist"
+depends = ["ui:install"]
+dir = "frontend"
+run = "bun run build"
+
+[tasks.package]
+description = "The release zip (dist/legion-orchestrator-<version>.zip): runs with uv alone"
+depends = ["ui:build"]
+run = "mise run -q package:zip"
+
+[tasks."package:zip"]
+description = "The release zip from the UI already built in static/dist (CI: the frontend job's); prints its path"
+run = "uv run --no-project python scripts/package.py --out dist"
+
+[tasks.check]
+description = "Everything CI runs"
+depends = ["lint", "test", "ui:check", "package"]
+
+[tasks.run]
+description = "Run the controller (UI/API/git on server.port, MCP on server.mcp_port)"
+depends = ["install"]
+run = 'legion-orch -c "${LEGION_CONFIG:-orchestrator.yaml}" serve'
+
+[tasks."openshell:install"]
+description = "Install the OpenShell CLI with NVIDIA's installer (deb/rpm on Linux)"
+run = "curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh"
+
+[tasks."openshell:setup"]
+description = "One-time workspace setup: import the legion-controller provider profile and create the provider"
+depends = ["install"]
+run = 'legion-orch -c "${LEGION_CONFIG:-orchestrator.yaml}" setup-openshell --apply'
