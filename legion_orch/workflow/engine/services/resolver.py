@@ -4,7 +4,8 @@ diagnoses it and proposes one of the step's human actions; a human applies, edit
 When a step escalates (a failure – not a gate's due decision; ``ChangeCore`` notices it as the
 change saves) the resolver is sent a message through the inboxes – the escalation, the step's
 state, the actions a human may take – and its answer's proposal, a fenced JSON block, is
-recorded on the escalation (and at ``control/proposals/<node>-<n>.json``). A proposal naming an
+recorded on the escalation (and at ``control/proposals/<node>-<n>.json``). The message goes
+through the A2A layer's inbox (``EngineHost.deliver``), as any other. A proposal naming an
 action not offered is returned with the reason (:data:`TRIES`); one for an escalation decided
 first is stale.
 """
@@ -18,7 +19,6 @@ from ... import cards, context
 from ...model import ESCALATED, ResolverProposal
 from ..base.common import NoAgent, WorkflowError, _slug
 from ..base.core import ChangeCore
-from .agents.inbox import Inboxes
 
 TRIES = 3
 
@@ -41,8 +41,8 @@ def parse_proposal(answer: str) -> tuple[dict | None, str]:
 
 
 class Resolver:
-    def __init__(self, core: ChangeCore, inboxes: Inboxes, actions: Callable[[str], list[str]]):
-        self.c, self.inboxes, self.actions = core, inboxes, actions
+    def __init__(self, core: ChangeCore, actions: Callable[[str], list[str]]):
+        self.c, self.actions = core, actions
 
     def brief(self, node_id: str) -> dict | None:
         """What the resolver is told of an escalation (None: the step is not escalated)."""
@@ -70,9 +70,9 @@ class Resolver:
                 f"```json\n{json.dumps(brief, indent=1)}\n```")
         for attempt in range(1, TRIES + 1):
             try:
-                _, answer = await self.inboxes.deliver(card, cards.ORCHESTRATOR,
-                                                       cards.ORCHESTRATOR, text,
-                                                       f"esc-{node_id}-{at}-{attempt}")
+                _, answer = await self.c.host.deliver(self.c.cid, card.id, cards.ORCHESTRATOR,
+                                                      cards.ORCHESTRATOR, text,
+                                                      f"esc-{node_id}-{at}-{attempt}")
             except (NoAgent, WorkflowError) as e:
                 async with self.c.lock:
                     self.c.event("resolver", f"could not ask the resolver about {node_id}: {e}",

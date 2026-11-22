@@ -89,6 +89,19 @@ class EngineHost(Protocol):
     def remove_cards(self, cid: str, node_id: str | None) -> None:
         """A step's cards (or, ``None``, all of the change's) are withdrawn from the catalog."""
 
+    async def deliver(self, cid: str, card: str, sender: str, sender_role: str, text: str,
+                      task_id: str) -> tuple[str, str]:
+        """Put a message in a card's inbox (the A2A layer's) and await its reply."""
+
+    def inbox_messages(self, cid: str, card: str) -> list[tuple[str, str, str]]:
+        """The messages waiting in a card's inbox: (task id, sender, text), oldest first."""
+
+    def reply_message(self, cid: str, card: str, task_id: str, state: str, text: str) -> bool:
+        """The card's agent's reply to a message in its inbox."""
+
+    def fail_message(self, cid: str, card: str, task_id: str, why: str) -> None:
+        """The card's agent can no longer answer a message: it fails with why."""
+
     async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
         """Send ``sender``'s reply to a question back as the next message on its A2A task (the
         A2A layer carries it, as the sender would with ``a2a send --task-id``)."""

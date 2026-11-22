@@ -14,7 +14,7 @@ from engine_harness import TASKS, Flow, scenario
 from test_sessions import give_session
 
 from legion_orch.identity import WorkloadBinding
-from legion_orch.server import MCP_TOOLS, build_a2a_app, build_app
+from legion_orch.server import MCP_TOOLS, A2AHub, build_a2a_app, build_app
 from legion_orch.server.views import change_state
 from legion_orch.workflow import attention
 from legion_orch.workflow.cards import agent_state
@@ -176,14 +176,14 @@ async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
                         token(f, planner))                          # the idle planner asks
         tid = res["task"]["id"]
         for _ in range(100):
-            if f.ce.pending_messages("critic@plan"):
+            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
                 break
             await asyncio.sleep(0.02)
-        [item] = f.ce.pending_messages("critic@plan")
+        [item] = A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan")
         assert item.view()["from"] == "planner@plan" and "REQ-1" in item.text
-        assert (await f.ce.a2a_reply(critic, tid, "Yes, final.", "completed"))["ok"]
+        assert (await A2AHub.of(f.ctl).agent_reply(f.ce, critic, tid, "Yes, final.", "completed"))["ok"]
         t = await task_when(c, "critic@plan", tid, token(f, planner))
-        assert answer_text(t) == "Yes, final." and not f.ce.pending_messages("critic@plan")
+        assert answer_text(t) == "Yes, final." and not A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan")
         # the sender's tasks are its own
         r = await c.post("/a2a/critic@plan", headers=token(f, critic) | V,
                          json={"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": tid}})
@@ -204,7 +204,7 @@ async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: 
         res = await rpc(c, "implementer@build:T1", send("Where does the greeting live?"),
                         token(f, other))
         await asyncio.sleep(0.2)
-        assert f.ce.pending_messages("implementer@build:T1")   # waits: T1 is live
+        assert A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "implementer@build:T1")   # waits: T1 is live
         await f.implement("T1")                                  # reports without answering
         t = await task_when(c, "implementer@build:T1", res["task"]["id"], token(f, other))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
