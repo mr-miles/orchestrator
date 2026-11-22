@@ -66,8 +66,9 @@ from starlette.routing import Route
 
 from ..identity import WorkloadBinding
 from ..util import bearer, now_iso
-from ..workflow.cards import ORCHESTRATOR, RESOLVER, StepCard, card_id, card_url, identifier
+from ..workflow.cards import ORCHESTRATOR, RESOLVER, card_id, card_url, identifier, ordered
 from ..workflow.engine import AgentBusy, ChangeEngine, Controller, NoAgent, WorkflowError
+from ..workflow.model import Card
 
 log = logging.getLogger("legion.a2a")
 
@@ -191,6 +192,34 @@ def as_text(text: str, data: list[dict]) -> str:
     return "\n".join([text] + [json.dumps(d, indent=1) for d in data]).strip()
 
 
+class Catalog:
+    """The A2A catalog: every change's published cards, in memory – a view of the workflow,
+    pushed to as it goes (``EngineHost.publish_cards`` / ``remove_cards``; given every change's
+    cards again when it subscribes). Nothing else holds them."""
+
+    def __init__(self):
+        self._cards: dict[str, dict[str, Card]] = {}          # change -> card id -> card
+
+    def publish(self, change: str, cards: list[Card]) -> None:
+        mine = self._cards.setdefault(change, {})
+        for card in cards:
+            mine.setdefault(card.id, card)
+
+    def remove(self, change: str, node: str | None) -> None:
+        if node is None:
+            self._cards.pop(change, None)
+            return
+        mine = self._cards.get(change, {})
+        for cid in [c.id for c in mine.values() if c.node == node]:
+            del mine[cid]
+
+    def cards(self, change: str) -> list[Card]:
+        return list(self._cards.get(change, {}).values())
+
+    def get(self, change: str, card: str) -> Card | None:
+        return self._cards.get(change, {}).get(card)
+
+
 class A2AHub:
     """The A2A side of a controller: each card's SDK handler, and the inboxes of running steps.
     One per controller (:meth:`of`), shared by the A2A and MCP listeners."""
@@ -208,7 +237,9 @@ class A2AHub:
 
     def __init__(self, ctl: Controller):
         self.ctl = ctl
+        self.catalog = Catalog()
         ctl.escalation_listeners.append(self.escalated)       # every escalation: the resolver
+        ctl.subscribe_cards(self.catalog)                     # the workflow pushes its cards
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
         self.inbox: dict[tuple[str, str], dict[str, InboxItem]] = {}
         self.questions: dict[tuple[str, str], dict[str, QuestionBack]] = {}   # sender -> asked
@@ -217,10 +248,16 @@ class A2AHub:
     def url(self, card: str) -> str:
         return card_url(self.ctl.cfg.server.a2a_url, card)
 
-    def find(self, ce: ChangeEngine, card_id: str) -> StepCard | None:
-        return next((c for c in ce.a2a_cards() if c.id == card_id), None)
+    def cards(self, ce: ChangeEngine) -> list[Card]:
+        """The change's cards in the catalog, its own first."""
+        return ordered(ce, self.catalog.cards(ce.cid))
 
-    def agent_card(self, ce: ChangeEngine, card: StepCard) -> AgentCard:
+    def find(self, ce: ChangeEngine, card_id: str) -> Card | None:
+        return self.catalog.get(ce.cid, card_id)
+
+    def agent_card(self, ce: ChangeEngine, card: Card) -> AgentCard:
+        """The A2A agent card: who the agent is – no state (that is the step's and its
+        tasks')."""
         if card.node is None:
             desc = (f"The orchestrator of change {ce.cid} ({ce.change.goal[:200]}): the controller "
                     "itself, not a model. Lists the change's cards and asks its decision owners. "
@@ -228,9 +265,8 @@ class A2AHub:
                     "text.")
             skills = ORCHESTRATOR_SKILLS
         else:
-            desc = (f"The {card.role} agent of step {card.node} in change {ce.cid}: {card.title}."
-                    + {"not started": " It has not started: a message starts it to answer.",
-                       "stopped": " Its sandbox is stopped: a message starts it."}.get(card.state, ""))
+            desc = (f"The {card.role} agent of step {card.node} in change {ce.cid}: {card.title}. "
+                    "Message it at any time: it answers whether or not it is running.")
             skills = [STEP_SKILL]
         return AgentCard(
             name=f"{ce.cid}/{card.id}", description=desc, version=self.ctl.assets.sha[:12] or "1",
@@ -241,17 +277,13 @@ class A2AHub:
             default_input_modes=MODES, default_output_modes=MODES, skills=skills)
 
     def registry(self, ce: ChangeEngine, caller: WorkloadBinding) -> list[dict]:
-        """The caller's change's cards, but its own step's."""
-        out = []
-        for c in ce.a2a_cards():
-            if (c.node, c.role) == (caller.task, caller.role):
-                continue
-            state = "orchestrator" if c.node is None else ce.agent_state(c.node, c.role) or "gone"
-            out.append({"id": c.id, "node": c.node, "role": c.role, "title": c.title,
-                        "stopped": c.stopped, "state": state, "url": self.url(c.id)})
-        return out
+        """The caller's change's cards, but its own: who each agent is (its state is the step's:
+        MCP step_status)."""
+        return [{"id": c.id, "node": c.node, "role": c.role, "title": c.title,
+                 "url": self.url(c.id)}
+                for c in self.cards(ce) if (c.node, c.role) != (caller.task, caller.role)]
 
-    def catalog(self, ce: ChangeEngine, caller: WorkloadBinding) -> dict:
+    def ai_catalog(self, ce: ChangeEngine, caller: WorkloadBinding) -> dict:
         """The change's cards as an AI Catalog (what ``a2a catalog add`` registers): one A2A
         agent entry per card the caller may message."""
         entries = []
@@ -259,15 +291,12 @@ class A2AHub:
             tags = ["orchestrator"] if c["node"] is None else [c["role"], c["node"]]
             entries.append({"identifier": identifier(c["id"]), "displayName": c["id"],
                             "type": "application/a2a-agent-card+json", "url": c["url"],
-                            "description": c["title"] + (f" ({c['state']})"
-                                                         if c["state"] in ("absent", "idle") else ""),
-                            "tags": tags + (["stopped"] if c["stopped"] else [])
-                            + (["not-started"] if c["state"] == "absent" else [])})
+                            "description": c["title"], "tags": tags})
         return {"specVersion": "1.0",
                 "host": {"displayName": f"Legion change {ce.cid}: {ce.change.goal[:120]}"},
                 "entries": entries}
 
-    def dispatcher(self, ce: ChangeEngine, card: StepCard) -> JsonRpcDispatcher:
+    def dispatcher(self, ce: ChangeEngine, card: Card) -> JsonRpcDispatcher:
         key = (ce.cid, card.id)
         d = self._dispatchers.get(key)
         if d is None:
@@ -289,7 +318,7 @@ class A2AHub:
         """Forget the handlers (and their tasks) of changes that are no longer active."""
         for cid, card in list(self._dispatchers):
             ce = self.ctl.changes.get(cid)
-            if ce is None or not ce.a2a_cards():
+            if ce is None or not self.catalog.cards(cid):
                 del self._dispatchers[(cid, card)]
 
     # ------------------------------------------------------------------ delivery
@@ -372,7 +401,7 @@ class A2AHub:
         item.reply.set_result((state, text))
         return True
 
-    async def deliver(self, ce: ChangeEngine, card: StepCard, sender: WorkloadBinding, text: str,
+    async def deliver(self, ce: ChangeEngine, card: Card, sender: WorkloadBinding, text: str,
                       task_id: str) -> tuple[str, str]:
         """``text`` from ``sender`` to the step agent of ``card``; its answer. While the step has a live
         run the message waits in its inbox; when it has none (also once a run ends without
@@ -455,7 +484,7 @@ class _Executor(AgentExecutor):
 class StepExecutor(_Executor):
     """A step's card: the message waits for its agent's answer."""
 
-    def __init__(self, hub: A2AHub, ce: ChangeEngine, card: StepCard):
+    def __init__(self, hub: A2AHub, ce: ChangeEngine, card: Card):
         super().__init__(hub, ce)
         self.card = card
 
@@ -549,7 +578,7 @@ def build_a2a_app(ctl: Controller) -> Starlette:
                                           "legion-a2a provider)"}, status_code=401)
         return found
 
-    def card_for(request: Request) -> tuple[ChangeEngine, StepCard] | Response:
+    def card_for(request: Request) -> tuple[ChangeEngine, Card] | Response:
         """The caller's change's card named in the path (the change is the bearer's)."""
         found = check(request)
         if isinstance(found, Response):
@@ -574,7 +603,7 @@ def build_a2a_app(ctl: Controller) -> Starlette:
         found = check(request)
         if isinstance(found, Response):
             return found
-        return JSONResponse(hub.catalog(*found))
+        return JSONResponse(hub.ai_catalog(*found))
 
     async def card(request: Request) -> Response:
         found = card_for(request)

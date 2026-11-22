@@ -1022,17 +1022,21 @@ sandbox makes outbound calls only. The URLs name no change: the gateway-injected
 the caller's sandbox, change, task and role, and each request is answered for that change only
 (the registry and catalog list it, a card of another change is 404).
 
-* **Cards** ([`workflow/cards.py`](legion_orch/workflow/cards.py)), derived from the change's
-  state, never registered by hand:
+* **Cards** ([`workflow/cards.py`](legion_orch/workflow/cards.py)) say who an agent is – id,
+  step, role, title – and nothing of its state (that is `step_status` and its tasks'). They are
+  a view of the workflow, **pushed** to the A2A layer's catalog as it goes – a step publishes its
+  agents' cards when it starts and withdraws them when it ends; the change its own for its whole
+  life – and kept nowhere else: a catalog that subscribes (the A2A listener, after a restart) is
+  given every change's cards again. Each publication and withdrawal is a timeline event (`a2a`).
   * `orchestrator` – the controller itself, not a model, for as long as the change is active.
-    Skills: `list_cards`; `ask_human` (a
-    question to the decision owners: a blocking attention item, notified like a gate, answered in
-    the UI or `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
+    Skills: `list_cards`; `ask_human` (a question to the decision owners: a blocking attention
+    item, notified like a gate, answered in the UI or
+    `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
+  * `resolver` – the change's resolver agent (§5.16), for as long as the change is active.
   * one per **step agent**, `<role>@<node>` – the step's producer, critic and each judge of its
-    panel (`implementer@build:T1`, `reviewer@build:T1`, `critic@plan`) – **from the step's start
-    to its end**, whether the agent has a sandbox yet or not. The controller's own phases
-    (verification, merge, gates) have none. Each card's registration and removal is a timeline
-    event (`a2a`).
+    panel (`implementer@build:T1`, `reviewer@build:T1`, `critic@plan`) – from the step's start
+    to its end, whether the agent has a sandbox yet or not. The controller's own phases
+    (verification, merge, gates) have none.
 * **Discovery.** `GET /a2a/cards` (JSON) and `GET /a2a/ai-catalog.json`, an
   [AI Catalog](https://ai-catalog.io/) of the cards the caller may message (identifiers
   `urn:air:legion:agent:<card>`). `run-agent.sh` registers it as catalog `legion` before the

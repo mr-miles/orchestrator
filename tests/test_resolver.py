@@ -11,6 +11,7 @@ from test_a2a import client, rpc, send, task_when, token
 
 from legion_orch.server import A2AHub
 from legion_orch.workflow import attention
+from legion_orch.workflow.cards import agent_state
 from legion_orch.workflow.model import ESCALATED
 
 
@@ -50,7 +51,7 @@ def proposal(action: str, **payload) -> str:
 @scenario()
 async def test_the_resolver_has_a_card_for_the_whole_change(f: Flow):
     card = {c.id: c for c in f.ce.a2a_cards()}["resolver"]
-    assert card.state == "not started" and card.role == "resolver"
+    assert agent_state(f.ce, card) == "not started" and card.role == "resolver"
 
 
 @scenario()

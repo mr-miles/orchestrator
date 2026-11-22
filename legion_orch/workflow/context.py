@@ -72,8 +72,8 @@ def step_status(e: ChangeView, node_id: str) -> dict[str, Any]:
         out["escalation"] = {"kind": esc.kind, "reason": esc.reason[:1000],
                              "resume": str(esc.resume) if esc.resume else None,
                              "at": esc.at}
-    out["agents"] = [{"card": c.id, "state": c.state} for c in card_views.cards(e)
-                     if c.node == node.id]
+    out["agents"] = [{"card": c.id, "state": card_views.agent_state(e, c)}
+                     for c in card_views.ordered(e, card_views.cards(e)) if c.node == node.id]
     return out
 
 
@@ -124,10 +124,10 @@ def workflow_context(e: RoleContext, node_id: str, stages: list[dict]) -> dict[s
                                                            "attestation-format", "a2a-protocol",
                                                            "a2a-cli")]}
                         for r in judges if r in e.assets.roles]
-    ask = [c for c in card_views.cards(e) if c.node is not None and c.node != node.id]
+    ask = [c for c in card_views.ordered(e, card_views.cards(e)) if c.node is not None and c.node != node.id]
     related = {d["node"] for d in out.get("task", {}).get("builds_on", [])} | {
         d["node"] for d in out.get("task", {}).get("nearby", [])}
-    out["ask"] = [{"card": c.id, "state": c.state,
+    out["ask"] = [{"card": c.id, "state": card_views.agent_state(e, c),
                    "why": "your task builds on it" if c.node in related and task
                    and any(d["node"] == c.node for d in out["task"]["builds_on"])
                    else "it touches nearby files" if c.node in related

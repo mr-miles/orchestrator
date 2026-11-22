@@ -5,7 +5,7 @@ import difflib
 
 from ..git import GitError
 from ..store import DocStore
-from ..workflow import governance, ship, traceability
+from ..workflow import cards, governance, ship, traceability
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
 from ..workflow.governance.approvals import ENV_SPEC
@@ -90,7 +90,8 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             # node -> the log of its verification running now (/api/runs/<log>/log)
             "verifying": dict(ce.verifying),
             "verifications": [v.model_dump(mode="json") for v in ce.verifications()],
-            "a2a": {"cards": [c.model_dump(mode="json") for c in ce.a2a_cards()],
+            "a2a": {"cards": [c.model_dump(mode="json") | {"state": cards.agent_state(ce, c)}
+                              for c in ce.a2a_cards()],
                     "questions": [q.model_dump(mode="json")
                                   for q in ce.change.questions.values()]},
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}

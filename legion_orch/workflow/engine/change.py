@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
-from .. import context
+from .. import cards, context
 from ..model import (
     LIVE_RUN,
     V_FINAL,
@@ -69,12 +69,14 @@ class ChangeEngine(ChangeCore):
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
         self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
+
         self.seed_attention()
 
     def start(self, goal: str, workspace: str) -> None:
         """Initialise a new change in ``workspace`` (the caller holds the lock). Its first step
         syncs the workspace and bases the change on its base branch."""
         self.st.change = Change(id=self.cid, goal=goal, workspace=workspace)
+        self.publish_cards(cards.change_cards(self.cid))     # its orchestrator, its resolver
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n")
         self._flow.start()
         self.event("change", f"change {self.cid} started in {workspace}")

@@ -83,6 +83,12 @@ class EngineHost(Protocol):
     def attention(self, item: AttentionItem, raised: bool) -> None:
         """An attention item (§2.2) was raised or resolved: notify the decision owners."""
 
+    def publish_cards(self, cid: str, cards: list) -> None:
+        """Cards the workflow publishes (a step starts; the change starts): to the A2A catalog."""
+
+    def remove_cards(self, cid: str, node_id: str | None) -> None:
+        """A step's cards (or, ``None``, all of the change's) are withdrawn from the catalog."""
+
     def escalated(self, cid: str, node_id: str) -> None:
         """A step escalated (a failure, not a gate's due decision): its resolver is asked."""
 
