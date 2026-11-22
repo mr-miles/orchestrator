@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 from ....sandbox import agentlog
 from ....util import now_iso
-from ...cards import RESOLVER
 from ...model import (
     LIVE_RUN,
     R_ACCEPTED,
@@ -28,7 +27,6 @@ from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
-    from .agent_runs import AgentRuns
 
 
 def log_part(run_id: str, n: int) -> str:
@@ -68,7 +66,6 @@ class RunLifecycle:
     def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
         self.c, self.sandboxes = core, sandboxes
         self._ended: set[str] = set()        # released because the change ended (tried once)
-        self.agents: AgentRuns = None  # type: ignore[assignment]   # set once it exists (A2A)
 
     def live_runs(self) -> list[Run]:
         return [r for r in self.c.runs.values() if r.status in LIVE_RUN]
@@ -234,14 +231,6 @@ class RunLifecycle:
         if answerer.session_run(node_id, role) is None:
             return "absent" if has_card else None
         return "live" if answerer.live(node_id, role) else "idle"
-
-    async def answer(self, node_id: str, role: str, sender: str, text: str) -> str:
-        """The step agent answers: in a resumed turn of its session, or – not started yet – in
-        its first turn (a consult, :meth:`AgentRuns.consult`), which its run later continues."""
-        if self.agent_state(node_id, role) == "absent" or role == RESOLVER:
-            # (the resolver investigates on every message: always a full turn of its own)
-            return await self.agents.consult(node_id, role, sender, text)
-        return await self.sandboxes.answerer.answer(node_id, role, sender, text)
 
     def stored_log(self, run_id: str) -> str:
         """A run's whole archived log ('' if none)."""

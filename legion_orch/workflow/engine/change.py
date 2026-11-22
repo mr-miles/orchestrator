@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
-from .. import cards, context
+from .. import context
 from ..model import (
     LIVE_RUN,
     V_FINAL,
@@ -38,7 +38,7 @@ from .services.verification import record_path as verification_path
 if TYPE_CHECKING:
     from .runtime.flow_runtime import FlowRuntime
     from .runtime.human import HumanGates
-    from .services.inbox import Inboxes, RunTasks
+    from .services.agents import AgentRunner, Inboxes, RunTasks
     from .services.reports import Reports
     from .services.resolver import Resolver
     from .services.runs import RunLifecycle
@@ -63,6 +63,7 @@ class ChangeEngine(ChangeCore):
         self._verifications: Verifications
         self._tasks: RunTasks
         self._inboxes: Inboxes
+        self._agent_runner: AgentRunner
         self._resolver: Resolver
         compose(self)                # its layers (compose.py); it fronts only these four
 
@@ -78,7 +79,7 @@ class ChangeEngine(ChangeCore):
         """Initialise a new change in ``workspace`` (the caller holds the lock). Its first step
         syncs the workspace and bases the change on its base branch."""
         self.st.change = Change(id=self.cid, goal=goal, workspace=workspace)
-        self.publish_cards(cards.change_cards(self.cid))     # its orchestrator, its resolver
+        self._agent_runner.open_change()                     # its orchestrator, its resolver
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n")
         self._flow.start()
         self.event("change", f"change {self.cid} started in {workspace}")
@@ -152,6 +153,10 @@ class ChangeEngine(ChangeCore):
         missing (an ask-again; the messages still waiting in its inbox, each once)."""
         async with self.lock:
             return self._tasks.reply(run, state, text, list(unanswered))
+
+    def republish_cards(self) -> None:
+        """A card catalog subscribed (a restart): the cards the workflow has open, again."""
+        self._agent_runner.republish()
 
     def inbox(self, run: Run, assignment: dict) -> list[dict]:
         """Everything waiting on ``run``'s agent: its work, messages, questions back."""

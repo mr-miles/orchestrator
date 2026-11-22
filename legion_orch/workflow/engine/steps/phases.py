@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from ..base.dispatch import Dispatcher, StepDispatcher
     from ..sandboxes.sandboxes import Sandboxes
     from ..services.agent_runs import AgentRuns, Ended
+    from ..services.agents import AgentRunner
     from ..services.provision import Provisioner
     from ..services.publish import Published, Publisher
     from ..services.runs import RunLifecycle
@@ -95,6 +96,7 @@ class PhaseContext:
     agents: AgentRuns = None  # type: ignore[assignment]
     publisher: Publisher = None  # type: ignore[assignment]
     verifications: Verifications = None  # type: ignore[assignment]
+    agent_runner: AgentRunner = None  # type: ignore[assignment]
 
 
 class _Again:

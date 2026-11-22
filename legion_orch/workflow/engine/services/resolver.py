@@ -18,7 +18,7 @@ from ... import cards, context
 from ...model import ESCALATED, ResolverProposal
 from ..base.common import NoAgent, WorkflowError, _slug
 from ..base.core import ChangeCore
-from .inbox import Inboxes
+from .agents.inbox import Inboxes
 
 TRIES = 3
 

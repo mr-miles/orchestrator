@@ -9,7 +9,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-from ... import cards
 from ...model import (
     AWAITING_HUMAN,
     ESCALATED,
@@ -81,7 +80,7 @@ class ActiveStep:
         node, step = self.node, self.type
         node.approved = False                    # a gate is asked again
         node.agent_roles = step.agent_roles(self.c)   # their A2A cards, for the whole step
-        self.c.publish_cards(cards.step_cards(node))   # (again for a new cycle: idempotent)
+        self.ctx.agent_runner.open_step(node)          # its agents' cards (again for a new cycle)
         if node.runs or node.status != PENDING:
             node.cycle += 1
             node.candidate_sha = node.accepted_sha = None
@@ -118,7 +117,7 @@ class ActiveStep:
         node.approved = False
         self.release()
         self.states.reset(node)
-        self.c.remove_cards(node.id)             # sent back or stopped: its step is over
+        self.ctx.agent_runner.close_step(node.id)    # sent back or stopped: its step is over
 
     def resume(self, answered: bool = False) -> None:
         """Its escalation is resolved – ``answered`` by a human, or retried: it goes on where
@@ -210,7 +209,7 @@ class ActiveStep:
         """The change ended at this node (abandoned at its escalation)."""
         self.release()
         self.states.end(self.node)
-        self.c.remove_cards(self.node.id)
+        self.ctx.agent_runner.close_step(self.node.id)
 
     def again(self) -> None:
         """A node outside the workflow's tree (the retrospective) runs again."""
@@ -399,7 +398,7 @@ class ActiveStep:
         self.states.accept(self.node)        # before its reservation goes back: work waiting
         self.release()                       # for what it built is served on that release
         self.lifecycle.accept_runs(self.node)
-        self.c.remove_cards(self.node.id)    # its step is over: its cards go
+        self.ctx.agent_runner.close_step(self.node.id)   # its step is over: its cards go
         self.events.completed(self.node)
 
     def escalate(self, kind: str, reason: str, resume: Resume, *, run: str | None = None,
