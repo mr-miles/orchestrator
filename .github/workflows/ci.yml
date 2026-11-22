@@ -1,5 +1,5 @@
-# Build, lint and test the backend (uv) and the frontend (bun), then assemble the release zip:
-# the controller with its built web UI, which runs with uv alone (no bun or Node needed).
+# Build, lint and test the backend and the frontend with the mise tasks (mise.toml: the same
+# tools and commands as a local `mise run check`), then assemble the release zip.
 name: CI
 
 on:
@@ -17,22 +17,15 @@ concurrency:
 
 jobs:
   frontend:
-    name: Frontend (bun)
+    name: Frontend
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.4'
-      - name: Install
-        run: bun install --frozen-lockfile
+      - uses: jdx/mise-action@v2          # installs python, uv, buned)
       - name: Typecheck, lint, format check, tests
-        run: bun run check
+        run: mise run ui:check
       - name: Build
-        run: bun run build
+        run: mise run ui:build
       - uses: actions/upload-artifact@v7
         with:
           name: ui-dist
@@ -41,22 +34,15 @@ jobs:
           retention-days: 7
 
   backend:
-    name: Backend (uv)
+    name: Backend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.3
-        with:
-          python-version: '3.12'
-          enable-cache: true
-      - name: Install
-        run: uv sync --locked --extra test --extra dev
-      - name: Lint
-        run: uv run ruff check legion_orch tests scripts
-      - name: Check the assets and the environment library
-        run: uv run legion-orch -c orchestrator.example.yaml check
-      - name: Tests
-        run: uv run pytest -q
+      - uses: jdx/mise-action@v2
+      - name: Lint (ruff, the assets and the environment library)
+        run: mise run lint
+      - name: Tests (in parallel: pytest addopts -n auto)
+        run: mise run test
 
   package:
     name: Release zip
@@ -64,25 +50,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.3
-        with:
-          python-version: '3.12'
+      - uses: jdx/mise-action@v2
       - uses: actions/download-artifact@v8
         with:
           name: ui-dist
           path: legion_orch/server/static/dist
       - name: Build the zip
         id: zip
-        run: echo "path=$(uv run --no-project python scripts/package.py --out dist)" >> "$GITHUB_OUTPUT"
+        run: echo "path=$(mise run -q package:zip)" >> "$GITHUB_OUTP
       - name: Smoke test from a clean unpack, with uv only
         run: |
           work="$RUNNER_TEMP/unpacked"
-          mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }}" -d "$work"
+          mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }
           cd "$work"/legion-orchestrator-*
           test -f legion_orch/server/static/dist/index.html
           uv run legion-orch -c orchestrator.example.yaml check
-          uv run python -c "from legion_orch.server import web; assert (web.UI_DIST / 'index.html').is_file()"
-      # the zip itself (not wrapped in another zip); the artifact is named after the file
+          uv run python -c "from legion_orch.server import web; asse').is_file()"
       - uses: actions/upload-artifact@v7
         with:
           path: ${{ steps.zip.outputs.path }}
