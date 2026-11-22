@@ -1,7 +1,7 @@
-"""The agents of a change: the runner the workflow talks to (``runner.py``), their inboxes
-(``inbox.py``). See ~/plans/inbox-runner.md for where this is going (placement and work
-turns move here next)."""
-from .inbox import Inboxes, RunTasks
+"""The agents of a change: the runner the workflow talks to (``runner.py``) and the workflow's
+side of an agent's inbox, its run's work task (``tasks.py``). The inbox itself is the A2A
+layer's (``server/inbox.py``); it tells the runner when something waits on an agent."""
 from .runner import AgentRunner
+from .tasks import RunTasks
 
-__all__ = ["AgentRunner", "Inboxes", "RunTasks"]
+__all__ = ["AgentRunner", "RunTasks"]

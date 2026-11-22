@@ -291,7 +291,11 @@ class Flow:
         """Tasks that wait legitimately (across the controller's changes)."""
         procs = sum(1 for p in self.ctl.svc.procs.values() if p.returncode is None)
         steps = sum(ce._runner.waiting for ce in self.ctl.changes.values())
-        return procs + steps + self.ctl.svc.dispatcher.waiting
+        # a message awaiting its reply in the A2A inbox (its sender's task waits on it)
+        inbox = self.ctl.a2a.inbox if self.ctl.a2a is not None else None
+        messages = sum(1 for (cid, card) in (inbox._messages if inbox else {})
+                       for i in inbox.pending(cid, card) if not i.reply.done())
+        return procs + steps + self.ctl.svc.dispatcher.waiting + messages
 
     def _fingerprint(self):
         ch = self.ce.change

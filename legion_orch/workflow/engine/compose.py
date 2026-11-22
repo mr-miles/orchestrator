@@ -51,10 +51,10 @@ def compose(ce: ChangeEngine) -> None:
     ce._verifications = verifications             # fronted: pushes, agents' requests, the API
     ce._tasks = tasks
     # the workflow's one counterpart for agents: cards, inboxes, turns (services/agents/)
-    agent_runner = AgentRunner(ce, lifecycle, agents, sandboxes, ce.svc.dispatcher, tasks)
+    agent_runner = AgentRunner(ce, lifecycle, agents, sandboxes, ce.svc.dispatcher)
     phases.agent_runner = flow.agent_runner = ce._agent_runner = agent_runner
-    ce._inboxes = agent_runner.inboxes
-    ce._resolver = Resolver(ce, agent_runner.inboxes, flow.actions)   # every escalation
+    agents.turn_ended = agent_runner.turn_ended   # what a run left unanswered gets a turn
+    ce._resolver = Resolver(ce, flow.actions)     # every escalation goes to it
     # not the facade's: for tests that drive a layer directly
     ce._sandboxes, ce._agents, ce._phases, ce._provisioner, ce._runner = (
         sandboxes, agents, phases, provisioner, runner)

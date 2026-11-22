@@ -120,10 +120,33 @@ class Controller:
         for sink in list(self.card_sinks):
             sink.remove(cid, node_id)
 
-    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
+    # ---- the A2A layer's inbox and transport (server/inbox.py, server/a2a.py)
+    def _a2a(self):
         if self.a2a is None:
-            raise WorkflowError("no A2A listener to carry the reply")
-        await self.a2a.follow_up(cid, sender, task_id, text)
+            raise WorkflowError("no A2A listener: agents cannot be messaged")
+        return self.a2a
+
+    async def deliver(self, cid, card, sender, sender_role, text, task_id):
+        return await self._a2a().inbox.deliver(cid, card, sender, sender_role, text, task_id)
+
+    def inbox_messages(self, cid, card):
+        return [(i.task_id, i.sender, i.text) for i in self._a2a().inbox.pending(cid, card)
+                if not i.reply.done()]                 # (answered: its sender takes it out)
+
+    def reply_message(self, cid, card, task_id, state, text):
+        return self._a2a().inbox.reply(cid, card, task_id, state, text)
+
+    def fail_message(self, cid, card, task_id, why):
+        self._a2a().inbox.fail(cid, card, task_id, why)
+
+    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
+        await self._a2a().follow_up(cid, sender, task_id, text)
+
+    def item_added(self, cid: str, card: str) -> None:
+        """The A2A inbox: something waits on ``card``'s agent."""
+        ce = self.changes.get(cid)
+        if ce is not None:
+            ce.item_added(card)
 
     def subscribe_cards(self, sink) -> None:
         """A card catalog (the A2A listener's) subscribes: it is given every change's cards as

@@ -28,7 +28,7 @@ from ..model import (
     VerificationRun,
 )
 from ..results import ActionResult, ReportOutcome
-from .base.common import NoAgent, WorkflowError
+from .base.common import WorkflowError
 from .base.core import ChangeCore
 from .base.shared import EngineHost, Services
 from .compose import compose
@@ -38,7 +38,7 @@ from .services.verification import record_path as verification_path
 if TYPE_CHECKING:
     from .runtime.flow_runtime import FlowRuntime
     from .runtime.human import HumanGates
-    from .services.agents import AgentRunner, Inboxes, RunTasks
+    from .services.agents import AgentRunner, RunTasks
     from .services.reports import Reports
     from .services.resolver import Resolver
     from .services.runs import RunLifecycle
@@ -62,7 +62,6 @@ class ChangeEngine(ChangeCore):
         self._lifecycle: RunLifecycle
         self._verifications: Verifications
         self._tasks: RunTasks
-        self._inboxes: Inboxes
         self._agent_runner: AgentRunner
         self._resolver: Resolver
         compose(self)                # its layers (compose.py); it fronts only these four
@@ -158,28 +157,10 @@ class ChangeEngine(ChangeCore):
         """A card catalog subscribed (a restart): the cards the workflow has open, again."""
         self._agent_runner.republish()
 
-    def inbox(self, run: Run, assignment: dict) -> list[dict]:
-        """Everything waiting on ``run``'s agent: its work, messages, questions back."""
-        return self._inboxes.view(run, assignment)
-
-    async def a2a_reply(self, run: Run, task_id: str, text: str, state: str) -> dict:
-        """The agent's a2a_reply on any task in its inbox; returns what is left in it."""
-        return await self._inboxes.reply_from(run, task_id, text, state)
-
-    async def deliver(self, card_id: str, sender: str, sender_role: str, text: str,
-                      task_id: str) -> tuple[str, str]:
-        """A message to a card's agent (the A2A layer carries it): its reply (state, text)."""
-        card = next((c for c in self.a2a_cards() if c.id == card_id), None)
-        if card is None or card.node is None:
-            raise NoAgent(f"{card_id} is not an agent of this change")
-        return await self._inboxes.deliver(card, sender, sender_role, text, task_id)
-
-    def pending_messages(self, card_id: str) -> list:
-        """Messages waiting in a card's inbox (for views and tests)."""
-        return self._inboxes.pending(card_id)
-
-    def questions_back(self, card_id: str) -> list:
-        return self._inboxes.questions_for(card_id)
+    def item_added(self, card_id: str) -> None:
+        """The A2A inbox: something waits on ``card_id``'s agent (the runner answers it if the
+        agent is not running)."""
+        self._agent_runner.item_added(card_id)
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:

@@ -54,7 +54,7 @@ from ..sandboxes.sandboxes import AgentSession, Sandboxes, sandbox_env
 from .runs import RunLifecycle
 
 if TYPE_CHECKING:
-    from .inbox import RunTasks
+    from .agents.tasks import RunTasks
     from .reports import Reports
     from .verification import Verifications
 
@@ -203,6 +203,8 @@ class AgentTurn(Command):
             run.stage = RunStage.EXITED
             runs.lifecycle.archive_log(run)
             c.save()
+        if not run.consult:
+            runs.turn_ended(run.node_id, run.role)
         return self.result(rc, "")
 
 
@@ -215,6 +217,8 @@ class AgentRuns:
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
         self.verifications: Verifications | None = None      # set once it exists (G-V0)
         self.tasks: RunTasks | None = None                   # set once it exists
+        # told when a run's turns are over: what it left in its inbox gets turns of its own
+        self.turn_ended: Callable[[str, str], None] = lambda node_id, role: None
 
     # ------------------------------------------------------------------ the run's task
     def ask_again_after(self, run: Run, rc: int) -> str | None:
