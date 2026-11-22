@@ -98,7 +98,7 @@ async def test_ending_the_task_with_messages_waiting_reminds_of_each_message_onc
     attempts = critic.attempts
     first = await f.ce.reply_task(critic, "completed", "done", waiting)
     assert not first["ok"] and first["message"].startswith("1 task in your inbox")
-    assert "inbox()" in first["message"]
+    assert "`inbox`" in first["message"]
     assert critic.attempts == attempts                           # no report attempt used
     later = waiting + [("t-new", "implementer@build:T9")]           # one arrived since
     second = await f.ce.reply_task(critic, "completed", "done", later)
@@ -126,3 +126,37 @@ async def test_a_peer_can_ask_back_or_decline(f: Flow):
             assert t["status"]["state"] == expect
             assert "which REQ" in str(t["status"]["message"])
     assert httpx and V                                          # (helpers shared with test_a2a)
+
+
+@scenario()
+async def test_a_question_back_is_in_the_senders_inbox_and_its_reply_continues_the_task(f: Flow):
+    """critic@plan answers the planner's message with a question (input-required): the planner
+    sees it in its inbox, and its reply is the next message on the same task."""
+    planner, critic = await to_critique(f)
+    hub = A2AHub.of(f.ctl)
+    async with client(f) as c:
+        res = await rpc(c, "critic@plan", send("Is REQ-1 final?"), token(f, planner))
+        tid = res["task"]["id"]
+        for _ in range(100):
+            if hub.pending(f.ce.cid, "critic@plan"):
+                break
+            await asyncio.sleep(0.02)
+        assert hub.reply(f.ce.cid, "critic@plan", tid, "Final as of which spec version?",
+                         "input-required")
+        await task_when(c, "critic@plan", tid, token(f, planner),
+                        done=("TASK_STATE_INPUT_REQUIRED",))
+        [q] = hub.questions_for(f.ce.cid, "planner@plan")
+        assert (q.task_id, q.card) == (tid, "critic@plan") and q.view()["kind"] == "question"
+        me = WorkloadBinding(sandbox=planner.sandbox_ref, change=f.ce.cid, task="plan",
+                             role="planner")
+        assert await hub.answer_back(f.ce, me, tid, "Version 2.")
+        for _ in range(100):
+            if hub.pending(f.ce.cid, "critic@plan"):
+                break
+            await asyncio.sleep(0.02)
+        [item] = hub.pending(f.ce.cid, "critic@plan")
+        assert item.task_id == tid and item.text == "Version 2."     # the same conversation
+        assert not hub.questions_for(f.ce.cid, "planner@plan")
+        assert hub.reply(f.ce.cid, "critic@plan", tid, "Then yes, final.")
+        t = await task_when(c, "critic@plan", tid, token(f, planner))
+        assert t["status"]["state"] == "TASK_STATE_COMPLETED"

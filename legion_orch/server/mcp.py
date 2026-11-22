@@ -24,6 +24,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import METHOD_NOT_FOUND
 
+from ..identity import WorkloadBinding
 from ..store import DocCheck, DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
@@ -282,24 +283,44 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     async def inbox(ctx: Context) -> dict:
         ce, r = current(ctx)
         work = ce.task_view(r) | {"assignment": await get_assignment(ctx)}
-        peers = [i.view() | {"kind": "message"}
-                 for i in hub.pending(ce.cid, card_id(r.role, r.node_id))]
-        return {"tasks": [work, *peers]}
+        card = card_id(r.role, r.node_id)
+        peers = [i.view() | {"kind": "message"} for i in hub.pending(ce.cid, card)]
+        back = [q.view() for q in hub.questions_for(ce.cid, card)]
+        return {"tasks": [work, *peers, *back]}
 
-    @server.tool(description="End (or pause) a task in your inbox with your text. state: "
+    @server.tool(description="End (or pause) a task in your inbox with your text; returns what is "
+                             "still in your inbox (`inbox`). state: "
                              "completed (default), input-required, failed, rejected. Your own "
                              "work's task (task_id = your run id): report(...) first – reply "
                              "completed after an accepted DONE report, input-required after an "
                              "accepted BLOCKED one, failed to give up; anything else is answered "
                              "with what is missing. A message from another agent: completed "
                              "answers it, input-required asks them something back, rejected "
-                             "declines it (say why).")
+                             "declines it (say why). A question back (an agent you messaged "
+                             "asked you something): your text continues that conversation.")
     async def a2a_reply(ctx: Context, task_id: str, text: str, state: str = "completed") -> dict:
         ce, r = current(ctx)
+        card = card_id(r.role, r.node_id)
+
+        def remaining() -> list[dict]:
+            """What is still in the inbox, so the agent need not ask again."""
+            work = ce.task_view(r)
+            return ([] if work["state"] != "working" else
+                    [{"task_id": work["task_id"], "from": "orchestrator", "kind": "work",
+                      "state": work["state"], "last": work["messages"][-1]["text"][:500]}]) + [
+                {"task_id": i.task_id, "from": i.sender, "kind": "message", "state": "working",
+                 "text": i.text[:2000]} for i in hub.pending(ce.cid, card)] + [
+                q.view() for q in hub.questions_for(ce.cid, card)]
+
         if task_id == r.id:
-            waiting = [(i.task_id, i.sender)
-                       for i in hub.pending(ce.cid, card_id(r.role, r.node_id))]
-            return await ce.reply_task(r, state, text, waiting)
+            waiting = [(i.task_id, i.sender) for i in hub.pending(ce.cid, card)]
+            return await ce.reply_task(r, state, text, waiting) | {"inbox": remaining()}
+        if any(q.task_id == task_id for q in hub.questions_for(ce.cid, card)):
+            me = WorkloadBinding(sandbox=r.sandbox_ref, change=ce.cid, task=r.node_id, role=r.role)
+            if not text.strip():
+                raise ToolError("text is required")
+            await hub.answer_back(ce, me, task_id, text.strip())
+            return {"ok": True, "state": "sent: the conversation goes on", "inbox": remaining()}
         if not text.strip():
             raise ToolError("text is required")
         if state not in ("completed", "input-required", "rejected"):
@@ -307,9 +328,8 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         if not hub.reply(ce.cid, card_id(r.role, r.node_id), task_id, text.strip(), state):
             raise ToolError(f"no task {task_id} waits in your inbox (answered already, or its "
                             "sender cancelled it)")
-        ce.event("a2a", f"{card_id(r.role, r.node_id)} replied {state} to a message",
-                 r.node_id, r.id)
-        return {"ok": True, "state": state}
+        ce.event("a2a", f"{card} replied {state} to a message", r.node_id, r.id)
+        return {"ok": True, "state": state, "inbox": remaining()}
 
     # the gateway's MCP allowlist must match exactly what is served
     registered = {t.name for t in await server.list_tools()}
