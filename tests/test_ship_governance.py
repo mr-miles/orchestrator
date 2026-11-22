@@ -375,8 +375,8 @@ async def test_the_baseline_flags_an_acceptance_test_that_already_passes(f: Flow
 
 @scenario()
 async def test_the_baseline_flags_results_that_differ_from_the_controllers(f: Flow):
+    f.runner.commands[GREET] = (1, "FAIL\n")             # fails before the build (preflight too)
     await f.to_h2(tier="R3")
-    f.runner.commands[GREET] = (1, "FAIL\n")             # fails before the build, as it should
     await _baseline(f, reported=0)                       # but the agent says it passed
     assert f.status("baseline") == ACCEPTED              # failures are expected: no rework
     w = _oracle_warnings(f)
@@ -385,8 +385,8 @@ async def test_the_baseline_flags_results_that_differ_from_the_controllers(f: Fl
 
 @scenario()
 async def test_a_failing_acceptance_test_at_the_baseline_raises_nothing(f: Flow):
+    f.runner.commands[GREET] = (1, "FAIL\n")             # fails before the build (preflight too)
     await f.to_h2(tier="R3")
-    f.runner.commands[GREET] = (1, "FAIL\n")
     await _baseline(f, reported=1)
     assert f.status("baseline") == ACCEPTED and _oracle_warnings(f) == []
 
@@ -394,8 +394,8 @@ async def test_a_failing_acceptance_test_at_the_baseline_raises_nothing(f: Flow)
 @scenario()
 async def test_the_integration_verifier_is_given_the_baseline(f: Flow):
     from legion_orch.workflow.roles import handler_for
+    f.runner.commands[GREET] = (1, "FAIL\n")             # fails before the build (preflight too)
     await f.to_h2(tier="R3")
-    f.runner.commands[GREET] = (1, "FAIL\n")
     await _baseline(f, reported=1)
     refs = handler_for("integration").extra_context(f.ce, f.ce.nodes["integration"])
     ver = f.ce.nodes["baseline"].verification["baseline"].attestation

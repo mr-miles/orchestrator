@@ -299,6 +299,7 @@ async def test_a_baseline_escalation_can_send_the_plan_back_to_the_planner(f: Fl
     await f.to_h2(tier="R3")
     cmd = f.ce.baseline_commands()[0]
     f.runner.commands[cmd] = (127, "bun: command not found\n")
+    f.ce.change.verifications.clear()     # the preflight's run of it is outside this script's world
     await _baseline(f)
     base = f.ce.nodes["baseline"]
     assert base.status == ESCALATED and base.escalation.kind == "verify_unrunnable"

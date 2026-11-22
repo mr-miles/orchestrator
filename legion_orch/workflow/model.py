@@ -287,6 +287,45 @@ class Verification(Record):
     log: str | None = None           # its log's id (the sandbox's name): /api/runs/<log>/log
     at: str = Field(default_factory=now_iso)
     attestation: str | None = None   # the stored verification record
+    run: str | None = None           # the verification service's run (VerificationRun.id)
+    cached: bool = False             # the result of an earlier run of the same key
+
+
+class VerificationState(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    INFRA_ERROR = "infra_error"      # not a result: never reused, the next request runs again
+    CANCELLED = "cancelled"          # superseded by a newer push before it started
+
+
+V_FINAL = {VerificationState.PASSED, VerificationState.FAILED}
+V_LIVE = {VerificationState.QUEUED, VerificationState.RUNNING}
+
+
+class VerificationRun(Record):
+    """One verification of the service (services/verification.py): ``commands`` at ``sha`` with
+    the setup pin, verifier image and timeout of its key. A passed or failed run is the key's
+    result for good (once per sha); requests for it later are served from it."""
+    id: str                          # v-<hash of the key>[-<attempt>]
+    key: str                         # the key's hash
+    sha: str
+    commands: list[str] = []
+    setup_pin: str | None = None
+    image: str | None = None
+    timeout_s: int = 0
+    node: str | None = None          # the step whose commands they are
+    branch: str | None = None        # the run branch it was pushed to (superseding)
+    state: VerificationState = VerificationState.QUEUED
+    attempt: int = 1
+    requested_by: list[str] = []     # "step:<node>", "push:<run>", "agent:<run>", "operator:<who>"
+    priority: int = 0                # lower runs first (step, gate checks, push, agents)
+    sandbox: str | None = None       # the verifier sandbox (its log id)
+    result: Verification | None = None    # compact (no output); the stored record has it all
+    queued_at: str = Field(default_factory=now_iso)
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class PanelDecision(Record):
@@ -346,6 +385,9 @@ class Node(Record):
     # the roles of the step's agents (producer, critic, panel), set when the step starts: each
     # has an A2A card while the step is in progress, whether its agent has started or not
     agent_roles: list[str] = []
+    # a human resumed its verification (retry, answer): the next one is a fresh attempt – what
+    # they fixed (the test setup, a flaky service) is outside the verification's key
+    reverify: bool = False
     panel: dict[str, PanelDecision] = {}  # str(cycle): the panel's pass at that cycle
     escalation: Escalation | None = None
     extra_cycles: int = 0                 # granted by a human on escalation
@@ -443,6 +485,7 @@ class Run(Record):
     # an A2A turn of the role's agent before its work started (it answered a message): not one
     # of the node's runs, it never reports; the role's run continues its sandbox and session
     consult: bool = False
+    verification_requests: int = 0        # verifications it asked for (MCP), against its limit
 
 
 # ---------------------------------------------------------------------------- change records
@@ -646,6 +689,7 @@ class Change(Record):
     round: int = 1                                         # 1, or the current fix round
     rounds: list[FixRound] = []                            # fix rounds since the last restart
     questions: dict[str, AgentQuestion] = {}               # A2A ask_human, by task id
+    verifications: dict[str, VerificationRun] = {}         # the verification service's runs
 
     def round_first_build_at(self) -> str | None:
         """When the current round's first build started (round 1: the change's first build);

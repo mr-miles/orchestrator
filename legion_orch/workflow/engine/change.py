@@ -18,22 +18,28 @@ from ...store import DocCheck, DocVersion
 from ...util import now_iso
 from ..model import (
     LIVE_RUN,
+    V_FINAL,
+    V_LIVE,
     AgentQuestion,
     Change,
     FailureSource,
     Run,
+    VerificationRun,
 )
 from ..results import ActionResult, ReportOutcome
 from .base.common import WorkflowError
 from .base.core import ChangeCore
 from .base.shared import EngineHost, Services
 from .compose import compose
+from .services.verification import AGENT, HEAD_CHECK, PUSH
+from .services.verification import record_path as verification_path
 
 if TYPE_CHECKING:
     from .runtime.flow_runtime import FlowRuntime
     from .runtime.human import HumanGates
     from .services.reports import Reports
     from .services.runs import RunLifecycle
+    from .services.verification import Verifications
 
 
 class ChangeEngine(ChangeCore):
@@ -51,6 +57,7 @@ class ChangeEngine(ChangeCore):
         self._gates: HumanGates
         self._reports: Reports
         self._lifecycle: RunLifecycle
+        self._verifications: Verifications
         compose(self)                # its layers (compose.py); it fronts only these four
 
     # ------------------------------------------------------------------ controller
@@ -81,6 +88,7 @@ class ChangeEngine(ChangeCore):
                                          FailureSource.CONTROLLER)
                 if not run.consult:        # an A2A turn's asker is gone too: nothing escalates
                     failed.setdefault(run.node_id, run)
+        self._verifications.recover()             # verifications in flight are gone
         for q in self.change.questions.values():  # their A2A tasks lived in memory
             if q.open:
                 self._withdraw(q, "the controller restarted: the asking agent's task is gone")
@@ -103,6 +111,75 @@ class ChangeEngine(ChangeCore):
                             missing_decision: str | None, dry_run: bool = False) -> ReportOutcome:
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
                                                  blocked_reason, missing_decision, dry_run)
+
+    # ------------------------------------------------------------------ verification service
+    async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:
+        """A run pushed its branch to ``sha`` (the git remote): a build task's tip is verified
+        (once per sha; a newer push cancels the older tip's that has not started)."""
+        async with self.lock:
+            run = self.runs.get(run_id)
+            node = self.nodes.get(run.node_id) if run else None
+            if node is None or not node.task or not run.branch or self.change.status != "ACTIVE":
+                return None
+            svc = self._verifications
+            v = svc.request(svc.key(sha, node.task.verification), f"push:{run.id}", PUSH,
+                            node=node.id, branch=run.branch)
+            self.save()
+            return v
+
+    def verification_key_for(self, run: Run, sha: str):
+        """The key an agent's request verifies: its step's task commands at ``sha``."""
+        node = self.nodes.get(run.node_id)
+        if node is None or not node.task:
+            raise WorkflowError(f"{run.node_id} has no verification commands of its own (only "
+                                "build tasks do)")
+        return self._verifications.key(sha, node.task.verification)
+
+    async def request_verification(self, run: Run, sha: str) -> VerificationRun:
+        """An agent asks for its step's commands to be verified at ``sha`` (MCP): its result if
+        verified already, else queued (lowest priority), within the run's request limit."""
+        async with self.lock:
+            key = self.verification_key_for(run, sha)
+            svc = self._verifications
+            known = svc.latest(key)
+            if not (known and (known.state in V_FINAL or known.state in V_LIVE)):
+                limit = self.cfg.limits.verification_requests_per_run
+                if run.verification_requests >= limit:
+                    raise WorkflowError(f"this run asked for {limit} verifications already "
+                                        "(limits.verification_requests_per_run)")
+                run.verification_requests += 1
+            v = svc.request(key, f"agent:{run.id}", AGENT, node=run.node_id)
+            self.save()
+            return v
+
+    def latest_verification(self, run: Run, sha: str) -> VerificationRun | None:
+        """The latest verification of ``run``'s step commands at ``sha`` (as the key is now)."""
+        return self._verifications.latest(self.verification_key_for(run, sha))
+
+    def verifications(self, sha: str | None = None) -> list[VerificationRun]:
+        runs = list(self.change.verifications.values())
+        return [r for r in runs if r.sha == sha] if sha else runs
+
+    def verification_record(self, vid: str) -> dict | None:
+        """A finished verification's whole record (command output included)."""
+        path = verification_path(vid)
+        return self.json_doc(path) if self.latest(path) else None
+
+    async def reverify(self, vid: str, approver: str) -> VerificationRun:
+        """A decision owner runs a verification again (a new attempt): a flaky result is
+        challenged, the attempts stay visible."""
+        async with self.lock:
+            if approver not in self.cfg.decision_owners:
+                raise WorkflowError(f"approver {approver!r} is not a decision owner "
+                                    f"({', '.join(self.cfg.decision_owners)})")
+            old = self.change.verifications.get(vid)
+            if old is None:
+                raise WorkflowError(f"unknown verification {vid}")
+            svc = self._verifications
+            v = svc.request(svc.key(old.sha, old.commands), f"operator:{approver}", HEAD_CHECK,
+                            node=old.node, force=True)
+            self.save()
+            return v
 
     # ------------------------------------------------------------------ A2A (server/a2a.py)
     def agent_state(self, node_id: str, role: str) -> str | None:
