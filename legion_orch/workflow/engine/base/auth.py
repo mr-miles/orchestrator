@@ -33,7 +33,7 @@ from .common import log
 
 def open_task(r: Run) -> bool:
     """A run reported, its task not ended yet: its agent still replies (a2a_reply) – and is
-    asked again if it does not (services/run_tasks.py)."""
+    asked again if it does not (services/inbox.py)."""
     if r.status != R_REPORTED or r.consult or r.concluded or r.report is None:
         return False
     wanted = "input-required" if str(r.report.status) == "BLOCKED" else "completed"

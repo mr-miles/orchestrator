@@ -24,12 +24,11 @@ from ..model import (
     AgentQuestion,
     Change,
     FailureSource,
-    ResolverProposal,
     Run,
     VerificationRun,
 )
 from ..results import ActionResult, ReportOutcome
-from .base.common import WorkflowError, _slug
+from .base.common import NoAgent, WorkflowError
 from .base.core import ChangeCore
 from .base.shared import EngineHost, Services
 from .compose import compose
@@ -39,8 +38,9 @@ from .services.verification import record_path as verification_path
 if TYPE_CHECKING:
     from .runtime.flow_runtime import FlowRuntime
     from .runtime.human import HumanGates
+    from .services.inbox import Inboxes, RunTasks
     from .services.reports import Reports
-    from .services.run_tasks import RunTasks
+    from .services.resolver import Resolver
     from .services.runs import RunLifecycle
     from .services.verification import Verifications
 
@@ -62,6 +62,8 @@ class ChangeEngine(ChangeCore):
         self._lifecycle: RunLifecycle
         self._verifications: Verifications
         self._tasks: RunTasks
+        self._inboxes: Inboxes
+        self._resolver: Resolver
         compose(self)                # its layers (compose.py); it fronts only these four
 
     # ------------------------------------------------------------------ controller
@@ -119,54 +121,10 @@ class ChangeEngine(ChangeCore):
                                                  blocked_reason, missing_decision, dry_run)
 
     # ------------------------------------------------------------------ the resolver
-    def escalation_brief(self, node_id: str) -> dict | None:
-        """What the resolver is told of an escalation (None: the step is not escalated)."""
-        node = self.nodes.get(node_id)
-        if node is None or node.status != "ESCALATED" or node.escalation is None:
-            return None
-        esc = node.escalation
-        return {"node": node.id, "title": node.title, "escalation": {
-                    "kind": esc.kind, "reason": esc.reason, "at": esc.at, "run": esc.run,
-                    "missing_decision": esc.missing_decision,
-                    "log_tail": (esc.log_tail or "")[-4000:],
-                    "source": str(esc.source) if esc.source else None},
-                "actions": self._flow.actions(node_id),
-                "step": self.step_status(node_id)}
-
-    async def propose(self, node_id: str, escalation_at: str, proposal: dict,
-                      run: str | None = None) -> str | None:
-        """The resolver's proposal for the escalation of ``node_id`` raised at
-        ``escalation_at``: recorded on it (and as control/proposals/…). Returns why it was not
-        taken – None when it was. A proposal for an escalation already decided is stale."""
-        async with self.lock:
-            node = self.nodes.get(node_id)
-            esc = node.escalation if node else None
-            if esc is None or node.status != "ESCALATED" or esc.at != escalation_at:
-                self.event("resolver", f"proposal for {node_id} is stale: its escalation was "
-                                       "decided first", node_id)
-                self.save()
-                return "stale"
-            actions = self._flow.actions(node_id)
-            action = proposal.get("action")
-            if action not in actions:
-                return f"action must be one of {', '.join(actions)} (got {action!r})"
-            payload = proposal.get("payload") or {}
-            if not isinstance(payload, dict):
-                return "payload must be a JSON object"
-            atts = [a for a in proposal.get("attestations") or [] if isinstance(a, str)]
-            n = len(self.docs.list(self.p(f"control/proposals/{_slug(node_id)}-"))) + 1
-            p = ResolverProposal(action=action, payload=payload,
-                                 rationale=str(proposal.get("rationale") or "")[:4000],
-                                 attestations=atts, run=run)
-            rec = self.write_record(f"control/proposals/{_slug(node_id)}-{n}.json",
-                                    p.model_dump(mode="json") | {"node": node_id,
-                                                                 "escalation_at": esc.at})
-            p.record = rec.attestation
-            esc.proposal = p
-            self.event("resolver", f"proposes {action} for {node_id}: {p.rationale[:200]}",
-                       node_id, run)
-            self.save()
-            return None
+    def escalated(self, node_id: str) -> None:
+        """A step escalated (ChangeCore, on a save): its resolver is asked, in the background."""
+        if self.cfg.resolver.enabled:
+            self.host.spawn(self._resolver.resolve(node_id))
 
     # ------------------------------------------------------------------ where a step stands
     def step_status(self, node_id: str) -> dict:
@@ -183,9 +141,9 @@ class ChangeEngine(ChangeCore):
         except KeyError:
             raise WorkflowError(f"unknown step {node_id}") from None
 
-    # ------------------------------------------------------------------ a run's A2A task
+    # ------------------------------------------------------------------ inboxes (services/inbox.py)
     def task_view(self, run: Run) -> dict:
-        """The run's task as the agent's inbox shows it (services/run_tasks.py)."""
+        """The run's task as the agent's inbox shows it."""
         return self._tasks.view(run)
 
     async def reply_task(self, run: Run, state: str, text: str,
@@ -194,6 +152,29 @@ class ChangeEngine(ChangeCore):
         missing (an ask-again; the messages still waiting in its inbox, each once)."""
         async with self.lock:
             return self._tasks.reply(run, state, text, list(unanswered))
+
+    def inbox(self, run: Run, assignment: dict) -> list[dict]:
+        """Everything waiting on ``run``'s agent: its work, messages, questions back."""
+        return self._inboxes.view(run, assignment)
+
+    async def a2a_reply(self, run: Run, task_id: str, text: str, state: str) -> dict:
+        """The agent's a2a_reply on any task in its inbox; returns what is left in it."""
+        return await self._inboxes.reply_from(run, task_id, text, state)
+
+    async def deliver(self, card_id: str, sender: str, sender_role: str, text: str,
+                      task_id: str) -> tuple[str, str]:
+        """A message to a card's agent (the A2A layer carries it): its reply (state, text)."""
+        card = next((c for c in self.a2a_cards() if c.id == card_id), None)
+        if card is None or card.node is None:
+            raise NoAgent(f"{card_id} is not an agent of this change")
+        return await self._inboxes.deliver(card, sender, sender_role, text, task_id)
+
+    def pending_messages(self, card_id: str) -> list:
+        """Messages waiting in a card's inbox (for views and tests)."""
+        return self._inboxes.pending(card_id)
+
+    def questions_back(self, card_id: str) -> list:
+        return self._inboxes.questions_for(card_id)
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:

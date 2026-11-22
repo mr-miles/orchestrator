@@ -9,7 +9,6 @@ import json
 from engine_harness import Flow, scenario
 from test_a2a import client, rpc, send, task_when, token
 
-from legion_orch.server import A2AHub
 from legion_orch.workflow import attention
 from legion_orch.workflow.cards import agent_state
 from legion_orch.workflow.model import ESCALATED
@@ -56,7 +55,7 @@ async def test_the_resolver_has_a_card_for_the_whole_change(f: Flow):
 
 @scenario()
 async def test_an_escalation_is_routed_to_the_resolver_and_its_proposal_is_shown(f: Flow):
-    A2AHub.of(f.ctl)                                     # the A2A listener is up
+    f.cfg.resolver.enabled = True
     await blocked(f)
     actions = f.ce.workflow.actions("intake")
     assert "answer" in actions
@@ -79,7 +78,7 @@ async def test_an_escalation_is_routed_to_the_resolver_and_its_proposal_is_shown
 
 @scenario()
 async def test_an_invalid_proposal_is_returned_with_the_reason(f: Flow):
-    A2AHub.of(f.ctl)
+    f.cfg.resolver.enabled = True
     await blocked(f)
     first = await play_resolver(f, proposal("merge_everything"))
     second = await play_resolver(f, proposal("answer", answer="English."))
@@ -92,7 +91,7 @@ async def test_an_invalid_proposal_is_returned_with_the_reason(f: Flow):
 
 @scenario()
 async def test_a_proposal_after_the_human_decided_is_stale(f: Flow):
-    A2AHub.of(f.ctl)
+    f.cfg.resolver.enabled = True
     await blocked(f)
     await f.human("intake", "answer", answer="English, decided already")
     await play_resolver(f, proposal("answer", answer="English."))

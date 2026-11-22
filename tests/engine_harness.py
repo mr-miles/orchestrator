@@ -256,6 +256,7 @@ class Flow:
             make_source_repo(tmp_path / "src-repo")
         self.cfg = make_config(tmp_path, blank_repo=blank_repo, **limits)
         self.cfg.retrospective.reflect = False      # tests that want reflections turn them on
+        self.cfg.resolver.enabled = False           # ... and the resolver on escalations
         self.cfg.retrospective.auto = False         # ... and automatic retrospectives
         self.runner = FakeRunner()
         self.builder = FakeBuilder()

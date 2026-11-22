@@ -118,7 +118,7 @@ class ChangeCore:
         self.st.save()
         escalated, self._escalated = self._escalated, []
         for nid in escalated:
-            self.host.escalated(self.cid, nid)     # the resolver is asked (server/a2a.py)
+            self.escalated(nid)                    # the resolver is asked (services/resolver.py)
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.notify()
         self.host.changed()
@@ -131,6 +131,9 @@ class ChangeCore:
     async def next_save(self) -> None:
         """Return at the change's next save: what a phase waits for may hold now."""
         await self._saved.wait()
+
+    def escalated(self, node_id: str) -> None:
+        """Hook: a step escalated (the facade asks the resolver)."""
 
     def before_save(self) -> None:
         """Hook: the workflow's own record, saved with the change."""

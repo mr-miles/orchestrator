@@ -37,7 +37,6 @@ class StubHost:
 
     def remove_cards(self, cid, node_id): ...
 
-    def escalated(self, cid, node_id): ...
 
     def next_run_id(self):
         return "r0001"

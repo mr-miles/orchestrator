@@ -14,7 +14,7 @@ from engine_harness import TASKS, Flow, scenario
 from test_sessions import give_session
 
 from legion_orch.identity import WorkloadBinding
-from legion_orch.server import MCP_TOOLS, A2AHub, build_a2a_app, build_app
+from legion_orch.server import MCP_TOOLS, build_a2a_app, build_app
 from legion_orch.server.views import change_state
 from legion_orch.workflow import attention
 from legion_orch.workflow.cards import agent_state
@@ -170,21 +170,20 @@ async def test_a_message_to_a_stopped_agent_starts_it_resumes_its_session_and_st
 @scenario()
 async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
     planner, critic = await to_critique(f)
-    hub = A2AHub.of(f.ctl)
     assert {"inbox", "a2a_reply"} <= set(MCP_TOOLS)
     async with client(f) as c:
         res = await rpc(c, "critic@plan", send("Is the spec's REQ-1 section final?"),
                         token(f, planner))                          # the idle planner asks
         tid = res["task"]["id"]
         for _ in range(100):
-            if hub.pending(f.ce.cid, "critic@plan"):
+            if f.ce.pending_messages("critic@plan"):
                 break
             await asyncio.sleep(0.02)
-        [item] = hub.pending(f.ce.cid, "critic@plan")
+        [item] = f.ce.pending_messages("critic@plan")
         assert item.view()["from"] == "planner@plan" and "REQ-1" in item.text
-        assert hub.reply(f.ce.cid, "critic@plan", tid, "Yes, final.")
+        assert (await f.ce.a2a_reply(critic, tid, "Yes, final.", "completed"))["ok"]
         t = await task_when(c, "critic@plan", tid, token(f, planner))
-        assert answer_text(t) == "Yes, final." and not hub.pending(f.ce.cid, "critic@plan")
+        assert answer_text(t) == "Yes, final." and not f.ce.pending_messages("critic@plan")
         # the sender's tasks are its own
         r = await c.post("/a2a/critic@plan", headers=token(f, critic) | V,
                          json={"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": tid}})
@@ -205,7 +204,7 @@ async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: 
         res = await rpc(c, "implementer@build:T1", send("Where does the greeting live?"),
                         token(f, other))
         await asyncio.sleep(0.2)
-        assert A2AHub.of(f.ctl).pending(f.ce.cid, "implementer@build:T1")   # waits: T1 is live
+        assert f.ce.pending_messages("implementer@build:T1")   # waits: T1 is live
         await f.implement("T1")                                  # reports without answering
         t = await task_when(c, "implementer@build:T1", res["task"]["id"], token(f, other))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
@@ -391,3 +390,56 @@ touch {tmp_path}/added
         "catalog add legion http://h:8769/a2a/ai-catalog.json auth=",
         "catalog update legion auth=Bearer tok"]                 # reused: updated (dev auth)
     assert "no a2a CLI on PATH" in start("/usr/bin:/bin")
+
+
+def drift_check(f: Flow):
+    from legion_orch.server.a2a import A2AHub
+    hub = A2AHub.of(f.ctl)
+
+    def check(where: str) -> None:
+        pushed = sorted(c.id for c in hub.catalog.cards(f.ce.cid))
+        implied = sorted(c.id for c in f.ce.a2a_cards())
+        assert pushed == implied, (where, pushed, implied)
+    return hub, check
+
+
+@scenario()
+async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Flow):
+    """The cards the workflow pushed (publish as a step starts, withdraw as it ends) are, after
+    every step, exactly the cards its state implies; a catalog subscribing later gets the same."""
+    from legion_orch.server.a2a import Catalog
+    hub, check = drift_check(f)
+    check("start")
+    await f.intake()
+    check("intake reported")
+    await f.human("H-1", "accept")
+    check("H-1")
+    await f.plan()
+    check("plan")
+    await f.critique("REWORK")
+    check("critique rework")
+    await f.plan()
+    await f.critique("PASS")
+    check("critique pass")
+    late = Catalog()
+    f.ctl.subscribe_cards(late)                       # a catalog subscribing later (a restart)
+    assert sorted(c.id for c in late.cards(f.ce.cid)) == sorted(c.id for c in f.ce.a2a_cards())
+
+
+@scenario()
+async def test_the_catalog_never_drifts_from_the_workflow_through_build_and_the_end(f: Flow):
+    hub, check = drift_check(f)
+    await f.to_build()
+    check("build")
+    await f.implement()
+    check("implemented")
+    await f.review(verdict="FAIL")
+    check("review fail: rework")
+    run = f.run("build:T1", "implementer")                 # cycle 2: it blocks, it escalates
+    out = await f.report(run, [], status="BLOCKED", blocked_reason="the greeting is ambiguous",
+                         missing_decision="which language?")
+    assert out.accepted, out
+    check("escalated")
+    await f.human("build:T1", "abandon", reason="the goal changed: no greeting needed at all")
+    check("abandoned")
+    assert hub.catalog.cards(f.ce.cid) == []
