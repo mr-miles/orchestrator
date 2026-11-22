@@ -56,24 +56,25 @@ class RunTasks:
         return "working"
 
     # ------------------------------------------------------------------ the agent replies
-    def reply(self, run: Run, state: str, text: str, unanswered: list[str] = ()) -> dict:
+    def reply(self, run: Run, state: str, text: str,
+              unanswered: list[tuple[str, str]] = ()) -> dict:
         """Under the lock: the agent's ``a2a_reply`` on its run's task. Always taken; a reply
         the record does not support is answered with what is missing (an ask-again). Ending it
-        with messages still in its inbox (``unanswered``: who sent them) is answered once with
-        the list – those are its to answer; ended again, the end is taken (what is left is
-        answered in a turn of its own after the run)."""
+        with messages still in its inbox (``unanswered``: (task id, sender)) is answered with how
+        many wait – but only when one arrived it was not told of yet, so it cannot loop; what is
+        left when it ends is answered in a turn of its own after the run."""
         if state not in STATES:
             return {"ok": False, "error": f"state must be one of {', '.join(STATES)}"}
         if self.ended(run):
             return {"ok": True, "state": self.state(run), "note": "the task was ended already"}
-        if (unanswered and state in ("completed", "input-required") and state == self.wanted(run)
-                and not run.inbox_reminded):
-            run.inbox_reminded = True
-            msg = (f"Before you end your task: {len(unanswered)} message(s) in your inbox wait for "
-                   f"your answer (from {', '.join(unanswered)}). Answer each with a2a_reply, then "
-                   "end your task again.")
+        new = [(tid, who) for tid, who in unanswered if tid not in run.inbox_reminded]
+        if new and state in ("completed", "input-required") and state == self.wanted(run):
+            run.inbox_reminded += [tid for tid, _ in new]
+            n = len(unanswered)
+            msg = (f"{n} task{'s' if n != 1 else ''} in your inbox – check with inbox(), answer "
+                   "with a2a_reply, then end your task again.")
             run.asked.append(msg)
-            self.c.event("agent", f"asked to answer {len(unanswered)} message(s) first",
+            self.c.event("agent", f"asked to answer {len(new)} message(s) first",
                          run.node_id, run.id)
             self.c.save()
             return {"ok": False, "state": "working", "message": msg}

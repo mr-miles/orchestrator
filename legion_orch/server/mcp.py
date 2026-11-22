@@ -50,7 +50,8 @@ a2a_reply() too."""
 AGENT_HIDDEN = ("/control/logs/",)
 WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report",
                   "inbox", "a2a_reply",
-                  "verification_request", "verification_status", "verification_evidence")
+                  "verification_request", "verification_status", "verification_evidence",
+                  "step_status", "workflow_context")
 # The gateway's MCP allowlist (sandbox network policy) is generated from exactly this list.
 MCP_TOOLS = tuple(STORE_TOOLS) + WORKFLOW_TOOLS
 
@@ -181,6 +182,27 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                                          blocked_reason, missing_decision, dry_run)
         return outcome.model_dump(mode="json", exclude_none=True)
 
+    # ------------------------------------------------------------------ where your work stands
+    @server.tool(description="A step of your change as it is now – yours by default, or any "
+                             "node id: its status and cycle, the budget left (review or critique "
+                             "cycles), its candidate's verification, the panel's verdicts so far, "
+                             "an escalation, and the state of its agents' cards.")
+    async def step_status(ctx: Context, node: str | None = None) -> dict:
+        ce, r = current(ctx)
+        try:
+            return ce.step_status(node or r.node_id)
+        except WorkflowError as e:
+            raise ToolError(str(e)) from None
+
+    @server.tool(description="How your step fits the change: the goal and tier, the stages and "
+                             "where you are, your task's place in the task graph (what it builds "
+                             "on, what builds on it, which tasks touch nearby files), the "
+                             "requirements and acceptance criteria it serves, who judges it and "
+                             "what they load, and whom to ask (cards).")
+    async def workflow_context(ctx: Context) -> dict:
+        ce, r = current(ctx)
+        return ce.workflow_context(r.node_id)
+
     # ------------------------------------------------------------------ verification service
     def _view(v) -> dict:
         res = v.result
@@ -275,7 +297,8 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     async def a2a_reply(ctx: Context, task_id: str, text: str, state: str = "completed") -> dict:
         ce, r = current(ctx)
         if task_id == r.id:
-            waiting = [i.sender for i in hub.pending(ce.cid, card_id(r.role, r.node_id))]
+            waiting = [(i.task_id, i.sender)
+                       for i in hub.pending(ce.cid, card_id(r.role, r.node_id))]
             return await ce.reply_task(r, state, text, waiting)
         if not text.strip():
             raise ToolError("text is required")

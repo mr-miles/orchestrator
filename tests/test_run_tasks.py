@@ -79,7 +79,7 @@ async def test_the_agent_keeps_its_mcp_access_until_it_ends_its_task(f: Flow):
 
 
 @scenario()
-async def test_ending_the_task_with_messages_waiting_is_answered_once_with_them(f: Flow):
+async def test_ending_the_task_with_messages_waiting_reminds_of_each_message_once(f: Flow):
     planner, critic = await to_critique(f)
     async with client(f) as c:
         await rpc(c, "critic@plan", send("Is REQ-1 final?"), token(f, planner))
@@ -94,13 +94,17 @@ async def test_ending_the_task_with_messages_waiting_is_answered_once_with_them(
                                    {"verdict": "PASS", "findings": [], "checked": ["x"]},
                                    None, None)
     assert out.accepted, out
-    waiting = [i.sender for i in A2AHub.of(f.ctl).pending(f.ce.cid, "critic@plan")]
+    waiting = [(i.task_id, i.sender) for i in A2AHub.of(f.ctl).pending(f.ce.cid, "critic@plan")]
     attempts = critic.attempts
     first = await f.ce.reply_task(critic, "completed", "done", waiting)
-    assert not first["ok"] and "planner@plan" in first["message"]
+    assert not first["ok"] and first["message"].startswith("1 task in your inbox")
+    assert "inbox()" in first["message"]
     assert critic.attempts == attempts                           # no report attempt used
-    second = await f.ce.reply_task(critic, "completed", "done", waiting)
-    assert second["ok"]                                          # ended again: taken
+    later = waiting + [("t-new", "implementer@build:T9")]           # one arrived since
+    second = await f.ce.reply_task(critic, "completed", "done", later)
+    assert not second["ok"] and second["message"].startswith("2 tasks in your inbox")
+    third = await f.ce.reply_task(critic, "completed", "done", later)
+    assert third["ok"]                              # nothing it was not told of: taken
 
 
 @scenario()
