@@ -136,6 +136,16 @@ export interface RunFailure {
   exit_code?: number | null
 }
 
+/** One turn of a run's agent: its process from start to exit (a turn that ends with the
+ * run's task open is followed by another, the orchestrator asking again). */
+export interface Turn {
+  n: number
+  started_at: string
+  ended_at?: string | null
+  exit_code?: number | null
+  asked?: string | null
+}
+
 export interface Run {
   id: string
   node_id: string
@@ -157,6 +167,7 @@ export interface Run {
   violations: string[][]
   report?: { status: string; summary: string; attestations: string[] } | null
   progress: Progress[]
+  turns?: Turn[]
 }
 
 export interface GateResult {

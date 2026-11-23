@@ -21,8 +21,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .....bus import CardsPublished, CardsWithdrawn, ItemAdded
+from .....util import now_iso
 from .... import cards
-from ....model import Node, Run
+from ....model import Node, Run, Turn
 from ...base.common import NoAgent, WorkflowError
 from ...base.core import ChangeCore
 from ...base.dispatch import Dispatcher
@@ -138,6 +139,33 @@ class AgentRunner:
             self._busy.discard(card.id)
 
     # ------------------------------------------------------------------ turns
+    async def take_turns(self, run: Run, proc) -> int:
+        """A run's agent from its first turn to its last (the process ``proc`` started): each
+        turn awaited under the run's timers, and – while it ends with the run's task open (no
+        accepted report, or no reply ending the task) – another, its session resumed with the
+        orchestrator's message. Each is recorded (``run.turns``). Returns the last exit code."""
+        c, agents = self.c, self.agents
+        n, asked = 1, None
+        while True:
+            async with c.lock:
+                run.turns.append(Turn(n=n, asked=asked[:500] if asked else None))
+                c.save()
+            rc = await agents._turn(run, proc)
+            async with c.lock:
+                turn = run.turns[-1]
+                turn.ended_at, turn.exit_code = now_iso(), rc
+                asked = agents.ask_again_after(run, rc)
+                c.save()
+            if asked is None:
+                return rc
+            n += 1
+            proc = await agents.continue_turn(run, asked, n)
+            async with c.lock:
+                c.procs[run.id] = proc
+                c.event("agent", f"turn {n}: the agent's session resumed with the "
+                                 "orchestrator's message", run.node_id, run.id)
+                c.save()
+
     async def turn(self, node_id: str, role: str, sender: str, text: str,
                    task_id: str | None = None) -> str:
         """An agent not running answers ``text`` (the message's ``task_id``) in a turn of its

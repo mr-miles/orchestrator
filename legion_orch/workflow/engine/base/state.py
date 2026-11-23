@@ -29,7 +29,7 @@ RUN_ASSIGNMENT = ("role", "soul", "cycle", "consult", "created_at", "sandbox", "
                   "context_refs", "assignment", "instructions")
 RUN_OUTCOME = ("status", "failure", "exit_code", "ended_at", "concluded", "session_id", "report",
                "reply", "attempts", "violations", "docs_written", "doc_bytes", "confirmed_docs",
-               "verification_requests")
+               "verification_requests", "turns")
 
 
 class StateStore:

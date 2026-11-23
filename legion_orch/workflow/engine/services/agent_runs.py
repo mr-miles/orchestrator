@@ -63,6 +63,7 @@ from .agents.placement import Placement
 from .runs import RunLifecycle
 
 if TYPE_CHECKING:
+    from .agents.runner import AgentRunner
     from .agents.tasks import RunTasks
     from .reports import Reports
     from .verification import Verifications
@@ -181,12 +182,10 @@ Your instructions for that work, as they stand now (do not start on them in this
 
 @dataclass
 class AgentTurn(Command):
-    """The agent's turns: start the agent and await its process (its timers stop it: the run
-    timeout while its task is open, the end-of-turn grace after it ended it). A turn that ends
-    with the run's task still open – no accepted report, or no reply ending the task – is asked
-    again (services/inbox.py): the agent's session is resumed for another turn of the same
-    run, with the orchestrator's message. Then the run's record is completed (exit code, a live
-    run failed with why, the log archived)."""
+    """The agent's turns: start the agent, then the agent runner takes its turns
+    (:meth:`AgentRunner.take_turns`: another while the run's task is open, each awaited under
+    the run's timers). Then the run's record is completed (exit code, a live run failed with
+    why, the log archived)."""
     runs: AgentRuns | None = None
     of: Run | None = None                   # the run whose agent this is
 
@@ -199,22 +198,7 @@ class AgentTurn(Command):
             c.event("sandbox", f"agent process started in sandbox {run.sandbox}",
                     run.node_id, run.id)
             c.save()
-        rc = await runs._turn(run, proc)
-        turn = 1
-        while True:
-            async with c.lock:
-                again = runs.ask_again_after(run, rc)
-                c.save()
-            if again is None:
-                break
-            turn += 1
-            proc = await runs.continue_turn(run, again, turn)
-            async with c.lock:
-                c.procs[run.id] = proc
-                c.event("agent", f"turn {turn}: the agent's session resumed with the "
-                                 "orchestrator's message", run.node_id, run.id)
-                c.save()
-            rc = await runs._turn(run, proc)
+        rc = await runs.runner.take_turns(run, proc)
         async with c.lock:
             c.procs.pop(run.id, None)
             run.exit_code = rc
@@ -241,6 +225,7 @@ class AgentRuns:
                  roles: RoleContext):
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
+        self.runner: AgentRunner = None  # type: ignore[assignment]  # its turns (compose)
         self.verifications: Verifications | None = None      # set once it exists (G-V0)
         self.tasks: RunTasks | None = None                   # set once it exists
         self.placement = Placement(core, sandboxes, lifecycle)   # where each agent works

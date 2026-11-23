@@ -40,6 +40,7 @@ function LiveRun({ run }: { run: Run }) {
           </Button>{' '}
           · soul {run.soul} · sandbox <code className="font-mono">{run.sandbox}</code> · reports{' '}
           {run.attempts}
+          {(run.turns?.length ?? 0) > 1 && <> · turn {run.turns?.at(-1)?.n}</>}
         </CardDescription>
         <CardAction>
           <Button variant="outline" size="sm" onClick={() => nav.openLog(run.id)}>
@@ -95,6 +96,7 @@ export function AgentsTab({ runs, cards = [] }: { runs: Run[]; cards?: A2ACard[]
                 <TableHead>Role</TableHead>
                 <TableHead>Node</TableHead>
                 <TableHead>Cycle</TableHead>
+                <TableHead>Turns</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Log</TableHead>
               </TableRow>
@@ -114,6 +116,7 @@ export function AgentsTab({ runs, cards = [] }: { runs: Run[]; cards?: A2ACard[]
                     </Button>
                   </TableCell>
                   <TableCell>{r.cycle}</TableCell>
+                  <TableCell>{r.turns?.length ?? 0}</TableCell>
                   <TableCell>
                     <StatusBadge status={r.status} />
                   </TableCell>
