@@ -36,6 +36,7 @@ from ...model import (
     TaskReply,
 )
 from ...roles import handler_for
+from ...roles.base import outputs_of_owner
 from ...tickets import Ticket
 from ...tickets.executors import AgentEnd
 from ...tickets.executors import Work as TicketWork
@@ -433,11 +434,14 @@ class AgentRuns:
 
     # ------------------------------------------------------------------ the run record
     def _context_refs(self, ticket: Ticket, role: str, tw: TicketWork) -> list[str]:
-        """What the run is given to read: its inputs (the approved versions it consumes), what
-        its work declares it needs, and its role handler's own (workflow/roles/)."""
+        """What the run is given to read: its inputs (the approved versions it consumes), a
+        judge's the outputs of the work it judges (its owner's), what its work declares it
+        needs, and its role handler's own (workflow/roles/)."""
         refs: list[str] = []
         for value in tw.inputs.values():
             refs += value if isinstance(value, list) else [value] if value else []
+        if ticket.role == "criterion":
+            refs += outputs_of_owner(self.roles, ticket)
         refs += [attest.normalize(x, self.c.cid) for x in ticket.work.get("context", [])]
         given = {_file_path(a) for a in refs} - {None}
         refs += [a for a in (attest.normalize(x, self.c.cid)

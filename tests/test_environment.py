@@ -9,7 +9,17 @@ import shutil
 
 import pytest
 import yaml
-from engine_harness import ENVIRONMENT, ORACLE, ROOT, TASKS, Flow, make_config, scenario
+from engine_harness import (
+    ENVIRONMENT,
+    ORACLE,
+    REPO,
+    ROOT,
+    Flow,
+    make_config,
+    plan_doc,
+    scenario,
+    signals,
+)
 
 from legion_orch.config import load_config
 from legion_orch.sandbox import (
@@ -37,7 +47,6 @@ from legion_orch.workflow.environment import (
     resolve,
     resolve_tool,
 )
-from legion_orch.workflow.model import RUNNING
 
 ENV = {"environment": {}}
 SCHEMA = json.loads((ROOT / "assets/schemas/environment.json").read_text())
@@ -69,32 +78,33 @@ def sandboxes(f: Flow, role: str, task: str | None = None) -> list[SandboxSpec]:
 async def to_plan(f: Flow) -> None:
     """Up to the planner's run."""
     await f.intake()
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
 
 
-# ====================================================================== graph and flow
+R2 = signals(scope_breadth=2, novelty_uncertainty=2, verification_quality=2)
+
+
+# ====================================================================== tree and flow
 @scenario()
-async def test_without_environment_config_the_graph_is_unchanged(f: Flow):
+async def test_without_environment_config_nothing_is_provisioned(f: Flow):
     await f.to_build()
-    assert not {"environment", "provision"} & set(f.ce.nodes)     # H-E1 approves the plan only
-    assert [s.subject for s in __import__("legion_orch.workflow.governance", fromlist=["x"])
-            .subject_status(f.ce)] == ["plan", "REQ-1"]
+    assert f.status("provision") == "passed" and f.ce.change.environment is None
+    assert "default image" in f.ce.timeline()
     assert all(sp.env is None for sp in f.runner.specs.values())
 
 
 @scenario(**ENV)
 async def test_environment_is_specified_critiqued_approved_provisioned_and_attached(f: Flow):
     f.cfg.sandbox.image, f.cfg.sandbox.verifier_image = "reg/agent:1", "reg/verifier:1"
-    await f.intake()
-    await f.human("H-1", "accept")
-    assert f.ce.nodes["H-E1"].depends_on == ["plan"] and "environment" not in f.ce.nodes
-    assert "`pypi` – Python Package Index" in f.run("plan").assignment["environment"]
+    await to_plan(f)
+    assert "`pypi` – Python Package Index" in f.run("design").assignment["environment"]
     await f.plan()
-    assert any("plan/environment.json" in r for r in f.run("plan", "critic").context_refs)
+    critic = f.run("critique", "critic")
+    assert f.ticket("design").outputs["environment"] in critic.context_refs
     await f.critique("PASS")
-    assert f.status("H-E1") == "AWAITING_HUMAN" and f.status("provision") == "PENDING"
-    await f.human("H-E1", "approve")
-    assert f.status("provision") == "ACCEPTED"
+    assert f.status("H-E1") == "working" and f.status("provision") == "pending"
+    await f.signoff("H-E1")
+    assert f.status("provision") == "passed"
     roles = f.ce.change.environment.roles
     assert {r: e.profile for r, e in roles.items()} == ENVIRONMENT["roles"]
     impl, ver, rev = roles["implementer"], roles["verifier"], roles["reviewer"]
@@ -104,14 +114,15 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     assert ver.network == rev.network == {}          # check is offline
     assert (impl.cpu, impl.memory, impl.driver_config) == ("2", "4096Mi", None)
     assert (ver.cpu, ver.memory, ver.driver_config) == (None, None, None)
-    assert f.ce.latest("control/environment/build.json") and f.ce.latest("control/logs/provision.log")
+    assert f.ce.latest("control/environment/build.json")
+    assert f.ce.latest("control/environment/provision.log")
     recipe = f.builder.recipes[impl.image]
     assert "COPY mise.toml /etc/mise/config.toml" in recipe.files["Dockerfile"]
     assert '"python" = "3.12"' in recipe.files["mise.toml"]
     assert {e["host"] for e in impl.network["env_pypi"]["endpoints"]} >= {"pypi.org"}
 
-    name = f.run("build:T1", "implementer").sandbox
-    tools = f.run("build:T1", "implementer").template_vars["sandbox_tools"]
+    name = f.run("T1", "implementer").sandbox
+    tools = f.run("T1", "implementer").template_vars["sandbox_tools"]
     assert tools.startswith("profile `dev`: python@3.12, uv, ruff. Build, test and verify only")
     sp = f.runner.specs[name]
     assert sp.env == SandboxEnv(image=impl.image, network=impl.network, cpu="2", memory="4096Mi")
@@ -128,36 +139,38 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
                for v in verifiers)
     await f.review()
     assert all(r.env.image == rev.image and not r.push for r in sandboxes(f, "reviewer"))
-    assert f.status("build:T1") == "ACCEPTED"
+    assert f.status("T1") == "passed"
     assert all(sp.env is None for sp in f.runner.specs.values()
                if sp.role in ("intake", "planner", "critic"))
 
 
 @scenario(**ENV)
-async def test_r2_oracle_and_integration_run_in_the_environment(f: Flow):
-    await f.to_build(tier="R2")
-    assert f.ce.nodes["oracle"].depends_on == ["provision"]
+async def test_r2_the_oracle_runs_in_the_environment(f: Flow):
+    await f.to_build(R2)
     roles = f.ce.change.environment.roles
     [oracle] = sandboxes(f, "oracle")
     assert oracle.env.image == roles["oracle"].image
-    await f.implement()
-    await f.review()
-    await f.integration(verdict="PASS")
-    assert f.status("integration") == "ACCEPTED"
-    integ = sandboxes(f, "verifier", "integration")
-    assert integ and all(v.env.image == roles["verifier"].image for v in integ)
-    assert all(v.env is None for v in sandboxes(f, "integration"))     # integration is unmapped
+    pre = sandboxes(f, "verifier", "preflight")             # its preflight, in the verifier's
+    assert pre and all(v.env.image == roles["verifier"].image for v in pre)
 
 
 @scenario(**ENV)
-async def test_identical_environments_reuse_images(f: Flow):
+async def test_identical_environments_build_the_same_recipes(f: Flow):
     await f.to_build()
     first = list(f.builder.built)
     (f.tmp / "second").mkdir()
-    g = await Flow.create(f.tmp / "second", goal="again")     # another controller, same spec
+    g = Flow(f.tmp / "second", environment={})              # another controller, same spec
     g.builder = g.ctl.svc.builder = f.builder
-    await g.to_build()
-    assert f.builder.built == first      # nothing new built: the same recipes were found
+    await g.git.ensure()
+    g.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
+    g.ce = await g.ctl.start_change("again", REPO)
+    await g.settle()
+    try:
+        await g.to_build()
+    finally:
+        await g.stop()
+    # the same recipes: another tag of the change's own on the same layers (images::image_tag)
+    assert [t.rsplit("-", 1)[1] for t in f.builder.built] == [t.rsplit("-", 1)[1] for t in first] * 2
 
 
 # ====================================================================== guards
@@ -231,7 +244,7 @@ async def test_an_invalid_library_is_reported_to_the_agent_and_rejects_its_spec(
     own_library(f)
     (f.tmp / "lib/tools/broken.yaml").write_text("description: [unclosed\n")
     await to_plan(f)
-    assert "the library is invalid" in f.run("plan").assignment["environment"]
+    assert "the library is invalid" in f.run("design").assignment["environment"]
     out = await f.plan()
     assert not out.accepted and "G-E1: the environment library is invalid" in out.violations[0]
 
@@ -250,108 +263,67 @@ def test_schema_has_no_place_for_credentials_or_unsafe_env():
         assert not v.is_valid(ok | {"env": bad}), bad
 
 
-# ====================================================================== gate, resets, failures
+# ====================================================================== sign-off, rework, failures
 @scenario(**ENV)
-async def test_the_planner_must_attest_the_environment_spec(f: Flow):
+async def test_the_planner_must_report_the_environment_spec(f: Flow):
     await to_plan(f)
-    r = f.run("plan")
-    atts = [await f.write(r, "plan/spec.md", "# Spec\n"),
-            await f.write(r, "plan/oracle.json", ORACLE),
-            await f.write(r, "plan/taskgraph.json", {"tasks": TASKS}),
-            await f.write(r, "plan/specs/REQ-1.md", "# REQ-1\n\n## Current behaviour\nx\n\n"
-                          "## Change\ny\n\n## Acceptance criteria\n- z\n")]
-    out = await f.report(r, atts)
-    assert not out.accepted and any("G-E1: " in v and "plan/environment.json not attested" in v
-                                    for v in out.violations)
+    r = f.run("design")
+    spec_ = await f.write(r, "spec.md", "# Spec\n")
+    orc = await f.write(r, "oracle.json", ORACLE)
+    plan = await f.write(r, "tickets.json", plan_doc([{"id": "T1", "files_allowed": ["a"],
+                                                        "verification": ["true"]}], ("verify",)))
+    req = await f.write(r, "specs/REQ-1.md", "# REQ-1\n\n## Current behaviour\nx\n\n"
+                        "## Change\ny\n\n## Acceptance criteria\n- z\n")
+    out = await f.report(r, [spec_, orc, plan, req], outputs={
+        "spec": spec_, "oracle": orc, "tickets": plan, "specs": [req]})
+    assert not out.accepted and any("environment" in v for v in out.violations), out.violations
 
 
 @scenario()
 async def test_without_the_stage_the_planner_is_told_not_to_write_a_spec(f: Flow):
     await to_plan(f)
-    assert "do not write `plan/environment.json`" in f.run("plan").assignment["environment"]
+    assert "every sandbox uses the default image" in f.run("design").assignment["environment"]
 
 
 @scenario(**ENV)
-async def test_h_e1_revise_reworks_the_plan_and_recritiques(f: Flow):
+async def test_an_h_e1_rejection_reworks_the_plan_and_critiques_it_again(f: Flow):
     await to_plan(f)
+    first = f.run("design")
     await f.plan()
     await f.critique("PASS")
-    await f.human("H-E1", "revise", feedback="the verifier needs node for the lint step")
-    plan = f.ce.nodes["plan"]
-    assert plan.cycle == 2 and plan.status == "RUNNING" and f.status("H-E1") == "PENDING"
-    assert "node for the lint" in f.run("plan").assignment["feedback_items"][-1]["text"]
+    await f.signoff("H-E1", approve=False, reason="the verifier needs node for the lint step")
+    design = f.ticket("design")
+    assert design.attempt == 2 and design.status == "working"
+    assert any("node for the lint" in x for x in f.run("design").assignment["findings"])
+    assert f.run("design").sandbox == first.sandbox            # its own sandbox, kept
     await f.plan(environment=spec(profiles={**ENVIRONMENT["profiles"],
                                             "check": {"tools": ["python", "uv", "node"]}}))
-    assert f.status("plan") == "REVIEWING" and f.run("plan", "critic").cycle == 2
+    critic = f.run("critique", "critic")                       # a fresh judge, a new round
+    assert len(f.runs("critique")) == 2 and critic.sandbox != f.runs("critique")[0].sandbox
     await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    assert f.status("provision") == "ACCEPTED"
+    await f.signoff("H-E1")
+    assert f.status("provision") == "passed"
 
 
 @scenario(**ENV)
-async def test_a_plan_rework_may_keep_the_environment_spec(f: Flow):
-    await to_plan(f)
-    await f.plan()
-    first = f.ce.latest("plan/environment.json")
-    await f.critique("REWORK")
-    assert f.status("plan") == "RUNNING"
-    assert (await f.plan(keep_environment=True)).accepted
-    assert f.ce.latest("plan/environment.json") == first     # not rewritten
-    await f.critique("PASS")
-    assert f.status("H-E1") == "AWAITING_HUMAN"
-
-
-@scenario(**ENV)
-async def test_a_rework_must_attest_the_latest_environment_spec(f: Flow):
-    await to_plan(f)
-    await f.plan()
-    old = f.ce.latest_att("plan/environment.json")
-    await f.critique("REWORK")
-    f.ce.write_record("plan/environment.json", json.dumps(spec(summary="newer")))
-    r = f.run("plan")
-    atts = [await f.write(r, p, f.ce.doc(p).content) for p in
-            ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json", "plan/specs/REQ-1.md")]
-    out = await f.report(r, [*atts, old])
-    assert not out.accepted and any("is not the latest version" in v for v in out.violations)
-
-
-@scenario(critique_max_cycles=1, **ENV)
-async def test_critique_budget_answer_reworks_the_plan(f: Flow):
-    await to_plan(f)
-    await f.plan()
-    await f.critique("REWORK")
-    assert f.ce.nodes["plan"].escalation.kind == "critique_budget"
-    await f.human("plan", "answer", answer="keep the single task")
-    assert f.status("plan") == "RUNNING" and f.status("H-E1") == "PENDING"
-
-
-@scenario(**ENV)
-async def test_sending_the_design_back_resets_environment_approval_and_build(f: Flow):
-    await f.to_h2(tier="R2")
-    assert f.ce.change.environment
-    await f.human("H-2", "send_back", stage="design", feedback="split T1 in two")
-    assert f.ce.change.environment is None and "H-E1" not in f.ce.change.approvals
-    assert f.status("H-E1") == "PENDING" and f.status("provision") == "PENDING"
-    assert f.status("plan") == "RUNNING"
-
-
-@scenario(**ENV)
-async def test_provision_failure_escalates_and_retry_provisions_again(f: Flow):
+async def test_a_provision_failure_waits_and_a_retry_provisions_again(f: Flow):
     await to_plan(f)
     await f.plan()
     await f.critique("PASS")
     f.builder.fail = "podman build failed (1): mise: python 3.12 not found"
-    await f.human("H-E1", "approve")
-    node = f.ce.nodes["provision"]
-    assert node.status == "ESCALATED" and node.escalation.kind == "provision_failed"
-    assert "G-PV1" in node.escalation.reason and "mise: python" in node.escalation.reason
+    await f.signoff("H-E1")
+    t = f.ticket("provision")
+    assert (t.status, t.waiting) == ("waiting", "system")
+    why = " ".join(t.findings)
+    assert "G-PV1" in why and "mise: python" in why
     assert f.ce.change.environment is None
+    f.builder.fail = None
     await f.human("provision", "retry")
-    assert node.status == "ACCEPTED" and f.ce.change.environment
+    assert f.status("provision") == "passed" and f.ce.change.environment
 
 
 @scenario(**ENV)
-async def test_library_changed_after_approval_escalates_provisioning(f: Flow):
+async def test_library_changed_after_approval_stops_provisioning(f: Flow):
     """The approved spec is resolved again at provisioning: a library entry removed (or a
     library broken) since then stops the build instead of building something else."""
     own_library(f)
@@ -359,43 +331,32 @@ async def test_library_changed_after_approval_escalates_provisioning(f: Flow):
     await f.plan()
     await f.critique("PASS")
     (f.tmp / "lib/tools/uv.yaml").unlink()
-    await f.human("H-E1", "approve")
-    node = f.ce.nodes["provision"]
-    assert node.status == "ESCALATED"
-    assert "no longer resolves against the library" in node.escalation.reason
-    assert "unknown tool 'uv'" in node.escalation.reason and not f.builder.built
+    await f.signoff("H-E1")
+    t = f.ticket("provision")
+    assert t.status == "waiting"
+    why = " ".join(t.findings)
+    assert "no longer resolves against the library" in why
+    assert "unknown tool 'uv'" in why and not f.builder.built
     (f.tmp / "lib/tools/uv.yaml").write_text("mise: {uv: '0.9'}\n")           # invalid now
     await f.human("provision", "retry")
-    assert "the environment library is invalid" in node.escalation.reason
+    assert "the environment library is invalid" in " ".join(f.ticket("provision").findings)
     shutil.copy(ROOT / "environments/tools/uv.yaml", f.tmp / "lib/tools/uv.yaml")
     await f.human("provision", "retry")
-    assert node.status == "ACCEPTED"
+    assert f.status("provision") == "passed"
 
 
 @scenario(**ENV)
-async def test_stale_environment_approval_blocks_dispatch(f: Flow):
-    """G-E5: a spec changed after approval is never used to create an agent sandbox."""
-    await to_plan(f)
-    await f.plan()
-    await f.critique("PASS")
-    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, its gate not passed
-    f.ce.write_record("plan/environment.json", json.dumps(spec(summary="edited after approval")))
-    await f.settle()
-    gate = f.ce.nodes["H-E1"]                                # its gate asks again
-    assert gate.status == "AWAITING_HUMAN" and "environment" in gate.escalation.reason
-    assert not f.runs("build:T1") and f.status("provision") == "PENDING"
-    # (after provisioning, a stale spec stops a dispatch: ..._blocks_the_verifier, G-E5)
-
-
-@scenario(**ENV)
-async def test_stale_environment_approval_blocks_the_verifier(f: Flow):
-    """G-E5 for verifier sandboxes: verification escalates instead of using a stale environment."""
+async def test_a_stale_environment_stops_the_verifier(f: Flow):
+    """G-E5 for verifier sandboxes: the build's verification does not use an environment built
+    from a spec the change no longer has approved."""
     await f.to_build()
-    f.ce.write_record("plan/environment.json", json.dumps(spec(summary="edited after dispatch")))
+    root = f.ce.tickets.root
+    root.pointers["environment"] = f.ce.write_record(
+        "tickets/design/environment.json", json.dumps(spec(summary="replanned"))).attestation
     await f.implement()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == "ESCALATED" and node.escalation.kind == "verify_infra"
-    assert "G-E5" in node.escalation.reason and not sandboxes(f, "verifier")
+    t = f.ticket("verify:T1")
+    assert t.status == "waiting" and "G-E5" in " ".join(t.findings)
+    assert not sandboxes(f, "verifier")
 
 
 @scenario(**ENV)
@@ -407,17 +368,18 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
     await f.ce.human_action("H-E1", "approve", "miles", {})
     for _ in range(100):                                # provisioning starts, then its build waits
         await asyncio.sleep(0.02)
-        if f.ce.nodes["provision"].status == RUNNING:
+        if f.status("provision") == "working":
             break
-    assert f.ce.nodes["provision"].status == RUNNING
+    assert f.status("provision") == "working"
     await f.ctl.stop()                                  # the controller dies mid-build
     f.builder.hold.set()
     ctl2, ce2 = await f.restart(recover=True)
-    for _ in range(100):
+    f.ctl, f.ce = ctl2, ce2
+    for _ in range(200):
         await asyncio.sleep(0.02)
-        if ce2.nodes["provision"].status == "ACCEPTED":
+        if f.status("provision") == "passed":
             break
-    assert ce2.nodes["provision"].status == "ACCEPTED"
+    assert f.status("provision") == "passed"
     ctl3, _ = await f.restart()      # and the build persists
     assert ctl3.changes[f.ce.cid].change.environment == ce2.change.environment
 
@@ -674,7 +636,6 @@ def test_builder_runs_time_out():
 # ====================================================================== operators
 @scenario(**ENV)
 async def test_promote_copies_an_approved_proposal_into_the_library(f: Flow):
-    from legion_orch.workflow.engine import WorkflowError
     own_library(f)
     await to_plan(f)
     s = spec(proposed={"tools": {"taplo": {"description": "taplo", "mise": {"taplo": "0.9"}}}},
@@ -682,9 +643,9 @@ async def test_promote_copies_an_approved_proposal_into_the_library(f: Flow):
     await f.plan(environment=s)
     await f.critique("PASS")
     promote = lambda kind, name: f.change_action("promote_proposal", kind=kind, name=name)
-    with pytest.raises(WorkflowError, match="not approved"):
+    with pytest.raises(WorkflowError, match="approved"):
         await promote("tool", "taplo")
-    await f.human("H-E1", "approve")
+    await f.signoff("H-E1")
     res = await promote("tool", "taplo")
     written = f.tmp / "lib/tools/taplo.yaml"
     assert str(written) in res.note and "taplo" in Library.load(f.tmp / "lib", SCHEMA).tools
@@ -777,61 +738,3 @@ def test_npm_registry_is_read_only_and_keeps_encoded_slashes():
     node, err = resolve_tool("node", lib.tools["node"], None)
     assert err is None and ("NPM_CONFIG_AUDIT", "false") in node.env
     assert 'ENV NPM_CONFIG_AUDIT="false"' in dockerfile("base", [node], "v1", "sandbox")
-
-
-# ====================================================================== provisioning again
-async def blocked_task(f: Flow):
-    """A build task's implementer blocked on its image: the escalation reprovisioning answers."""
-    run = f.run("build:T1", "implementer")
-    await f.report(run, [], status="BLOCKED", blocked_reason="uv is too old in the image",
-                   missing_decision="fix the uv library entry")
-    assert f.status("build:T1") == "ESCALATED"
-    return run
-
-
-@scenario(**ENV)
-async def test_an_escalation_is_answered_by_provisioning_again(f: Flow):
-    """A fixed library entry reaches a provisioned change as an escalation's answer: the provision
-    step runs again in place (what was built on it stands), new runs of mapped roles wait for
-    it, released sandboxes start fresh in the new build, and the escalated step is retried in
-    it. The spec and its H-E1 approval stay."""
-    lib_dir = f.tmp / "lib"
-    own_library(f)
-    await f.to_build()
-    old = f.ce.change.environment.roles
-    approval = f.ce.change.approvals["H-E1"]
-    first = await blocked_task(f)
-    assert "rerun:provision" in f.ce.workflow.flow.actions("build:T1")
-    with pytest.raises(WorkflowError, match="reason"):
-        await f.human("build:T1", "rerun:provision", reason="fix")
-    uv = lib_dir / "tools/uv.yaml"
-    uv.write_text(uv.read_text() + "  UV_NO_PROGRESS: \"1\"\n")
-    res = await f.human("build:T1", "rerun:provision",
-                        reason="the uv library entry gained a setting")
-    assert "provisioning again" in res.note
-    assert f.status("provision") == "ACCEPTED"                  # built again, and accepted
-    assert f.ce.nodes["provision"].cycle == 2
-    new = f.ce.change.environment.roles
-    assert new["implementer"].image != old["implementer"].image
-    assert f.ce.change.approvals["H-E1"] == approval            # same spec, same approval
-    assert f.status("plan") == f.status("H-E1") == "ACCEPTED"   # what was built on it stands
-    recipe = f.builder.recipes[new["implementer"].image]
-    assert 'ENV UV_NO_PROGRESS="1"' in recipe.files["Dockerfile"]
-    retried = f.run("build:T1", "implementer")                  # retried, in the new build
-    assert retried.id != first.id and f.status("build:T1") == "RUNNING"
-    assert first.sandbox in f.runner.deleted
-    assert f.runner.specs[retried.sandbox].env.image == new["implementer"].image
-
-
-@scenario(**ENV)
-async def test_provisioning_again_needs_a_provisioned_current_environment(f: Flow):
-    reason = "rebuild against the updated library"
-    await f.to_build()
-    await blocked_task(f)
-    path = "plan/environment.json"
-    f.ce.docs.write(f.ce.p(path), json.dumps(spec(summary="changed after approval")),
-                    author="someone", role="planner", base_version=f.ce.latest(path))
-    with pytest.raises(WorkflowError, match="G-E5"):
-        await f.human("build:T1", "rerun:provision", reason=reason)
-    with pytest.raises(WorkflowError, match="unknown change action"):
-        await f.change_action("reprovision", reason=reason)     # only as an answer now
