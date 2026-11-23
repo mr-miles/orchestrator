@@ -237,14 +237,6 @@ def main():
         doc = write(f"{me}/review.md", f"{data['verdict']}")
         print(call("report", status="DONE", summary="reviewed", attestations=[catt, doc],
                    data=data, outputs={"review": doc}))
-    elif role == "baseline":
-        head = a["head_sha"]
-        orc = json.loads(call("docs_read", path=f"{PLAN}/oracle.json")["content"])
-        results = [{"command": c, "exit_code": subprocess.run(["sh", "-c", c]).returncode}
-                   for c in orc["acceptance_commands"] + orc["integration_commands"]]
-        doc = write(f"{me}/report.md", f"baseline at {head}: {results}")
-        print(call("report", status="DONE", summary="baseline", attestations=[f"git:{REPO}@{head}", doc],
-                   data={"results": results}, outputs={"report": doc}))
     elif role == "describer":
         head = a["head_sha"]
         files = git("ls-files", "src", "docs").split()          # what the builds wrote

@@ -588,13 +588,7 @@ class Flow:
         if "oracle" in self.ce.st.tickets:
             await self.oracle()
             await self.signoff("H-2")
-        if "baseline" in self.ce.st.tickets:
-            r = self.run("baseline")
-            doc = await self.write(r, "report.md", "baseline")
-            cmds = self.ce.oracle_commands()
-            await self.report(r, [f"git:{REPO}@{r.base_sha}", doc], {
-                "results": [{"command": c, "exit_code": 1} for c in cmds]},
-                outputs={"report": doc})
+        if "baseline" in self.ce.st.tickets:            # the controller's: then signed off
             await self.signoff("H-2b")
 
     async def to_end(self, **kw) -> None:

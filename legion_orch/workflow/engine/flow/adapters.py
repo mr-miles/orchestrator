@@ -185,8 +185,11 @@ class Verify:
             async with c.lock:
                 c.verifying.pop(tid, None)
         full = c.json_doc(record_path(run.id)) if c.latest(record_path(run.id)) else None
-        return Verification.model_validate(full) if full else (run.result or Verification(
-            sha=sha, infra_error=f"verification {run.id}: {run.state}"))
+        if full:                              # the record (outputs), with its attestation
+            return Verification.model_validate(full).model_copy(update={
+                "attestation": run.result.attestation if run.result else None})
+        return run.result or Verification(sha=sha,
+                                          infra_error=f"verification {run.id}: {run.state}")
 
     async def stop(self, ticket: str) -> None:
         return None

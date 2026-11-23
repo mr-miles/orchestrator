@@ -30,6 +30,10 @@ from .rules import Add, Replan, precedes, validate
 CLOSED = {Status.FAILED, Status.CANCELLED}
 
 
+# what a controller ticket's work produces (an agent's is its role's ``outputs``)
+CONTROLLER_OUTPUTS = {"controller:baseline": ["baseline"]}
+
+
 class SpecError(ValueError):
     pass
 
@@ -144,7 +148,11 @@ class WorkflowSpec(_Strict):
         produces – the roles' declared outputs standing in for reports –, applies ``tier`` or one
         of them, and whether every input names an output some sign-off approves."""
         def has(x: Ticket, name: str) -> bool:
-            return x.type.startswith("agent:") and x.role != "criterion" \
+            if x.role == "criterion":
+                return False
+            if x.type in CONTROLLER_OUTPUTS:
+                return name in CONTROLLER_OUTPUTS[x.type]
+            return x.type.startswith("agent:") \
                 and name in role_outputs.get(x.type.partition(":")[2], [])
         out: list[str] = []
         signed: set[str] = set()

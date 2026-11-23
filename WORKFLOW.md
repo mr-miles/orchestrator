@@ -353,7 +353,7 @@ violations the findings, so the planner reworks.
 | H-1 | `intake` | `requirements`, `risk` | `tier` |
 | H-E1 | `design` (after the critique) | `spec`, `specs`, `oracle`, `environment`, `tickets` | `tickets` |
 | H-2 | `oracle` (after preflight), R2+ | `tests` | – |
-| H-2b | `baseline`, R3 | `report` | – |
+| H-2b | `baseline`, R3 | `baseline` (the controller's record) | – |
 | H-3 | `evaluate` | `head` (the integrated change), `pr` | – |
 
 ### 4.3 Lifecycle
@@ -631,7 +631,7 @@ Every sandbox that works on the repository is a fresh clone. The repository's `m
 a checkout needs: `[tools]`, installed when the environment's images are built, and a
 `[tasks.setup]` task – dependency installs, code generation, a build the tests need – that the
 controller runs after every checkout as `mise run setup`: first in every verifier sandbox (G-V3),
-and once after the clone in the sandbox of every role that works with a commit (oracle, baseline,
+and once after the clone in the sandbox of every role that works with a commit (oracle,
 implementer, reviewers, integration; a failure is logged and the agent may still work). Read-only
 roles (intake, planner, critic) skip it. No `setup` task: nothing runs.
 
@@ -703,18 +703,19 @@ configuration they depend on is listed in `oracle.protected_support` and protect
 (G-P7, G-O1, G-INT2). The test-engineer soul requires this, the critic checks it, and humans
 sign it at H-2. Per-build verification commands are a faster, weaker check backed by review.
 
-### 5.5 `baseline` (R3) – independent baseline (`plan` ▸ `acceptance` ▸ `baseline`)
+### 5.5 `controller:baseline` (R3) – independent baseline (`plan` ▸ `acceptance` ▸ `baseline`)
 
 What is true of the code before any build: which acceptance tests fail (as they should, until the
-change is built) and which failures were already there. The integration verifier is given it.
-
-* **Soul:** `baseline-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`
-* **Inputs:** `spec`, `oracle`  **Outputs:** `report` (`report.md`), git `head` (its base: the head with the oracle merged)
+change is built) and which failures were already there. It is deterministic, so the controller
+does it: the repository's setup and then the oracle's acceptance and integration commands, at the
+head with the oracle merged, in a fresh verifier sandbox – the verification service, once per key
+(§5.7). Failing commands are expected and recorded, not judged; a setup that fails, a command the
+image lacks or the verifier's infrastructure is a fault (it waits on a human). The verification
+record is its output `baseline`; the integration verifier is given it.
 
 | ID | Rule |
 | --- | --- |
-| G-BL1 | `data.results` lists every acceptance and integration command with its exit code at the attested head. |
-| H-2b | A decision owner signs the baseline's `report`. A rejection reworks the baseline. |
+| H-2b | A decision owner signs the `baseline` record – which commands already pass (they cannot show that the change works), which fail. A rejection escalates: rerunning the same commands at the same head would change nothing, so the remedy is a replan (a changed oracle, or abandoning the change). |
 
 ### 5.6 `implementer` – a build (`delivery` ▸ the planner's builds)
 
@@ -808,7 +809,7 @@ is a replan that adds fix builds to `delivery`, after which every one of its cri
 new head again, from the first (or a waiver of the integration's verdict).
 
 * **Soul:** `integration-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`
-* **Outputs:** `report`, git `head` (the commit it judges: `delivery`'s head)  **Context:** every build's evidence and, at R3, the baseline's report
+* **Outputs:** `report`, git `head` (the commit it judges: `delivery`'s head)  **Context:** every build's evidence and, at R3, the baseline record
 
 | ID | Rule |
 | --- | --- |
@@ -1064,8 +1065,6 @@ rules and has not yet brought back others.
 * G-P9 – A delta spec for every accepted requirement, written by this run.
 * G-PF1's routing – a preflight whose setup fails reworks the oracle; when the fault is in the
   environment or the plan the oracle can only report BLOCKED.
-* G-BL2 – The controller's own run of the baseline's commands at the head (failures expected and
-  recorded), and at H-2 the acceptance commands that already pass.
 * G-PP1 – a human's approval for a protected path in one build's diff
   (`approve_protected_paths`).
 * G-H1 – the integration branch moved outside the workflow (commits not made by a merge) is not
@@ -1135,7 +1134,7 @@ assets/
   its work, and what its handler adds: a judge, the outputs of the work it judges (and its
   predecessor's review); a build's implementer and judges, the delta specs of the build's own
   requirements only and the oracle's commit; the integration verifier, every build's evidence
-  and the baseline's report. A document already given at its approved version is not repeated
+  and the baseline record. A document already given at its approved version is not repeated
   at another, and relative `file:` refs are qualified to the change.
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)
@@ -1150,7 +1149,6 @@ generated `legion-workflow` skill.
 | `planner` | [`prompts/planner.md`](assets/prompts/planner.md) |
 | `critic` | [`prompts/critic.md`](assets/prompts/critic.md) |
 | `oracle` | [`prompts/oracle.md`](assets/prompts/oracle.md) |
-| `baseline` | [`prompts/baseline.md`](assets/prompts/baseline.md) |
 | `scaffolder` | [`prompts/scaffolder.md`](assets/prompts/scaffolder.md) |
 | `implementer` | [`prompts/implementer.md`](assets/prompts/implementer.md) |
 | `reviewer` | [`prompts/reviewer.md`](assets/prompts/reviewer.md) |
@@ -1169,7 +1167,6 @@ generated `legion-workflow` skill.
 * [`architect-planner`](assets/souls/architect-planner.md)
 * [`plan-critic`](assets/souls/plan-critic.md)
 * [`test-engineer`](assets/souls/test-engineer.md)
-* [`baseline-verifier`](assets/souls/baseline-verifier.md)
 * [`senior-developer`](assets/souls/senior-developer.md)
 * [`backend-engineer`](assets/souls/backend-engineer.md)
 * [`frontend-engineer`](assets/souls/frontend-engineer.md)
@@ -1200,7 +1197,6 @@ guards, because a per-file schema cannot express them.
 * [`oracle`](assets/schemas/oracle.json)
 * [`questions`](assets/schemas/questions.json)
 * [`release-plan`](assets/schemas/release-plan.json)
-* [`report-baseline`](assets/schemas/report-baseline.json)
 * [`report-critique`](assets/schemas/report-critique.json)
 * [`report-integration`](assets/schemas/report-integration.json)
 * [`report-none`](assets/schemas/report-none.json)

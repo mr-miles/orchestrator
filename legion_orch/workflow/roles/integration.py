@@ -16,8 +16,8 @@ class Integration(RoleHandler):
     roles = ("integration",)
 
     def extra_context(self, e: RoleContext, ticket) -> list[str]:
-        """Every build's evidence and (R3) the baseline's report."""
-        return outputs_named(e, "evidence") + outputs_named(e, "report", "agent:baseline")
+        """Every build's evidence and (R3) the baseline: the oracle's commands before any build."""
+        return outputs_named(e, "evidence") + outputs_named(e, "baseline", "controller:baseline")
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         orc = Oracle.model_validate(json.loads(pointer(e, "oracle") or "{}"))

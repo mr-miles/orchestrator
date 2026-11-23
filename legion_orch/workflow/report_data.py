@@ -16,7 +16,7 @@ class NoData(Record):
 
 
 class ResultsData(Record):
-    """Commands the agent ran, with their exit codes (baseline)."""
+    """Commands the agent ran, with their exit codes (the integration verifier)."""
     results: list[CommandResult]
 
     def missing(self, commands: list[str]) -> list[str]:
@@ -47,7 +47,6 @@ class IntegrationData(ReviewData, ResultsData):
 
 MODEL_FOR_SCHEMA: dict[str, type[Record]] = {
     "report-none": NoData,
-    "report-baseline": ResultsData,
     "report-review": ReviewData,
     "report-critique": CritiqueData,
     "report-integration": IntegrationData,

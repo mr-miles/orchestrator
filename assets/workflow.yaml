@@ -71,14 +71,14 @@ skeleton:
                   type: "human:signoff"
                   signs: [tests]
             - id: baseline
-              type: "agent:baseline"
-              tiers: [R3]
+              type: "controller:baseline"   # the oracle's commands before any build: what
+              tiers: [R3]                   # fails, as it should, and what already did
               goal: "the baseline: what passes and fails before any build"
-              inputs: [spec, oracle]
-              criteria:             # its own sign-off: a rejection reworks it
+              criteria:             # its sign-off: a rejection escalates (nothing to rework)
                 - id: H-2b
                   type: "human:signoff"
-                  signs: [report]
+                  severity: escalate
+                  signs: [baseline]
     - id: delivery
       # the planner's builds; its criteria judge them together, at its head (its own branch:
       # it merges into the change's once they pass – a failure escalates: fixes are a replan)
@@ -132,8 +132,8 @@ tiers:                              # rules by ticket type – never by id (ids 
       - {type: "agent:oracle", criteria: ["controller:preflight", "human:signoff"]}
   R3:
     extends: R2
-    exists: ["agent:baseline"]
+    exists: ["controller:baseline"]
     order:
-      - {each: "agent:implementer", after: "agent:baseline"}
+      - {each: "agent:implementer", after: "controller:baseline"}
     every:
-      - {type: "agent:baseline", criteria: ["human:signoff"]}
+      - {type: "controller:baseline", criteria: ["human:signoff"]}

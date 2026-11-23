@@ -26,13 +26,6 @@ oracle:
   git: commit
   report_schema: report-none
   repo: true
-baseline:
-  soul: baseline-verifier
-  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol]
-  outputs: [report]
-  git: head
-  report_schema: report-baseline
-  repo: true
 implementer:
   soul: "{{task_soul}}"
   souls_allowed: [senior-developer, backend-engineer, frontend-engineer]

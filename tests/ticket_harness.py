@@ -39,7 +39,7 @@ class Script:
     the work giving its outcome instead; ``gates[id]``: an event its work waits for;
     :meth:`reached`: until a ticket's work has started."""
 
-    CODE = frozenset({"agent:implementer", "agent:oracle", "agent:baseline"})
+    CODE = frozenset({"agent:implementer", "agent:oracle", "agent:scaffolder"})
 
     def __init__(self, hub: GitRemote, outputs: dict[str, list[str]] | None = None):
         self.hub, self.role_outputs = hub, outputs or {}

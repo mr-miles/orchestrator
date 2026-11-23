@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from ...model import Verification
-from .base import Backoff, Fault, Judged, Outcome, Work, attempt
+from .base import Backoff, Done, Fault, Judged, Outcome, Work, attempt
 
 EXIT_NOT_FOUND = 127        # bash: command not found (126, not executable, is a fixable repo file)
 TAIL = 800
@@ -52,11 +52,15 @@ def verification_outcome(res: Verification, expect_failures: bool = False) -> Ou
 
 
 class VerifyExecutor:
-    """``expect_failures``: a preflight (its commands must run, not pass)."""
+    """``expect_failures``: a preflight (its commands must run, not pass). ``records``: a
+    ticket's own work (the baseline) – the commands run, failures expected, and the
+    verification record is its output of that name (a setup that fails, or a command that
+    cannot run, waits on a human: rerunning it would change nothing)."""
 
     def __init__(self, port: VerifyPort, backoff: Backoff = Backoff(),
-                 expect_failures: bool = False):
-        self.port, self.backoff, self.expect = port, backoff, expect_failures
+                 expect_failures: bool = False, records: str | None = None):
+        self.port, self.backoff = port, backoff
+        self.expect, self.records = expect_failures or records is not None, records
 
     async def run(self, work: Work) -> Outcome:
         sha = work.judged or work.base
@@ -67,7 +71,13 @@ class VerifyExecutor:
             return Judged(True)           # run – a build always has its own (G-P4)
 
         async def once() -> Outcome:
-            return verification_outcome(await self.port.verify(work, sha, commands), self.expect)
+            res = await self.port.verify(work, sha, commands)
+            out = verification_outcome(res, self.expect)
+            if self.records is None or not isinstance(out, Judged):
+                return out
+            if not out.passed:
+                return Fault("; ".join(out.findings), transient=False)
+            return Done(outputs={self.records: res.attestation} if res.attestation else {})
         return await attempt(once, self.backoff)
 
     async def stop(self, ticket: str) -> None:

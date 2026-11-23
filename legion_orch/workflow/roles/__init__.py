@@ -1,6 +1,5 @@
 """Per-role report handling; importing the package registers every handler."""
 from . import (  # noqa: F401  (registration side effects)
-    baseline,
     critic,
     describer,
     implementer,
