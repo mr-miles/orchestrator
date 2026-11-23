@@ -7,7 +7,6 @@ import json
 
 from engine_harness import Flow, scenario
 
-from legion_orch.config import Config
 from legion_orch.sandbox import OpenShellRunner, SandboxError
 from legion_orch.workflow.engine import Controller
 
@@ -78,32 +77,38 @@ async def test_a_sandbox_of_the_change_no_run_knows_is_deleted_on_start(f: Flow)
 async def test_a_gateway_that_does_not_answer_leaves_the_change_as_it_was(f: Flow):
     planner = await _planned(f)
 
-    async def broken():
+    async def broken(selector=None):
         raise SandboxError("gateway unreachable")
     f.runner.list = broken
     _, ce2 = await _restart(f)
     assert not ce2.runs[planner.id].sandbox_deleted               # nothing concluded
 
 
-def test_the_openshell_listing_is_parsed_and_a_further_page_makes_it_partial(tmp_path):
-    page = {"next_page_token": "", "sandboxes": [
-        {"name": "lg-ana", "id": "64ee", "phase": "Stopped",
-         "labels": {"legion.change": "c1", "legion.task": "build.T1"},
-         "annotations": {"legion.task": "build:T1"}},
-        {"name": "claw", "id": "d901", "phase": "Ready", "labels": {}}]}
-    cfg = Config.__new__(Config)
+def test_the_openshell_listing_selects_the_change_and_reads_every_page(tmp_path):
+    pages = {"": {"next_page_token": "abc", "sandboxes": [
+                 {"name": "lg-ana", "id": "64ee", "phase": "Stopped",
+                  "labels": {"legion.change": "c1", "legion.task": "build.T1"},
+                  "annotations": {"legion.task": "build:T1"}}]},
+             "abc": {"next_page_token": "", "sandboxes": [
+                 {"name": "lg-bo", "id": "d901", "phase": "Ready",
+                  "labels": {"legion.change": "c1"}}]}}
     runner = OpenShellRunner.__new__(OpenShellRunner)
     calls = []
 
     async def os_(*args, timeout=600):
         calls.append(args)
-        return json.dumps(page)
-    runner._os, runner.cfg = os_, cfg
-    listing = asyncio.run(runner.list())
-    assert calls == [("sandbox", "list", "--output", "json")] and listing.complete
-    ana, claw = listing.sandboxes
+        token = args[args.index("--page-token") + 1] if "--page-token" in args else ""
+        return json.dumps(pages[token])
+    runner._os = os_
+    listing = asyncio.run(runner.list({"legion.change": "c1"}))
+    assert calls == [
+        ("sandbox", "list", "--output", "json", "--selector", "legion.change=c1"),
+        ("sandbox", "list", "--output", "json", "--selector", "legion.change=c1",
+         "--page-token", "abc")]
+    assert listing.complete
+    ana, bo = listing.sandboxes
     assert (ana.name, ana.id, ana.change, ana.stopped) == ("lg-ana", "64ee", "c1", True)
-    assert ana.annotations["legion.task"] == "build:T1"
-    assert claw.change is None and not claw.stopped                # not ours
-    page["next_page_token"] = "abc"
+    assert ana.annotations["legion.task"] == "build:T1" and not bo.stopped
+    pages[""]["next_page_token"] = pages["abc"]["next_page_token"] = "abc"   # never ends
+    runner.MAX_PAGES = 3
     assert not asyncio.run(runner.list()).complete
