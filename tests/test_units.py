@@ -8,6 +8,7 @@ import pytest
 
 from legion_orch.store import DocStore, DocStoreError, VersionConflict
 from legion_orch.store.journal import Journal
+from legion_orch.store.state_tables import StateTables
 from legion_orch.telemetry import Telemetry
 from legion_orch.workflow import guards, risk
 from legion_orch.workflow.assets import AssetError, Assets
@@ -281,7 +282,8 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     svc = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None,
                                 assets=None, runner=None, lock=None, procs={},
                                 telemetry=Telemetry.off(),
-                                journal=Journal(tmp_path / "journal"))
+                                journal=Journal(tmp_path / "journal"),
+                                tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = Reports(ChangeCore(svc, StubHost(), "c1"), lifecycle=None, roles=None)  # writes need neither
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
@@ -770,7 +772,8 @@ def test_transition_rollback_keeps_identity(tmp_path):
     from legion_orch.workflow.model import Change, Node, Run
     svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
                                 lock=None, procs={}, telemetry=Telemetry.off(),
-                                journal=Journal(tmp_path / "journal"))
+                                journal=Journal(tmp_path / "journal"),
+                                tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = ChangeCore(svc, StubHost(), "c1")
     ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")

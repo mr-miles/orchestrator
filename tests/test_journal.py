@@ -5,9 +5,8 @@ import json
 
 from engine_harness import TASKS, Flow, scenario
 
-from legion_orch.store.journal import apply, diff
+from legion_orch.store.journal import Journal, apply, diff
 from legion_orch.workflow.engine import Controller
-from legion_orch.workflow.engine.base.state import StateStore
 
 
 def _reload(f: Flow) -> tuple[Controller, object]:
@@ -36,19 +35,33 @@ def test_entries_fold_to_the_record():
 
 
 @scenario()
-async def test_a_restart_folds_the_journal_back_into_the_same_records(f: Flow):
+async def test_a_restart_loads_the_same_records_from_the_tables_alone(f: Flow):
     t2 = dict(TASKS[0], id="T2", title="part", files_modified=["src/part.txt"],
               verification=["test -f src/part.txt"])
     await f.to_build(tasks=[TASKS[0], t2])
     await f.implement("T1")
     await f.settle()
     before = _dumps(f.ce)
+    f.ctl.svc.journal.path(f.ce.cid).unlink()          # the history is not read on start
     _, ce2 = _reload(f)
     assert _dumps(ce2) == before
     assert list(ce2.nodes) == list(f.ce.nodes) and list(ce2.runs) == list(f.ce.runs)
-    # the controller's records are no documents any more
+    # the controller's records are no documents
     assert not f.ctl.docs.list(f"changes/{f.ce.cid}/control/runs/")
     assert not f.ctl.docs.latest_version(f"changes/{f.ce.cid}/control/change.json")
+
+
+@scenario()
+async def test_the_tables_hold_one_row_per_record_updated_in_place(f: Flow):
+    await f.to_build()
+    await f.implement()
+    conn, cid = f.ctl.svc.tables.conn, f.ce.cid
+    count = lambda t: conn.execute(f"SELECT COUNT(*) FROM {t} WHERE change=?", (cid,)).fetchone()[0]  # noqa: E731
+    assert count("changes") == 1
+    assert count("steps") == len(f.ce.nodes) and count("runs") == len(f.ce.runs)
+    # the journal's history folds to the same records
+    folded = f.ctl.svc.journal.fold(cid)
+    assert folded == f.ctl.svc.tables.load(cid)
 
 
 @scenario()
@@ -75,42 +88,16 @@ async def test_the_journal_is_only_appended_to_and_a_save_appends_what_changed(f
 
 
 @scenario()
-async def test_a_load_snapshots_and_a_later_load_folds_from_the_snapshot(f: Flow):
-    await f.intake()
-    _, ce2 = _reload(f)
-    lines = [json.loads(x) for x in f.ctl.svc.journal.path(f.ce.cid).read_text().splitlines()]
-    assert lines[-1]["entries"][0] == ["$snapshot", {}]           # every live record, in full
-    assert {r for r, _ in lines[-1]["entries"][1:]} == {
-        "change", "workflow", *(f"node:{k}" for k in f.ce.nodes), *(f"run:{k}" for k in f.ce.runs)}
-    _, ce3 = _reload(f)
-    assert _dumps(ce3) == _dumps(ce2)
-
-
-@scenario()
-async def test_snapshots_are_taken_every_so_many_entries(f: Flow):
-    StateStore.SNAPSHOT_EVERY = 5
-    try:
-        await f.intake()
-        await f.human("H-1", "accept")
-    finally:
-        StateStore.SNAPSHOT_EVERY = 1000
-    lines = f.ctl.svc.journal.path(f.ce.cid).read_text().splitlines()
-    assert sum(json.loads(x)["entries"][0][0] == "$snapshot" for x in lines) >= 2
-    _, ce2 = _reload(f)
-    assert _dumps(ce2) == _dumps(f.ce)
-
-
-@scenario()
 async def test_a_line_cut_short_by_a_crash_is_skipped_and_the_next_save_starts_a_new_one(f: Flow):
     await f.intake()
-    path = f.ctl.svc.journal.path(f.ce.cid)
-    before = _dumps(f.ce)
-    with open(path, "a") as fh:
+    j, cid = f.ctl.svc.journal, f.ce.cid
+    before = j.fold(cid)
+    with open(j.path(cid), "a") as fh:
         fh.write('{"seq": 999, "entries": [["change", {"status": "BRO')     # the crash
-    ctl2, ce2 = _reload(f)
-    assert _dumps(ce2) == before                                   # the torn save never happened
+    fresh = Journal(f.cfg.state_dir / "journal")
+    assert fresh.fold(cid) == before                     # the torn save is not history
+    ctl2, ce2 = _reload(f)                               # the controller after the crash
     async with ctl2.svc.lock:
         ce2.change.goal = "after the crash"
         ce2.save()
-    _, ce3 = _reload(f)
-    assert ce3.change.goal == "after the crash"
+    assert Journal(f.cfg.state_dir / "journal").fold(cid)["change"]["goal"] == "after the crash"
