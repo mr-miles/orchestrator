@@ -46,9 +46,20 @@ class Failure(Exception):
 
 
 def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    return free_ports(1)[0]
+
+
+def free_ports(n: int) -> list[int]:
+    """``n`` distinct free ports, held together while they are picked (so none repeats). Another
+    process may still take one before the controller binds it: :meth:`Driver.serve` retries."""
+    socks = [socket.socket() for _ in range(n)]
+    try:
+        for s in socks:
+            s.bind(("127.0.0.1", 0))
+        return [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
 
 
 # ------------------------------------------------------------------------------- collector
@@ -203,7 +214,7 @@ class Driver:
         self.logs: list[Path] = []
         self.collector = Collector(sc.get("collector", "ok"), list(sc.get("needles", [])))
         self.token = sc.get("operator_token")
-        self.port = free_port()
+        self.port: int | None = None            # (write_config picks it)
         self.cid = None
         self.final: dict = {}
         self.exit_codes: list[int] = []
@@ -232,6 +243,7 @@ class Driver:
         fake.write_text(f"#!/bin/sh\nexec {sys.executable} {ROOT / 'tests/fake_agent.py'}\n")
         fake.chmod(0o755)
         server_extra = f", operator_token: {json.dumps(self.token)}" if self.token else ""
+        self.port, mcp, git, token, a2a = free_ports(5)
         text = textwrap.dedent(f"""
             project: {self.sc.get('project', 'otel-acceptance')}
             workspaces: [{{name: app, source: {self.tmp / 'src-repo'}, base_branch: main}}]
@@ -240,8 +252,8 @@ class Driver:
             assets_dir: {ROOT / 'assets'}
             workflow_doc: {ROOT / 'WORKFLOW.md'}
             server: {{host: 127.0.0.1, port: {self.port}, agent_host: 127.0.0.1, public_host: 127.0.0.1,
-                      mcp_port: {free_port()}, git_port: {free_port()},
-                      token_port: {free_port()}, a2a_port: {free_port()}{server_extra}}}
+                      mcp_port: {mcp}, git_port: {git},
+                      token_port: {token}, a2a_port: {a2a}{server_extra}}}
             limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
             retrospective: {{auto: false}}
             sandbox:
@@ -334,7 +346,28 @@ class Driver:
                         {"action": action, "approver": approver, "payload": payload or {}})
 
     def await_serving(self, proc):
-        self.wait(lambda: self.api("/api/meta"), "the operator API", proc)
+        def meta():
+            try:
+                return self.api("/api/meta")
+            except Failure:                 # not ours yet (another test's server on the port)
+                return None
+        self.wait(meta, "the operator API", proc)
+
+    def serve(self) -> tuple[Path, subprocess.Popen]:
+        """Write a config on fresh ports and start the controller until it serves. Another test's
+        process may take one of the ports first (picked free, not reserved): the controller then
+        cannot bind it and exits, and starts again on new ports."""
+        for _ in range(3):
+            cfg = self.write_config()
+            proc = self.start_process(cfg)
+            try:
+                self.await_serving(proc)
+                return cfg, proc
+            except Failure as e:
+                if "controller exited" not in str(e) or \
+                        "address already in use" not in self.stderr_tail().lower():
+                    raise
+        raise Failure("the controller found no free ports in 3 tries")
 
     def snapshot_final(self):
         st = self.state()
@@ -391,11 +424,9 @@ class Driver:
     def run(self):
         sc = self.sc["scenario"]
         self.make_repo()
-        cfg = self.write_config()
-        proc = self.start_process(cfg)
         if sc == "blocked":
-            return self.blocked(proc)
-        self.await_serving(proc)
+            return self.blocked(self.start_process(self.write_config()))
+        cfg, proc = self.serve()
         goal = self.sc.get("goal") or "Say hello and goodbye"
         self.cid = self.api("/api/changes", {"goal": goal, "workspace": "app"})["change"]
         if sc == "wire":
