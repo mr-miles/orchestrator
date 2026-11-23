@@ -153,9 +153,12 @@ class ChangeCore:
 
     def _stamp_statuses(self) -> None:
         """A ticket that started waiting on a human is an escalation (the resolver hears)."""
+        now = now_iso()
         for tid, t in self.st.tickets.items():
-            if self._statuses.get(tid) != t.status and t.status == Status.WAITING:
-                self.emit(Escalated(self.cid, tid))
+            if self._statuses.get(tid) != t.status:
+                t.since = now
+                if t.status == Status.WAITING:
+                    self.emit(Escalated(self.cid, tid))
         self._statuses = {tid: t.status for tid, t in self.st.tickets.items()}
 
     def _update_attention(self) -> None:

@@ -21,7 +21,6 @@ from ....sandbox import (
     is_name_clash,
     write_payload,
 )
-from ... import governance
 from ...assets import GitMode
 from ...environment import VERIFIER
 from ...model import LIVE_RUN, Change, Run, RunStage
@@ -115,7 +114,7 @@ class VerifierSession:
             env = sandbox_env(c.change, VERIFIER)
             policy = c.svc.write_policy(self._base / "policy.yaml", agent=False,
                                         network=env.network if env else None)
-            if stale := governance.stale_environment(c):
+            if stale := stale_environment(c):
                 raise SandboxError(stale)
             try:
                 self._ref = await c.runner.create(SandboxSpec(
@@ -146,6 +145,16 @@ class VerifierSession:
                 await c.runner.delete(self.name)
             except Exception as e:
                 c.event("sandbox", f"verifier delete failed: {e}")
+
+
+def stale_environment(c: ChangeCore) -> str | None:
+    """G-E5: the provisioned environment was built from the approved spec (the ``environment``
+    pointer) – not from one a replan has since replaced."""
+    build, ref = c.change.environment, c.tickets.root.pointers.get("environment") \
+        if c.st.tickets else None
+    if build is None or ref is None or build.spec == ref:
+        return None
+    return f"G-E5: the environment was built from {build.spec}, but the approved spec is {ref}"
 
 
 class Sandboxes:

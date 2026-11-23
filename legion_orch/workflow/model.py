@@ -12,55 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..util import now_iso
 
-
 # ---------------------------------------------------------------------------- enums
-class NodeKind(StrEnum):
-    WORKSPACE = "workspace"              # the controller syncs the change's workspace (first)
-    INTAKE = "intake"
-    PLAN = "plan"
-    PROVISION = "provision"
-    ORACLE = "oracle"
-    PREFLIGHT = "preflight"              # the controller runs the oracle's commands (R2+)
-    BASELINE = "baseline"
-    BUILD = "build"
-    INTEGRATION = "integration"
-    DESCRIBE = "describe"                # the change's pull request description, judged
-    PUBLISH = "publish"                  # after H-3: the controller opens the pull request
-    RELEASE = "release"                  # (kept for live-system workflows; in no tier's tree)
-    HUMAN = "human"
-    RETROSPECTIVE = "retrospective"      # on demand, once the change has ended
-
-
-class NodeStatus(StrEnum):
-    PENDING = "PENDING"
-    READY = "READY"
-    RUNNING = "RUNNING"
-    VERIFYING = "VERIFYING"
-    REVIEWING = "REVIEWING"
-    MERGING = "MERGING"
-    REWORK = "REWORK"
-    ACCEPTED = "ACCEPTED"
-    ESCALATED = "ESCALATED"
-    FAILED = "FAILED"
-    AWAITING_HUMAN = "AWAITING_HUMAN"
-    DEFINING = "DEFINING"                 # an accepted plan's tasks become the workflow's steps
-
-
-class RunStatus(StrEnum):
-    STARTING = "STARTING"
-    ACTIVE = "ACTIVE"
-    REPORTED = "REPORTED"
-    ACCEPTED = "ACCEPTED"
-    SUPERSEDED = "SUPERSEDED"
-    FAILED = "FAILED"
-
-
-class RunStage(StrEnum):
-    """How far a run's sandbox got (independent of :class:`RunStatus`, which is the outcome)."""
-    PREPARING = "PREPARING"      # OpenShell is creating the sandbox
-    LAUNCHING = "LAUNCHING"      # the payload is in place; the setup script and agent are starting
-    RUNNING = "RUNNING"          # the agent has connected to the controller (first MCP call)
-    EXITED = "EXITED"            # the agent process has ended
 
 
 class FailureSource(StrEnum):
@@ -102,68 +54,24 @@ class ReportStatus(StrEnum):
     BLOCKED = "BLOCKED"
 
 
-class AttestationKind(StrEnum):
-    INDEPENDENT_BASELINE = "independent-baseline"
-    SECURITY_EVALUATION = "security-evaluation"
-    E2E_EVALUATION = "e2e-evaluation"
-    ARCHITECTURE_REVIEW = "architecture-review"
-    ROLLBACK_EVIDENCE = "rollback-evidence"
-    FORWARD_FIX_EVIDENCE = "forward-fix-evidence"
-    RELEASE_OBSERVATION = "release-observation"
+class RunStatus(StrEnum):
+    STARTING = "STARTING"
+    ACTIVE = "ACTIVE"
+    REPORTED = "REPORTED"
+    ACCEPTED = "ACCEPTED"
+    SUPERSEDED = "SUPERSEDED"
+    FAILED = "FAILED"
 
 
-class AttestationVerdict(StrEnum):
-    PASS = "pass"
-    FAIL = "fail"
-    UNKNOWN = "unknown"
-    NOT_APPLICABLE = "not_applicable"      # a waiver (needs a reason)
-
-
-class OverrideKind(StrEnum):
-    ADD_GATE = "add_gate"
-    WAIVE_GATE = "waive_gate"
-
-
-class GateStatus(StrEnum):
-    SATISFIED = "satisfied"
-    UNSATISFIED = "unsatisfied"
-    UNEVALUABLE = "unevaluable"            # no evidence to evaluate yet
-
-
-class ReadinessVerdict(StrEnum):
-    READY = "READY"
-    NOT_READY = "NOT_READY"
-
-
-class ApprovalState(StrEnum):
-    """An H-2 subject's approval against the current document versions."""
-    APPROVED = "approved"
-    STALE = "stale"                        # approved, but the documents changed since
-    PENDING = "pending"
-
-
-class Resume(StrEnum):
-    """What resolving an escalation (retry/answer) resumes."""
-    READY = "READY"                       # dispatch the node again
-    REWORK = "REWORK"                     # dispatch a rework run in the same cycle
-    REWORK_CYCLE = "REWORK_CYCLE"         # grant one more cycle and rework
-    CRITIQUE_BUDGET = "CRITIQUE_BUDGET"   # grant one more plan cycle; the plan is reworked
-    VERIFYING = "VERIFYING"               # re-run deterministic verification
-    REVIEWING = "REVIEWING"               # re-dispatch the missing panel member(s)
-    MERGING = "MERGING"                   # merge the accepted candidate again
+class RunStage(StrEnum):
+    """How far a run's sandbox got (independent of :class:`RunStatus`, which is the outcome)."""
+    PREPARING = "PREPARING"      # OpenShell is creating the sandbox
+    LAUNCHING = "LAUNCHING"      # the payload is in place; the setup script and agent are starting
+    RUNNING = "RUNNING"          # the agent has connected to the controller (first MCP call)
+    EXITED = "EXITED"            # the agent process has ended
 
 
 # Short aliases used throughout the engine (members compare and serialise as their strings).
-INTAKE, PLAN, ORACLE, BASELINE, BUILD, INTEGRATION, RELEASE, HUMAN = (
-    NodeKind.INTAKE, NodeKind.PLAN, NodeKind.ORACLE, NodeKind.BASELINE,
-    NodeKind.BUILD, NodeKind.INTEGRATION, NodeKind.RELEASE, NodeKind.HUMAN)
-PROVISION, RETRO, PREFLIGHT = NodeKind.PROVISION, NodeKind.RETROSPECTIVE, NodeKind.PREFLIGHT
-WORKSPACE, DESCRIBE, PUBLISH = NodeKind.WORKSPACE, NodeKind.DESCRIBE, NodeKind.PUBLISH
-H_REQUIREMENTS, H_SPEC, H_CHANGE = "H-1", "H-2", "H-3"      # human gate node ids
-H_ENV = "H-E1"                                              # approve the sandbox environment
-PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALATED, FAILED, \
-    AWAITING_HUMAN, DEFINING = tuple(NodeStatus)
-ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, DEFINING, MERGING}
 R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(RunStatus)
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
@@ -173,21 +81,6 @@ class Record(BaseModel):
 
 
 # ---------------------------------------------------------------------------- plan documents
-class TaskContract(Record):
-    """One task of the plan's ``taskgraph.json`` (shape enforced by the taskgraph schema)."""
-    id: str
-    title: str
-    soul: str
-    requirements: list[str]
-    depends_on: list[str] = []
-    files_modified: list[str]
-    files_forbidden: list[str] = []
-    context: list[str] = []
-    instructions: str
-    acceptance: list[str]
-    verification: list[str]
-    # the blank repository's scaffold (§5.3b): built before the oracle and H-2
-    scaffold: bool = False
 
 
 class Criterion(Record):
@@ -244,36 +137,6 @@ class Finding(Record):
         return self.model_copy(update={"observation": self.observation[:500],
                                        "impact": self.impact[:300], "fix": self.fix[:500],
                                        "attestations": self.attestations[:5]})
-
-
-class Feedback(Record):
-    cycle: int
-    source: str            # critique | review | verification | merge | feedback | decisions
-    text: str
-    attestations: list[str] = []
-    head: str | None = None  # decisions: the integration head the human answered at
-
-
-class ReviewResult(Record):
-    verdict: Verdict
-    sha: str | None = None
-    run: str
-    findings: list[Finding] = []
-    checked: list[str] = []
-    doc: str | None = None           # attestation of the review document
-
-
-class ReviewReport(Record):
-    """A judge's report as accepted (``<step records>/reports/<role>-cycle-<n>.json``): the
-    review it records on its node (``node.reviews``, projected) and the report itself."""
-    run: str
-    role: str
-    review: ReviewResult
-    status: str
-    summary: str = ""
-    attestations: list[str] = []
-    data: dict[str, Any] = {}        # the structured result (the role's report_schema)
-    at: str = Field(default_factory=now_iso)
 
 
 class CommandResult(Record):
@@ -334,17 +197,6 @@ class VerificationRun(Record):
     ended_at: str | None = None
 
 
-class PanelDecision(Record):
-    """A panel's pass (G-RV1): every judge that sat passed the candidate ``sha`` in ``cycle``,
-    each citing its review document. What the merge checks (G-A1), with the verification."""
-    sha: str
-    cycle: int
-    judges: list[str] = []               # the roles that sat (none: an empty panel)
-    reviews: list[str] = []              # attestations of their review documents
-    at: str = Field(default_factory=now_iso)
-    attestation: str | None = None       # the stored decision record
-
-
 class ResolverProposal(Record):
     """The resolver's proposal for an escalation: one of the node's human actions, with its
     payload, reasons and evidence. Shown on the escalation; a human applies, edits or ignores
@@ -356,104 +208,6 @@ class ResolverProposal(Record):
     at: str = Field(default_factory=now_iso)
     run: str | None = None           # the resolver's run that answered
     record: str | None = None        # attestation of control/proposals/<node>-<n>.json
-
-
-class Escalation(Record):
-    kind: str                        # blocked | run_failed | cycle_budget | verify_unrunnable | ...
-    reason: str
-    resume: Resume
-    at: str = Field(default_factory=now_iso)
-    run: str | None = None
-    missing_decision: str | None = None
-    log_tail: str | None = None
-    source: FailureSource | None = None   # run failures: agent error or system error
-    retrying: bool = False                # retry chosen: the old sandbox is being removed
-    proposal: ResolverProposal | None = None   # the resolver's (A2A); a human decides
-
-
-class Override(Record):
-    """A human accepted a build task without a full panel PASS (verification still required)."""
-    approver: str
-    reason: str
-    sha: str
-    at: str = Field(default_factory=now_iso)
-
-
-class Node(Record):
-    id: str
-    kind: NodeKind
-    title: str
-    depends_on: list[str] = []
-    status: NodeStatus = PENDING
-    status_since: str | None = None       # when it last changed status (stamped on save)
-    cycle: int = 1
-    task: TaskContract | None = None      # build contract from the plan's taskgraph.json
-    wave: int = 0
-    runs: list[str] = []
-    current_run: str | None = None
-    # the sandbox the node's producer keeps across rework cycles (implementer; intake, planner
-    # and oracle until their gate passes), and whether it is stopped between runs
-    sandbox: str | None = None
-    sandbox_stopped: bool = False
-    base_sha: str | None = None
-    candidate_sha: str | None = None
-    accepted_sha: str | None = None
-    feedback: list[Feedback] = []
-    finding_history: list[list[str]] = []  # HIGH finding fingerprints per review cycle
-    reviews: dict[str, ReviewResult] = {}  # review_key(cycle, role) or "integration"
-    verification: dict[str, Verification] = {}   # str(cycle) or "integration"
-    # the roles of the step's agents (producer, critic, panel), set when the step starts: each
-    # has an A2A card while the step is in progress, whether its agent has started or not
-    agent_roles: list[str] = []
-    # a human resumed its verification (retry, answer): the next one is a fresh attempt – what
-    # they fixed (the test setup, a flaky service) is outside the verification's key
-    reverify: bool = False
-    panel: dict[str, PanelDecision] = {}  # str(cycle): the panel's pass at that cycle
-    escalation: Escalation | None = None
-    extra_cycles: int = 0                 # granted by a human on escalation
-    override: Override | None = None
-    approved: bool = False                # a gate step: a human approved it in this attempt
-    # fix rounds (§5.10a): a build task's round; for the plan node, the round being planned and
-    # the cycle it started at (the round's critique budget and feedback count from there)
-    round: int = 1
-    round_start_cycle: int = 1
-
-    @staticmethod
-    def review_key(cycle: int, role: str) -> str:
-        return f"{cycle}:{role}"
-
-    def review(self, cycle: int, role: str) -> ReviewResult | None:
-        return self.reviews.get(self.review_key(cycle, role))
-
-    def current_verification(self) -> Verification | None:
-        return self.verification.get(str(self.cycle))
-
-    def current_panel(self) -> PanelDecision | None:
-        return self.panel.get(str(self.cycle))
-
-    @property
-    def records(self) -> str:
-        """Where the controller files this step's records (relative to the change): a build
-        task's ``tasks/<task_id>``, any other step's ``control/steps/<node id>``. Each kind in
-        its own directory, per cycle – ``verification/cycle-<n>.json``, ``panel/cycle-<n>.json``,
-        ``reports/<role>-cycle-<n>.json`` – so the path says whose record it is."""
-        return f"tasks/{self.task.id}" if self.task else f"control/steps/{self.id}"
-
-
-def step_record(rel: str) -> tuple[str, str, str] | None:
-    """``(node id, kind, name)`` of a step record's path (relative to the change) – the inverse
-    of :attr:`Node.records`; ``None`` for any other path."""
-    parts = rel.split("/")
-    if len(parts) == 4 and parts[0] == "tasks":
-        return f"build:{parts[1]}", parts[2], parts[3]
-    if len(parts) == 5 and parts[:2] == ["control", "steps"]:
-        return parts[2], parts[3], parts[4]
-    return None
-
-
-def cycle_of(name: str) -> int:
-    """The cycle of a per-cycle record's file name (``cycle-2.json``, ``reviewer-cycle-2.json``)."""
-    return int(name.rsplit("cycle-", 1)[1].removesuffix(".json"))
 
 
 # ---------------------------------------------------------------------------- run records
@@ -572,92 +326,6 @@ class RiskAssessment(Record):
     scores: dict[str, int]
 
 
-class TierOverride(Record):
-    from_tier: str
-    to_tier: str
-    reason: str | None = None
-    approver: str
-    at: str = Field(default_factory=now_iso)
-
-
-class Approval(Record):
-    """A human gate decision: H-1, one H-2 subject (plan, a delta spec, the oracle) or H-3."""
-    gate: str
-    approver: str
-    at: str = Field(default_factory=now_iso)
-    pins: dict[str, int] = {}         # document path -> approved version
-    subject: str | None = None        # H-2 subject
-    oracle_sha: str | None = None     # H-2 oracle subject
-    head: str | None = None           # H-3: integration head accepted
-    tier: str | None = None           # H-1: the accepted tier
-    note: str | None = None
-    attestation: str | None = None    # the stored approval record
-
-
-class AttestationRecord(Record):
-    kind: AttestationKind
-    verdict: AttestationVerdict
-    attested_by: str
-    at: str = Field(default_factory=now_iso)
-    sources: list[str]
-    covers: list[str] | None = None   # task ids; None = the whole change
-    waiver_reason: str | None = None
-    supersedes: str | None = None
-    warnings: list[str] = []
-    attestation: str | None = None
-
-
-class GateOverride(Record):
-    kind: OverrideKind
-    gate: str
-    reason: str
-    approver: str
-    at: str = Field(default_factory=now_iso)
-    evidence: str | None = None       # waive_gate: replacement evidence
-    attestation: str | None = None
-
-
-class Accepted(Record):
-    """``control/accepted/<subject>.json``: the version of an agent's document the controller
-    accepted as the change's ``subject`` – the oracle (when it merged, as H-2 approved it), the
-    risk assessment (when the intake report was accepted) – or, ``revoked``, none any more."""
-    subject: str                          # "oracle" | "risk"
-    doc: str | None = None                # the document, relative to the change
-    version: int | None = None
-    revoked: bool | None = None
-    at: str = Field(default_factory=now_iso)
-
-    @property
-    def path(self) -> str:
-        return f"control/accepted/{self.subject}.json"
-
-
-class ProtectedPathApproval(Record):
-    task: str
-    paths: list[str]
-    approver: str
-    reason: str
-    at: str = Field(default_factory=now_iso)
-    attestation: str | None = None
-
-
-class SurfacePin(Record):
-    surface: str
-    pins: dict[str, str | None]       # pinned path -> blob sha (None: absent when pinned)
-    head: str
-    approver: str
-    reason: str
-    at: str = Field(default_factory=now_iso)
-    attestation: str | None = None
-
-
-class GateResult(Record):
-    status: GateStatus
-    detail: str
-    human_judgement: bool = False
-    added: bool = False
-
-
 class ChangeEnd(Record):
     """Who ended a change before it could ship, where and why: abandoned at an escalation, or
     rejected at H-3. The retrospective reads it (``change.json``)."""
@@ -667,18 +335,6 @@ class ChangeEnd(Record):
     reason: str | None = None
     at: str = Field(default_factory=now_iso)
     attestation: str | None = None    # control/ended.json
-
-
-class Readiness(Record):
-    verdict: ReadinessVerdict
-    tier: str
-    integration_head: str
-    integration_branch: str
-    gates: dict[str, GateResult]
-    waived_gates: list[str] = []
-    human_judgement_gates: list[str] = []
-    note: str = "Readiness verdict only. Nothing was published, deployed or released."
-    attestation: str | None = None
 
 
 class RoleEnvironment(Record):
@@ -700,18 +356,6 @@ class EnvironmentBuild(Record):
     log: str | None = None                # attestation of the build log
     at: str = Field(default_factory=now_iso)
     attestation: str | None = None        # the stored build record
-
-
-class FixRound(Record):
-    """A fix round (§5.10a): planned on top of the integration head after a late failure."""
-    number: int                       # 2, 3, …
-    approver: str
-    comment: str | None = None
-    head: str                         # the integration head the round starts from
-    at: str = Field(default_factory=now_iso)
-    failure: list[str] = []           # the integration report, verification and findings
-    first_build_at: str | None = None  # the round's first build run
-    attestation: str | None = None    # control/rounds/<n>.json
 
 
 class SetupPin(Record):
@@ -751,15 +395,6 @@ class Card(Record):
     ticket: str | None = None        # its ticket (None: the orchestrator)
     role: str | None = None
     title: str
-
-
-class PlanPointer(Record):
-    """``control/plan.json``: the plan the change is working to – the plan step whose
-    directory holds its documents (``plan``, a fix round's ``plan.2``) and, once H-2 approved
-    them, the approved version of each (relative path -> version)."""
-    node: str = "plan"
-    approved: dict[str, int] = {}
-    at: str = Field(default_factory=now_iso)
 
 
 class Change(Record):

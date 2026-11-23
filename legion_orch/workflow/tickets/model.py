@@ -98,6 +98,7 @@ class Ticket(BaseModel):
     outputs: dict[str, str | list[str]] = {}  # what its accepted report attests: name -> doc ref(s)
     runs: list[str] = []                   # its agent runs, in order (the current: the last)
     sandbox: str | None = None             # the sandbox its own work keeps across its attempts
+    since: str = ""                        # when its status last changed (the engine stamps it)
     pointers: dict[str, str | list[str]] = {}  # (the root) the approved version of each output
     held: Literal["start", "retry"] | None = None   # (paused) what it does on resume
     paused: list[str] = []                 # (the root) why the workflow is paused: none – it runs
