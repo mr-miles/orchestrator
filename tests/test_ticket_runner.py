@@ -236,6 +236,7 @@ def test_the_policy_and_the_skeleton_at_each_tier():
         t.verdict("H-1", True, apply=SPEC.tier_additions(tier, t.t))
         assert ("acceptance" in t.t) == (tier in ("R2", "R3"))
         assert ("baseline" in t.t) == (tier == "R3")
+        assert ("H-2b" in t.t and t.t["H-2b"].parent == "baseline") == (tier == "R3")
         v = check_policy(SPEC, tier, t.t)
         assert f"tier {tier}: delivery's last group must be its agent:integration" in v
     t = Tickets(SPEC.skeleton_at("R2"))

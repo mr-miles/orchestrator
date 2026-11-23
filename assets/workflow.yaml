@@ -57,6 +57,10 @@ skeleton:
               type: "agent:baseline"
               tiers: [R3]
               goal: "the baseline: what passes and fails before any build"
+              criteria:             # its own sign-off: a rejection reworks it
+                - id: H-2b
+                  type: "human:signoff"
+                  signs: [tickets/baseline/report.md]
     - id: delivery
       branch: integration           # the change's integration branch
       # the planner's builds, then the integration ticket as the last group
