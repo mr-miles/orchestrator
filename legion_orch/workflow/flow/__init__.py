@@ -10,7 +10,6 @@ from .core import (
     Record,
     ResumeStep,
     RetryStep,
-    Reworking,
     StartStep,
     StopStep,
     Waiting,
@@ -19,5 +18,5 @@ from .structure import AppendRound, Parallel, Stage, StartOver, Step, Workflow, 
 
 __all__ = ["CHANGE", "ActionError", "AppendRound", "Completed", "EndChange", "Escalated",
            "FlowState", "Parallel", "Record", "ResumeStep",
-           "RetryStep", "Reworking", "Stage", "StartOver", "StartStep", "Step", "StopStep",
+           "RetryStep", "Stage", "StartOver", "StartStep", "Step", "StopStep",
            "Waiting", "Workflow", "walk"]
