@@ -11,13 +11,14 @@ from test_a2a import V, client, rpc, send, task_when, to_critique, token
 
 from legion_orch.identity import WorkloadBinding
 from legion_orch.server import A2AHub
-from legion_orch.workflow.model import ACCEPTED, ESCALATED, R_FAILED, R_REPORTED
+from legion_orch.workflow.model import R_FAILED, R_REPORTED
 
 
 async def intake_report(f: Flow, run, **kw):
-    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
-            await f.write(run, "intake/risk.json", signals())]
-    return await f.report(run, atts, exit_agent=False, **kw)
+    req = await f.write(run, "requirements.md", "# Requirements\n\n- REQ-1: hello\n")
+    risk = await f.write(run, "risk.json", signals())
+    outputs = {} if kw.get("status") == "BLOCKED" else {"requirements": req, "risk": risk}
+    return await f.report(run, [req, risk], exit_agent=False, outputs=outputs, **kw)
 
 
 @scenario()
@@ -42,9 +43,9 @@ async def test_a_reply_the_record_does_not_support_is_asked_again(f: Flow):
     assert not out["ok"] and 'state="completed"' in out["message"]
     out = await f.reply(run, "completed")
     assert out["ok"] and f.ce.task_view(run)["state"] == "completed"
-    assert f.status("intake") != ACCEPTED                       # its turn has not ended yet
+    assert f.status("intake") == "working"                      # its turn has not ended yet
     await f.exit_agent(run)
-    assert run.concluded and f.status("intake") == ACCEPTED
+    assert run.concluded and f.status("intake") == "checking"   # on to its sign-off
 
 
 @scenario()
@@ -54,7 +55,7 @@ async def test_blocked_then_input_required_escalates(f: Flow):
                         missing_decision="greet in which language?")
     assert (await f.reply(run, "input-required"))["ok"]
     await f.exit_agent(run)
-    assert f.status("intake") == ESCALATED
+    assert (f.status("intake"), f.ticket("intake").waiting) == ("waiting", "blocked")
 
 
 @scenario()
@@ -64,13 +65,14 @@ async def test_failed_gives_up_and_the_run_fails(f: Flow):
     assert out["ok"] and run.status == R_FAILED
     assert "gave up" in run.failure.reason and "cannot read" in run.failure.reason
     await f.settle()
-    assert f.status("intake") == ESCALATED
+    t = f.ticket("intake")                 # an attempt of its: the next round starts
+    assert (t.status, t.attempt) == ("working", 2) and f.run("intake").id != run.id
 
 
 @scenario()
 async def test_the_agent_keeps_its_mcp_access_until_it_ends_its_task(f: Flow):
     run = f.run("intake")
-    b = WorkloadBinding(sandbox=run.sandbox_ref, change=f.ce.cid, task=run.node_id, role=run.role)
+    b = WorkloadBinding(sandbox=run.sandbox_ref, change=f.ce.cid, task=run.ticket, role=run.role)
     tok = f.ctl.auth.identity.tokens.issue(b, "spiffe://t/x")
     await intake_report(f, run, status="DONE")
     assert run.status == R_REPORTED and f.ctl.run_for_bearer(tok) is not None   # may reply
@@ -82,25 +84,25 @@ async def test_the_agent_keeps_its_mcp_access_until_it_ends_its_task(f: Flow):
 async def test_ending_the_task_with_messages_waiting_reminds_of_each_message_once(f: Flow):
     planner, critic = await to_critique(f)
     async with client(f) as c:
-        await rpc(c, "critic@plan", send("Is REQ-1 final?"), token(f, planner))
+        await rpc(c, "critic@critique", send("Is REQ-1 final?"), token(f, planner))
         for _ in range(100):
-            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
+            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique"):
                 break
             await asyncio.sleep(0.02)
-    doc = await f.write(critic, f"plan/critique/cycle-{critic.cycle}.md", "critique PASS")
-    plan = [f"file:changes/{f.ce.cid}/plan/{p}@1" for p in ("spec.md", "oracle.json",
-                                                            "taskgraph.json")]
+    doc = await f.write(critic, "critique.md", "critique PASS")
+    design = f.ticket("design")
+    plan = [x for v in design.outputs.values() for x in (v if isinstance(v, list) else [v])]
     out = await f.ce.handle_report(critic.id, "DONE", "ok", plan + [doc],
                                    {"verdict": "PASS", "findings": [], "checked": ["x"]},
-                                   None, None)
+                                   None, None, False, {"critique": doc})
     assert out.accepted, out
-    waiting = [(i.task_id, i.sender) for i in A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan")]
+    waiting = [(i.task_id, i.sender) for i in A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")]
     attempts = critic.attempts
     first = await f.ce.reply_task(critic, "completed", "done", waiting)
     assert not first["ok"] and first["message"].startswith("1 task in your inbox")
     assert "`inbox`" in first["message"]
     assert critic.attempts == attempts                           # no report attempt used
-    later = waiting + [("t-new", "implementer@build:T9")]           # one arrived since
+    later = waiting + [("t-new", "implementer@T9")]           # one arrived since
     second = await f.ce.reply_task(critic, "completed", "done", later)
     assert not second["ok"] and second["message"].startswith("2 tasks in your inbox")
     third = await f.ce.reply_task(critic, "completed", "done", later)
@@ -113,15 +115,15 @@ async def test_a_peer_can_ask_back_or_decline(f: Flow):
     async with client(f) as c:
         for state, expect in (("input-required", "TASK_STATE_INPUT_REQUIRED"),
                               ("rejected", "TASK_STATE_REJECTED")):
-            res = await rpc(c, "critic@plan", send(f"question ({state})"), token(f, planner))
+            res = await rpc(c, "critic@critique", send(f"question ({state})"), token(f, planner))
             tid = res["task"]["id"]
             for _ in range(100):
-                if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
+                if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique"):
                     break
                 await asyncio.sleep(0.02)
             hub = A2AHub.of(f.ctl)
             assert (await hub.agent_reply(f.ce, critic, tid, "which REQ do you mean?", state))["ok"]
-            t = await task_when(c, "critic@plan", tid, token(f, planner),
+            t = await task_when(c, "critic@critique", tid, token(f, planner),
                                 done=(expect,))
             assert t["status"]["state"] == expect
             assert "which REQ" in str(t["status"]["message"])
@@ -130,34 +132,34 @@ async def test_a_peer_can_ask_back_or_decline(f: Flow):
 
 @scenario()
 async def test_a_question_back_is_in_the_senders_inbox_and_its_reply_continues_the_task(f: Flow):
-    """critic@plan answers the planner's message with a question (input-required): the planner
+    """critic@critique answers the planner's message with a question (input-required): the planner
     sees it in its inbox, and its reply is the next message on the same task."""
     planner, critic = await to_critique(f)
     async with client(f) as c:
-        res = await rpc(c, "critic@plan", send("Is REQ-1 final?"), token(f, planner))
+        res = await rpc(c, "critic@critique", send("Is REQ-1 final?"), token(f, planner))
         tid = res["task"]["id"]
         for _ in range(100):
-            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
+            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique"):
                 break
             await asyncio.sleep(0.02)
         assert (await A2AHub.of(f.ctl).agent_reply(f.ce, critic, tid, "Final as of which spec version?",
                                      "input-required"))["ok"]
-        await task_when(c, "critic@plan", tid, token(f, planner),
+        await task_when(c, "critic@critique", tid, token(f, planner),
                         done=("TASK_STATE_INPUT_REQUIRED",))
-        [q] = A2AHub.of(f.ctl).inbox.questions_for(f.ce.cid, "planner@plan")
-        assert (q.task_id, q.card) == (tid, "critic@plan") and q.view()["kind"] == "question"
+        [q] = A2AHub.of(f.ctl).inbox.questions_for(f.ce.cid, "planner@design")
+        assert (q.task_id, q.card) == (tid, "critic@critique") and q.view()["kind"] == "question"
         hub = A2AHub.of(f.ctl)
         out = await hub.agent_reply(f.ce, planner, tid, "Version 2.", "completed")   # its answer
         assert out["ok"] and out["state"].startswith("sent")
         for _ in range(100):
-            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
+            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique"):
                 break
             await asyncio.sleep(0.02)
-        [item] = A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan")
+        [item] = A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")
         assert item.task_id == tid and item.text == "Version 2."     # the same conversation
-        assert not A2AHub.of(f.ctl).inbox.questions_for(f.ce.cid, "planner@plan")
+        assert not A2AHub.of(f.ctl).inbox.questions_for(f.ce.cid, "planner@design")
         assert (await A2AHub.of(f.ctl).agent_reply(f.ce, critic, tid, "Then yes, final.", "completed"))["ok"]
-        t = await task_when(c, "critic@plan", tid, token(f, planner))
+        t = await task_when(c, "critic@critique", tid, token(f, planner))
         assert t["status"]["state"] == "TASK_STATE_COMPLETED"
 
 
@@ -174,6 +176,6 @@ async def test_a_turn_that_ends_with_the_task_open_is_followed_by_another_and_bo
     await intake_report(f, run, status="DONE")
     assert (await f.reply(run, "completed"))["ok"]
     await f.exit_agent(run)
-    assert f.status("intake") == ACCEPTED and run.turns[-1].exit_code == 0
-    turns = f.ce.json_doc(f"control/steps/intake/runs/{run.id}/outcome.json")["turns"]
+    assert f.status("intake") == "checking" and run.turns[-1].exit_code == 0
+    turns = f.ce.json_doc(f"control/runs/{run.id}/outcome.json")["turns"]
     assert [t["n"] for t in turns] == [1, 2] and turns[1]["asked"] == second.asked

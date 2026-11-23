@@ -12,7 +12,8 @@ from engine_harness import Flow, scenario
 
 from legion_orch.git import GitHub, GitHubError, PullRequest
 from legion_orch.workflow.engine.services.publish import LabelSpec
-from legion_orch.workflow.model import ACCEPTED, ESCALATED, ChangeStatus
+from legion_orch.workflow.model import ChangeStatus
+from legion_orch.workflow.tickets.executors import Backoff
 
 
 class FakeGitHub(GitHub):
@@ -61,34 +62,40 @@ class FakeGitHub(GitHub):
         pr.labels = sorted((set(pr.labels) - set(remove)) | set(add))
 
 
-async def to_h3(f: Flow, gh: FakeGitHub | None = None) -> FakeGitHub:
-    """An R1 change whose workspace is on GitHub, built, described and reviewed: H-3 (automatic
-    at R1) accepts it, and the publish step runs."""
+def on_github(f: Flow, gh: FakeGitHub | None = None, tries: int = 4) -> FakeGitHub:
+    """The workspace's source on GitHub (``gh``), its faults retried ``tries`` times, quickly."""
     gh = f.ctl.svc.github = gh or FakeGitHub()
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    await f.implement()
-    await f.review(verdict="PASS")                  # then described and reviewed
+    flow = f.ce._flow
+    *ports, _ = flow._ports
+    flow._ports = (*ports, Backoff(tries=tries, first=0.01))
+    flow._executors = None                   # built again: the publisher with a remote
+    if flow.runner is not None:
+        flow.runner.executors = flow.executors
     return gh
+
+
+def head(f: Flow) -> str:
+    """What was published: the integration branch's head (all that was delivered)."""
+    import subprocess
+    return subprocess.run(["git", "rev-parse", f"legion/{f.ce.cid}/integration"], cwd=f.git.repo,
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 @scenario()
 async def test_an_accepted_change_is_published_as_a_labelled_pull_request(f: Flow):
-    gh = await to_h3(f)
+    gh = on_github(f)
+    await f.to_end()
     cid, ch = f.ce.cid, f.ce.change
-    assert list(f.ce.nodes)[-2:] == ["H-3", "publish"] and f.status("publish") == ACCEPTED
+    assert f.status("publish") == "passed"
     branch = f"agent/{cid}"
-    assert gh.pushed == {branch: ch.integration_head}                # legion/* stays internal
+    assert gh.pushed == {branch: head(f)}                            # legion/* stays internal
     pr = gh.prs[branch]
     title, body = gh.bodies[pr.number]
     assert title == "Greet the user" and body.startswith("## Motivation")
     assert f"Legion change: `{cid}` · risk tier R1" in body           # the controller's footer
     assert pr.labels == ["risk:R1"] and gh.created_labels == ["risk:R1"]
     rec = f.ce.json_doc("control/pr.json")
-    assert rec == {"url": pr.url, "number": 1, "branch": branch, "head": ch.integration_head,
+    assert rec == {"url": pr.url, "number": 1, "branch": branch, "head": head(f),
                    "labels": ["risk:R1"], "workspace": ch.workspace}
     assert ch.status == ChangeStatus.READY                           # ready once published
     from legion_orch.server.views import change_state
@@ -97,37 +104,41 @@ async def test_an_accepted_change_is_published_as_a_labelled_pull_request(f: Flo
 
 @scenario()
 async def test_publishing_again_updates_the_pull_request_and_only_its_own_labels(f: Flow):
-    gh = await to_h3(f)
+    gh = on_github(f)
+    await f.to_end()
     pr = gh.prs[f"agent/{f.ce.cid}"]
     pr.labels = ["needs-docs", "risk:R0"]            # a human's label; a stale tier
     gh.bodies[pr.number] = ("old", "old")
-    done = await f.ce._phases.publisher.publish([LabelSpec("risk:", ("risk:R1",), "d93f0b", "tier")])
+    publisher = f.ce._flow._ports[3]
+    done = await publisher.publish([LabelSpec("risk:", ("risk:R1",), "d93f0b", "tier")], head(f))
     assert len(gh.prs) == 1 and done.number == pr.number             # the same pull request
     assert pr.labels == ["needs-docs", "risk:R1"] and done.labels == ("needs-docs", "risk:R1")
     assert gh.bodies[pr.number][0] == "Greet the user"               # brought up to date
     assert gh.created_labels == ["risk:R1"]                          # created once
 
 
+class Failing(FakeGitHub):
+    """Every push fails until ``fixed``."""
+    fixed = False
+
+    async def push(self, hub, source, sha, branch):
+        if not self.fixed:
+            raise GitHubError(f"pushing {branch} failed: ! [rejected] (non-fast-forward)")
+        await super().push(hub, source, sha, branch)
+
+
 @scenario()
-async def test_a_failed_push_escalates_and_a_retry_publishes(f: Flow):
-    gh = FakeGitHub()
-    gh.fail = "pushing agent/x failed: ! [rejected] (non-fast-forward)"
-    await to_h3(f, gh)
-    node = f.ce.nodes["publish"]
-    assert node.status == ESCALATED and node.escalation.kind == "publish_failed"
-    assert "non-fast-forward" in node.escalation.reason
+async def test_a_push_that_keeps_failing_escalates_and_a_retry_publishes(f: Flow):
+    gh = on_github(f, Failing(), tries=2)
+    await f.to_end()
+    t = f.ticket("publish")
+    assert (t.status, t.waiting) == ("waiting", "system"), f.status()
+    assert any("non-fast-forward" in x for x in t.findings)
     assert f.ce.change.status == ChangeStatus.ACTIVE and not gh.prs
+    gh.fixed = True
     await f.human("publish", "retry")
-    assert f.status("publish") == ACCEPTED and len(gh.prs) == 1
+    assert f.status("publish") == "passed" and len(gh.prs) == 1
     assert f.ce.change.status == ChangeStatus.READY
-
-
-@scenario()
-async def test_a_workspace_not_on_github_ends_at_h3(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    assert "publish" not in f.ce.nodes                               # a local source
-    assert f.ce._flow.tree["publish"] is False
 
 
 # ---------------------------------------------------------------------------- the real client
