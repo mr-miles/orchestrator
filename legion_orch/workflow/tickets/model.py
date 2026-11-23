@@ -79,6 +79,9 @@ class Ticket(BaseModel):
     severity: Severity = Severity.REWORK   # (criteria) what a failure does to the parent
     waivable: bool = True                  # (criteria) whether a human may waive a failure
     signs: list[str] = []                  # (human:signoff) what it signs: documents at versions
+    applies: str | None = None             # (sign-offs) what its pass applies: a replan document,
+                                           # or ``tier`` (the tier's skeleton tickets)
+    branch: str | None = None              # a named branch instead of its own (``integration``)
     limit: int = 3                         # attempts allowed (its own work's reruns)
     # state
     status: Status = Status.PENDING

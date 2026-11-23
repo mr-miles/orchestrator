@@ -126,6 +126,9 @@ def cmd_check(cfg: Config, args) -> int:
     from .workflow.assets import Assets
     a = Assets(cfg.assets_dir)
     print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
+    if a.workflow is not None:
+        print(f"workflow: tiers={sorted(a.workflow.tiers)} "
+              f"skeleton={[g[0].id for g in a.workflow.skeleton.subtasks]}")
     if cfg.environment is not None:
         from .workflow.environment import Library
         lib = Library.for_config(cfg, a.schemas)

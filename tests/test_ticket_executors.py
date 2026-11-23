@@ -4,10 +4,10 @@ that follow the tree – checks, merges and conflicts in a real bare hub."""
 from __future__ import annotations
 
 import asyncio
-import os
 import subprocess
 
 import pytest
+from ticket_harness import commit
 
 from legion_orch.git.branches import Branches, ticket_branch
 from legion_orch.git.remote import GitRemote
@@ -245,22 +245,6 @@ def _git(*args, cwd):
                           text=True).stdout.strip()
 
 
-async def _commit(hub: GitRemote, parent: str, files: dict[str, str], msg: str) -> str:
-    """A commit on ``parent`` changing ``files``, made in the bare hub (as an agent's push)."""
-    env = {**os.environ, "GIT_INDEX_FILE": str(hub.root / f"index-{msg}")}
-
-    def g(*a, input=None):
-        return subprocess.run(["git", *a], cwd=hub.repo, env=env, check=True, capture_output=True,
-                              text=True, input=input).stdout.strip()
-    g("read-tree", parent)
-    for path, text in files.items():
-        blob = g("hash-object", "-w", "--stdin", input=text)
-        g("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}")
-    tree = g("write-tree")
-    return g("-c", "user.name=a", "-c", "user.email=a@a", "commit-tree", tree, "-p", parent,
-             "-m", msg)
-
-
 @pytest.fixture
 async def hub(tmp_path):
     hub = GitRemote(tmp_path / "git", "app", None, "main")
@@ -281,9 +265,9 @@ async def test_merges_follow_the_tree_and_a_conflict_is_a_rework(hub):
     parent = ticket_branch("c1", "delivery")
     assert await br.create(parent, base) == base
     assert await br.create(parent, "0" * 39 + "1") == base        # it exists: kept
-    t1 = await _commit(hub, base, {"a.txt": "one\n"}, "t1")
-    t2 = await _commit(hub, base, {"a.txt": "two\n"}, "t2")       # the same file, otherwise
-    t3 = await _commit(hub, base, {"b.txt": "three\n"}, "t3")
+    t1 = commit(hub, base, {"a.txt": "one\n"}, "t1")
+    t2 = commit(hub, base, {"a.txt": "two\n"}, "t2")       # the same file, otherwise
+    t3 = commit(hub, base, {"b.txt": "three\n"}, "t3")
     assert (await br.can_merge(t1, parent)).clean and (await br.can_merge(t2, parent)).clean
 
     merged = await br.merge(t1, parent, "legion c1: T1")
@@ -308,8 +292,8 @@ async def test_the_merge_on_pass_through_the_rules(hub):
     await br.create(into, base)
     t = tickets()
     t.start()
-    t1 = await _commit(hub, base, {"a.txt": "one\n"}, "t1")
-    t2 = await _commit(hub, base, {"a.txt": "two\n"}, "t2")
+    t1 = commit(hub, base, {"a.txt": "one\n"}, "t1")
+    t2 = commit(hub, base, {"a.txt": "two\n"}, "t2")
     t.work_done("T2", t2)                                           # T2: no criteria, merges
     assert merge_outcome(t, "T2", into, await merger.merge(t2, into, "T2")) == []
     assert t.t["T2"].status == Status.PASSED and t.t["c"].sha == await br.head(into)
@@ -322,14 +306,14 @@ async def test_the_merge_on_pass_through_the_rules(hub):
     can = CanMergeExecutor(br, NOW)
     rev = t.t["rev"]
     assert (await can.run(work(rev, judged=t1, into=into))).passed is False
-    t1b = await _commit(hub, t.t["c"].sha, {"a.txt": "one and two\n"}, "t1b")   # rebased
+    t1b = commit(hub, t.t["c"].sha, {"a.txt": "one and two\n"}, "t1b")   # rebased
     assert await can.run(work(rev, judged=t1b, into=into)) == Judged(True)
 
 
 async def test_publishing_without_a_remote_merges_into_the_base_branch(hub):
     br = Branches(hub)
     base = await hub.resolve_base()
-    result = await _commit(hub, base, {"a.txt": "done\n"}, "result")
+    result = commit(hub, base, {"a.txt": "done\n"}, "result")
 
     async def text(w):
         return "Add a.txt\n\nThe change's description."

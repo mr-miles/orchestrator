@@ -1,0 +1,101 @@
+# The workflow: every change's skeleton, the risk tiers' policies, and its hooks
+# (legion_orch/workflow/tickets/spec.py; plan: ~/plans/tickets-design.md §6, §7).
+#
+# A ticket is its own work (by its type), then its subtask groups in order – a list item is one
+# ticket, or a list of tickets that run in parallel – then its criteria, in order. Sign-offs name
+# what they sign: documents in the change (a ticket's under tickets/<id>/), `git:<ticket>` for a
+# ticket's branch head. `applies`: what a sign-off's pass applies – `tier` (the tickets marked
+# with `tiers`, once H-1 has signed the tier off) or a replan document (the planner's tickets).
+
+hooks:
+  on_complete: retrospective        # after any ending: passed, abandoned, failed
+  on_escalation: resolver           # proposes a replan; a human signs it off
+
+criteria:                           # per criterion type: may a decision owner waive a failure?
+  controller:verify: {waivable: false}
+  controller:can-merge: {waivable: false}
+  human:signoff: {waivable: false}
+
+skeleton:
+  id: change
+  subtasks:
+    - id: requirements
+      subtasks:
+        - {id: intake, type: "agent:intake", goal: "the requirements and the risk assessment"}
+      criteria:
+        - id: H-1
+          type: "human:signoff"
+          signs: [intake/requirements.md, intake/risk.json]
+          applies: tier
+    - id: plan
+      subtasks:
+        - id: design
+          type: "agent:planner"
+          goal: "the spec, the oracle, the environment and the tickets"
+          criteria:
+            - {id: critique, type: "agent:critic"}
+            - id: H-E1
+              type: "human:signoff"
+              signs: [tickets/design/spec.md, tickets/design/tickets.json,
+                      tickets/design/environment.json]
+              applies: tickets/design/tickets.json
+        - {id: provision, type: "controller:provision", goal: "the signed-off environment, built"}
+        - id: acceptance
+          tiers: [R2, R3]
+          subtasks:
+            - id: oracle
+              type: "agent:oracle"
+              goal: "the acceptance tests, failing before any build"
+              criteria:
+                - {id: preflight, type: "controller:verify"}
+            - id: baseline
+              type: "agent:baseline"
+              tiers: [R3]
+              goal: "the baseline: what passes and fails before any build"
+          criteria:
+            - id: H-2
+              type: "human:signoff"
+              signs: [tickets/oracle/tests.md]
+    - id: delivery
+      branch: integration           # the change's integration branch
+      # the planner's builds, then the integration ticket as the last group
+    - id: evaluate
+      subtasks:
+        - {id: describe, type: "agent:describer", goal: "the pull request's description"}
+      criteria:
+        - id: H-3
+          type: "human:signoff"
+          signs: ["git:delivery", tickets/describe/pr.md]
+    - id: release
+      subtasks:
+        - {id: publish, type: "controller:publish", goal: "the change, published"}
+
+tiers:
+  R0:
+    requires:
+      requirements: [intake]
+      plan: [design, provision]
+      release: [publish]
+    every:
+      - {type: "agent:implementer", criteria: ["controller:verify", "controller:can-merge"]}
+    criteria:
+      evaluate: ["human:signoff"]
+    last:
+      delivery: "agent:integration"
+    limits: {"agent:implementer": 3, "agent:planner": 3}
+  R1:
+    extends: R0
+    every:
+      - type: "agent:implementer"
+        criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
+    labels:
+      security: ["agent:security"]
+  R2:
+    extends: R1
+    requires:
+      plan: [acceptance]
+      acceptance: [oracle]
+  R3:
+    extends: R2
+    requires:
+      acceptance: [baseline]

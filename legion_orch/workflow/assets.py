@@ -8,6 +8,8 @@ Layout (naming convention)::
       skills/<skill>.md      skill: frontmatter with only a ``description`` (when to load it),
                              then the body; every run gets every skill as ``legion-<skill>``
       prompts/<role>.md      task prompt template (file name = role name)
+      workflow.yaml          the skeleton, tier policies and hooks (tickets/spec.py); also the
+                             ``workflow`` skill, generated from it
 
 Skills are not put in the prompt. Each is rendered with the run's variables into an Agent Skill
 (``legion-<skill>/SKILL.md``) that the agent loads on demand; the prompt only names the ones the
@@ -25,7 +27,11 @@ from typing import Any
 import yaml
 
 from ..store import SchemaRegistry
+from .tickets.spec import SKILL_DESCRIPTION as WORKFLOW_SKILL_DESCRIPTION
+from .tickets.spec import SpecError, WorkflowSpec
+from .tickets.spec import render as render_workflow
 
+WORKFLOW, WORKFLOW_SKILL = "workflow.yaml", "workflow"
 VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
@@ -117,6 +123,7 @@ class Assets:
             raise AssetError(f"{self.root}/roles.yaml not found")
         self.souls_ = self._load_dir("souls")
         self.skills_, self.skill_descriptions = self._load_skills()
+        self.workflow = self._load_workflow()
         self.prompts_ = self._load_dir("prompts")
         raw = yaml.safe_load((self.root / "roles.yaml").read_text()) or {}
         self.roles: dict[str, Role] = {}
@@ -162,8 +169,38 @@ class Assets:
             bodies[name], descriptions[name] = body, d.strip()
         return bodies, descriptions
 
+    def _load_workflow(self) -> WorkflowSpec | None:
+        """``workflow.yaml``, validated, and its skill (``workflow``); None without one."""
+        path = self.root / WORKFLOW
+        if not path.is_file():
+            return None
+        try:
+            spec = WorkflowSpec.load(path)
+        except SpecError as e:
+            raise AssetError(str(e)) from None
+        if WORKFLOW_SKILL in self.skills_:
+            raise AssetError(f"skills/{WORKFLOW_SKILL}.md: the {WORKFLOW_SKILL} skill is generated "
+                             f"from {WORKFLOW}")
+        self.skills_[WORKFLOW_SKILL] = render_workflow(spec)
+        self.skill_descriptions[WORKFLOW_SKILL] = WORKFLOW_SKILL_DESCRIPTION
+        return spec
+
+    def _workflow_roles(self) -> list[str]:
+        """Every role the workflow names: its agent tickets', its policies', its hooks'."""
+        spec = self.workflow
+        assert spec is not None
+        types = [t.type for t in spec.skeleton.walk()]
+        for name in spec.tiers:
+            p = spec.policy(name)
+            types += [r.type for r in p.every] + [c for r in p.every for c in r.criteria]
+            types += [c for v in [*p.criteria.values(), *p.labels.values()] for c in v]
+            types += [*p.last.values(), *p.limits]
+        return [t.partition(":")[2] for t in types if t.startswith("agent:")] \
+            + list(spec.hooks.values())
+
     def _files(self) -> list[Path]:
-        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
+        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + [
+            p for p in [self.root / WORKFLOW] if p.is_file()] + sorted(
             p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md")) \
             + sorted((self.root / "schemas").glob("*.json"))
 
@@ -231,6 +268,9 @@ class Assets:
                 self.skill(sk)
             self.prompt(role.name)
         self.skill("harness-contract")              # every prompt tells the agent to load it
+        if self.workflow is not None:
+            if unknown := sorted(set(self._workflow_roles()) - set(self.roles)):
+                raise AssetError(f"{WORKFLOW}: roles not in roles.yaml: {unknown}")
         used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
         for r in self.roles.values():
             if r.report_schema not in self.schemas.schemas:

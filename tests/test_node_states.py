@@ -91,12 +91,13 @@ def test_a_reset_returns_any_node_to_pending():
 
 
 def test_only_node_states_writes_a_nodes_status():
-    """The engine and the role handlers change a node's status only through NodeStates."""
+    """The engine and the role handlers change a node's status only through NodeStates (the
+    pure cores – the flow's, the tickets' rules – have their own records)."""
     wf = ROOT / "legion_orch/workflow"
     write = re.compile(r"\b(?!run\b|r\b|cur\b|planner\b|judge\b|change\b|ch\b|st\b|tr\b|res\b)"
                        r"\w+\.status\s*=[^=]")
     found = [f"{p.relative_to(ROOT)}:{i}" for p in wf.rglob("*.py")
-             if p.name != "node_states.py" and "flow" not in p.parts
+             if p.name != "node_states.py" and "flow" not in p.parts and "tickets" not in p.parts
              for i, line in enumerate(p.read_text().splitlines(), 1) if write.search(line)]
     assert found == []
 

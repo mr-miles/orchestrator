@@ -317,3 +317,49 @@ def test_any_tree_through_any_events_keeps_the_invariants(tree, data):
                 else:
                     break
         check(t)
+
+
+# ------------------------------------------------------------------------------- sign-offs apply
+def planning() -> Tickets:
+    return Tickets([
+        T("c", subtasks=[["plan"], ["delivery"]]),
+        T("plan", "c", subtasks=[["design"], ["provision"]]),
+        T("design", "plan", type="agent:planner", criteria=["H-E1"]),
+        crit("H-E1", "design", type="human:signoff", applies="plan/tickets.json"),
+        T("provision", "plan", type="controller:provision"),
+        T("delivery", "c"),
+    ])
+
+
+def test_a_signoff_applies_its_replan_before_anything_starts():
+    t = planning()
+    t.start()
+    assert started(t.work_done("design")) == ["H-E1"]
+    plan = Replan(add=[Add(T("acceptance", type="agent:oracle"), "plan", 2),
+                       Add(T("T1", type="agent:implementer"), "delivery", 0)])
+    with pytest.raises(TicketError, match="inactive"):     # another ticket is working
+        t.t["provision"].status = Status.WORKING
+        t.verdict("H-E1", True, apply=plan)
+    t.t["provision"].status = Status.PENDING
+    eff = t.verdict("H-E1", True, apply=plan)
+    assert started(eff) == ["provision"]                  # design passed, then plan went on
+    assert t.t["plan"].subtasks == [["design"], ["provision"], ["acceptance"]]
+    assert t.t["delivery"].subtasks == [["T1"]]
+
+
+def test_a_refused_replan_changes_nothing():
+    t = planning()
+    t.start()
+    t.work_done("design")
+    before = {k: v.model_dump() for k, v in t.t.items()}
+    bad = Replan(add=[Add(T("T1", type="agent:implementer"), "delivery", 0),
+                      Add(T("T1", type="agent:implementer"), "delivery", 1)])   # a duplicate
+    with pytest.raises(TicketError, match="duplicate"):
+        t.verdict("H-E1", True, apply=bad)
+    assert {k: v.model_dump() for k, v in t.t.items()} == before   # H-E1 still working
+    quiet = Tickets([T("c", subtasks=[["delivery"]]), T("delivery", "c")])
+    quiet.start()                                         # delivery is empty: it waits
+    with pytest.raises(TicketError, match="nowhere"):
+        quiet.replan(Replan(add=[Add(T("T1", type="agent:implementer"), "delivery", 0),
+                                 Add(T("x"), "nowhere", 0)]))
+    assert quiet.t["delivery"].subtasks == [] and "T1" not in quiet.t

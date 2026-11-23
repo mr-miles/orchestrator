@@ -5,7 +5,8 @@ history is the journal's, :mod:`.journal`, never read on start):
 
 * ``changes`` – one row per change: its record (``record``) and the workflow's
   (``workflow``: the stage tree's parameters and the core's inputs);
-* ``steps``   – one row per node of the change (``record``).
+* ``steps``   – one row per node of the change (``record``);
+* ``tickets`` – one row per ticket of the change (``record``: its fields, state included).
 
 (Agent runs are documents – their assignment and outcome – not rows.)
 
@@ -31,10 +32,17 @@ CREATE TABLE IF NOT EXISTS steps (
   record TEXT NOT NULL,
   PRIMARY KEY (change, node)
 );
+CREATE TABLE IF NOT EXISTS tickets (
+  change TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  record TEXT NOT NULL,
+  PRIMARY KEY (change, ticket)
+);
 """
 
 CHANGE, WORKFLOW = "change", "workflow"
-_TABLES = {"node": ("steps", "node")}                          # record prefix -> (table, key)
+_TABLES = {"node": ("steps", "node"),                         # record prefix -> (table, key)
+           "ticket": ("tickets", "ticket")}
 
 
 def _dumps(data: Any) -> str:
@@ -86,6 +94,15 @@ class StateTables:
         if kind not in _TABLES:
             raise ValueError(f"not a state record: {record!r}")
         return _TABLES[kind]
+
+    def rows(self, change: str, prefix: str) -> dict[str, dict[str, Any]]:
+        """The change's records of one kind (``ticket``), key -> fields, in the order they were
+        first written."""
+        table, key = _TABLES[prefix]
+        with self.lock:
+            return {k: json.loads(d) for k, d in self.conn.execute(
+                f"SELECT {key}, record FROM {table} WHERE change=? ORDER BY rowid",
+                (change,)).fetchall()}
 
     def load(self, change: str) -> dict[str, dict[str, Any]]:
         """Every record of ``change`` (record -> its fields); nodes in the order they were first

@@ -25,7 +25,8 @@ The rules (the numbered ones are ~/plans/tickets.md's corner-case rules):
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+import contextlib
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,12 +84,14 @@ class TicketError(ValueError):
 @dataclass
 class Add:
     """A replan's new ticket: under ``into``, as a subtask in group ``group`` (a new group at that
-    index when ``new_group``) or – ``criterion`` – as a criterion at index ``group``."""
+    index when ``new_group``) or – ``criterion`` – as a criterion at index ``group``. ``tree``:
+    the ticket's descendants, which come with it (already listed by their parents)."""
     ticket: Ticket
     into: str
     group: int
     new_group: bool = True
     criterion: bool = False
+    tree: list[Ticket] = field(default_factory=list)
 
 
 @dataclass
@@ -141,16 +144,26 @@ class Tickets:
         self._after_work(x)
         return self._take()
 
-    def verdict(self, tid: str, passed: bool, findings: Iterable[str] = ()) -> list[Effect]:
-        """A criterion's outcome."""
+    def verdict(self, tid: str, passed: bool, findings: Iterable[str] = (),
+                apply: Replan | None = None) -> list[Effect]:
+        """A criterion's outcome. ``apply``: the replan its pass applies (a sign-off of the
+        planner's tickets, of a replan document, of the tier) – in the same step, so nothing
+        starts before it is applied; every other ticket must be inactive."""
         c = self._working(tid, criterion=True)
-        c.findings = list(findings)
-        c.status = Status.PASSED if passed else Status.REJECTED
+        if apply is not None and passed:
+            self._inactive(but=tid)
+        with self._transaction():
+            c.findings = list(findings)
+            c.status = Status.PASSED if passed else Status.REJECTED
+            parent = self.t[c.parent]
+            if not passed:
+                self._criterion_failed(parent, c)
+                return self._take()
+            if apply is not None and not self._edit(apply):
+                return self._take()                       # it cancelled the root
         parent = self.t[c.parent]
-        if passed:
+        if parent.status == Status.CHECKING:
             self._check(parent)
-        else:
-            self._criterion_failed(parent, c)
         return self._take()
 
     def work_failed(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
@@ -219,9 +232,30 @@ class Tickets:
         return self._take()
 
     def replan(self, plan: Replan) -> list[Effect]:
-        """An accepted replan (signed off), applied while no ticket is working."""
-        if busy := [x.id for x in self.t.values() if x.status in ACTIVE]:
+        """An accepted replan (signed off), applied while no ticket is working – all of it or,
+        refused, none of it."""
+        self._inactive()
+        with self._transaction():
+            self._edit(plan)
+        return self._take()
+
+    def _inactive(self, but: str | None = None) -> None:
+        if busy := [x.id for x in self.t.values() if x.status in ACTIVE and x.id != but]:
             raise TicketError(f"a replan waits for every ticket to be inactive: {busy} working")
+
+    @contextlib.contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """Everything in the block, or – a refusal – nothing."""
+        saved = {k: v.model_copy(deep=True) for k, v in self.t.items()}
+        effects = list(self._effects)
+        try:
+            yield
+        except TicketError:
+            self.t, self._effects = saved, effects
+            raise
+
+    def _edit(self, plan: Replan) -> bool:
+        """The replan's edits, then the tickets it touched go on; False: it cancelled the root."""
         touched: set[str] = set()
         for tid in plan.fail:
             x = self.t[tid]
@@ -236,7 +270,7 @@ class Tickets:
             if x.parent is None:
                 self._cancel_tree(x)
                 self._effects.append(Ended(Status.CANCELLED))
-                return self._take()
+                return False
             touched.add(x.parent)
             self._remove(x)
             self._cancel_tree(x)
@@ -255,7 +289,7 @@ class Tickets:
             raise TicketError("; ".join(errs))
         for tid in sorted(touched, key=self._depth, reverse=True):     # deepest first
             self._resume(self.t[tid])
-        return self._take()
+        return True
 
     def abandon(self) -> list[Effect]:
         """The change ends where it is (R17): running work stops, everything not finished is
@@ -419,6 +453,14 @@ class Tickets:
             else:
                 p.subtasks[a.group].append(x.id)
         self.t[x.id] = x
+        below = {x.id}
+        for d in a.tree:                          # parents before their children
+            if d.id in self.t:
+                raise TicketError(f"duplicate ticket id {d.id!r}")
+            if d.parent not in below:
+                raise TicketError(f"{d.id}: its parent {d.parent!r} is not in {x.id}'s tree")
+            self.t[d.id] = d.model_copy(update={"status": Status.PENDING, "attempt": 0})
+            below.add(d.id)
 
     def _resume(self, x: Ticket) -> None:
         """After a replan: a ticket it touched goes on from where it is."""

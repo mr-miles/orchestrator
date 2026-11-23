@@ -1130,6 +1130,7 @@ assets/
   souls/<soul>.md          agent persona, injected verbatim (never summarised)
   skills/<skill>.md        skill: frontmatter `description` (when to load it), then the body
   prompts/<role>.md        task prompt template for the role (file name = role name)
+  workflow.yaml            the tickets' skeleton, the tier policies and the hooks (being built)
 ```
 
 * A role's prompt is `prompts/<role>.md`, kept light: the rendered template followed by one line
@@ -1168,6 +1169,11 @@ assets/
   plus one handler module; the controller refuses to start if a role in `roles.yaml` has none.
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)
+
+**The workflow as tickets** (replacing the stages and steps, being built):
+[`assets/workflow.yaml`](assets/workflow.yaml) – every change's skeleton, what each risk tier's plan
+must contain, and the hooks. `legion-orch check` validates it; every run also gets it as the
+generated `legion-workflow` skill.
 
 | Role | Prompt |
 | --- | --- |
