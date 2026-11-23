@@ -43,9 +43,20 @@ async def _wait(engine, pred, what, timeout=90):
     for _ in range(int(timeout / 0.2)):
         if pred():
             return
+        stuck = {k: (t.waiting, [(r.id, r.failure.reason[:300] if r.failure else r.status)
+                                for r in engine.runs.values() if r.ticket == k])
+                 for k, t in engine.st.tickets.items()
+                 if t.status == "waiting"} if hasattr(engine, "st") else {}
+        if stuck:
+            raise AssertionError(f"waiting for {what}, but tickets wait on a human: {stuck}")
         await asyncio.sleep(0.2)
-    states = {n.id: n.status for n in engine.nodes.values()} if hasattr(engine, "nodes") else {}
-    raise AssertionError(f"timeout waiting for {what}; nodes={states}")
+    states = {k: t.status for k, t in engine.st.tickets.items()} if hasattr(engine, "st") else {}
+    extra = ""
+    if hasattr(engine, "st"):
+        d = engine.st.tickets.get("design")
+        extra = (f"; design attempt {d.attempt} findings {d.findings}" if d else "") + "; events: " + \
+            " | ".join(e["message"][:200] for e in engine.timeline_events()[-8:])
+    raise AssertionError(f"timeout waiting for {what}; tickets={states}{extra}")
 
 
 def _config(tmp_path, port):
@@ -109,85 +120,70 @@ async def _full_workflow(tmp_path):
     leftovers = [p for p in cfg.state_dir.rglob("*") if p.name in ("run.env", "mcp.json")]
     assert leftovers == [], leftovers
 
-    # restart: everything is rebuilt from the document store alone
+    # restart: everything is rebuilt from the tables and the document store
     ctl2 = Controller(cfg)
     ctl2.load()
     assert set(ctl2.changes) == {a.cid, b.cid}
     for old in (a, b):
         new = ctl2.changes[old.cid]
-        assert new.change.ship.verdict == "READY"
+        assert new.change.status == "READY"
         assert new.change.model_dump() == old.change.model_dump()      # typed records round-trip
         json.dumps(change_state(ctl2, new))                             # the UI state serialises
-        assert list(new.nodes) == list(old.nodes)
-        assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
+        assert list(new.st.tickets) == list(old.st.tickets)
+        assert {k: t.status for k, t in new.st.tickets.items()} == \
+            {k: t.status for k, t in old.st.tickets.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
-        assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
-        assert ctl2.svc.journal.fold(old.cid)["workflow"]["core"]["states"]  # its history
-        assert not ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
+        assert any(m.path.endswith("/log") for m in ctl2.docs.list(f"changes/{old.cid}/control/runs/")), \
+            "agent logs archived in store"
+        assert any(k.startswith("ticket:") for k in ctl2.svc.journal.fold(old.cid))   # its history
     assert ctl2.auth.identity.tokens.verify(old_token) is None     # signing key never persisted
     assert all(r.sandbox_ref for _, r in ctl2.all_runs())
-    assert not ctl2.docs.list("changes/" + a.cid + "/control/prompts/")
+
+
+async def _signoff(ce, tid: str, approver: str = "miles", timeout: float = 90) -> None:
+    await _wait(ce, lambda: tid in ce.signoffs_waiting(), tid, timeout)
+    await ce.human_action(tid, "approve", approver)
 
 
 async def _drive(ce):
-    n = ce.nodes
-    await _wait(ce, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
-    assert ce.change.risk.tier == "R2"          # public_api=2 floor
-    await ce.human_action("H-1", "accept", "miles")
-    assert ce.change.panel == ["reviewer"]
-
-    await _wait(ce, lambda: n["H-E1"].status == "AWAITING_HUMAN", "H-E1")
-    assert n["plan"].cycle == 2                     # critique forced one rework
-    assert {"build:T1", "build:T2", "build:T3"} <= set(n)
+    t = ce.st.tickets
+    await _signoff(ce, "H-1")
+    await _wait(ce, lambda: ce.change.tier is not None, "the tier, from the signed risk")
+    assert ce.change.tier == "R2"               # public_api=2 floor
+    await _wait(ce, lambda: "H-E1" in ce.signoffs_waiting(), "H-E1")
+    assert t["design"].attempt == 2             # the critique forced one rework
     with pytest.raises(WorkflowError, match="not a decision owner"):
         await ce.human_action("H-E1", "approve", "mallory")
-    r = await ce.human_action("H-E1", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
-    assert r.pending == ["REQ-2"] and n["H-E1"].status == "AWAITING_HUMAN"
-    r = await ce.human_action("H-E1", "approve", "ana", {"subjects": ["REQ-2"]})
-    assert r.pending == []
-    await _wait(ce, lambda: n["H-E1"].status == "ACCEPTED", "H-E1")   # its gate step passes
-
-    await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
-    assert ce.change.oracle_sha
-    r = await ce.human_action("H-2", "approve", "ana", {"subjects": ["oracle"]})
-    assert r.pending == []
-    await _wait(ce, lambda: n["H-2"].status == "ACCEPTED", "H-2")
-    assert ce.change.surface_pins["files"].pins["README.md"]
-
-    await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
-    assert n["build:T1"].cycle == 2                 # review FAIL -> rework
-    assert n["build:T2"].cycle == 2                 # verification FAIL -> rework
-    t3_runs = [ce.runs[r] for r in n["build:T3"].runs]
+    await ce.human_action("H-E1", "approve", "miles")
+    await _wait(ce, lambda: {"T1", "T2", "T3", "integration"} <= set(t), "the plan's tickets")
+    await _signoff(ce, "H-2", "ana")            # R2: the oracle, signed off
+    await _signoff(ce, "H-3", timeout=150)
+    await _wait(ce, lambda: ce.change.status == "READY", "publication")
+    assert t["T1"].attempt == 2                 # review FAIL -> rework
+    assert t["T2"].attempt == 2                 # verification FAIL -> rework
+    t3_runs = [ce.runs[r] for r in t["T3"].runs]
     assert any(any(v.startswith("G-B3") for v in vs) for r in t3_runs for vs in r.violations)
-    await ce.human_action("H-3", "accept", "miles")
+    assert all(x.status == "passed" for x in t.values())
 
-    await _wait(ce, lambda: ce.change.status == "READY", "H-3's preconditions")
-    ship = ce.change.ship
-    assert ship.verdict == "READY", ship.gates
-    assert set(ship.gates) == {
-        "approved_delta_spec", "protected_oracle", "task_contract", "deterministic_verification",
-        "task_level_independent_review", "integration_or_real_interface_checks",
-        "whole_change_acceptance_evidence", "pr_description_verified"}
-
-    # every accepted run's sandbox is gone; documents are namespaced, versioned & immutable
+    # every run's sandbox is gone; documents are namespaced, versioned & immutable
     await _wait(ce, lambda: all(r.sandbox_deleted for r in ce.runs.values()
                                 if r.status == "ACCEPTED"), "sandbox cleanup", 20)
     sb_root = ce.cfg.state_dir / "local-sandboxes"
     names = {r.sandbox for r in ce.runs.values() if r.sandbox}
     mine = [p for p in sb_root.glob("lg-*") if p.name in names] if sb_root.exists() else []
     assert mine == [], mine
-    assert ce.docs.latest_version(f"changes/{ce.cid}/plan/spec.md") == 2
-    assert ce.docs.latest_version("plan/spec.md") is None
+    assert ce.docs.latest_version(f"changes/{ce.cid}/tickets/design/spec.md") == 2
     with pytest.raises(sqlite3.DatabaseError, match="immutable"):
         ce.docs.conn.execute("UPDATE documents SET content='x'")
 
-    # integration branch contains all work
-    head = ce.change.integration_head
+    # the change's integration branch holds all its work
+    head = ce.tickets.t["change"].sha
     show = lambda p: subprocess.run(["git", "show", f"{head}:{p}"], cwd=ce.git.repo,
                                     capture_output=True, text=True).stdout
     assert show("src/greet.txt") == "hello\n\n"
     assert show("src/bye.txt") == "goodbye\n"
     assert "goodbye" in show("docs/README.md")
+    assert "grep -q hello" in show("tests/acceptance/test_greet.sh")      # the oracle's
 
 
 async def _r3_workflow(tmp_path):
@@ -201,56 +197,18 @@ async def _r3_workflow(tmp_path):
     try:
         await _wait(ctl, lambda: server.started, "server start", 20)
         ce = await ctl.start_change("R3: say hello and goodbye", "app")
-        n = ce.nodes
-        await _wait(ce, lambda: n["H-1"].status == "AWAITING_HUMAN", "H-1")
-        await ce.human_action("H-1", "accept", "miles")
-        assert ce.change.tier == "R3" and ce.change.panel == ["reviewer", "security", "architecture"]
-
-        await _wait(ce, lambda: n["H-E1"].status == "AWAITING_HUMAN", "H-E1")
-        await ce.human_action("H-E1", "approve", "miles")
-        await _wait(ce, lambda: n["H-2"].status == "AWAITING_HUMAN", "H-2")
-        assert n["baseline"].status == "ACCEPTED"
-        with pytest.raises(Exception, match="G-AT1"):
-            await ce.change_action("attest", "miles", {"kind": "independent-baseline",
-                                                       "verdict": "pass", "sources": []})
-        r = await ce.human_action("H-2", "approve", "miles")    # R3: attests the baseline too
-        assert r.pending == [] and "independent-baseline" in r.approved
-        await _wait(ce, lambda: n["H-2"].status == "ACCEPTED", "H-2")
-        assert ce.change.attestations["independent-baseline"].attested_by == "miles"
-
-        await _wait(ce, lambda: n["H-3"].status == "AWAITING_HUMAN", "H-3", 150)
-        assert all(f"{b.cycle}:architecture" in b.reviews for b in ce.build_nodes())
-        opened = ce.change.ship                     # evaluated as H-3 opened
-        await ce.human_action("H-3", "accept", "miles")
-        await _wait(ce, lambda: ce.change.ship is not opened, "H-3's preconditions")
-        gates = ce.change.ship.gates
-        assert ce.change.ship.verdict == "NOT_READY" and n["H-3"].status == "AWAITING_HUMAN"
-        assert gates["security_or_e2e_evaluator"].status == "unevaluable"
-        assert gates["independent_baseline"].status == "satisfied"
-        assert gates["architecture_or_security_review"].status == "satisfied"
-        assert gates["pr_description_verified"].status == "satisfied"     # described, reviewed
-        assert "release" not in n                                         # no release step
-
-        with pytest.raises(Exception, match="cannot be waived"):
-            await ce.change_action("override", "miles", {
-                "kind": "waive_gate", "gate": "deterministic_verification",
-                "reason": "we really want to skip the checks here", "evidence": "file:delivery/pr.md@1"})
-        sec = ce.latest_att("tasks/T1/reviews/security-cycle-2.md")
-        await ce.change_action("attest", "ana", {"kind": "security-evaluation", "verdict": "pass",
-                                                 "sources": [sec]})
-        await ce.change_action("override", "miles", {
-            "kind": "add_gate", "gate": "evidence_bundle_or_log",
-            "reason": "keep the per-task evidence logs for audit"})
-        first = ce.change.ship
-        await ce.human_action("H-3", "recheck", "miles")
-        await _wait(ce, lambda: ce.change.ship is not first, "H-3 recheck")
-        ship = ce.change.ship
-        unsatisfied = {k: g for k, g in ship.gates.items() if g.status != "satisfied"}
-        assert ship.verdict == "READY", unsatisfied
-        assert ship.gates["evidence_bundle_or_log"].added
-        assert {"independent_baseline", "security_or_e2e_evaluator"} <= set(
-            ship.human_judgement_gates)
-        await _wait(ce, lambda: ce.change.status == "READY", "the change accepted")
+        t = ce.st.tickets
+        await _signoff(ce, "H-1")
+        await _wait(ce, lambda: ce.change.tier is not None, "the tier, from the signed risk")
+        assert ce.change.tier == "R3" and "baseline" in t and "H-2b" in t
+        await _signoff(ce, "H-E1")
+        await _signoff(ce, "H-2")
+        await _signoff(ce, "H-2b")                  # R3: the baseline, signed off on its own
+        await _wait(ce, lambda: t["baseline"].status == "passed", "the baseline")
+        await _signoff(ce, "H-3", timeout=150)
+        await _wait(ce, lambda: ce.change.status == "READY", "publication")
+        assert {"security:T1", "architecture:T1"} <= set(t)     # the plan's R3 judges
+        assert all(t[x].status == "passed" for x in ("security:T1", "architecture:T1"))
     finally:
         for srv in servers:
             srv.should_exit = True
@@ -283,10 +241,13 @@ async def _event_streams(ctl, cfg, ce):
         assert {i["change"] for i in first[1][1]["inbox"]} <= set(ctl.changes)
         assert first[2][1]["change"]["id"] == ce.cid and "version" not in first[2][1]
         ce.event("note", "an event alone changes nothing the UI shows")      # bumps the version
-        await ce.change_action("attest", "miles", {
-            "kind": "e2e-evaluation", "verdict": "pass", "sources": ["file:plan/spec.md@1"]})
+        async with ce.lock:                                    # a real change of the state
+            ce.change.goal = "say hello and goodbye, said again"
+            ce.save()
         name, state = await asyncio.wait_for(anext(stream), 5)      # only the real change arrives
-        assert name == "state" and "e2e-evaluation" in state["change"]["attestations"]
+        while name != "state":                                     # (its list changed too)
+            name, state = await asyncio.wait_for(anext(stream), 5)
+        assert state["change"]["goal"] == "say hello and goodbye, said again"
         await stream.aclose()
         run = next(iter(ce.runs.values()))
         log = [x async for x in _sse(c, f"{base}/runs/{run.id}/log/events")]
@@ -364,12 +325,12 @@ async def _identity_checks(ctl, cfg):
     # task-scoped: a token only works for the live run of the task (and role) it names
     from legion_orch.workflow.model import Run
     ce = next(iter(ctl.changes.values()))
-    ce.runs["r9999"] = Run(id="r9999", node_id="build:T1", role="implementer", soul="s", cycle=9,
+    ce.runs["r9999"] = Run(id="r9999", ticket="T1", role="implementer", soul="s", attempt=9,
                            status="ACTIVE", sandbox="lg-x", sandbox_ref="lg-x")
     try:
-        good = WorkloadBinding(sandbox="lg-x", change=ce.cid, task="build:T1", role="implementer")
+        good = WorkloadBinding(sandbox="lg-x", change=ce.cid, task="T1", role="implementer")
         assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(good, "x"))[1].id == "r9999"
-        for wrong in ({"task": "build:T2"}, {"role": "reviewer"}, {"change": "c-other"},
+        for wrong in ({"task": "T2"}, {"role": "reviewer"}, {"change": "c-other"},
                       {"sandbox": "lg-y"}):
             bad = dataclasses.replace(good, **wrong)
             assert ctl.run_for_bearer(ctl.auth.identity.tokens.issue(bad, "x")) is None, wrong
@@ -491,12 +452,13 @@ async def test_document_listing_hides_controller_records_unless_asked(tmp_path):
         prefix = f"changes/{f.ce.cid}/"
         default = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}")).json()]
         every = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}&all=1")).json()]
-    assert default == [prefix + "intake/requirements.md", prefix + "intake/risk.json"]
+    assert default == [prefix + "tickets/intake/requirements.md", prefix + "tickets/intake/risk.json"]
     control = set(every) - set(default)
     assert prefix + "control/goal.md" in control           # the records are the journal's
-    assert any("/control/logs/" in p for p in control)
+    assert any("/control/runs/" in p for p in control)    # runs are audit documents
     assert not any(p.endswith(("/control/change.json", "/control/workflow.json"))
-                   or "/control/runs/" in p or "/control/nodes/" in p for p in control)
+                   for p in control)
+    await f.stop()
 
 
 @pytest.mark.anyio
@@ -559,7 +521,7 @@ async def test_agent_connects_at_start_up_not_first_tool_call(tmp_path):
     run = f.run("intake")
     assert (run.status, run.stage) == ("STARTING", "LAUNCHING")
     token = f.ctl.auth.identity.tokens.issue(WorkloadBinding(
-        sandbox=run.sandbox, change=f.ce.cid, task=run.node_id, role=run.role), "x")
+        sandbox=run.sandbox, change=f.ce.cid, task=run.ticket, role=run.role), "x")
     port = _free_port()
     srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
                                         port=port, log_level="warning"))

@@ -85,6 +85,7 @@ class TicketFlow:
                 "agent": AgentExecutor(agents, backoff),
                 "human:signoff": SignoffExecutor(self.signoffs, backoff),
                 "controller:verify": VerifyExecutor(verify, backoff),
+                "controller:preflight": VerifyExecutor(verify, backoff, expect_failures=True),
                 "controller:can-merge": CanMergeExecutor(self.branches, backoff),
                 "controller:provision": ProvisionExecutor(provision, backoff),
                 "controller:publish": PublishExecutor(remote=remote, branches=self.branches,

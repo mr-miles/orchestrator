@@ -153,6 +153,9 @@ class Verify:
         self.c, self.svc, self.dispatch = c, verifications, Dispatch(dispatcher)
 
     def commands(self, work: Work) -> tuple[str, ...]:
+        """A build's own ``verification``; otherwise (a preflight, the integration's) the
+        approved oracle's – or, before it is approved (the oracle's own preflight), the oracle
+        its owner is about to have signed: the design's."""
         t = work.ticket
         owner = self.c.tickets.t.get(t.parent) if t.parent else None
         own = list((owner.work if owner else {}).get("verification", []))

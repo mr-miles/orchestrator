@@ -161,7 +161,7 @@ class Controller:
         ce = self.changes.get(item.change)
         if ce is not None:
             ce.event("notified", f"{event} via {sink}: " + (f"failed: {error}" if error else "sent")
-                     + f" ({item.title})", item.node)
+                     + f" ({item.title})", item.ticket)
 
     def attention_items(self) -> list[AttentionItem]:
         """Every change's attention items (§2.2): blocking first, oldest first."""

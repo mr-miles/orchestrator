@@ -216,7 +216,7 @@ class RunLifecycle:
         (its step is in progress but its agent has not started: a consult starts it) or None
         (no card: the step is not in progress)."""
         answerer = self.sandboxes.answerer
-        has_card = any(c.node == node_id and c.role == role for c in self.c.a2a_cards())
+        has_card = any(c.ticket == node_id and c.role == role for c in self.c.a2a_cards())
         if answerer.session_run(node_id, role) is None:
             return "absent" if has_card else None
         return "live" if answerer.live(node_id, role) else "idle"

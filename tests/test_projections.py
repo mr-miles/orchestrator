@@ -7,8 +7,6 @@ import json
 
 from engine_harness import Flow, scenario
 
-from legion_orch.store import now_iso
-
 
 def _journalled(f: Flow, field: str) -> bool:
     path = f.ctl.svc.journal.path(f.ce.cid)

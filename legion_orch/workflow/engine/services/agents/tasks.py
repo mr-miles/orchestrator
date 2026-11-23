@@ -133,7 +133,7 @@ class RunTasks:
     def view(self, run: Run) -> dict:
         """The task as the agent's inbox shows it."""
         return {"task_id": run.id, "from": "orchestrator", "kind": "work",
-                "state": self.state(run), "cycle": run.cycle,
+                "state": self.state(run), "attempt": run.attempt,
                 "messages": [{"from": "orchestrator", "text": run.instructions}]
                 + [{"from": "orchestrator", "text": m} for m in run.asked]
                 + ([{"from": "you", "text": run.reply.text, "state": run.reply.state}]

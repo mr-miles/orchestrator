@@ -76,12 +76,12 @@ def items(e: ChangeView) -> list[AttentionItem]:
         out.append(AttentionItem(change=ch.id, goal=goal, ticket=None, kind=UNSYNCED,
                                  detail="workspace", title="The workspace could not be synced",
                                  reason=_clip(ch.unsynced), since=ch.created_at, blocking=True))
-    if tickets and e.tickets.paused and ch.status == ChangeStatus.ACTIVE:
+    held = [r for r in (e.tickets.root.paused if tickets else []) if not r.startswith("signing ")]
+    if held and ch.status == ChangeStatus.ACTIVE:      # a sign-off's own pause is its item
         root = e.tickets.root
         out.append(AttentionItem(change=ch.id, goal=goal, ticket=None, kind=PAUSED,
-                                 detail=",".join(root.paused), title="The workflow is paused",
-                                 reason=_clip(", ".join(root.paused)), since=root.since,
-                                 blocking=True))
+                                 detail=",".join(held), title="The workflow is paused",
+                                 reason=_clip(", ".join(held)), since=root.since, blocking=True))
     for q in ch.questions.values():
         if q.open:
             out.append(AttentionItem(change=ch.id, goal=goal, ticket=q.ticket, kind=QUESTION,

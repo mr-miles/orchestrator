@@ -30,7 +30,10 @@ class VerifyPort(Protocol):
     async def stop(self, ticket: str) -> None: ...
 
 
-def verification_outcome(res: Verification) -> Outcome:
+def verification_outcome(res: Verification, expect_failures: bool = False) -> Outcome:
+    """``expect_failures`` (a preflight: the oracle's tests before any build): it passes if the
+    commands ran – a failing command is expected; a failing setup, a missing command or the
+    infrastructure is not."""
     if res.infra_error:
         return Fault(f"verification infrastructure: {res.infra_error}")
     fails = [r for r in res.results if r.exit_code != 0]
@@ -39,14 +42,21 @@ def verification_outcome(res: Verification) -> Outcome:
                      + ", ".join(f"`{r.command}`" for r in unrunnable), transient=False)
     if res.ok and not fails:
         return Judged(True)
+    if expect_failures:
+        setup = [r for r in fails if r.setup]
+        return Judged(False, tuple(f"BLOCKER: the setup `{r.command}` exited {r.exit_code}: "
+                                   f"{r.output[-TAIL:]}" for r in setup)) if setup else Judged(True)
     return Judged(False, tuple(
         f"BLOCKER: {'the setup ' if r.setup else ''}`{r.command}` exited {r.exit_code}: "
         f"{r.output[-TAIL:]}" for r in fails) or ("BLOCKER: the verification did not pass",))
 
 
 class VerifyExecutor:
-    def __init__(self, port: VerifyPort, backoff: Backoff = Backoff()):
-        self.port, self.backoff = port, backoff
+    """``expect_failures``: a preflight (its commands must run, not pass)."""
+
+    def __init__(self, port: VerifyPort, backoff: Backoff = Backoff(),
+                 expect_failures: bool = False):
+        self.port, self.backoff, self.expect = port, backoff, expect_failures
 
     async def run(self, work: Work) -> Outcome:
         sha = work.judged or work.base
@@ -57,7 +67,7 @@ class VerifyExecutor:
             return Fault("nothing to verify: the ticket has no commands", transient=False)
 
         async def once() -> Outcome:
-            return verification_outcome(await self.port.verify(work, sha, commands))
+            return verification_outcome(await self.port.verify(work, sha, commands), self.expect)
         return await attempt(once, self.backoff)
 
     async def stop(self, ticket: str) -> None:

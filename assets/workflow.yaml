@@ -17,6 +17,7 @@ hooks:
 
 criteria:                           # per criterion type: may a decision owner waive a failure?
   controller:verify: {waivable: false}
+  controller:preflight: {waivable: false}
   controller:can-merge: {waivable: false}
   human:signoff: {waivable: false}
 
@@ -57,7 +58,7 @@ skeleton:
               goal: "the acceptance tests, failing before any build"
               inputs: [spec, specs, oracle]
               criteria:             # on the oracle: a rejection reworks it
-                - {id: preflight, type: "controller:verify"}
+                - {id: preflight, type: "controller:preflight"}   # its commands run
                 - id: H-2
                   type: "human:signoff"
                   signs: [tests]
@@ -114,7 +115,7 @@ tiers:                              # rules by ticket type – never by id (ids 
     order:
       - {each: "agent:implementer", after: "agent:oracle"}        # the tests exist first
     every:
-      - {type: "agent:oracle", criteria: ["controller:verify", "human:signoff"]}
+      - {type: "agent:oracle", criteria: ["controller:preflight", "human:signoff"]}
   R3:
     extends: R2
     exists: ["agent:baseline"]
