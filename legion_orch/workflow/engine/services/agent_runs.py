@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -18,7 +17,7 @@ from ....config import agent_command
 from ....sandbox import (
     AGENT_PREFIX,
     agentlog,
-    payload_scripts,
+    write_payload,
 )
 from ....store import DocStoreError
 from ....util import now_iso
@@ -258,18 +257,11 @@ class AgentRuns:
         """Resume ``run``'s agent session for another turn on ``message`` (its full tools and
         MCP, as its first turn), its log appended to the run's."""
         sid = run.session_id or agentlog.session_id(self.lifecycle.log_tail(run.id, 100_000))
-        d = self.c.run_dir(f"{run.id}-turn{turn}") / "payload"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "prompt.md").write_text(CONTINUE_PROMPT.format(task=run.id, message=message))
-        soul = self.c.assets.soul(run.soul) if run.soul in self.c.assets.souls_ else ""
-        (d / "soul.md").write_text(soul)
-        (d / "mcp.json").write_text(self._mcp_json())
-        env = self._env(run) | {"LEGION_NEEDS_REPO": "0"}
-        if sid:
-            env["LEGION_RESUME_SESSION"] = sid
-        (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
-        for name, text in payload_scripts().items():
-            (d / name).write_text(text)
+        env = self._env(run) | {"LEGION_NEEDS_REPO": "0"} | (
+            {"LEGION_RESUME_SESSION": sid} if sid else {})
+        d = write_payload(self.c.run_dir(f"{run.id}-turn{turn}") / "payload", env,
+                          prompt=CONTINUE_PROMPT.format(task=run.id, message=message),
+                          soul=self.c.assets.soul_text(run.soul), mcp=self._mcp_json())
         await self.sandboxes.upload(run.sandbox, d)
         return await self.sandboxes.start_agent(run.sandbox, self.c.run_dir(run.id) / "agent.log")
 
@@ -657,24 +649,19 @@ class AgentRuns:
                 rnd.first_build_at = now_iso()
 
     def _payload(self, run: Run, rendered, plan: SandboxPlan, *, tools: bool = True) -> None:
-        d = self.c.run_dir(run.id) / "payload"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "soul.md").write_text(rendered.soul)
         if run.consult:                       # an A2A answer turn: its prompt is the message
-            (d / "prompt.md").write_text(rendered.prompt)
+            prompt = rendered.prompt
         else:                                 # the assignment is its task's first message
             run.instructions = rendered.prompt
-            (d / "prompt.md").write_text(START_PROMPT.format(
-                role=run.role, node=run.node_id, change=self.c.cid, task=run.id))
-        write_skills(d / SKILLS_DIR, rendered.skills)
-        (d / "mcp.json").write_text(self._mcp_json())
+            prompt = START_PROMPT.format(role=run.role, node=run.node_id, change=self.c.cid,
+                                         task=run.id)
         env = self._env(run, tools=tools)
         if found := self.placement.resumable_session(run, plan):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session
-        (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
-        for name, text in payload_scripts().items():
-            (d / name).write_text(text)
+        d = write_payload(self.c.run_dir(run.id) / "payload", env, prompt=prompt,
+                          soul=rendered.soul, mcp=self._mcp_json())
+        write_skills(d / SKILLS_DIR, rendered.skills)
         for rel, text in handler_for(run.role).payload_files(self.roles,
                                                              self._node_of(run.node_id),
                                                              run).items():

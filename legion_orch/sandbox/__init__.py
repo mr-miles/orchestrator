@@ -30,14 +30,15 @@ from .runner import (
     SandboxSpec,
     make_runner,
 )
-from .scripts import MISE_SETUP_SH, RUN_AGENT_SH, payload_scripts
+from .scripts import MISE_SETUP_SH, RUN_AGENT_SH, payload_scripts, write_payload
 from .templates import TEMPLATES, VOCABULARY, TemplateError, base_values, render, spec_to_args
 
 __all__ = ["agentlog", "render_policy", "CONTROLLER_PROFILES", "provider_profiles", "setup_commands",
            "setup_workspace",
            "LocalRunner", "OpenShellRunner", "Runner", "SandboxError", "SandboxSpec", "make_runner",
            "CHANGE_LABEL", "GatewaySandbox", "Listing",
-           "MISE_SETUP_SH", "RUN_AGENT_SH", "payload_scripts", "TEMPLATES", "VOCABULARY", "TemplateError",
+           "MISE_SETUP_SH", "RUN_AGENT_SH", "payload_scripts", "write_payload",
+           "TEMPLATES", "VOCABULARY", "TemplateError",
            "base_values", "render", "spec_to_args", "MAX_NAME", "check_name", "human_name",
            "is_name_clash", "AGENT_PREFIX", "VERIFIER_PREFIX", "BuildError", "EnvironmentBuilder",
            "ImageRecipe", "NoBuilder", "PodmanBuilder", "Policy", "Tool", "make_builder", "SandboxEnv",
