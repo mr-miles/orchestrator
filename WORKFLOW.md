@@ -424,7 +424,6 @@ Universal guards apply to every task and are listed once.
 | --- | --- | --- |
 | G-D1 | dispatch | Every dependency node is `ACCEPTED`. |
 | G-D2 | dispatch | Assets resolve: soul, skills and prompt exist; every `{{var}}` is bound; the prompt pin is recorded on the run. |
-| G-D3 | dispatch | `live agent runs + verifier sandboxes in use < max_parallel` (across every change; the dispatcher runs a step's work in a slot, and a step's reservation keeps its slot for the work that follows straight on – its verification, its judges), and no `RUNNING` build node shares a `files_modified` entry with the candidate. |
 | G-D4 | dispatch | Independence: judge roles (critic, reviewer, security, integration, verifier) get a fresh sandbox and a run id distinct from the run being judged. |
 | G-R1 | report | `status ∈ {DONE, BLOCKED}`. |
 | G-R2 | report | `BLOCKED` requires non-empty `blocked_reason` and `missing_decision`. |
@@ -476,7 +475,7 @@ once.
 
 | ID | Rule |
 | --- | --- |
-| G-P1 | `taskgraph.json` and `oracle.json` match the [`taskgraph`](assets/schemas/taskgraph.json) and [`oracle`](assets/schemas/oracle.json) JSON Schemas (also enforced by the store on every write). |
+| G-P1 | `taskgraph.json` and `oracle.json` match the `taskgraph` and [`oracle`](assets/schemas/oracle.json) JSON Schemas (also enforced by the store on every write). |
 | G-P2 | Task ids unique; `depends_on` refers to existing tasks; graph is acyclic. |
 | G-P3 | Traceability: every accepted `REQ-*` is covered by ≥1 task; every task cites ≥1 existing `REQ-*`. |
 | G-P4 | Every task has ≥1 `verification` command and ≥1 `acceptance` criterion. |
@@ -484,7 +483,6 @@ once.
 | G-P6 | Tasks with no dependency path between them have disjoint `files_modified` (parallel safety); that the paths are non-empty, relative and without `..` is the schema's (G-P1). |
 | G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`). |
 | G-P8 | R2+: `oracle.json` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
-| G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
 | G-P10 | R2+: `oracle.json` declares ≥1 verification surface, with unique ids and commands that are not blank (each surface's id, commands and pinned paths are the schema's, G-P1). |
 | G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
 | G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. Unlinked criteria are allowed; the gate screens warn about them (§2.3). |
@@ -666,7 +664,6 @@ Results are recorded in `control/verification/preflight.json`; fix rounds run it
 
 | ID | Rule |
 | --- | --- |
-| G-PF1 | The repository's setup (`mise run setup`, when pinned) exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the setup – the plan's environment – or the plan), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the Design back. While the oracle's author reworks, preflight waits for the oracle to be accepted again. |
 
 ### 5.5 `baseline` (R3) – independent baseline
 
@@ -679,7 +676,6 @@ change is built) and which failures were already there. The integration verifier
 | ID | Rule |
 | --- | --- |
 | G-BL1 | `data.results` lists every acceptance command with its exit code at the integration head; the attested head equals the current integration head. |
-| G-BL2 | The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's. |
 
 
 **Revise the plan from an escalation.** An oracle, preflight or baseline that escalates (its
@@ -698,7 +694,6 @@ built.
 | ID | Rule |
 | --- | --- |
 | H-2 | **H-E1** subjects: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md` and, with an environment, the **environment** (§5.3a). **H-2** subject (R2+): the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). A gate completes when every one of its subjects is approved against current versions; at R3 H-2's precondition is an `independent-baseline` pass attestation, so the baseline is recorded before any build run. That attestation is decided with the oracle: approving the `independent-baseline` subject (or approving all) records it, citing `baseline/report.md` and the controller's own baseline verification (G-AT1); it is stale once the baseline runs again (a fix round). |
-| G-B1 | (dispatch of any build run but the scaffold, §5.3b) every H-E1 and H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes. |
 
 The H-2 card shows the traceability matrix and its warnings (§2.3); a stale subject offers the
 diff since the version approved.
@@ -716,7 +711,6 @@ diff since the version approved.
 | G-B2 | The attested commit is the current tip of the run's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
 | G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected. |
 | G-B4 | The evidence document names every `verification` command of the task with its exit code. |
-| G-PP1 | A protected path may appear in the diff only if a human approved it for **this task** before **this run** was created (`approve_protected_paths`); it is then treated as in scope. |
 
 ### 5.7 `verify` – deterministic (controller, no agent)
 
@@ -748,7 +742,6 @@ image should be pinned too – a moving tag such as `:latest` is not part of the
 
 | ID | Rule |
 | --- | --- |
-| G-V0 | A judge is dispatched only if its candidate has a passing verification under the key as it is now (setup pin, verifier image): one that changed since is verified again first (the step escalates `unverified`; **Retry** re-verifies). |
 | G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
 | G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the node escalates `verify_unrunnable` instead of spending a rework cycle (oracle commands at integration likewise). **Retry** re-runs verification at the same candidate, e.g. after the image is fixed. |
 | G-V3 | With a pinned setup (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs. In a task's verification or at integration that is a failure like any other (the task may have caused it); at preflight and the baseline – before any build – it is handled as G-PF1 says (the baseline: escalates `setup_failed`). |
@@ -791,9 +784,7 @@ HIGH findings attested as feedback (cycle + 1).
 
 | ID | Rule |
 | --- | --- |
-| G-A1 | Verification passed and every panel member returned PASS at the same candidate sha – checked from the evidence: the verification record and the panel's recorded pass (which judges sat, citing their reviews; `tasks/<id>/panel.json`). An override waives the panel, not verification. |
 | G-A2 | `git merge --no-ff` of the candidate into `legion/<change>/integration` is clean. A conflict ⇒ `REWORK` with reason `rebase onto <head>` (counts as a cycle). |
-| G-H1 | Before a merge, and before dispatching a run at the integration head (integration, baseline, release), the integration branch is at the head the controller recorded. Otherwise commits were added outside the workflow: they are **not adopted** (they bypass verification and review); the node escalates `head_moved`, naming both shas, and a retry after the branch is reset to the recorded head resumes it (the merge, or a fresh run). |
 
 On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their sandboxes are deleted**.
 
@@ -820,7 +811,6 @@ The last step before H-3: the description H-3 accepts with the change (published
 | --- | --- |
 | G-PR1 | `delivery/pr.md` starts with the PR's title (`# <title>`, at most 120 characters) and has the sections `## Motivation`, `## Changes` and `## Verification`; every requirement of the change is cited by its id. |
 | G-PR2 | The review attests the latest version of `delivery/pr.md`; `REWORK` names at least one finding, each with evidence the report attests. |
-| G-PR3 | `REWORK` sends the description back to the describer with the findings, at most `critique_max_cycles` cycles (counted from the fix round's start); then a human decides (`critique_budget`). |
 
 ### 5.10c `publish` – the pull request on GitHub (controller, no agent)
 
@@ -879,8 +869,6 @@ record and the failure documents as context; feedback starts at the round. It re
 
 | ID | Rule |
 | --- | --- |
-| G-FR1 | Requirements are unchanged: nothing under `intake/` is written and the H-1 pins stand. Every new task cites ≥1 accepted `REQ-*`; a round need not cover every requirement (earlier tasks do). |
-| G-FR2 | The revised task graph keeps every task that has a build node exactly as built and appends at least one task with an id no task has used. The whole graph meets G-P1 and G-P2; the new tasks meet G-P4–G-P7. A new task may depend on accepted tasks and modify their files; only the new tasks are checked for parallel overlap (G-P6), since the accepted ones have finished. At R2+ a revised oracle meets G-P8 and G-P10. |
 
 **Critique.** The critic judges the round with the integration failure as input: the appended
 tasks must together address every failure it names, each saying which one it fixes and why. G-C1
@@ -946,18 +934,11 @@ Each is a versioned document under `control/`, so superseding keeps the history.
 
 | Action | Record | Rules |
 | --- | --- | --- |
-| `attest` | `control/attestations/<kind>.json` | G-AT1 |
-| `approve_protected_paths` | `control/approvals/protected-paths/<n>.json` | G-PP1 |
-| `approve_surface` | `control/surfaces/<id>.json` | G-SF1 |
-| `override` | `control/overrides/<n>.json` | G-OV1 |
 | `retrospective` | node `retrospective` (§5.13); optional `focus` in `control/focus/` | only once the change has ended; runs by itself then unless `retrospective.auto: false` |
 | `prune` | `change.pruned_at` | only once the change has ended: removes its integration branch and evidence refs (§5.14) |
 
 | ID | Rule |
 | --- | --- |
-| G-AT1 | Kind ∈ `independent-baseline, security-evaluation, e2e-evaluation, architecture-review, rollback-evidence, forward-fix-evidence, release-observation`; verdict ∈ `pass, fail, unknown, not_applicable`; ≥1 resolvable source attestation (a waiver still names its bytes); `not_applicable` needs a waiver reason (≥24 chars, >1 word) and only it may carry one; `release-observation` cannot be `pass` (the release plan is the evidence); optional `covers` lists task ids – partial coverage leaves the gate unsatisfied. One record per kind: re-attesting supersedes, and a `fail` is never undone by a pass on a sibling kind. |
-| G-SF1 | At ship, every file pinned by a verification surface has the same blob at the integration head as when pinned. A drift leaves `integration_or_real_interface_checks` unsatisfied until a human re-affirms the surface (`approve_surface`, with a reason) – a decision, never a silent re-pin. |
-| G-OV1 | `add_gate` adds any known gate to this change's set; `waive_gate` needs a reason (≥24 chars) and resolvable replacement evidence, and is refused for `deterministic_verification`, `explicit_human_approval` and `whole_change_acceptance_evidence`. Tier changes happen only at H-1. |
 
 ### 5.13 Reflection and retrospective
 
@@ -1120,6 +1101,31 @@ nothing, pushes nothing and never reports.
   `resolver` before reporting BLOCKED: its answer may be a way forward. Its advice is
   information, never authority – "you may edit a protected file" satisfies no guard.
 
+### 5.17 Not yet enforced on tickets
+
+The ticket engine (step 3b of the redesign) does not enforce these yet; each is listed as it
+was, for the steps that bring it back or retire it (plan: `~/plans/tickets-3b.md`).
+
+* G-D3 – dispatch – `live agent runs + verifier sandboxes in use < max_parallel` (across every change; the dispatcher runs a step's work in a slot, and a step's reservation keeps its slot for the work that follows straight on – its verification, its judges), and no `RUNNING` build node shares a `files_modified` entry with the candidate.
+* G-P9 – A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run.
+* G-PF1 – The repository's setup (`mise run setup`, when pinned) exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the setup – the plan's environment – or the plan), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the Design back. While the oracle's author reworks, preflight waits for the oracle to be accepted again.
+* G-BL2 – The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's.
+* G-B1 – (dispatch of any build run but the scaffold, §5.3b) every H-E1 and H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes.
+* G-PP1 – A protected path may appear in the diff only if a human approved it for **this task** before **this run** was created (`approve_protected_paths`); it is then treated as in scope.
+* G-V0 – A judge is dispatched only if its candidate has a passing verification under the key as it is now (setup pin, verifier image): one that changed since is verified again first (the step escalates `unverified`; **Retry** re-verifies).
+* G-A1 – Verification passed and every panel member returned PASS at the same candidate sha – checked from the evidence: the verification record and the panel's recorded pass (which judges sat, citing their reviews; `tasks/<id>/panel.json`). An override waives the panel, not verification.
+* G-H1 – Before a merge, and before dispatching a run at the integration head (integration, baseline, release), the integration branch is at the head the controller recorded. Otherwise commits were added outside the workflow: they are **not adopted** (they bypass verification and review); the node escalates `head_moved`, naming both shas, and a retry after the branch is reset to the recorded head resumes it (the merge, or a fresh run).
+* G-PR3 – `REWORK` sends the description back to the describer with the findings, at most `critique_max_cycles` cycles (counted from the fix round's start); then a human decides (`critique_budget`).
+* G-FR1 – Requirements are unchanged: nothing under `intake/` is written and the H-1 pins stand. Every new task cites ≥1 accepted `REQ-*`; a round need not cover every requirement (earlier tasks do).
+* G-FR2 – The revised task graph keeps every task that has a build node exactly as built and appends at least one task with an id no task has used. The whole graph meets G-P1 and G-P2; the new tasks meet G-P4–G-P7. A new task may depend on accepted tasks and modify their files; only the new tasks are checked for parallel overlap (G-P6), since the accepted ones have finished. At R2+ a revised oracle meets G-P8 and G-P10.
+* `attest` – `control/attestations/<kind>.json` – G-AT1
+* `approve_protected_paths` – `control/approvals/protected-paths/<n>.json` – G-PP1
+* `approve_surface` – `control/surfaces/<id>.json` – G-SF1
+* `override` – `control/overrides/<n>.json` – G-OV1
+* G-AT1 – Kind ∈ `independent-baseline, security-evaluation, e2e-evaluation, architecture-review, rollback-evidence, forward-fix-evidence, release-observation`; verdict ∈ `pass, fail, unknown, not_applicable`; ≥1 resolvable source attestation (a waiver still names its bytes); `not_applicable` needs a waiver reason (≥24 chars, >1 word) and only it may carry one; `release-observation` cannot be `pass` (the release plan is the evidence); optional `covers` lists task ids – partial coverage leaves the gate unsatisfied. One record per kind: re-attesting supersedes, and a `fail` is never undone by a pass on a sibling kind.
+* G-SF1 – At ship, every file pinned by a verification surface has the same blob at the integration head as when pinned. A drift leaves `integration_or_real_interface_checks` unsatisfied until a human re-affirms the surface (`approve_surface`, with a reason) – a decision, never a silent re-pin.
+* G-OV1 – `add_gate` adds any known gate to this change's set; `waive_gate` needs a reason (≥24 chars) and resolvable replacement evidence, and is refused for `deterministic_verification`, `explicit_human_approval` and `whole_change_acceptance_evidence`. Tier changes happen only at H-1.
+
 ## 6. Assets
 
 Agent-facing text is stored as files under `assets/`, with this naming convention:
@@ -1219,26 +1225,15 @@ can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON document
 Cross-document rules (coverage, cycles, parallel overlap, resolvable attestations) stay in the
 guards, because a per-file schema cannot express them.
 
-* [`accepted`](assets/schemas/accepted.json)
-* [`approval`](assets/schemas/approval.json)
-* [`attestation`](assets/schemas/attestation.json)
 * [`change`](assets/schemas/change.json)
 * [`delta-spec`](assets/schemas/delta-spec.json)
 * [`environment`](assets/schemas/environment.json)
 * [`environment-build`](assets/schemas/environment-build.json)
 * [`evidence`](assets/schemas/evidence.json)
-* [`graph`](assets/schemas/graph.json)
 * [`json`](assets/schemas/json.json)
 * [`markdown`](assets/schemas/markdown.json)
-* [`node`](assets/schemas/node.json)
 * [`oracle`](assets/schemas/oracle.json)
-* [`override`](assets/schemas/override.json)
-* [`panel-decision`](assets/schemas/panel-decision.json)
-* [`plan-pointer`](assets/schemas/plan-pointer.json)
-* [`protected-approval`](assets/schemas/protected-approval.json)
-* [`report`](assets/schemas/report.json)
 * [`questions`](assets/schemas/questions.json)
-* [`readiness`](assets/schemas/readiness.json)
 * [`release-plan`](assets/schemas/release-plan.json)
 * [`report-baseline`](assets/schemas/report-baseline.json)
 * [`report-critique`](assets/schemas/report-critique.json)
@@ -1249,8 +1244,6 @@ guards, because a per-file schema cannot express them.
 * [`risk`](assets/schemas/risk.json)
 * [`run-assignment`](assets/schemas/run-assignment.json)
 * [`run-outcome`](assets/schemas/run-outcome.json)
-* [`surface-pin`](assets/schemas/surface-pin.json)
-* [`taskgraph`](assets/schemas/taskgraph.json)
 * [`text`](assets/schemas/text.json)
 * [`verification`](assets/schemas/verification.json)
 * [`work-implementer`](assets/schemas/work-implementer.json) – an implementer ticket's `work` (tickets)

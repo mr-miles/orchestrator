@@ -1,4 +1,4 @@
-"""release: the release plan and rollback (G-RL1)."""
+"""release: the release plan and rollback (G-REL1)."""
 from __future__ import annotations
 
 from .. import guards

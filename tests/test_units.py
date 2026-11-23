@@ -198,6 +198,15 @@ def check(tasks, reqs=("REQ-1",), tier="R2", oracle=ORACLE):
                        SchemaRegistry(ROOT / "assets/schemas"))
 
 
+def work_problems(task: dict) -> list[str]:
+    """What the implementer's work schema says of a task-like dict."""
+    from legion_orch.workflow.assets import Assets
+    from legion_orch.workflow.tickets import Ticket
+    work = {k: v for k, v in task.items() if k not in ("id", "title", "depends_on")}
+    return Assets(ROOT / "assets").work_problems(Ticket(id=task["id"], type="agent:implementer",
+                                                         work=work))
+
+
 def test_plan_guards():
     assert check([_task("T1", ["src/a.py"]), _task("T2", ["src/b.py"], ["T1"])]) == []
     ids = lambda v: {x.split(":")[0] for x in v}
@@ -207,7 +216,7 @@ def test_plan_guards():
     assert check([_task("T1", ["src/"]), _task("T2", ["src/b.py"], ["T1"])]) == []    # ordered: fine
     assert "G-P7" in ids(check([_task("T1", ["tests/acc/test_a.py"])]))
     assert "G-P7" in ids(check([_task("T1", [".github/workflows/ci.yml"])]))
-    assert "G-P1" in ids(check([_task("T1", ["../x"])]))   # path shape is in the schema
+    assert work_problems(_task("T1", ["../x"]))            # path shape: the work schema's
     empty_oracle = {"acceptance_tests": [], "acceptance_commands": [], "integration_commands": [],
                     "criteria": []}
     assert "G-P8" in ids(check([_task("T1", ["a"])], oracle=empty_oracle))
@@ -259,8 +268,8 @@ def test_namespacing_and_agent_read_restrictions():
     assert qualify("changes/c2/plan/spec.md", "c1") == "changes/c2/plan/spec.md"
     assert normalize("file:plan/spec.md@2", "c1") == "file:changes/c1/plan/spec.md@2"
     assert normalize(f"git:app@{SHA}", "c1") == f"git:app@{SHA}"
-    assert _hidden("changes/c1/control/logs/r0001.log")
-    assert not _hidden("changes/c1/control/approvals/spec.json")
+    assert _hidden("changes/c1/control/runs/r0001/log")
+    assert not _hidden("changes/c1/tickets/design/spec.md")
 
 
 def test_agents_cannot_write_other_changes_or_control(tmp_path):
@@ -278,33 +287,31 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
                                 journal=Journal(tmp_path / "journal"),
                                 tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = Reports(ChangeCore(svc, StubHost(), "c1"), lifecycle=None, roles=None)  # writes need neither
-    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
-              write_scope=["changes/c1/plan/"])
-    assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
-    run.write_scope = ["changes/c1/plan/", "changes/c1/tasks/T1/"]   # even a broad scope can't
-    for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md",
-                "tasks/T1/verification/cycle-1.json", "tasks/T1/panel/cycle-1.json",
-                "tasks/T1/reports/reviewer-cycle-1.json", "control/steps/plan/reports/critic-cycle-1.json",
-                "tasks/T1/runs/r0001/assignment.json", "tasks/T1/runs/r0001/outcome.json",
-                "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
+    run = Run(id="r0001", ticket="design", role="planner", soul="s", attempt=1,
+              write_scope=["changes/c1/tickets/design/"])
+    assert ce.docs_write(run, "tickets/design/spec.md", "x", None).path == \
+        "changes/c1/tickets/design/spec.md"
+    run.write_scope = ["changes/c1/tickets/design/", "changes/c1/"]   # even a broad scope can't
+    for bad in ("changes/c2/tickets/design/spec.md", "control/x.json",
+                "control/runs/r0001/assignment.json", "control/verifications/v1/record.json"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
     # G-W4: per-run quota (limits: 3 versions, 10 bytes in this test)
     with pytest.raises(WorkflowError, match="G-W4.*bytes"):
-        ce.docs_write(run, "plan/big.md", "x" * 10, None)
-    ce.docs_write(run, "plan/a.md", "y", None)
-    ce.docs_write(run, "plan/b.md", "z", None)
+        ce.docs_write(run, "tickets/design/big.md", "x" * 10, None)
+    ce.docs_write(run, "tickets/design/a.md", "y", None)
+    ce.docs_write(run, "tickets/design/b.md", "z", None)
     assert (run.docs_written, run.doc_bytes) == (3, 3)
     with pytest.raises(WorkflowError, match="G-W4.*versions"):
-        ce.docs_write(run, "plan/c.md", "w", None)
+        ce.docs_write(run, "tickets/design/c.md", "w", None)
     # a dry run makes the same checks, and writes and counts nothing
     with pytest.raises(WorkflowError, match="G-W4.*versions"):
-        ce.docs_write(run, "plan/c.md", "w", None, dry_run=True)
+        ce.docs_write(run, "tickets/design/c.md", "w", None, dry_run=True)
     run.docs_written = 0
     with pytest.raises(WorkflowError, match="G-W1"):
         ce.docs_write(run, "control/x.json", "{}", None, dry_run=True)
-    c = ce.docs_write(run, "plan/c.md", "w", None, dry_run=True)
-    assert c.attestation == "file:changes/c1/plan/c.md@1" and docs.latest_version(c.path) is None
+    c = ce.docs_write(run, "tickets/design/c.md", "w", None, dry_run=True)
+    assert c.attestation == "file:changes/c1/tickets/design/c.md@1" and docs.latest_version(c.path) is None
     assert (run.docs_written, run.doc_bytes) == (0, 3)
 
 
@@ -317,20 +324,22 @@ def test_review_panels():
 def test_docstore_check_makes_every_write_check_and_writes_nothing():
     from legion_orch.store import SchemaViolation
     d = _store()
-    c = d.check("changes/c1/plan/spec.md", "one")
-    assert (c.attestation, c.unchanged, c.schema) == ("file:changes/c1/plan/spec.md@1", False, "markdown")
-    assert d.latest_version("changes/c1/plan/spec.md") is None          # nothing written
-    v1 = d.write("changes/c1/plan/spec.md", "one", author="r1", role="planner")
+    spec = "changes/c1/tickets/design/spec.md"
+    c = d.check(spec, "one")
+    assert (c.attestation, c.unchanged, c.schema) == (f"file:{spec}@1", False, "markdown")
+    assert d.latest_version(spec) is None          # nothing written
+    v1 = d.write(spec, "one", author="r1", role="planner")
     assert c.sha256 == v1.sha256
-    assert d.check("changes/c1/plan/spec.md", "one", base_version=1).unchanged
-    assert d.check("changes/c1/plan/spec.md", "two", base_version=1).version == 2
+    assert d.check(spec, "one", base_version=1).unchanged
+    assert d.check(spec, "two", base_version=1).version == 2
     with pytest.raises(VersionConflict, match="G-W2"):
-        d.check("changes/c1/plan/spec.md", "two")                       # base missing
+        d.check(spec, "two")                       # base missing
     with pytest.raises(SchemaViolation, match="G-W3.*missing heading 'Change'"):
-        d.check("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n")
+        d.check("changes/c1/tickets/design/specs/REQ-1.md",
+                "# x\n## Current behaviour\n## Acceptance criteria\n")
     with pytest.raises(DocStoreError, match="invalid document path"):
         d.check("../x.md", "x")
-    assert d.latest_version("changes/c1/plan/spec.md") == 1
+    assert d.latest_version(spec) == 1
 
 
 def test_store_enforces_bound_schemas():
@@ -338,26 +347,26 @@ def test_store_enforces_bound_schemas():
 
     from legion_orch.store import SchemaViolation
     d = _store()
-    good = {"tasks": [_task("T1", ["src/a.py"])]}
-    v = d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner")
-    assert (v.schema, v.schema_sha.startswith("sha256:")) == ("taskgraph", True)
-    assert d.read("changes/c1/plan/taskgraph.json").schema == "taskgraph"
-    bad = {"tasks": [dict(_task("T1", ["/abs"]), extra=1)]}
-    with pytest.raises(SchemaViolation, match="G-W3.*taskgraph"):
-        d.write("changes/c1/plan/taskgraph.json", _j.dumps(bad), author="r1", role="planner", base_version=1)
-    with pytest.raises(SchemaViolation, match="bound to schema 'taskgraph', not 'json'"):
-        d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner",
-                base_version=1, schema="json")
+    path = "changes/c1/tickets/design/oracle.json"
+    v = d.write(path, _j.dumps(ORACLE), author="r1", role="planner")
+    assert (v.schema, v.schema_sha.startswith("sha256:")) == ("oracle", True)
+    assert d.read(path).schema == "oracle"
+    with pytest.raises(SchemaViolation, match="G-W3.*oracle"):
+        d.write(path, _j.dumps(dict(ORACLE, acceptance_tests="x")), author="r1", role="planner",
+                base_version=1)
+    with pytest.raises(SchemaViolation, match="bound to schema 'oracle', not 'json'"):
+        d.write(path, _j.dumps(ORACLE), author="r1", role="planner", base_version=1, schema="json")
     with pytest.raises(SchemaViolation, match="missing heading 'Change'"):
-        d.write("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n",
-                author="r1", role="planner")
-    run = {"role": "planner", "soul": "s", "cycle": 1, "created_at": "2026-11-23T00:00:00.000Z"}
-    d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
+        d.write("changes/c1/tickets/design/specs/REQ-1.md",
+                "# x\n## Current behaviour\n## Acceptance criteria\n", author="r1", role="planner")
+    run = {"ticket": "T1", "role": "planner", "soul": "s", "attempt": 1,
+           "created_at": "2026-11-23T00:00:00.000Z"}
+    d.write("changes/c1/control/runs/r0001/assignment.json", _j.dumps(run), author="controller",
             role="controller")                                  # a valid assignment
     run["token"] = "x"
     with pytest.raises(SchemaViolation, match="run-assignment.*does not allow"):   # never a token
-        d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
-                role="controller")
+        d.write("changes/c1/control/runs/r0001/assignment.json", _j.dumps(run),
+                author="controller", role="controller")
     assert d.write("changes/c1/notes/anything.txt", "free text", author="r", role="r").schema == "text"
 
 
@@ -658,10 +667,6 @@ def test_panel_members_cannot_write_each_others_reviews():
 def test_plan_limits_and_scale():
     import time
 
-    from legion_orch.store import SchemaRegistry
-    reg = SchemaRegistry(ROOT / "assets/schemas")
-    too_many = {"tasks": [_task(f"T{i}", [f"src/{i}.py"]) for i in range(1, 102)]}
-    assert any("tasks" in e for e in reg.validate_data("taskgraph", too_many))
     # a 100-long dependency chain: waves are iterative (no recursion limit)
     chain = [_task(f"T{i}", [f"src/{i}.py"], [f"T{i - 1}"] if i > 1 else []) for i in range(1, 101)]
     assert guards.waves(chain)["T100"] == 100
@@ -696,25 +701,26 @@ def test_transition_rollback_keeps_identity(tmp_path):
     import types
 
     from legion_orch.workflow.engine.base.core import ChangeCore
-    from legion_orch.workflow.model import Change, Node, Run
+    from legion_orch.workflow.model import Change, Run
+    from legion_orch.workflow.tickets import Ticket
     svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
                                 lock=None, procs={}, telemetry=Telemetry.off(),
                                 journal=Journal(tmp_path / "journal"),
                                 tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = ChangeCore(svc, StubHost(), "c1")
     ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
-    node = Node(id="plan", kind="plan", title="Plan")
-    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
-    ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
+    t = Ticket(id="design", type="agent:planner")
+    run = Run(id="r0001", ticket="design", role="planner", soul="s", attempt=1, status="ACTIVE")
+    ce.st.tickets["design"], ce.st.runs["r0001"] = t, run
     with pytest.raises(RuntimeError), ce.st.transaction():
-        run.status, node.status, node.feedback = "REPORTED", "ACCEPTED", [{"x": 1}]
+        run.status, t.status, t.findings = "REPORTED", "passed", ["x"]
         ce.st.change.tier = "R3"
-        ce.st.nodes["build:T1"] = Node(id="build:T1", kind="build", title="T1")  # e.g. new builds
-        del ce.st.nodes["plan"]
+        ce.st.tickets["T1"] = Ticket(id="T1", type="agent:implementer")   # e.g. new builds
+        del ce.st.tickets["design"]
         raise RuntimeError("transition failed")
-    assert ce.nodes["plan"] is node and ce.runs["r0001"] is run       # same objects
-    assert (run.status, node.status, node.feedback) == ("ACTIVE", "PENDING", [])
-    assert ce.change.tier is None and "build:T1" not in ce.nodes
+    assert ce.st.tickets["design"] is t and ce.runs["r0001"] is run       # same objects
+    assert (run.status, t.status, t.findings) == ("ACTIVE", "pending", [])
+    assert ce.change.tier is None and "T1" not in ce.st.tickets
 
 
 def test_protected_support_files_are_protected():
@@ -724,13 +730,11 @@ def test_protected_support_files_are_protected():
     assert check([_task("T1", ["src/a.py"])], oracle=support) == []
     import types
 
-    from legion_orch.workflow import governance
-    from legion_orch.workflow.model import Oracle
-    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support),
-                                                           setup_pin=None, plan_node="plan"),
+    from legion_orch.workflow.roles.base import protected
+    e = types.SimpleNamespace(change=types.SimpleNamespace(setup_pin=None),
                               cfg=types.SimpleNamespace(protected_paths=[".github/"]),
-                              latest=lambda _rel: None, current=lambda _base: None)
-    assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
+                              tickets=types.SimpleNamespace(root=types.SimpleNamespace(pointers={})))
+    assert protected(e, support) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
 
 
 def test_cgi_head_parsing():
@@ -752,8 +756,8 @@ def test_plan_guard_branches():
     assert "cites unknown requirement REQ-9" in msgs(check([t("T1", ["a"], reqs=("REQ-1", "REQ-9"))]))
     blank = t("T1", ["a"]) | {"verification": ["  "]}       # schema-valid, but no real command
     assert {"G-P4"} == ids(check([blank]))
-    # path shape is the schema's (G-P1), checked before any other guard
-    assert {"G-P1"} == ids(check([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]))
+    # path shape is the work schema's (checked when the plan's tickets are applied)
+    assert work_problems(t("T1", ["a"]) | {"files_forbidden": ["/etc/passwd", "a/../b"]})
     crit = dict(ORACLE, criteria=[{"id": "AC-1", "requirement": "REQ-7", "text": "t"}])
     assert "must reference an accepted requirement" in msgs(check([t("T1", ["a"])], oracle=crit))
     # parallel overlap: exact/exact, pattern/exact, exact/pattern, glob/glob

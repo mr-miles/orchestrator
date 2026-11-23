@@ -17,7 +17,7 @@ from .a2a import A2AHub
 def change_list(ctl: Controller) -> list[dict]:
     out = []
     for ce in ctl.changes.values():
-        c, tickets = ce.change, list(ce.st.tickets.values())
+        c, tickets = ce.change, list(ce.tickets.t.values())
         out.append({"id": c.id, "workspace": c.workspace, "goal": c.goal,
                     "status": c.status, "tier": c.tier,
                     "created_at": c.created_at,
@@ -32,9 +32,9 @@ def environment_spec(ce: ChangeEngine) -> dict | None:
     """The environment spec being signed off (the planner's output, else the approved one):
     the proposals its profiles use and each profile's effective network (what its tools bring
     plus extras), or the problems."""
-    ref = next((t.outputs.get("environment") for t in ce.st.tickets.values()
+    ref = next((t.outputs.get("environment") for t in ce.tickets.t.values()
                 if t.type == "agent:planner" and t.outputs.get("environment")), None) \
-        or (ce.tickets.root.pointers.get("environment") if ce.st.tickets else None)
+        or (ce.tickets.root.pointers.get("environment") if ce.tickets.t else None)
     m = FILE_RE.match(ref) if isinstance(ref, str) else None
     if ce.cfg.environment is None or m is None:
         return None
@@ -57,9 +57,9 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
     pointers (the approved outputs), the sign-offs waiting and what they show, its runs. Run
     assignments (the rendered prompt variables) are left out."""
     ch, cfg = ce.change, ctl.cfg
-    tickets = [t.model_dump(mode="json") for t in ce.st.tickets.values()]
+    tickets = [t.model_dump(mode="json") for t in ce.tickets.t.values()]
     runs = [r.model_dump(mode="json", exclude={"assignment"}) for r in ce.runs.values()]
-    root = ce.tickets.root if ce.st.tickets else None
+    root = ce.tickets.root if ce.tickets.t else None
     return {"project": cfg.project, "repo": ch.workspace if ch else None,
             "decision_owners": cfg.decision_owners,
             "assets_sha": ctl.assets.sha, "limits": cfg.limits.__dict__,
