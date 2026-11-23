@@ -4,6 +4,7 @@ Controller access is one provider profile per endpoint, each with the SPIFFE tok
 injects a task-scoped bearer into requests to that endpoint only:
 
 * ``legion-mcp`` (``policies/legion-mcp-profile.template.yaml``) – the MCP endpoint, for agents;
+* ``legion-a2a`` (``policies/legion-a2a-profile.template.yaml``) – the A2A endpoint, for agents;
 * ``legion-git`` and ``legion-git-push`` (``policies/legion-git-profile.template.yaml``) – the git
   remote, read-only (a ``git-receive-pack`` deny) and read-write.
 
@@ -24,6 +25,7 @@ import yaml
 from ..config import Config
 from .runner import openshell_cli
 from .templates import (
+    A2A_PROFILE,
     CONTROLLER_PROFILES,
     GIT_PROFILE,
     GIT_PUSH_PROFILE,
@@ -40,6 +42,7 @@ def provider_profiles(cfg: Config, mcp_tools: list[str]) -> dict[str, dict[str, 
     values = base_values(cfg, mcp_tools=mcp_tools)
     return {
         MCP_PROFILE: render(cfg, "mcp_profile", values | {"PROFILE_ID": MCP_PROFILE}),
+        A2A_PROFILE: render(cfg, "a2a_profile", values | {"PROFILE_ID": A2A_PROFILE}),
         **{pid: render(cfg, "git_profile", values | {"PROFILE_ID": pid,
                                                     "GIT_PUSH_DENY_RULES": git_push_deny_rules(push)})
            for pid, push in ((GIT_PROFILE, False), (GIT_PUSH_PROFILE, True))},

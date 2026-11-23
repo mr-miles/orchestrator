@@ -73,6 +73,7 @@ from .phases import (
     TaskCommands,
     TierPanel,
     Verify,
+    _judges,
 )
 
 if TYPE_CHECKING:
@@ -209,6 +210,17 @@ class StepType:
     def role(self) -> str | None:
         first = self.phases[0]
         return first.role if isinstance(first, Produce) else None
+
+    def agent_roles(self, c) -> list[str]:
+        """The roles of its agents – producer, critic, the change's panel – in phase order: each
+        has an A2A card while the step is in progress (workflow/cards.py)."""
+        roles: list[str] = []
+        for p in self.phases:
+            if isinstance(p, (Produce, Critique)):
+                roles.append(p.role)
+            elif isinstance(p, Panel):
+                roles += _judges(p.judges, c)
+        return list(dict.fromkeys(roles))
 
     @property
     def judges_head(self) -> bool:

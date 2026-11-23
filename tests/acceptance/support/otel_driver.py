@@ -241,7 +241,7 @@ class Driver:
             workflow_doc: {ROOT / 'WORKFLOW.md'}
             server: {{host: 127.0.0.1, port: {self.port}, agent_host: 127.0.0.1, public_host: 127.0.0.1,
                       mcp_port: {free_port()}, git_port: {free_port()},
-                      token_port: {free_port()}{server_extra}}}
+                      token_port: {free_port()}, a2a_port: {free_port()}{server_extra}}}
             limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
             retrospective: {{auto: false}}
             sandbox:

@@ -28,6 +28,7 @@ from ...setup import SETUP_COMMAND
 from ..base.auth import VerifierGrant
 from ..base.core import ChangeCore
 from ..base.work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
+from .answer import Answerer
 from .plan import Environments, Holds, SandboxPlan
 from .reflect import Reflector
 
@@ -63,10 +64,11 @@ class AgentSession:
         if not self.fresh:
             async with self.sb.lock(run.sandbox):
                 node = c.nodes.get(run.node_id)
-                if node and node.sandbox == run.sandbox and node.sandbox_stopped:
+                if self.sb.stopped(run.sandbox):    # kept for rework, or stopped after an A2A turn
                     await self.stage(RunStage.PREPARING, f"starting sandbox {run.sandbox}")
                     await self.sb.wake(run.sandbox)
-                    node.sandbox_stopped = False
+                    if node and node.sandbox == run.sandbox:
+                        node.sandbox_stopped = False
                 await self.stage(RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
                 await self.sb.upload(run.sandbox, payload)
             return
@@ -153,6 +155,7 @@ class Sandboxes:
         self.c, self._holds = core, holds
         self.environments: Environments | None = None    # set once the provisioner exists
         self.reflector = Reflector(core, self)
+        self.answerer = Answerer(core, self)     # A2A messages for steps not running
         self.retiring: set[str] = set()      # sandboxes being reflected on and deleted
         self.to_suspend: set[str] = set()    # to stop once nothing live uses them
         self.verifiers = 0                   # verifier sandboxes in use

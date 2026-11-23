@@ -30,6 +30,7 @@ TEMPLATES = {
     "verifier_sandbox": "verifier-sandbox.template.yaml",
     "mcp_profile": "legion-mcp-profile.template.yaml",
     "git_profile": "legion-git-profile.template.yaml",
+    "a2a_profile": "legion-a2a-profile.template.yaml",
     "provider": "legion-provider.template.yaml",
     "sandbox_resources": "sandbox-resources.template.yaml",
 }
@@ -47,23 +48,26 @@ VOCABULARY: dict[str, str] = {
     "MCP_TOOLS": "tool names the controller's MCP server registers (the tools/call allowlist)",
     "GIT_PUSH_DENY_RULES": "deny rules of the git profile: [] for legion-git-push, a POST "
                            "git-receive-pack deny for legion-git",
+    "A2A_HOST": "A2A listener host as seen from sandboxes (server.public_host)",
+    "A2A_PORT": "A2A listener port (server.a2a_port)",
     "TOKEN_ENDPOINT": "the controller's OAuth token endpoint (server.token_port, /oauth/token)",
     # identity (from identity.*)
     "TOKEN_AUDIENCE": "audience requested for controller access tokens",
     "SVID_AUDIENCE": "audience of the sandbox JWT-SVID presented to the token endpoint",
     "SCOPE": "OAuth scope requested for controller access tokens",
     "TOKEN_CACHE_TTL": "seconds the gateway may cache a controller access token",
-    "PROFILE_ID": "the controller provider profile being rendered (legion-mcp, legion-git, "
-                  "legion-git-push): its id, and its provider's name and type",
+    "PROFILE_ID": "the controller provider profile being rendered (legion-mcp, legion-a2a, "
+                  "legion-git, legion-git-push): its id, and its provider's name and type",
     # OpenShell placement and images (from sandbox.*)
     "WORKSPACE": "OpenShell workspace (sandbox.workspace)",
     "AGENT_IMAGE": "image for agent sandboxes: its environment image, else sandbox.image "
                    "(null: gateway default)",
     "VERIFIER_IMAGE": "image for verifier sandboxes: its environment image, else "
                       "sandbox.verifier_image or sandbox.image",
-    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: legion-mcp, legion-git-push "
-                         "(roles that push) or legion-git, then sandbox.providers",
+    "SANDBOX_PROVIDERS": "providers attached to agent sandboxes: legion-mcp, legion-a2a, "
+                         "legion-git-push (roles that push) or legion-git, then sandbox.providers",
     "AGENT_BINARIES": "paths of the agent CLI (sandbox.agent_binaries), for the legion-mcp profile",
+    "A2A_BINARIES": "paths of the A2A client (sandbox.a2a_binaries), for the legion-a2a profile",
     "GIT_BINARIES": "paths of git and its HTTP remote helpers (sandbox.git_binaries), for the "
                     "git profiles",
     # per sandbox (from the controller at creation time)
@@ -90,9 +94,10 @@ MCP_VERSIONS = ["2025-06-18", "2025-11-25", "2026-07-28"]
 # Controller access: one provider profile (and provider of the same name) per endpoint, and a
 # read-only and a read-write git profile, since deny rules apply across a sandbox's whole policy.
 MCP_PROFILE = "legion-mcp"
+A2A_PROFILE = "legion-a2a"
 GIT_PROFILE = "legion-git"
 GIT_PUSH_PROFILE = "legion-git-push"
-CONTROLLER_PROFILES = (MCP_PROFILE, GIT_PROFILE, GIT_PUSH_PROFILE)
+CONTROLLER_PROFILES = (MCP_PROFILE, A2A_PROFILE, GIT_PROFILE, GIT_PUSH_PROFILE)
 
 
 class TemplateError(ValueError):
@@ -112,10 +117,12 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
     """Vocabulary values derived from configuration (no per-sandbox values)."""
     gh, gp, _ = _host_port(cfg.server.git_base_url)
     mh, mp, mpath = _host_port(cfg.server.mcp_url)
+    ah, ap, _ = _host_port(cfg.server.a2a_url)
     ic, sc = cfg.identity, cfg.sandbox
     v: dict[str, Any] = {
         "GIT_HOST": gh, "GIT_PORT": gp,
         "MCP_HOST": mh, "MCP_PORT": mp, "MCP_PATH": mpath,
+        "A2A_HOST": ah, "A2A_PORT": ap,
         "MCP_VERSIONS": MCP_VERSIONS, "MCP_MAX_BODY_BYTES": cfg.server.mcp_max_body_bytes,
         "TOKEN_ENDPOINT": cfg.server.token_url,
         "TOKEN_AUDIENCE": ic.token_audience, "SVID_AUDIENCE": ic.svid_audience, "SCOPE": ic.scope,
@@ -129,6 +136,7 @@ def base_values(cfg: Config, *, mcp_tools: list[str] | None = None) -> dict[str,
         "RUN_AS_USER": sc.run_as_user, "RUN_AS_GROUP": sc.run_as_group,
         "AGENT_BINARIES": list(sc.agent_binaries),
         "GIT_BINARIES": list(sc.git_binaries),
+        "A2A_BINARIES": list(sc.a2a_binaries),
     }
     if mcp_tools is not None:
         v["MCP_TOOLS"] = list(mcp_tools)
@@ -142,9 +150,10 @@ def label_value(value: str) -> str:
 
 
 def sandbox_providers(cfg: Config, *, push: bool) -> list[str]:
-    """Providers an agent sandbox attaches: MCP, exactly one git profile, the configured ones."""
+    """Providers an agent sandbox attaches: MCP, A2A, exactly one git profile, the configured
+    ones."""
     git = GIT_PUSH_PROFILE if push else GIT_PROFILE
-    return list(dict.fromkeys([MCP_PROFILE, git, *cfg.sandbox.providers]))
+    return list(dict.fromkeys([MCP_PROFILE, A2A_PROFILE, git, *cfg.sandbox.providers]))
 
 
 def git_push_deny_rules(push: bool) -> list[dict]:

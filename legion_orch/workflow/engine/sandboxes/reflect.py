@@ -9,16 +9,12 @@ never holds up the change or keeps a sandbox alive past ``retrospective.reflect_
 from __future__ import annotations
 
 import asyncio
-import json
-import shlex
-import shutil
 from typing import TYPE_CHECKING
 
-from ....config import agent_command
-from ....sandbox import RUN_AGENT_SH, agentlog
-from ....util import stop_process
+from ....sandbox import agentlog
 from ...model import Run
 from ..base.core import ChangeCore
+from .turn import resumed_turn
 
 if TYPE_CHECKING:
     from .sandboxes import Sandboxes
@@ -147,31 +143,11 @@ class Reflector:
                 return                      # already reflected (a release seen twice)
             last = runs[-1]
             prompt = reflection_prompt(c, runs)
-            soul = c.assets.soul(last.soul) if last.soul in c.assets.souls_ else ""
         rid = f"{last.id}-reflect"
-        d = c.run_dir(rid)
-        payload, log_file = d / "payload", d / "agent.log"
-        payload.mkdir(parents=True, exist_ok=True)
-        (payload / "prompt.md").write_text(prompt)
-        (payload / "soul.md").write_text(soul)
-        (payload / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
-        # No skills in this payload: the sandbox still has those of the run that reflects (the
-        # last one in it), and run-agent.sh keeps installed skills when a payload brings none.
-        env = {"LEGION_RUN_ID": rid, "LEGION_ROLE": last.role, "LEGION_NEEDS_REPO": "0",
-               "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
-               "LEGION_RESUME_SESSION": last.session_id, "LEGION_REQUIRE_SESSION": "1"}
-        (payload / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n"
-                                                 for k, v in env.items()))
-        (payload / "run-agent.sh").write_text(RUN_AGENT_SH)
         c.event("reflection", f"asking {last.role} run {last.id} to reflect", last.node_id, last.id)
-        proc = None
         try:
-            if stopped:
-                await self.sandboxes.wake(sandbox)
-            await self.sandboxes.upload(sandbox, payload)
-            proc = await self.sandboxes.start_agent(sandbox, log_file)
-            rc = await asyncio.wait_for(proc.wait(), cfg.reflect_timeout_s)
-            text = log_file.read_text(errors="replace") if log_file.exists() else ""
+            rc, text = await resumed_turn(c, self.sandboxes, sandbox, last, rid, prompt,
+                                          timeout=cfg.reflect_timeout_s, wake=stopped)
             result = agentlog.agent_result(text)
             async with c.lock:
                 if result is None or result.is_error or not result.message.strip():
@@ -194,7 +170,3 @@ class Reflector:
         except Exception as e:                      # best-effort: never blocks the deletion
             c.event("reflection", f"reflection of run {last.id} skipped: {e or type(e).__name__}",
                     last.node_id, last.id)
-        finally:                                    # also when cancelled (at shutdown)
-            if proc is not None:
-                await stop_process(proc)
-            shutil.rmtree(d, ignore_errors=True)

@@ -228,11 +228,12 @@ async def test_a_task_goes_from_its_agent_to_verify_panel_merge_and_acceptance(f
     judge = await report(f, n, result=None, role="reviewer")   # its handler records the review only
     assert n.status == REVIEWING                         # the panel decides: no review yet
     assert judge.status == "ACCEPTED" and judge.concluded
-    assert judge.sandbox in f.ce._sandboxes.retiring     # the judge's sandbox goes
+    assert judge.sandbox not in f.ce._sandboxes.retiring      # kept (stopped) for A2A
+    assert judge.sandbox in f.ce._sandboxes.to_suspend
     rt.of(n).advance(rt.of(n).current())                 # the panel passed
     assert n.status == MERGING and started[-1] == "Merge"
     rt.of(n).advance(rt.of(n).current())                 # merged
-    assert n.status == ACCEPTED
+    assert n.status == ACCEPTED     # (its end retires the judge's: test_a2a, real runs)
 
 
 @scenario()

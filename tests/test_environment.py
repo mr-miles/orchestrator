@@ -457,9 +457,9 @@ def test_openshell_create_attaches_the_environment(tmp_path):
         return [args[i + 1] for i, a in enumerate(args) if a == name]
     agent = create(True, env)
     assert flag(agent, "--from") == ["localhost/legion-env:abc"]
-    assert flag(agent, "--provider") == ["legion-mcp", "legion-git", "claude-code"]
-    assert flag(create(True, env, push=True), "--provider") == ["legion-mcp", "legion-git-push",
-                                                                "claude-code"]
+    assert flag(agent, "--provider") == ["legion-mcp", "legion-a2a", "legion-git", "claude-code"]
+    assert flag(create(True, env, push=True), "--provider") == ["legion-mcp", "legion-a2a",
+                                                                "legion-git-push", "claude-code"]
     assert flag(agent, "--cpu") == ["2"] and flag(agent, "--memory") == ["4096Mi"]
     assert flag(agent, "--driver-config-json") == ['{"firecracker": {"disk_mib": 2048}}']
     verifier = create(False, env)

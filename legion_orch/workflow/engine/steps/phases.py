@@ -576,13 +576,15 @@ async def judge_work(active: ActivePhase, role: str) -> Ended | None:
 
 
 def judged(active: ActivePhase, ended: Ended) -> None:
-    """A judge's turn ended: its run is done and, accepted, its sandbox retired (once)."""
+    """A judge's turn ended: its run is done and, accepted, its sandbox stopped – kept, with its
+    session, for A2A questions about its judgement until its step ends (or the role's next
+    cycle gets a fresh sandbox), then retired."""
     run = ended.run
     if run is not None and not run.concluded:
         run.concluded = True
         if run.status == R_REPORTED and not isinstance(ended.result, Escalate):
             run.status = R_ACCEPTED
-            active.lifecycle.sandboxes.delete_later(run.sandbox)
+            active.lifecycle.sandboxes.suspend_when_idle({run.sandbox})
 
 
 def judge_resume(active: ActivePhase, escalation: Escalate) -> Resume:

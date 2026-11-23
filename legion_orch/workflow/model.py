@@ -343,6 +343,9 @@ class Node(Record):
     finding_history: list[list[str]] = []  # HIGH finding fingerprints per review cycle
     reviews: dict[str, ReviewResult] = {}  # review_key(cycle, role) or "integration"
     verification: dict[str, Verification] = {}   # str(cycle) or "integration"
+    # the roles of the step's agents (producer, critic, panel), set when the step starts: each
+    # has an A2A card while the step is in progress, whether its agent has started or not
+    agent_roles: list[str] = []
     panel: dict[str, PanelDecision] = {}  # str(cycle): the panel's pass at that cycle
     escalation: Escalation | None = None
     extra_cycles: int = 0                 # granted by a human on escalation
@@ -437,6 +440,9 @@ class Run(Record):
     sandbox_deleted: bool = False
     # its sandbox was stopped (its step's reservation released: escalated, done, sent back)
     sandbox_stopped: bool = False
+    # an A2A turn of the role's agent before its work started (it answered a message): not one
+    # of the node's runs, it never reports; the role's run continues its sandbox and session
+    consult: bool = False
 
 
 # ---------------------------------------------------------------------------- change records
@@ -587,6 +593,27 @@ class SetupPin(Record):
     source: str                       # base (the base branch at change start) | H-E1
 
 
+class AgentQuestion(Record):
+    """A question an agent asked the human through the change's orchestrator card (A2A
+    ``ask_human``). Its id is the A2A task's; answering it completes that task. Open questions
+    are withdrawn when the asker can no longer receive the answer (its sandbox is gone, the
+    controller restarted: the A2A task lived in memory)."""
+    id: str
+    node: str                          # the asking step
+    role: str
+    run: str | None = None
+    question: str
+    asked_at: str = Field(default_factory=now_iso)
+    answer: str | None = None
+    answered_by: str | None = None
+    answered_at: str | None = None
+    withdrawn: str | None = None       # why it can no longer be answered
+
+    @property
+    def open(self) -> bool:
+        return self.answer is None and self.withdrawn is None
+
+
 class Change(Record):
     id: str
     goal: str
@@ -618,6 +645,7 @@ class Change(Record):
     pruned_at: str | None = None     # a human removed the integration branch and evidence refs
     round: int = 1                                         # 1, or the current fix round
     rounds: list[FixRound] = []                            # fix rounds since the last restart
+    questions: dict[str, AgentQuestion] = {}               # A2A ask_human, by task id
 
     def round_first_build_at(self) -> str | None:
         """When the current round's first build started (round 1: the change's first build);

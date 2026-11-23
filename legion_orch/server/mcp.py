@@ -28,9 +28,11 @@ from ..store import DocCheck, DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
 from ..workflow import attest
+from ..workflow.cards import card_id
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Run
 from ..workflow.results import ReportOutcome
+from .a2a import A2AHub
 
 INSTRUCTIONS = """Legion orchestrator tools. Start with get_assignment(). Documents are immutable,
 versioned and schema-validated (docs_write creates a new version; pass base_version when revising;
@@ -38,10 +40,13 @@ docs_schema(path) shows what a path must contain). Paths are relative to your ch
 start with changes/. Back every claim with attestations: file:<path>@<version>,
 git:<repo>/<path>@<sha> or git:<repo>@<sha>. Finish with exactly one accepted
 report(status="DONE"|"BLOCKED"). Rejected reports list violated guard ids and use up an attempt;
-check first with report(..., dry_run=true) and docs_write(..., dry_run=true), which use none."""
+check first with report(..., dry_run=true) and docs_write(..., dry_run=true), which use none.
+Other agents of the change may message you over A2A: check a2a_inbox() at milestones and before
+you report, and answer each message with a2a_reply()."""
 
 AGENT_HIDDEN = ("/control/logs/",)
-WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report")
+WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report",
+                  "a2a_inbox", "a2a_reply")
 # The gateway's MCP allowlist (sandbox network policy) is generated from exactly this list.
 MCP_TOOLS = tuple(STORE_TOOLS) + WORKFLOW_TOOLS
 
@@ -171,6 +176,28 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         outcome = await ce.handle_report(r.id, status, summary, attestations, data,
                                          blocked_reason, missing_decision, dry_run)
         return outcome.model_dump(mode="json", exclude_none=True)
+
+    # ------------------------------------------------------------------ A2A inbox
+    hub = A2AHub.of(ctl)
+
+    @server.tool(description="Messages other agents of this change sent you over A2A that wait "
+                             "for your answer: task_id, from (their card, role@step), text. Check it at "
+                             "milestones and before you report; answer each with a2a_reply.")
+    async def a2a_inbox(ctx: Context) -> dict:
+        ce, r = current(ctx)
+        return {"messages": [i.view() for i in hub.pending(ce.cid, card_id(r.role, r.node_id))]}
+
+    @server.tool(description="Answer a message from your A2A inbox: the text is sent back to its "
+                             "sender as the answer to its task.")
+    async def a2a_reply(ctx: Context, task_id: str, text: str) -> dict:
+        ce, r = current(ctx)
+        if not text.strip():
+            raise ToolError("text is required")
+        if not hub.reply(ce.cid, card_id(r.role, r.node_id), task_id, text.strip()):
+            raise ToolError(f"no message {task_id} waits in your inbox (answered already, or "
+                            "its sender cancelled it)")
+        ce.event("a2a", f"{r.node_id} answered a message over MCP", r.node_id, r.id)
+        return {"ok": True}
 
     # the gateway's MCP allowlist must match exactly what is served
     registered = {t.name for t in await server.list_tools()}

@@ -1,6 +1,7 @@
 import type {
   Acceptance,
   ActionResult,
+  AgentQuestion,
   Attention,
   ChangeSummary,
   ConfigFiles,
@@ -103,6 +104,15 @@ export function changeAction(
   return api<ActionResult>(
     `/api/changes/${encodeURIComponent(cid)}/action`,
     { action, approver: who.approver, payload },
+    who.token,
+  )
+}
+
+/** Answer an agent's question (A2A ask_human): the answer completes its task. */
+export function answerQuestion(cid: string, qid: string, answer: string, who: Who) {
+  return api<AgentQuestion>(
+    `/api/changes/${encodeURIComponent(cid)}/questions/${encodeURIComponent(qid)}/answer`,
+    { answer, approver: who.approver },
     who.token,
   )
 }

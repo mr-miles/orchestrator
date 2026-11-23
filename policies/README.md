@@ -11,8 +11,9 @@ controller only fills in placeholders.
 | `agent-sandbox.template.yaml` | `sandbox create` flags for an agent sandbox |
 | `verifier-sandbox.template.yaml` | `sandbox create` flags for a verifier sandbox |
 | `legion-mcp-profile.template.yaml` | provider profile `legion-mcp` (controller MCP), imported once per workspace (`profile import -f`) |
+| `legion-a2a-profile.template.yaml` | provider profile `legion-a2a` (the controller's A2A endpoint, for a2a-cli), imported once per workspace |
 | `legion-git-profile.template.yaml` | provider profiles `legion-git` (read-only) and `legion-git-push` (read-write), imported once per workspace |
-| `legion-provider.template.yaml` | `provider create` flags, once per workspace for each of the three profiles |
+| `legion-provider.template.yaml` | `provider create` flags, once per workspace for each of the four profiles |
 | `sandbox-resources.template.yaml` | `--driver-config-json` for a sandbox whose environment profile requests disk (see below) |
 
 ## Rendering rules
@@ -30,7 +31,7 @@ controller only fills in placeholders.
   `--workspace ${WORKSPACE}` (and `-g <gateway>` when `sandbox.gateway` is set).
 * Controller access is not in the sandbox policies: each sandbox attaches the controller's
   provider profiles, whose endpoints OpenShell adds to its effective policy. Agents attach
-  `legion-mcp` and exactly one of `legion-git-push` (roles that push) or `legion-git`; verifiers
+  `legion-mcp`, `legion-a2a` and exactly one of `legion-git-push` (roles that push) or `legion-git`; verifiers
   attach only `legion-git`. OpenShell applies a deny rule across the whole effective policy, so
   the git template always allows `git-receive-pack` and `${GIT_PUSH_DENY_RULES}` removes it in
   `legion-git`; a sandbox must never attach both git profiles.
@@ -52,22 +53,25 @@ controller only fills in placeholders.
 | `${MCP_MAX_BODY_BYTES}` | largest MCP request the gateway inspects (`server.mcp_max_body_bytes`); larger ones are dropped with a connection reset |
 | `${MCP_TOOLS}` | tool names the controller's MCP server registers (the tools/call allowlist) |
 | `${GIT_PUSH_DENY_RULES}` | deny rules of the git profile: [] for `legion-git-push`, a POST git-receive-pack deny for `legion-git` |
+| `${A2A_HOST}` | A2A listener host as seen from sandboxes (server.public_host) |
+| `${A2A_PORT}` | A2A listener port (server.a2a_port) |
 | `${TOKEN_ENDPOINT}` | the controller's OAuth token endpoint (server.token_port, /oauth/token) |
 | `${TOKEN_AUDIENCE}` | audience requested for controller access tokens |
 | `${SVID_AUDIENCE}` | audience of the sandbox JWT-SVID presented to the token endpoint |
 | `${SCOPE}` | OAuth scope requested for controller access tokens |
 | `${TOKEN_CACHE_TTL}` | seconds the gateway may cache a controller access token |
-| `${PROFILE_ID}` | the controller provider profile being rendered (`legion-mcp`, `legion-git`, `legion-git-push`): its id, and its provider's name and type |
+| `${PROFILE_ID}` | the controller provider profile being rendered (`legion-mcp`, `legion-a2a`, `legion-git`, `legion-git-push`): its id, and its provider's name and type |
 | `${WORKSPACE}` | OpenShell workspace (sandbox.workspace) |
 | `${AGENT_IMAGE}` | image for agent sandboxes: its environment image, else sandbox.image (null for the gateway default) |
 | `${VERIFIER_IMAGE}` | image for verifier sandboxes: its environment image, else sandbox.verifier_image or sandbox.image |
-| `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: `legion-mcp`, `legion-git-push` (roles that push) or `legion-git`, then sandbox.providers |
+| `${SANDBOX_PROVIDERS}` | providers attached to agent sandboxes: `legion-mcp`, `legion-a2a`, `legion-git-push` (roles that push) or `legion-git`, then sandbox.providers |
 | `${VERIFIER_PROVIDERS}` | providers attached to verifier sandboxes: `legion-git` |
 | `${SANDBOX_CPU}` | `--cpu`: vCPUs requested by the sandbox's environment profile (null: driver default) |
 | `${SANDBOX_MEMORY}` | `--memory`: memory requested by the sandbox's environment profile, `<n>Mi` (null: driver default) |
 | `${DRIVER_CONFIG}` | `--driver-config-json` for the sandbox's disk (the rendered `sandbox-resources` template), null for the driver default |
 | `${DISK_MIB}` | disk in MiB requested by the sandbox's environment profile (`sandbox-resources` template only) |
 | `${AGENT_BINARIES}` | paths of the agent CLI (sandbox.agent_binaries), for the `legion-mcp` profile |
+| `${A2A_BINARIES}` | paths of the A2A client (sandbox.a2a_binaries), for the `legion-a2a` profile |
 | `${GIT_BINARIES}` | paths of git and its HTTP remote helpers (sandbox.git_binaries), for the git profiles |
 | `${SANDBOX_NAME}` | readable sandbox name: lg-<first name> (agents), lgv-<first name> (verifiers) |
 | `${POLICY_FILE}` | path of the rendered sandbox policy |

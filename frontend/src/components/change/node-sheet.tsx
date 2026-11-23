@@ -39,6 +39,7 @@ import {
   StatusBadge,
   Verdict,
 } from '../status'
+import { AgentQuestions } from './a2a'
 import { EnvironmentBuild, EnvironmentSpec } from './environment'
 import { useNav } from './nav'
 import { NodeActions } from './node-actions'
@@ -197,6 +198,7 @@ function Details({ node, state }: { node: Node; state: ChangeState }) {
   return (
     <div className="space-y-4">
       <KV rows={rows} />
+      <AgentQuestions state={state} node={node.id} />
       {node.kind === 'plan' && state.environment && (
         <section className="space-y-2">
           <h3 className="font-medium">Environment spec</h3>

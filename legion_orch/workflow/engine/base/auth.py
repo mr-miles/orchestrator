@@ -5,7 +5,8 @@ task-scoped access token at ``/oauth/token``). This module decides what that ide
 
 * :meth:`WorkloadAuth.sandbox_binding` – the one task a live sandbox serves (token issuance),
 * :meth:`WorkloadAuth.live_run` – the live run a bearer token acts for (MCP calls),
-* :meth:`WorkloadAuth.git_grant` – what a bearer may do on the git endpoint.
+* :meth:`WorkloadAuth.git_grant` – what a bearer may do on the git endpoint,
+* :meth:`WorkloadAuth.a2a_caller` – the agent an A2A request comes from.
 
 Verifier sandboxes have no run record; the engine registers them for their lifetime.
 """
@@ -89,6 +90,19 @@ class WorkloadAuth:
                     return cid, r
                 log.warning("token for %s does not match live run %s", b, r.id)
                 return None
+        return None
+
+    def a2a_caller(self, token: str | None) -> WorkloadBinding | None:
+        """The agent an A2A request comes from: the token's binding, if its sandbox still exists
+        and serves exactly that change, task and role. Not only live runs: an agent's sandbox
+        (and card) outlives its turns. Verifiers run no agent and get nothing."""
+        b = self.identity.tokens.verify(token) if token else None
+        if b is None or b.role == "verifier":
+            return None
+        for cid, r in self._runs():
+            if r.sandbox_ref == b.sandbox and not r.sandbox_deleted \
+                    and (cid, r.node_id, r.role) == (b.change, b.task, b.role):
+                return b
         return None
 
     def git_grant(self, token: str | None) -> GitGrant | None:

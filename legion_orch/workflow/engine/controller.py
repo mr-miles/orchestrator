@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from ...config import Config
 from ...git import GitRemote
+from ...identity import WorkloadBinding
 from ...notify import Notifier
 from ...sandbox import (
     EnvironmentBuilder,
@@ -287,6 +288,12 @@ class Controller:
         for ce in self.changes.values():
             for r in ce.runs.values():
                 yield ce.cid, r
+
+    def a2a_caller(self, token: str | None) -> tuple[ChangeEngine, WorkloadBinding] | None:
+        """The change and agent (sandbox, task, role) an A2A request's bearer comes from."""
+        b = self.auth.a2a_caller(token)
+        ce = self.changes.get(b.change) if b else None
+        return (ce, b) if ce is not None else None
 
     def run_for_bearer(self, token: str | None) -> tuple[ChangeEngine, Run] | None:
         """The change and live run a gateway-injected bearer acts for (see WorkloadAuth)."""

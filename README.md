@@ -67,7 +67,7 @@ legion-orch -c orchestrator.yaml act <change-id> build:T1 rerun:provision --appr
   --payload '{"reason": "rebuild against the updated environment library"}'
 ```
 
-Four listeners, one purpose each:
+Five listeners, one purpose each:
 
 | Listener | Default | Serves | Who reaches it |
 | --- | --- | --- | --- |
@@ -75,6 +75,7 @@ Four listeners, one purpose each:
 | `server.agent_host:mcp_port` | `0.0.0.0:8766` | `/mcp` | agents, vetted by the gateway as `protocol: mcp` |
 | `server.agent_host:git_port` | `0.0.0.0:8767` | `/git/<repo>.git` (push only to the run's branch) | agents and verifiers |
 | `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → task-scoped token) | the OpenShell gateway supervisor |
+| `server.agent_host:a2a_port` | `0.0.0.0:8769` | `/a2a/*` (A2A cards of the caller's change, its AI Catalog) | agents (the `a2a` CLI) |
 
 The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS and shadcn/ui,
 built with bun) has a left-hand menu in two groups. **Workloads**: *Work* (every change, counted by
@@ -108,8 +109,9 @@ policies, `sandbox create` flags, provider profiles, providers) is rendered from
 [`policies/`](policies/README.md) with one shared `${PLACEHOLDER}` vocabulary, and every
 `openshell` call targets `sandbox.workspace`. This imports one provider profile per controller
 endpoint and creates a provider of the same name for each: `legion-mcp` (MCP, for agents),
-`legion-git` (git fetch only) and `legion-git-push` (fetch and push). Agent sandboxes attach
-`legion-mcp` and one git provider (`legion-git-push` for roles that push); verifiers attach only
+`legion-a2a` (A2A, for the agents' `a2a` CLI), `legion-git` (git fetch only) and
+`legion-git-push` (fetch and push). Agent sandboxes attach `legion-mcp`, `legion-a2a` and one git
+provider (`legion-git-push` for roles that push); verifiers attach only
 `legion-git`. The attached profiles add the controller endpoints to the sandbox's effective
 policy, so the sandbox policies carry no rule for them. The gateway exchanges each sandbox's
 SPIFFE JWT-SVID at `/oauth/token` and injects the bearer into requests to the controller. Configure

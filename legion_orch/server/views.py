@@ -89,6 +89,9 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             else None,
             # node -> the log of its verification running now (/api/runs/<log>/log)
             "verifying": dict(ce.verifying),
+            "a2a": {"cards": [c.model_dump(mode="json") for c in ce.a2a_cards()],
+                    "questions": [q.model_dump(mode="json")
+                                  for q in ce.change.questions.values()]},
             "attestation_kinds": sorted(governance.ATTESTATION_KINDS)}
 
 
