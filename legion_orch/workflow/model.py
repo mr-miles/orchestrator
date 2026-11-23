@@ -495,6 +495,16 @@ class TaskReply(Record):
     at: str = Field(default_factory=now_iso)
 
 
+class Turn(Record):
+    """One turn of a run's agent: its process, from start to exit. A turn that ends with the
+    run's task open is followed by another (the orchestrator asks again, ``asked``)."""
+    n: int
+    started_at: str = Field(default_factory=now_iso)
+    ended_at: str | None = None
+    exit_code: int | None = None
+    asked: str | None = None              # the orchestrator's message it started on (turn 2+)
+
+
 class Run(Record):
     id: str
     node_id: str
@@ -552,6 +562,7 @@ class Run(Record):
     reply: TaskReply | None = None
     # messages (A2A task ids) it was reminded of, ending its task with them unanswered: each once
     inbox_reminded: list[str] = []
+    turns: list[Turn] = []                # its agent's turns, in order (the agent runner's)
 
 
 # ---------------------------------------------------------------------------- change records

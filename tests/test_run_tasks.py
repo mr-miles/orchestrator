@@ -159,3 +159,21 @@ async def test_a_question_back_is_in_the_senders_inbox_and_its_reply_continues_t
         assert (await A2AHub.of(f.ctl).agent_reply(f.ce, critic, tid, "Then yes, final.", "completed"))["ok"]
         t = await task_when(c, "critic@plan", tid, token(f, planner))
         assert t["status"]["state"] == "TASK_STATE_COMPLETED"
+
+
+@scenario()
+async def test_a_turn_that_ends_with_the_task_open_is_followed_by_another_and_both_are_recorded(f: Flow):
+    import json
+    run = f.run("intake")
+    with open(f.ce.run_dir(run.id) / "agent.log", "a") as fh:      # it ends its turn, no report
+        fh.write(json.dumps({"type": "result", "subtype": "success", "result": "done?"}) + "\n")
+    await f.exit_agent(run)
+    first, second = run.turns                                       # the runner asked again
+    assert (first.n, first.exit_code, first.asked) == (1, 0, None) and first.ended_at
+    assert second.n == 2 and second.asked and second.exit_code is None
+    await intake_report(f, run, status="DONE")
+    assert (await f.reply(run, "completed"))["ok"]
+    await f.exit_agent(run)
+    assert f.status("intake") == ACCEPTED and run.turns[-1].exit_code == 0
+    turns = f.ce.json_doc(f"control/steps/intake/runs/{run.id}/outcome.json")["turns"]
+    assert [t["n"] for t in turns] == [1, 2] and turns[1]["asked"] == second.asked

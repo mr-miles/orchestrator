@@ -21,10 +21,12 @@ def _dumps(ce) -> tuple:
     """What a restart keeps: the change, the steps, and each run as its documents say (its
     stage, latest progress and live bookkeeping are the live run's only)."""
     from legion_orch.workflow.engine.base.state import RUN_ASSIGNMENT, RUN_OUTCOME
-    kept = {"id", "node_id", *RUN_ASSIGNMENT, *RUN_OUTCOME}
+    from legion_orch.workflow.model import LIVE_RUN
+    ended, live = {"id", "node_id", *RUN_ASSIGNMENT, *RUN_OUTCOME}, {"id", "node_id", *RUN_ASSIGNMENT}
     return (ce.change.model_dump(mode="json"),
             {k: n.model_dump(mode="json") for k, n in ce.nodes.items()},
-            {k: r.model_dump(mode="json", include=kept) for k, r in ce.runs.items()})
+            {k: r.model_dump(mode="json", include=live if r.status in LIVE_RUN else ended)
+             for k, r in ce.runs.items()})
 
 
 def test_entries_fold_to_the_record():
@@ -101,7 +103,8 @@ async def test_the_journal_is_only_appended_to_and_a_save_appends_what_changed(f
     run = f.ce.runs["r0001"]
     base = f"{f.ce.st.run_dir(run)}"
     assert base == "control/steps/intake/runs/r0001"
-    assert f.ce.latest(f"{base}/assignment.json") <= 3 and f.ce.latest(f"{base}/outcome.json") <= 4
+    # (an outcome version per step of its conclusion: reported, its turn's end, accepted, …)
+    assert f.ce.latest(f"{base}/assignment.json") <= 3 and f.ce.latest(f"{base}/outcome.json") <= 6
     assert not any(e[0].startswith("run:") for x in lines for e in x["entries"])
     # the workflow core is one field: after its first entry, only the steps that changed
     wf = [d for x in lines for r, d in x["entries"] if r == "workflow"]

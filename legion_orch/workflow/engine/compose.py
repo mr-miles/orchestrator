@@ -53,7 +53,7 @@ def compose(ce: ChangeEngine) -> None:
     ce._tasks = tasks
     # the workflow's one counterpart for agents: cards, inboxes, turns (services/agents/)
     agent_runner = AgentRunner(ce, lifecycle, agents, sandboxes, ce.svc.dispatcher)
-    phases.agent_runner = flow.agent_runner = ce._agent_runner = agent_runner
+    phases.agent_runner = flow.agent_runner = ce._agent_runner = agents.runner = agent_runner
     ce._resolver = resolver = Resolver(ce, flow.actions)   # every escalation goes to it
     ce.svc.bus.subscribe(Escalated, resolver.escalated, cid=ce.cid)
     ce.svc.bus.subscribe(Pushed, lambda e: ce.pushed(e.run, e.sha), cid=ce.cid)
