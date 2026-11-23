@@ -18,6 +18,7 @@ import re
 from ... import cards
 from ...model import ResolverProposal
 from ...tickets import REMEDIES, Remedy, Status, Ticket
+from ...tickets.plan_doc import parse_plan
 from ..base.common import NoAgent, WorkflowError, _slug
 from ..base.core import ChangeCore
 
@@ -130,6 +131,14 @@ class Resolver:
             payload = proposal.get("payload") or {}
             if not isinstance(payload, dict):
                 return "payload must be a JSON object"
+            if action == "replan":                 # its plan, checked as applying it would
+                plan, v = parse_plan(payload.get("plan"))
+                if v or not payload.get("plan"):
+                    return "a replan's payload is {\"plan\": <a replan document>}: " + (
+                        "; ".join(v) or "no plan")
+                if ticket_id not in plan.fail and not any(a.into == ticket_id for a in plan.add):
+                    return (f"the plan must fail {ticket_id} (replaced) or add to it "
+                            "(repaired)")
             atts = [a for a in proposal.get("attestations") or [] if isinstance(a, str)]
             n = len(c.docs.list(c.p(f"control/proposals/{_slug(ticket_id)}-"))) + 1
             p = ResolverProposal(action=action, payload=payload,

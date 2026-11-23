@@ -438,6 +438,21 @@ the change action `replan` (the replan document in `plan`), typically the resolv
 the planner's `tickets` is applied by H-E1. There is no limit on replans: each is started by a
 human.
 
+**Revised outputs** (`tickets/stale.py`). A replan that revises an approved output – a ticket it
+adds produces, say, a new `environment` – says only that; what follows is mechanical:
+
+* the producing ticket gets a sign-off of what it revises – a copy of the passed sign-off that
+  approved those outputs, signing just what it produces (`H-E1.2`) – unless the replan gives it
+  one;
+* when that sign-off passes and moves a pointer to a **different** version, every finished
+  ticket that consumed the old one (its `inputs`) and whose type `workflow.yaml`'s `stale` says
+  to `redo` – the provisioning, the oracle – gets a new instance (`provision.2`: the same work,
+  fresh criteria) in a new subtask group right after the producer, applied with the sign-off's
+  verdict (held, and the workflow paused, until nothing else is active). Every other finished
+  ticket stands: builds' code is committed, and the replan itself adds new builds or cancels
+  pending ones; the baseline is a snapshot from before any build. A version unchanged by the
+  revision calls for nothing.
+
 ### 4.7 Run status
 
 `STARTING -> ACTIVE -> REPORTED -> ACCEPTED` (its outcome went to its ticket);
@@ -1071,8 +1086,6 @@ rules and has not yet brought back others.
   (`approve_protected_paths`).
 * G-H1 – the integration branch moved outside the workflow (commits not made by a merge) is not
   detected before a merge or a run at the head.
-* Staleness from pointers – a ticket done against `environment@3` while the pointer is `@5` – and
-  the mechanical follow-ups (a new sign-off, new instances of its consumers): step 5 of the plan.
 * The ship gates and H-3's preconditions, with the human attestations behind them: G-AT1
   (`attest`, `control/attestations/<kind>.json`: `independent-baseline`, `security-evaluation`,
   `e2e-evaluation`, `architecture-review`, `rollback-evidence`, `forward-fix-evidence`,

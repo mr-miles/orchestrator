@@ -99,7 +99,7 @@ import contracts in `pyproject.toml`, checked by `lint-imports`):
 
 | Package | Holds |
 | --- | --- |
-| `workflow/tickets/` | the ticket model and rules, the spec (`workflow.yaml`), named outputs and their resolution, the replan document, the runner, the executors and their ports, the tickets' persistence (`store.py`) |
+| `workflow/tickets/` | the ticket model and rules, the spec (`workflow.yaml`), named outputs and their resolution, the replan document, what a revision calls for (`stale.py`: a new sign-off, renewed provisioning and oracle), the runner, the executors and their ports, the tickets' persistence (`store.py`) |
 | `engine/flow/` | `TicketFlow` (the change's workflow: start, recover, hooks, human actions, housekeeping) and the adapters (`Agents`, `Signoffs`, `Verify`, `Provision`, `Remote`) |
 | `engine/services/` | `AgentRunner` (the workflow's one counterpart for agents: cards, work, A2A turns, placement; `services/agents/`), `AgentRuns`, `Reports`, `RunLifecycle`, the verification service, `Provisioner`, `Publisher`, the resolver, the end-of-change cleanup |
 | `engine/sandboxes/` | `Sandboxes` and their sessions, sandbox plans (`plan_for(ticket)`), reflections, consult turns |

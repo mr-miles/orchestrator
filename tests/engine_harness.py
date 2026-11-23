@@ -490,11 +490,11 @@ class Flow:
 
     async def plan(self, tasks=None, oracle=None, environment: dict | None = None,
                    criteria: tuple[str, ...] | None = None, doc: dict | None = None,
-                   scaffold: dict | None = None):
+                   scaffold: dict | None = None, tid: str = "design"):
         """The planner's outputs: the spec and its delta specs, the oracle, the environment,
         and the tickets (``doc``; else built from task-like dicts, ``tasks``, with the tier's
         criteria – ``criteria`` to say otherwise)."""
-        r = self.run("design")
+        r = self.run(tid)
         reqs = re.findall(r"REQ-[0-9]+", self.ce.doc("tickets/intake/requirements.md").content)
         spec = await self.write(r, "spec.md", f"# Spec (attempt {r.attempt})\n")
         specs = [await self.write(r, f"specs/{q}.md", (

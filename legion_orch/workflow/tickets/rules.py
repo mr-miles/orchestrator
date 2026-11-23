@@ -185,7 +185,7 @@ class Tickets:
                 return self._take()                       # it cancelled the root
             elif parent.status == Status.CHECKING:
                 self._check(parent)
-        if c.applies:                                     # its pause is over, either way
+        if signing(c.id) in self.root.paused:             # its pause is over, either way
             return self.resume(signing(c.id))
         return self._take()
 

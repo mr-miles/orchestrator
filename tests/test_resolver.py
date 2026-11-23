@@ -112,3 +112,23 @@ async def test_an_agent_asks_the_resolver_directly(f: Flow):
         t = await task_when(c, "resolver", res["task"]["id"], token(f, intake))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED"
     assert "only from the checkout" in str(t["artifacts"])
+
+
+@scenario()
+async def test_a_replan_proposal_needs_a_plan_that_replaces_or_repairs_the_ticket(f: Flow):
+    """Its plan is checked as it is proposed: none, or one that neither fails the waiting
+    ticket nor adds to it, goes back to the resolver with why."""
+    f.cfg.resolver.enabled = True
+    A2AHub.of(f.ctl)
+    await blocked(f)
+    await play_resolver(f, proposal("replan"))                        # no plan
+    second = await play_resolver(f, proposal("replan", plan={"cancel": []}))   # touches nothing
+    third = await play_resolver(f, proposal("replan", plan={"fail": ["intake"], "add": [
+        {"into": "requirements", "group": 1,
+         "ticket": {"id": "intake.2", "type": "agent:intake", "goal": "again, in English"}}]}))
+    assert third.id != second.id
+    await f.settle()
+    p = f.ce.change.proposals["intake"]
+    assert p.action == "replan" and p.payload["plan"]["fail"] == ["intake"]
+    turns = [r for r in f.ce.runs.values() if r.role == "resolver"]
+    assert len(turns) == 3                       # the first two were returned, each a new turn

@@ -51,6 +51,7 @@ from ...tickets.executors import (
 )
 from ...tickets.plan_doc import parse_plan
 from ...tickets.runner import Runner
+from ...tickets.spec import CONTROLLER_OUTPUTS
 from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 from ..services import cleanup
@@ -108,13 +109,19 @@ class TicketFlow:
                                                       message=self._pr_text, backoff=backoff)})
         return self._executors
 
+    def _outputs(self) -> dict[str, list[str]]:
+        """What each ticket type produces: an agent's its role's outputs, a controller's the
+        workflow's (the runner re-signs what a replan revises)."""
+        return {f"agent:{r}": o for r, o in self.c.assets.role_outputs().items()} \
+            | CONTROLLER_OUTPUTS
+
     def _runner(self) -> Runner:
         if self.runner is None:
             self.runner = Runner(self.c.cid, self.c.tickets, executors=self.executors,
                                  branches=self.branches, base=self.c.change.base_sha or "",
                                  spec=self.spec, hooks=self, save=self._saved,
                                  merger=Merger(self.branches), lock=self.c.lock,
-                                 spawner=self.c.spawn)
+                                 spawner=self.c.spawn, outputs=self._outputs())
         return self.runner
 
     # ------------------------------------------------------------------ lifecycle

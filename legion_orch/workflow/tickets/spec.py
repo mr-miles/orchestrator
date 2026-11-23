@@ -107,8 +107,16 @@ class CriterionType(_Strict):
 class WorkflowSpec(_Strict):
     hooks: dict[Literal["on_complete", "on_escalation"], str] = {}
     criteria: dict[str, CriterionType] = {}
+    # per ticket type: what a finished ticket does when an approved output it consumed is
+    # revised – a new instance (``redo``) or it stands (``keep``, every type not named)
+    stale: dict[str, Literal["redo", "keep"]] = {}
     skeleton: TicketSpec
     tiers: dict[str, TierPolicy] = Field(min_length=1)
+
+    @property
+    def redo_on_stale(self) -> set[str]:
+        """The ticket types a revision of what they consumed redoes (stale.followups)."""
+        return {ty for ty, what in self.stale.items() if what == "redo"}
 
     # ------------------------------------------------------------------ loading
     @classmethod

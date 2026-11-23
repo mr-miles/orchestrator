@@ -69,7 +69,9 @@ class Planner(RoleHandler):
                  for b in builds]
         decision = "none" if (scaffold is not None) == (SCAFFOLD in plan.cancel) \
             else "work" if scaffold is not None else "cancel"
-        v = guards.scaffold(decision, e.change.blank_repo)
+        sk = e.tickets.t.get(SCAFFOLD)               # decided already (a revised design): moot
+        v = guards.scaffold(decision, e.change.blank_repo) \
+            if sk is not None and sk.status == "pending" else []
         souls = e.assets.roles["implementer"].souls_allowed
         if tasks or scaffold:
             v += guards.plan({"tasks": tasks}, orc, requirement_ids(e), e.change.tier or "R0",

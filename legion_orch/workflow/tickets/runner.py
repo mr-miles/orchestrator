@@ -30,10 +30,22 @@ from typing import Any, Protocol
 
 from ...git.branches import Branches, integration_branch, ticket_branch
 from ...git.remote import GitError
+from . import stale
 from .executors import Done, Executors, Fault, Judged, Merger, Outcome, Work, apply, merge_outcome
 from .model import Remedy, Status, Ticket, Waiting
 from .outputs import TIER, resolve
-from .rules import Effect, Ended, Escalate, Merge, Replan, StartWork, StopWork, TicketError, Tickets
+from .rules import (
+    Effect,
+    Ended,
+    Escalate,
+    Merge,
+    Replan,
+    StartWork,
+    StopWork,
+    TicketError,
+    Tickets,
+    signing,
+)
 from .spec import WorkflowSpec, check_policy
 
 log = logging.getLogger(__name__)
@@ -58,9 +70,11 @@ class Runner:
                  base: str, spec: WorkflowSpec, hooks: Hooks,
                  save: Callable[[Iterable[Ticket]], None], merger: Merger | None = None,
                  lock: asyncio.Lock | None = None,
-                 spawner: Callable[[Coroutine], asyncio.Task] | None = None):
+                 spawner: Callable[[Coroutine], asyncio.Task] | None = None,
+                 outputs: Mapping[str, list[str]] | None = None):
         self.change, self.t, self.executors, self.branches = change, tickets, executors, branches
         self.base, self.spec, self.hooks, self.save = base, spec, hooks, save
+        self.outputs = dict(outputs or {})        # per ticket type: the outputs it produces
         self.merger = merger or Merger(branches)
         self.lock = lock or asyncio.Lock()        # the engine's: the change's own lock
         self.spawner = spawner or asyncio.ensure_future   # the engine's: its tasks are tracked
@@ -205,23 +219,48 @@ class Runner:
                     await self._carry(self.t.system_error(tid))
 
     def _holds(self, x: Ticket, outcome: Outcome) -> bool:
-        """A sign-off that applies a replan passed while others are still active: its verdict
-        waits for them (the replan's static backdrop)."""
-        return bool(x.role == "criterion" and x.applies and _passed(outcome)
-                    and [t for t in self.t.active() if t != x.id])
+        """A sign-off that applies a replan – or whose revisions call for follow-ups – passed
+        while others are still active: its verdict waits for them (the replan's static
+        backdrop), nothing else starting meanwhile."""
+        if not (x.role == "criterion" and _passed(outcome)
+                and [t for t in self.t.active() if t != x.id]):
+            return False
+        if x.applies:
+            return True
+        if self._followups(x, outcome).add:
+            self.t.pause(signing(x.id))
+            return True
+        return False
+
+    def _followups(self, x: Ticket, outcome: Outcome) -> Replan:
+        signed = outcome.signed if isinstance(outcome, Judged) else None
+        if x.type != stale.SIGNOFF or not signed:
+            return Replan()
+        return stale.followups(self.t.t, x.id, signed, self.spec.redo_on_stale)
 
     async def _outcome(self, x: Ticket, outcome: Outcome) -> list[Effect]:
         """The outcome as the rules' event – a passing sign-off that applies something applies
         it (or fails, with why)."""
+        follow = self._followups(x, outcome) if x.role == "criterion" and _passed(outcome) \
+            else Replan()
         if x.role == "criterion" and x.applies and _passed(outcome):
             signed = outcome.signed if isinstance(outcome, Judged) else None
             try:
                 plan, violations = await self._applied(x, signed or {})
                 if not violations:
+                    plan.add += follow.add
                     return self.t.verdict(x.id, True, apply=plan, signed=signed)
             except (TicketError, ValueError) as e:    # refused: nothing of it was applied
                 violations = [f"the plan cannot be applied: {e}"]
             return self.t.verdict(x.id, False, violations)
+        if follow.add:                                # the revised outputs' follow-ups:
+            signed = outcome.signed if isinstance(outcome, Judged) else None
+            self.t.pause(signing(x.id))               # applied as a replan is (its verdict
+            try:                                      # lifts the pause)
+                return self.t.verdict(x.id, True, apply=follow, signed=signed)
+            except TicketError:
+                self.t.resume(signing(x.id))
+                raise
         return apply(self.t, x.id, outcome)
 
     def _tier(self, signed: Mapping[str, Any] | None = None) -> str | None:
@@ -246,6 +285,7 @@ class Runner:
         """What the workflow says of a replan's new tickets' types (waivable, attempt limits),
         and what is wrong with any work it gives (its role's)."""
         problems = []
+        stale.resign(self.t.t, plan, self.outputs)    # what it revises gets signed off again
         for a in plan.add:
             for y in [a.ticket, *a.tree]:
                 self.spec.prepare(y, tier)

@@ -15,6 +15,11 @@ hooks:
   on_complete: retrospective        # after any ending: passed, abandoned, failed
   on_escalation: resolver           # proposes a replan; a human signs it off
 
+stale:                              # a finished ticket whose approved input is revised (a replan's
+  controller:provision: redo        # new design, signed off): a new instance after the revision –
+  agent:oracle: redo                # or, every type not named, it stands (builds' code is committed:
+                                    # a replan adds builds; the baseline is a snapshot before them)
+
 criteria:                           # per criterion type: may a decision owner waive a failure?
   controller:verify: {waivable: false}
   controller:preflight: {waivable: false}
