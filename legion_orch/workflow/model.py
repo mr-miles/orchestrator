@@ -744,11 +744,11 @@ class AgentQuestion(Record):
 
 class Card(Record):
     """An A2A card (workflow/cards.py): who an agent is – fixed for the card's life, no state.
-    Pushed to the controller's catalog as the workflow goes: a step's when it starts, removed
-    when it ends; the change's own (orchestrator, resolver) for its whole life. Not part of the
-    change's record."""
-    id: str                          # "orchestrator", "resolver", or <role>@<node>
-    node: str | None = None          # the step (None: the orchestrator)
+    Pushed to the controller's catalog as the workflow goes: an agent ticket's while it is
+    open, the change's own (orchestrator, resolver) for its whole life. Not part of the change's
+    record."""
+    id: str                          # "orchestrator", "resolver", or <role>@<ticket>
+    ticket: str | None = None        # its ticket (None: the orchestrator)
     role: str | None = None
     title: str
 

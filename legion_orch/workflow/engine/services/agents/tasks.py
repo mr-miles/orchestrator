@@ -79,20 +79,20 @@ class RunTasks:
                    "with a2a_reply, then end your task again.")
             run.asked.append(msg)
             self.c.event("agent", f"asked to answer {len(new)} message(s) first",
-                         run.node_id, run.id)
+                         run.ticket, run.id)
             self.c.save()
             return {"ok": False, "state": "working", "message": msg}
         if state in ("failed", "rejected"):
             run.reply = TaskReply(state=state, text=text.strip())
             self.c.event("agent", f"the agent ended its task {state}: {text.strip()[:300]}",
-                         run.node_id, run.id)
+                         run.ticket, run.id)
             self.lifecycle.fail_run(run, f"the agent gave up ({state}): {text.strip()[:500]}",
                                     FailureSource.AGENT)
             self.c.save()
             return {"ok": True, "state": "failed"}
         if state == self.wanted(run):                # only a reply the record supports ends it
             run.reply = TaskReply(state=state, text=text.strip())
-            self.c.event("agent", f"task {state}", run.node_id, run.id)
+            self.c.event("agent", f"task {state}", run.ticket, run.id)
             self.c.save()
             return {"ok": True, "state": state,
                     "next": "end your turn: your work goes back to the workflow"}
@@ -113,7 +113,7 @@ class RunTasks:
         run.attempts += 1
         run.asked.append(msg)
         self.c.event("agent", f"asked again ({run.attempts}/{limit}): {msg[:200]}",
-                     run.node_id, run.id)
+                     run.ticket, run.id)
         return msg
 
     def _missing(self, run: Run, opening: str | None) -> str:
