@@ -14,6 +14,7 @@ from .base import (
     RoleHandler,
     brief_findings,
     fix_round_note,
+    record_review,
     register,
     scaffold_note,
 )
@@ -45,7 +46,7 @@ class Critic(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         """Records the critique; the plan step's critique phase says what it means (G-C2)."""
         run, node, data = r.run, r.node, r.data
-        node.reviews[node.review_key(run.cycle, run.role)] = ReviewResult(
+        record_review(e, r, node.review_key(run.cycle, run.role), ReviewResult(
             verdict=data.verdict, run=run.id, findings=brief_findings(data.findings),
-            doc=str(r.docs[run.required_docs[0]]))
+            doc=str(r.docs[run.required_docs[0]])))  # -> node.reviews
         return None

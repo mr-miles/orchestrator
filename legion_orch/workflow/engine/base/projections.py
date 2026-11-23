@@ -29,6 +29,7 @@ from ...model import (
     PanelDecision,
     ProtectedPathApproval,
     Readiness,
+    ReviewReport,
     SurfacePin,
     Verification,
 )
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
 PROJECTED: dict[str, set[str]] = {
     "change": {"approvals", "requirements", "surface_pins", "protected_approvals", "overrides",
                "attestations", "ship", "environment", "oracle", "risk"},
-    "node": {"verification", "panel"},
+    "node": {"verification", "panel", "reviews"},
 }
 
 
@@ -139,6 +140,16 @@ def _panel(c: ChangeCore, doc: DocVersion) -> None:
         node.panel[str(rec.cycle)] = rec
 
 
+def _review(c: ChangeCore, doc: DocVersion) -> None:
+    """A judge's accepted report: its review on the node. Only the controller's own record
+    counts (agents may not write ``*.report.json``, G-W1)."""
+    if doc.author != "controller":
+        return
+    rec = ReviewReport.model_validate(json.loads(doc.content))
+    if (node := c.nodes.get(rec.node)) is not None:
+        node.reviews[rec.key] = rec.review
+
+
 # schema -> what a new version of a document of it projects into
 PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "approval": _approval,
@@ -151,6 +162,7 @@ PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "accepted": _accepted,
     "verification": _verification,
     "panel-decision": _panel,
+    "report": _review,
 }
 
 

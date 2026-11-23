@@ -1223,6 +1223,7 @@ guards, because a per-file schema cannot express them.
 * [`override`](assets/schemas/override.json)
 * [`panel-decision`](assets/schemas/panel-decision.json)
 * [`protected-approval`](assets/schemas/protected-approval.json)
+* [`report`](assets/schemas/report.json)
 * [`questions`](assets/schemas/questions.json)
 * [`readiness`](assets/schemas/readiness.json)
 * [`release-plan`](assets/schemas/release-plan.json)
