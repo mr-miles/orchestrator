@@ -63,7 +63,6 @@ rejected), and what would have prevented it."""
 
 def _outcome(run: Run) -> str:
     return {"ACCEPTED": "your work was accepted",
-            "SUPERSEDED": "your work was superseded by a later round",
             "FAILED": "your run failed"}.get(str(run.status), f"your run ended ({run.status})")
 
 

@@ -237,13 +237,12 @@ environment is being built again, so no sandbox starts from the old build. That 
 where the work is made – `AgentRuns.work` for its role, `Sandboxes.verifier_work` for the
 verifier – by the sandbox layer, which asks the provisioner through `Environments`. Work that
 cannot start keeps its place and holds no slot, and the dispatcher looks again whenever a slot
-changes. It calls only `can_start()` and `execute()`.
+frees and whenever a change saves (`recheck()`, from `TicketFlow.housekeeping`: a build that is
+done lets its waiting work start). It calls only `can_start()` and `execute()`.
 
-Tickets take slots as they come (the adapters' `Dispatch`, no reservation): work already in
-progress is not served first, so with `max_parallel=1` a second build can take the slot before
-the first build's verification. (The dispatcher still offers reservations – a claim that keeps a
-slot while one ticket's work follows straight on – for when that matters.) Verifications are
-further limited by `limits.max_parallel_verifications` (`PriorityCap`: a criterion's
+Work takes slots as it comes: work already in progress is not served first, so with
+`max_parallel=1` a second build can take the slot before the first build's verification.
+Verifications are further limited by `limits.max_parallel_verifications` (`PriorityCap`: a criterion's
 verification, then pushes, then agents).
 
 ## 3. Executors and their ports

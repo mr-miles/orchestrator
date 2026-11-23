@@ -25,7 +25,6 @@
       "enum": [
         "ACTIVE",
         "READY",
-        "NOT_READY",
         "ABANDONED"
       ]
     },

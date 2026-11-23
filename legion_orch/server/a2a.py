@@ -2,9 +2,9 @@
 
 Every card is hosted here, by the controller – sandboxes make outbound calls only:
 
-* ``GET  /a2a/cards``              the caller's change's cards (the registry)
-* ``GET  /a2a/ai-catalog.json``     the same as an AI Catalog (``a2a catalog add``, at sandbox
-  start; ``a2a catalog update`` picks up cards registered since)
+* ``GET  /a2a/ai-catalog.json``     the caller's change's cards as an AI Catalog – the one way to
+  find them (``a2a catalog add``, at sandbox start; ``a2a catalog update`` picks up cards
+  registered since)
 * ``GET  /a2a/<card>``              a card (also at ``…/.well-known/agent-card.json``)
 * ``POST /a2a/<card>``              its JSON-RPC endpoint
 
@@ -15,13 +15,13 @@ This module is **transport**: the A2A SDK, these routes, the caller's identity, 
 What it carries is the engine's:
 
 * the **catalog** of cards – kept only here, in memory (:class:`Catalog`), from the bus's
-  ``CardsPublished`` / ``CardsWithdrawn`` (the workflow raises them as steps open and close);
+  ``CardsPublished`` / ``CardsWithdrawn`` and the agents' ``AgentStarted`` / ``SandboxDeleted``;
   cards say who an agent is, never its state;
 * the **messages** – a message to a card is handed to the engine's inboxes
   (``ChangeEngine.deliver``, ``engine/services/inbox.py``), which deliver it and return the
   reply; this module turns it into the A2A task's state. The one call the engine makes back is
   :meth:`A2AHub.follow_up` (a question back answered: the next message on its task);
-* the **orchestrator** card's skills – deterministic, no model: ``list_cards``, ``ask_human``.
+* the **orchestrator** card's one skill – deterministic, no model: ``ask_human``.
 
 Every request carries the bearer the OpenShell gateway injects (``legion-a2a`` provider
 profile): it names the calling sandbox's change, task and role, and a caller sees and reaches
@@ -41,7 +41,6 @@ from a2a.auth.user import User
 from a2a.helpers.proto_helpers import (
     get_data_parts,
     get_text_parts,
-    new_data_part,
     new_task_from_user_message,
     new_text_part,
 )
@@ -80,10 +79,6 @@ log = logging.getLogger("legion.a2a")
 MODES = ["text/plain", "application/json"]
 SENDS = {"SendMessage", "SendStreamingMessage", "message/send", "message/stream"}
 ORCHESTRATOR_SKILLS = [
-    AgentSkill(id="list_cards", name="List cards",
-               description="The cards of this change you can message: the orchestrator and every "
-                           "step whose agent has a sandbox (its roles, and whether it is stopped).",
-               tags=["registry"], examples=["/list_cards"]),
     AgentSkill(id="ask_human", name="Ask a human",
                description="Ask the change's decision owners a question. The task completes with "
                            "their answer, which can take hours: send with --async and poll. Ask "
@@ -92,8 +87,8 @@ ORCHESTRATOR_SKILLS = [
                examples=["/ask_human Should the CLI keep the deprecated --legacy flag?"]),
 ]
 STEP_SKILL = AgentSkill(
-    id="message", name="Message the step's agent",
-    description="Ask this step's agent about its work. It answers when it next checks its inbox "
+    id="message", name="Message the ticket's agent",
+    description="Ask this ticket's agent about its work. It answers when it next checks its inbox "
                 "(while running), or in a turn of its session started for the message.",
     tags=["messaging"])
 
@@ -254,8 +249,8 @@ class A2AHub:
             default_input_modes=MODES, default_output_modes=MODES, skills=skills)
 
     def registry(self, ce: ChangeEngine, caller: WorkloadBinding) -> list[dict]:
-        """The caller's change's cards, but its own: who each agent is (its state is the step's:
-        MCP step_status)."""
+        """The caller's change's cards, but its own: who each agent is (its state is its
+        ticket's: MCP ticket_status)."""
         return [{"id": c.id, "ticket": c.ticket, "role": c.role, "title": c.title,
                  "url": self.url(c.id)}
                 for c in self.cards(ce) if (c.ticket, c.role) != (caller.task, caller.role)]
@@ -425,8 +420,9 @@ class StepExecutor(_Executor):
         await finish(up, self.card.id, state, answer)
 
 
-HELP = ("Name a skill: a data part {\"skill\": \"list_cards\" | \"ask_human\", …} or text "
-        "starting /list_cards or /ask_human <question>. Message another agent at its own card.")
+HELP = ("Name the skill: a data part {\"skill\": \"ask_human\", \"question\": …} or text "
+        "starting /ask_human <question>. Message another agent at its own card; find the cards "
+        "with `a2a catalog update legion`.")
 
 
 def parse_skill(text: str, data: list[dict]) -> tuple[str, dict[str, Any]]:
@@ -443,15 +439,11 @@ def parse_skill(text: str, data: list[dict]) -> tuple[str, dict[str, Any]]:
 
 
 class OrchestratorExecutor(_Executor):
-    """The change's orchestrator: deterministic skills over the change's cards and its humans."""
+    """The change's orchestrator: deterministic – it asks the change's humans."""
 
     async def run(self, up, task_id, caller, text, data) -> None:
         skill, args = parse_skill(text, data)
-        if skill == "list_cards":
-            await up.add_artifact([new_data_part({"cards": self.hub.registry(self.ce, caller)})],
-                                  name="cards")
-            await up.complete()
-        elif skill == "ask_human":
+        if skill == "ask_human":
             await self.ask_human(up, task_id, caller, str(args.get("question") or "").strip())
         else:
             await up.reject(_text(up, (f"unknown skill {skill!r}. " if skill else "") + HELP))
@@ -510,17 +502,10 @@ def build_a2a_app(ctl: Controller) -> Starlette:
         request.state.caller, request.state.ce = caller, ce
         card = hub.find(ce, request.path_params["card"])
         if card is None:
-            return JSONResponse({"error": "no such card in your change (GET /a2a/cards)"},
+            return JSONResponse({"error": "no such card in your change (see the catalog: "
+                                          "GET /a2a/ai-catalog.json)"},
                                 status_code=404)
         return ce, card
-
-    async def cards(request: Request) -> Response:
-        found = check(request)
-        if isinstance(found, Response):
-            return found
-        ce, caller = found
-        return JSONResponse({"change": ce.cid, "you": card_id(caller.role, caller.task),
-                             "cards": hub.registry(ce, caller)})
 
     async def catalog(request: Request) -> Response:
         found = check(request)
@@ -556,7 +541,6 @@ def build_a2a_app(ctl: Controller) -> Starlette:
     # One set of URLs for every change: what a caller sees and reaches is its own change's,
     # by its identity (the bearer), never by anything in the request.
     return Starlette(routes=[
-        Route("/a2a/cards", cards, methods=["GET"]),
         Route("/a2a/ai-catalog.json", catalog, methods=["GET"]),
         Route("/a2a/.well-known/ai-catalog.json", catalog, methods=["GET"]),
         Route("/a2a/{card}", card, methods=["GET"]),

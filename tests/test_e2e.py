@@ -307,7 +307,7 @@ async def _identity_checks(ctl, cfg):
         tok = r.json()["access_token"]
         # valid identity but no live run (all runs finished) -> MCP refuses, with a visible reason
         body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                "params": {"name": "whoami", "arguments": {}}}
+                "params": {"name": "get_assignment", "arguments": {}}}
         hdr = {"Accept": "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18"}
         for h in ({}, {"Authorization": f"Bearer {tok}"}):
             res = (await c.post(cfg.server.mcp_url, json=body, headers=hdr | h)).json()["result"]

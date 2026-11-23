@@ -81,18 +81,20 @@ async def to_critique(f: Flow) -> tuple[Run, Run]:
     return planner, f.run("critique", "critic")
 
 
+async def listed(c, tok) -> list[str]:
+    """The cards the caller may message: its change's AI Catalog (the one way to find them)."""
+    return [e["displayName"] for e in (await c.get("/a2a/ai-catalog.json", headers=tok)).json()["entries"]]
+
+
 @scenario()
 async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f: Flow):
     intake = f.run("intake")
     async with client(f) as c:
-        reg = (await c.get("/a2a/cards", headers=token(f, intake))).json()
-        assert reg["you"] == "intake@intake"
-        assert [x["id"] for x in reg["cards"]] == ["orchestrator", "resolver"]
+        assert await listed(c, token(f, intake)) == ["orchestrator", "resolver"]
         planner, critic = await to_critique(f)
         assert intake.sandbox in f.runner.deleted                 # H-1 accepted: intake gone
-        ids = [x["id"] for x in (await c.get("/a2a/cards", headers=token(f, critic))).json()["cards"]]
-        assert ids == ["orchestrator", "resolver", "planner@design"]    # not its own card
-        cards = {x.id: x for x in catalog(f)}
+        assert await listed(c, token(f, critic)) == ["orchestrator", "resolver", "planner@design"]
+        cards = {x.id: x for x in catalog(f)}                     # (not its own card, above)
         assert set(cards) == {"orchestrator", "resolver", "planner@design", "critic@critique"}
         assert agent_state(f.ce, cards["planner@design"]) == "stopped"     # still published
         assert agent_state(f.ce, cards["critic@critique"]) == "running"
@@ -102,47 +104,47 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         card = (await c.get("/a2a/planner@design", headers=token(f, critic))).json()
         assert card["name"] == f"{f.ce.cid}/planner@design"
         assert card["supportedInterfaces"][0]["url"].endswith("/a2a/planner@design")
-        assert (await c.get("/a2a/orchestrator/.well-known/agent-card.json",
-                            headers=token(f, critic))).json()["skills"][0]["id"] == "list_cards"
+        skills = (await c.get("/a2a/orchestrator/.well-known/agent-card.json",
+                              headers=token(f, critic))).json()["skills"]
+        assert [x["id"] for x in skills] == ["ask_human"]       # discovery is the catalog's
 
         # scope: the bearer's change only, live sandboxes only, never a verifier
-        assert (await c.get("/a2a/cards")).status_code == 401
-        assert (await c.get("/a2a/cards", headers=token(f, intake))).status_code == 401
-        assert (await c.get("/a2a/cards", headers=token(f, critic, role="verifier"))).status_code == 401
-        assert (await c.get("/a2a/cards", headers=token(f, critic, change="c-other"))).status_code == 401
+        cat = "/a2a/ai-catalog.json"
+        assert (await c.get(cat)).status_code == 401
+        assert (await c.get(cat, headers=token(f, intake))).status_code == 401
+        assert (await c.get(cat, headers=token(f, critic, role="verifier"))).status_code == 401
+        assert (await c.get(cat, headers=token(f, critic, change="c-other"))).status_code == 401
         assert (await c.get("/a2a/intake@intake", headers=token(f, critic))).status_code == 404
 
         # the same URLs for every change: a second change's agent sees only its own cards
         other = await f.ctl.start_change("Say goodbye", "app")
         await f.settle()
         theirs = next(r for r in other.runs.values() if r.role == "intake")
-        mine = (await c.get("/a2a/cards", headers=token(f, theirs, change=other.cid))).json()
-        assert mine["change"] == other.cid
-        assert [x["id"] for x in mine["cards"]] == ["orchestrator", "resolver"]
+        mine = (await c.get(cat, headers=token(f, theirs, change=other.cid))).json()
+        assert other.cid in mine["host"]["displayName"]
+        assert [e["displayName"] for e in mine["entries"]] == ["orchestrator", "resolver"]
         assert (await c.get("/a2a/planner@design",
                             headers=token(f, theirs, change=other.cid))).status_code == 404
         own = await c.get("/a2a/orchestrator", headers=token(f, theirs, change=other.cid))
         assert own.json()["name"] == f"{other.cid}/orchestrator"      # same URL, its change
 
-        # the same as an AI Catalog: what run-agent.sh registers with `a2a catalog add`
-        cat = (await c.get("/a2a/ai-catalog.json", headers=token(f, critic))).json()
-        assert cat["specVersion"] == "1.0"
-        assert [(e["identifier"], e["type"]) for e in cat["entries"]] == [
+        # what run-agent.sh registers with `a2a catalog add`
+        doc = (await c.get(cat, headers=token(f, critic))).json()
+        assert doc["specVersion"] == "1.0"
+        assert [(e["identifier"], e["type"]) for e in doc["entries"]] == [
             ("urn:air:legion:agent:orchestrator", "application/a2a-agent-card+json"),
             ("urn:air:legion:agent:resolver", "application/a2a-agent-card+json"),
             ("urn:air:legion:agent:planner@design", "application/a2a-agent-card+json")]
-        assert cat["entries"][2]["url"].endswith("/a2a/planner@design")
-        assert cat["entries"][2]["tags"] == ["planner", "design"]           # who, not how it is
+        assert doc["entries"][2]["url"].endswith("/a2a/planner@design")
+        assert doc["entries"][2]["tags"] == ["planner", "design"]           # who, not how it is
         env = next(e for e in f.runner.run_envs if "LEGION_ROLE=critic" in e)
         assert "LEGION_A2A_CATALOG=http://host.openshell.internal:8769/a2a/ai-catalog.json" \
             in env.replace("'", "")
         assert "A2ACLI_AGENT_CARD=" in env and "LEGION_A2A_CARD=critic@critique" in env.replace("'", "")
 
-        # the orchestrator's registry, through A2A
+        # the orchestrator explains what it does when asked something else
         res = await rpc(c, "orchestrator", send("/list_cards", wait=True), token(f, critic))
-        listed = res["task"]["artifacts"][0]["parts"][0]["data"]["cards"]
-        assert [x["id"] for x in listed] == ["orchestrator", "resolver", "planner@design"]
-        assert all("state" not in x for x in listed)
+        assert res["task"]["status"]["state"] in ("TASK_STATE_REJECTED", "rejected"), res
 
 
 @scenario()

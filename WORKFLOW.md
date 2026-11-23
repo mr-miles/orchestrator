@@ -156,8 +156,7 @@ included. A criterion with nothing behind it does not pass.
 
 | Tool | Purpose |
 | --- | --- |
-| `whoami()` | run id, role, ticket, attempt, write scope |
-| `get_assignment()` | full assignment: goal, work, inputs at their versions, findings to address, base sha, branch, the outputs to report |
+| `get_assignment()` | who the run is (run id, role, ticket, attempt, write scope) and its assignment: goal, work, inputs at their versions, findings to address, base sha, branch, the outputs to report |
 | `docs_list(prefix)` | list documents and latest versions |
 | `docs_read(path, version?)` | read an immutable version (latest by default) |
 | `docs_history(path)` | all versions with author/run and sha256 |
@@ -437,7 +436,7 @@ human.
 
 ### 4.7 Run status
 
-`STARTING -> ACTIVE -> REPORTED -> (ACCEPTED | SUPERSEDED)`;
+`STARTING -> ACTIVE -> REPORTED -> ACCEPTED` (its outcome went to its ticket);
 `ACTIVE -> FAILED` on crash, timeout or `max_report_attempts` rejected reports.
 
 **A run ends when its agent's turn does.** The `report` tool checks a report as it is filed, so a
@@ -941,7 +940,7 @@ the caller's sandbox, change, ticket and role, and each request is answered for 
   else: a catalog that subscribes (the A2A listener, after a restart) is given every change's
   cards again. Each publication and withdrawal is a timeline event (`a2a`).
   * `orchestrator` – the controller itself, not a model, for as long as the change is active.
-    Skills: `list_cards`; `ask_human` (a question to the decision owners: a blocking attention
+    Its one skill: `ask_human` (a question to the decision owners: a blocking attention
     item, notified like a sign-off, answered in the UI or
     `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
   * `resolver` – the change's resolver agent (§5.16), for as long as the change is active.
@@ -950,13 +949,13 @@ the caller's sandbox, change, ticket and role, and each request is answered for 
     between rounds – until its sandboxes are gone. An agent that has not started has no card: a
     message to it is refused. The controller's own tickets (verification, merges, sign-offs) have
     none.
-* **Discovery.** `GET /a2a/cards` (JSON) and `GET /a2a/ai-catalog.json`, an
+* **Discovery** is one thing: `GET /a2a/ai-catalog.json`, an
   [AI Catalog](https://ai-catalog.io/) of the cards the caller may message (identifiers
   `urn:air:legion:agent:<card>`). `run-agent.sh` registers it as catalog `legion` before the
   agent starts (`a2a catalog add`, or `update` in a reused sandbox), and sets
   `A2ACLI_AGENT_CARD` to the orchestrator. Cards come and go as agents start and finish, so an
-  agent asks again (`list_cards`, `a2a catalog update legion`) rather than trusting what it saw
-  at its start.
+  agent updates the catalog (`a2a catalog update legion`) rather than trusting what it saw at its
+  start.
 * **Delivery.** A message to an agent becomes a task that waits for its answer:
   * while the agent has a live run it waits in its **inbox**: MCP `inbox` lists it and
     `a2a_reply` answers it;

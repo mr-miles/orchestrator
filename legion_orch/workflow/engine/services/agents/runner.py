@@ -83,15 +83,14 @@ class AgentRunner:
 
     # ------------------------------------------------------------------ the workflow's work
     async def publish_work(self, ticket: Ticket, role: str, tw: TicketWork, plan: SandboxPlan,
-                           *, wanted: Callable[[], bool], started: Callable[[Run], None],
-                           dispatch):
+                           *, wanted: Callable[[], bool], started: Callable[[Run], None]):
         """A ticket's round for its ``role`` agent – its run's task, in the agent's inbox: the
         runner places it (``placement.py``), prepares its working copy and runs its turns, in
-        a dispatcher slot (``dispatch`` – work in flight goes first). Returns how it went –
+        a dispatcher slot. Returns how it went –
         (outcome, prepared) – for the ticket's executor to read."""
         work, prepared = self.agents.work(ticket, role, tw, plan, wanted=wanted, started=started)
         try:
-            outcome = await dispatch.run(work)
+            outcome = await self.dispatcher.run(work)
         except Exception as e:                  # noqa: BLE001 – the run fails, not the ticket
             log.exception("the work of a %s run failed", role)
             outcome = Outcome(error=f"{type(e).__name__}: {e}")

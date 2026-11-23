@@ -88,8 +88,7 @@ def items(e: ChangeView) -> list[AttentionItem]:
                                      detail=q.id, title=f"{q.ticket} asks", reason=_clip(q.question),
                                      since=q.asked_at, blocking=True))
     if ch.status != ChangeStatus.ACTIVE:
-        verb = {ChangeStatus.READY: "was published", ChangeStatus.NOT_READY: "is not ready",
-                ChangeStatus.ABANDONED: "was abandoned"}[ch.status]
+        verb = {ChangeStatus.READY: "was published", ChangeStatus.ABANDONED: "was abandoned"}[ch.status]
         out.append(AttentionItem(change=ch.id, goal=goal, ticket=None, kind=CHANGE_ENDED,
                                  detail=str(ch.status), title=f"Change {verb}",
                                  reason=_clip(ch.ended.reason or "") if ch.ended else "",

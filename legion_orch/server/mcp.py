@@ -47,7 +47,7 @@ docs_write(..., dry_run=true), which use none. Answer the messages in your inbox
 a2a_reply() too."""
 
 AGENT_HIDDEN = ("/control/runs/",)
-WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report",
+WORKFLOW_TOOLS = ("get_assignment", "verify_attestation", "progress", "report",
                   "inbox", "a2a_reply",
                   "verification_request", "verification_status", "verification_evidence",
                   "ticket_status", "workflow_context")
@@ -119,16 +119,9 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     register_store_tools(server, store_session)
 
     # ------------------------------------------------------------------ workflow tools
-    @server.tool(description="Identify this run: id, role, change, ticket, attempt, write "
-                             "scope, the outputs your report must name.")
-    async def whoami(ctx: Context) -> dict:
-        ce, r = current(ctx)
-        return {"run": r.id, "change": ce.cid, "role": r.role, "ticket": r.ticket,
-                "attempt": r.attempt, "soul": r.soul, "write_scope": r.write_scope,
-                "outputs": r.outputs, "doc_root": ce.p(""), "prompt_pin": r.prompt_pin}
-
-    @server.tool(description="Full assignment: your ticket's work, its inputs and context "
-                             "attestations, the findings to fix, the outputs to report, git.")
+    @server.tool(description="Who you are and what to do: your run, role, ticket and attempt, "
+                             "its work, inputs and context attestations, the findings to fix, "
+                             "the outputs to report, your write scope, git.")
     async def get_assignment(ctx: Context) -> dict:
         ce, r = current(ctx)
         a = dict(r.assignment)
@@ -140,6 +133,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                   "git": {"url": ce.git_url, "branch": r.branch, "base_sha": r.base_sha,
                           "checkout_sha": r.judged_sha or r.base_sha,
                           "can_push": r.branch is not None},   # only roles that push get one
+                  "soul": r.soul, "prompt_pin": r.prompt_pin,
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
         return a
 
@@ -161,7 +155,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
 
     @server.tool(description="Submit the result of this run. status is DONE or BLOCKED. "
                              "attestations: list of file:/git: references. outputs: each output "
-                             "your role names (whoami) -> the document it is, as "
+                             "your role names (get_assignment) -> the document it is, as "
                              "file:<path>@<version> (a list for a list output). data: "
                              "role-specific structured result matching your report_schema. "
                              "BLOCKED needs blocked_reason and missing_decision. Returns "

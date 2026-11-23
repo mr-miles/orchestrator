@@ -23,7 +23,6 @@ from ...tickets.executors import AgentEnd, Decision, Work
 from ...tickets.executors.verify import EXIT_NOT_FOUND
 from ..base.common import WorkflowError
 from ..base.core import ChangeCore
-from ..base.dispatch import Dispatcher
 from ..sandboxes.plan import plan_for
 from ..services.agent_runs import AgentRuns, ticket_dir
 from ..services.agents import AgentRunner
@@ -31,16 +30,6 @@ from ..services.provision import Provisioner
 from ..services.publish import LabelSpec, Publisher
 from ..services.runs import RunLifecycle
 from ..services.verification import STEP, Verifications, record_path
-
-
-class Dispatch:
-    """The shared dispatcher, as a ticket's slot (no reservation: tickets queue as they come)."""
-
-    def __init__(self, dispatcher: Dispatcher):
-        self.dispatcher = dispatcher
-
-    async def run(self, work):
-        return await self.dispatcher.run(work)
 
 
 def live(c: ChangeCore, work: Work) -> Ticket | None:
@@ -54,9 +43,8 @@ class Agents:
     """``agent:<role>`` tickets: one run of the role per round."""
 
     def __init__(self, c: ChangeCore, runner: AgentRunner, agents: AgentRuns,
-                 lifecycle: RunLifecycle, dispatcher: Dispatcher):
+                 lifecycle: RunLifecycle):
         self.c, self.runner, self.agents, self.lifecycle = c, runner, agents, lifecycle
-        self.dispatch = Dispatch(dispatcher)
 
     async def run(self, role: str, work: Work) -> AgentEnd:
         c = self.c
@@ -69,7 +57,7 @@ class Agents:
                 return await self._conclude(done, ticket, plan)   # a restart: its turn ended
         outcome, prepared = await self.runner.publish_work(
             ticket, role, work, plan, wanted=lambda: live(c, work) is not None,
-            started=lambda run: None, dispatch=self.dispatch)
+            started=lambda run: None)
         async with c.lock:
             if prepared.refused is not None:           # its prompt does not render: the assets
                 return AgentEnd(False, failure=FailureSource.CONTROLLER,
@@ -165,8 +153,8 @@ class Verify:
     """``controller:verify``: the commands of the work it checks – its owner's own (a build's
     ``verification``), else the approved oracle's – at the judged commit."""
 
-    def __init__(self, c: ChangeCore, verifications: Verifications, dispatcher: Dispatcher):
-        self.c, self.svc, self.dispatch = c, verifications, Dispatch(dispatcher)
+    def __init__(self, c: ChangeCore, verifications: Verifications):
+        self.c, self.svc = c, verifications
 
     def commands(self, work: Work) -> tuple[str, ...]:
         """A build's own ``verification``; otherwise (a preflight, the integration's) the
@@ -192,7 +180,7 @@ class Verify:
             c.host.touch()
         try:
             run = await self.svc.verify(key, f"ticket:{tid}", STEP, node=tid, on_sandbox=sandbox,
-                                        force=again, dispatch=self.dispatch)
+                                        force=again)
         finally:
             async with c.lock:
                 c.verifying.pop(tid, None)
@@ -214,8 +202,8 @@ def _not_the_commits(v: Verification | None) -> bool:
 class Provision:
     """``controller:provision``: the approved environment, built."""
 
-    def __init__(self, c: ChangeCore, provisioner: Provisioner, dispatcher: Dispatcher):
-        self.c, self.provisioner, self.dispatch = c, provisioner, Dispatch(dispatcher)
+    def __init__(self, c: ChangeCore, provisioner: Provisioner):
+        self.c, self.provisioner = c, provisioner
 
     async def provision(self, work: Work) -> str | None:
         if self.c.cfg.environment is None:          # no environment stage: the default image
@@ -226,8 +214,7 @@ class Provision:
             return None
         ticket = self.c.tickets.t[work.ticket.id]
         return await self.provisioner.provision(ticket, work,
-                                                wanted=lambda: live(self.c, work) is not None,
-                                                dispatch=self.dispatch)
+                                                wanted=lambda: live(self.c, work) is not None)
 
     async def stop(self, ticket: str) -> None:
         return None

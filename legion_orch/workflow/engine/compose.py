@@ -42,9 +42,9 @@ def compose(ce: ChangeEngine) -> None:
     agents.runner = agent_runner
     signoffs = Signoffs(ce)
     flow = TicketFlow(
-        ce, agents=Agents(ce, agent_runner, agents, lifecycle, dispatcher), signoffs=signoffs,
-        verify=Verify(ce, verifications, dispatcher),
-        provision=Provision(ce, provisioner, dispatcher), publisher=Publisher(ce),
+        ce, agents=Agents(ce, agent_runner, agents, lifecycle), signoffs=signoffs,
+        verify=Verify(ce, verifications),
+        provision=Provision(ce, provisioner), publisher=Publisher(ce),
         agent_runner=agent_runner, lifecycle=lifecycle,
         backoff=Backoff(tries=ce.cfg.limits.system_retries, first=ce.cfg.limits.system_retry_s))
     ce._flow, ce._reports, ce._lifecycle, ce._signoffs = flow, reports, lifecycle, signoffs

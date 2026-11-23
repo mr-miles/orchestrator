@@ -26,7 +26,6 @@ class FailureSource(StrEnum):
 class ChangeStatus(StrEnum):
     ACTIVE = "ACTIVE"
     READY = "READY"
-    NOT_READY = "NOT_READY"
     ABANDONED = "ABANDONED"
 
 
@@ -59,7 +58,6 @@ class RunStatus(StrEnum):
     ACTIVE = "ACTIVE"
     REPORTED = "REPORTED"
     ACCEPTED = "ACCEPTED"
-    SUPERSEDED = "SUPERSEDED"
     FAILED = "FAILED"
 
 
@@ -72,7 +70,7 @@ class RunStage(StrEnum):
 
 
 # Short aliases used throughout the engine (members compare and serialise as their strings).
-R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(RunStatus)
+R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_FAILED = tuple(RunStatus)
 LIVE_RUN = {R_STARTING, R_ACTIVE}
 
 class Record(BaseModel):

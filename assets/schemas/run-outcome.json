@@ -10,7 +10,6 @@
       "enum": [
         "REPORTED",
         "ACCEPTED",
-        "SUPERSEDED",
         "FAILED"
       ]
     },

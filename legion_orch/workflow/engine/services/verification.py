@@ -90,9 +90,8 @@ class Verifications:
         self.cap = cap
         self._futures: dict[str, asyncio.Future] = {}     # run id -> its result, while live
         self._watchers: dict[str, list[Callable[[str], None]]] = {}   # run id -> told its sandbox
-        self._dispatch: dict[str, object] = {}            # run id -> where it takes its slot
-        self._inner: dict[str, asyncio.Future] = {}       # run id -> its wait for that slot
-        self._started: set[str] = set()                   # past the cap: no longer moved
+        self._inner: dict[str, asyncio.Future] = {}       # run id -> its wait for a slot
+        self._started: set[str] = set()                   # past the cap: no longer cancelled
 
     # ------------------------------------------------------------------ keys
     def key(self, sha: str, commands: tuple[str, ...] | list[str]) -> VerificationKey:
@@ -116,12 +115,10 @@ class Verifications:
 
     # ------------------------------------------------------------------ requests
     def request(self, key: VerificationKey, by: str, priority: int, *, node: str | None = None,
-                branch: str | None = None, force: bool = False,
-                dispatch=None) -> VerificationRun:
+                branch: str | None = None, force: bool = False) -> VerificationRun:
         """Under the lock: the key's result, the run it joins, or a new run (started in the
         background). Never waits. ``force`` (a human's decision only): a new attempt even if the
-        key has a result. ``dispatch``: the requesting step's (its verification follows on in
-        the step's slot); others take a free slot."""
+        key has a result."""
         cur = self.latest(key)
         if cur is not None and (cur.id in self._futures
                                 or (cur.state in V_FINAL and not force)):
@@ -129,8 +126,6 @@ class Verifications:
                 cur.requested_by.append(by)
             if cur.state == VerificationState.QUEUED and priority < cur.priority:
                 cur.priority = priority
-            if dispatch is not None and cur.id in self._futures:
-                self._adopt(cur, dispatch)
             return cur
         attempt = cur.attempt + 1 if cur is not None else 1
         run = VerificationRun(id=f"v-{key.hash}" + (f"-{attempt}" if attempt > 1 else ""),
@@ -143,16 +138,16 @@ class Verifications:
             self._supersede(branch, run)
         self._futures[run.id] = asyncio.get_running_loop().create_future()
         self.c.event("verify", f"verification {run.id} of {key.sha[:12]} queued ({by})", node)
-        self.c.spawn(self._run(run, key, dispatch or self.dispatcher))
+        self.c.spawn(self._run(run, key))
         return run
 
     async def verify(self, key: VerificationKey, by: str, priority: int, *, node: str | None = None,
                      on_sandbox: Callable[[str], None] | None = None,
-                     force: bool = False, dispatch=None) -> VerificationRun:
+                     force: bool = False) -> VerificationRun:
         """The key's result, verifying it if needed (joins a live run). ``on_sandbox``: told
         the verifier sandbox once it has one (a live log to show)."""
         async with self.c.lock:
-            run = self.request(key, by, priority, node=node, force=force, dispatch=dispatch)
+            run = self.request(key, by, priority, node=node, force=force)
             fut = self._futures.get(run.id)
             if fut is not None and on_sandbox is not None:
                 if run.sandbox:
@@ -174,13 +169,10 @@ class Verifications:
                                        f"{branch} was pushed again", r.node)
 
     # ------------------------------------------------------------------ running
-    async def _run(self, run: VerificationRun, key: VerificationKey, dispatch) -> None:
-        """Run it: a dispatcher slot (the requesting step's, else a free one), then a place in
-        the verification cap – taken only inside a slot, so a holder always gets on – then the
-        verifier. While it waits for a slot, a step that needs it takes it into its own slot
-        (:meth:`_adopt`): a step never waits for a slot another step's reservation holds."""
+    async def _run(self, run: VerificationRun, key: VerificationKey) -> None:
+        """Run it: a dispatcher slot, then a place in the verification cap – taken only inside a
+        slot, so a holder always gets on – then the verifier."""
         fut = self._futures[run.id]
-        self._dispatch[run.id] = dispatch
         try:
             if not key.commands and not key.setup_pin:
                 res = Verification(sha=key.sha, infra_error="no commands to verify")
@@ -206,7 +198,7 @@ class Verifications:
                                           run=run.id)
                 self.c.save()
         finally:
-            for d in (self._futures, self._watchers, self._dispatch, self._inner):
+            for d in (self._futures, self._watchers, self._inner):
                 d.pop(run.id, None)
             self._started.discard(run.id)
             if not fut.done():
@@ -216,19 +208,15 @@ class Verifications:
         c = self.c
         log_state: dict = {}
         capped = _Capped(self, run, key, log_state)
-        while True:
-            inner = asyncio.ensure_future(self._dispatch[run.id].run(capped))
-            self._inner[run.id] = inner
-            try:
-                outcome = await inner
-                break
-            except asyncio.CancelledError:
-                task = asyncio.current_task()
-                if task is not None and task.cancelling():
-                    raise                            # the controller stops
-                if run.state == VerificationState.CANCELLED:
-                    return None
-                continue                             # adopted: into the step's slot
+        inner = asyncio.ensure_future(self.dispatcher.run(capped))
+        self._inner[run.id] = inner
+        try:
+            outcome = await inner
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise                                # the controller stops
+            return None                              # cancelled: a newer push
         res = verification_of(key.sha, outcome)
         name, write = log_state["name"], log_state["write"]
         if res.infra_error:
@@ -239,15 +227,6 @@ class Verifications:
             c.save()
         res.log = name if stored else None
         return res
-
-    def _adopt(self, run: VerificationRun, dispatch) -> None:
-        """A step needs ``run``, still waiting for a slot: it moves into the step's."""
-        if run.id in self._started or self._dispatch.get(run.id) is dispatch:
-            return
-        self._dispatch[run.id] = dispatch
-        inner = self._inner.get(run.id)
-        if inner is not None and not inner.done():
-            inner.cancel()
 
     def _cancel(self, run: VerificationRun) -> None:
         inner = self._inner.get(run.id)

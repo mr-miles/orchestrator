@@ -278,11 +278,13 @@ class TicketFlow:
 
     def housekeeping(self) -> None:
         """On every save of the change (the lock is held): kept sandboxes of closed tickets go,
-        sandboxes waiting to be stopped are stopped once nothing live uses them."""
+        sandboxes waiting to be stopped are stopped once nothing live uses them, and work waiting
+        for a slot is looked at again (an environment it waited for may be built now)."""
         if self.c.st.tickets:
             self.lifecycle.release_sandboxes()
             self._delete_merged_branches()
         self.lifecycle.sandboxes.suspend_due()
+        self.c.svc.dispatcher.recheck()            # work waiting for a build may start now
 
     def _delete_merged_branches(self) -> None:
         """A passed ticket's branch is merged into its parent's (§5.14): it goes; its commits

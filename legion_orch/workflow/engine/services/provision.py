@@ -89,10 +89,10 @@ class Provisioner:
         return plan
 
     async def provision(self, ticket: Ticket, tw: TicketWork, *,
-                        wanted: Callable[[], bool], dispatch=None) -> str | None:
+                        wanted: Callable[[], bool]) -> str | None:
         """Build the approved environment for the provision ticket's round, then check the
         setup at its base (G-PV3): None when the environment is ready (or the round is no
-        longer ``wanted``), else what failed. ``dispatch``: the setup verification's slot."""
+        longer ``wanted``), else what failed."""
         c = self.c
         async with c.lock:
             if not wanted():
@@ -143,16 +143,16 @@ class Provisioner:
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                         ticket.id)
                 return None
-        return await self._check_setup(ticket, tw, sorted(roles), wanted, dispatch)
+        return await self._check_setup(ticket, tw, sorted(roles), wanted)
 
-    async def _check_setup(self, ticket: Ticket, tw: TicketWork, roles: list[str], wanted,
-                           dispatch=None) -> str | None:
+    async def _check_setup(self, ticket: Ticket, tw: TicketWork, roles: list[str],
+                           wanted) -> str | None:
         """G-PV3: the approved mise.toml's setup task succeeds at the ticket's base in a fresh
         verifier sandbox from this build – before any sandbox relies on it."""
         c = self.c
         work = self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
                                             tw.base or c.change.base_sha, (), in_new_build=True)
-        outcome = await (dispatch or self.dispatcher).run(work)
+        outcome = await self.dispatcher.run(work)
         async with c.lock:
             if not wanted():
                 return None
