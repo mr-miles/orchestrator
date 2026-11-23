@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from legion_orch.store import DocStore, DocStoreError, VersionConflict
+from legion_orch.store.journal import Journal
 from legion_orch.telemetry import Telemetry
 from legion_orch.workflow import guards, risk
 from legion_orch.workflow.assets import AssetError, Assets
@@ -279,7 +280,8 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
     svc = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None,
                                 assets=None, runner=None, lock=None, procs={},
-                                telemetry=Telemetry.off())
+                                telemetry=Telemetry.off(),
+                                journal=Journal(tmp_path / "journal"))
     ce = Reports(ChangeCore(svc, StubHost(), "c1"), lifecycle=None, roles=None)  # writes need neither
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
@@ -759,13 +761,14 @@ def test_report_limits():
     assert guards.report_limits("s", [], {}, "r" * 3000, None)[0].startswith("G-R8: blocked_reason")
 
 
-def test_transition_rollback_keeps_identity():
+def test_transition_rollback_keeps_identity(tmp_path):
     import types
 
     from legion_orch.workflow.engine.base.core import ChangeCore
     from legion_orch.workflow.model import Change, Node, Run
     svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
-                                lock=None, procs={}, telemetry=Telemetry.off())
+                                lock=None, procs={}, telemetry=Telemetry.off(),
+                                journal=Journal(tmp_path / "journal"))
     ce = ChangeCore(svc, StubHost(), "c1")
     ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")

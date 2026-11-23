@@ -188,7 +188,7 @@ async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: s
                        oracle_sha=e.change.oracle_sha if subj == "oracle" else None)
         rec.attestation = e.write_record(
             f"control/approvals/{approval_key(subj).replace(':', '/')}.json", rec).attestation
-        e.change.approvals[approval_key(subj)] = rec
+        # (the record is projected into change.approvals as it is written)
         if subj == "oracle":
             e.change.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
             await pin_surfaces(e, approver, None, reason="initial pin at oracle approval")

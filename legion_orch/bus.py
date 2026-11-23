@@ -15,7 +15,8 @@ Rules:
 * **After the commit.** An event a change raises while it holds its lock (``ChangeCore.emit``)
   is queued and published when the change has saved: no subscriber sees state that may still be
   rolled back. Events from outside a change's lock (the A2A inbox, the git remote) are published
-  at once (:meth:`Bus.publish`).
+  at once (:meth:`Bus.publish`) – a document written (:class:`DocWritten`) too: the store has
+  committed it, and what is projected from it must be current when the write returns.
 * **Subscribers never break publishers.** A plain handler runs at once (a catalog is up to date
   when ``publish`` returns), its failure caught and logged; a coroutine handler – one that waits
   on something – runs as a background task (``spawn``), its failure logged there.
@@ -39,6 +40,9 @@ event                       published by                 subscribed by
                             are over)
 :class:`Escalated`          a change, as it saves        resolver
 :class:`Pushed`             the git remote               verification service (verify the tip)
+:class:`DocWritten`         the document store           the change's projections (its
+                                                         in-memory records, engine/base/
+                                                         projections.py)
 ==========================  ===========================  =====================================
 """
 from __future__ import annotations
@@ -68,6 +72,16 @@ class CardsPublished(Event):
 class CardsWithdrawn(Event):
     """A step's cards (``node``), or – ``None`` – all of the change's, are gone."""
     node: str | None
+
+
+@dataclass(frozen=True)
+class DocWritten(Event):
+    """A new version of a change's document: ``path`` relative to the change, its ``version``,
+    and the ``schema`` the store validated it against (bound to its path) – what a subscriber
+    matches on, rather than parsing the path."""
+    path: str
+    version: int
+    schema: str
 
 
 @dataclass(frozen=True)

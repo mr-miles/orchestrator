@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ....git import paths_overlap
+from ....util import now_iso
 from ...model import (
     ACTIVE_NODE,
     BASELINE,
@@ -191,7 +192,10 @@ class DropEnvironment(Reset):
     """The environment is provisioned again from a newly approved spec."""
 
     async def __call__(self, c: ChangeCore, lifecycle: RunLifecycle, node: Node) -> None:
-        c.change.approvals.pop(H_ENV, None)
+        if H_ENV in c.change.approvals:            # revoked: its document says so (projected)
+            c.write_record("control/approvals/environment.json",
+                           {"gate": H_ENV, "approver": "controller", "at": now_iso(),
+                            "revoked": True})
         c.change.environment = None
 
 

@@ -8,7 +8,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 
-from ...bus import Bus, Pushed
+from ...bus import Bus, DocWritten, Pushed
 from ...config import Config
 from ...git import GitRemote
 from ...identity import WorkloadBinding
@@ -21,6 +21,7 @@ from ...sandbox import (
     make_runner,
 )
 from ...store import DocStore
+from ...store.journal import Journal
 from ...telemetry import Telemetry
 from ...util import stop_process
 from ..assets import Assets
@@ -36,6 +37,7 @@ from .base.auth import WorkloadAuth
 from .base.common import WorkflowError, log
 from .base.dispatch import Dispatcher, PriorityCap
 from .base.shared import Services
+from .base.state import StateStore
 from .change import ChangeEngine
 
 
@@ -44,7 +46,8 @@ class Controller:
     of the attention reminders. Implements :class:`EngineHost` for the engines. There is no
     clock: each change's work runs as tasks that await what they need.
 
-    Durable state lives only in the document store (``state.db``) and the git remote; ``tmp/``
+    Durable state lives only in the document store (``state.db``), the changes' journals
+    (``journal/``, their records: :class:`StateStore`) and the git remote; ``tmp/``
     holds transient sandbox payloads and live agent logs and is wiped on start.
     """
 
@@ -64,6 +67,7 @@ class Controller:
         runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
         self.svc = Services(
             cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
+            journal=Journal(cfg.state_dir / "journal"),
             hubs={w.name: GitRemote(cfg.state_dir / "git", w.name, w.source, w.base_branch,
                                     max_push_bytes=cfg.limits.git_max_push_bytes)
                   for w in cfg.workspaces},
@@ -71,6 +75,7 @@ class Controller:
             builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel),
             verify_cap=PriorityCap(cfg.limits.max_parallel_verifications),
             telemetry=telemetry or Telemetry.from_config(cfg))
+        self.svc.docs.on_write.append(self._doc_written)   # projections follow the documents
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI streams)
@@ -82,6 +87,12 @@ class Controller:
         self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
                                  self._notified)
         self.a2a = None                     # the A2A transport (server/a2a.py), once it is up
+
+    def _doc_written(self, meta) -> None:
+        """A change's document has a new version: tell the change (its projections)."""
+        parts = meta.path.split("/", 2)
+        if len(parts) == 3 and parts[0] == "changes":
+            self.bus.publish(DocWritten(parts[1], parts[2], meta.version, meta.schema))
 
     # The pieces the HTTP layer reads.
     @property
@@ -186,17 +197,15 @@ class Controller:
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:
         """Rebuild every change from the store."""
-        for m in self.docs.list("changes/"):
-            parts = m.path.split("/")
-            if len(parts) == 4 and parts[2:] == ["control", "change.json"]:
-                ce = ChangeEngine(self.svc, self, parts[1])
-                ce.load()
-                if ce.change.workspace not in self.hubs:      # its workspace left the config
-                    log.warning("change %s is in workspace %r, which is not configured: not "
-                                "loaded", ce.cid, ce.change.workspace)
-                    continue
-                self.changes[ce.cid] = ce
-                self.notifier.seed(ce.attention_items)
+        for cid in StateStore.change_ids(self.docs, self.svc.journal):
+            ce = ChangeEngine(self.svc, self, cid)
+            ce.load()
+            if ce.change.workspace not in self.hubs:      # its workspace left the config
+                log.warning("change %s is in workspace %r, which is not configured: not "
+                            "loaded", ce.cid, ce.change.workspace)
+                continue
+            self.changes[ce.cid] = ce
+            self.notifier.seed(ce.attention_items)
 
     async def start(self) -> None:
         for hub in self.hubs.values():   # configure the hubs there are; a change clones one

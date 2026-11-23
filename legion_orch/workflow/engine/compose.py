@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ...bus import Escalated, Pushed
+from ...bus import DocWritten, Escalated, Pushed
 from .runtime.flow_runtime import FlowRuntime
 from .runtime.human import HumanGates
 from .sandboxes.sandboxes import Sandboxes
@@ -57,6 +57,7 @@ def compose(ce: ChangeEngine) -> None:
     ce._resolver = resolver = Resolver(ce, flow.actions)   # every escalation goes to it
     ce.svc.bus.subscribe(Escalated, resolver.escalated, cid=ce.cid)
     ce.svc.bus.subscribe(Pushed, lambda e: ce.pushed(e.run, e.sha), cid=ce.cid)
+    ce.svc.bus.subscribe(DocWritten, ce.projections.written, cid=ce.cid)
     # not the facade's: for tests that drive a layer directly
     ce._sandboxes, ce._agents, ce._phases, ce._provisioner, ce._runner = (
         sandboxes, agents, phases, provisioner, runner)

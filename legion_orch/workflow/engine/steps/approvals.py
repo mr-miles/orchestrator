@@ -72,8 +72,7 @@ class RequirementsAccepted(Approves):
         ch.requirements = guards.requirements_ids(c.doc("intake/requirements.md").content)
         ch.panel = risk.review_panel(tier, ch.risk.scores)
         rec = ApprovalRecord(gate=H_REQUIREMENTS, approver=approver, pins=pins, tier=tier)
-        rec.attestation = c.write_record("control/approvals/requirements.json", rec).attestation
-        ch.approvals[H_REQUIREMENTS] = rec
+        rec.attestation = c.write_record("control/approvals/requirements.json", rec).attestation   # projected
         return Approved(ActionResult(tier=tier, panel=ch.panel), answered=True)
 
 
@@ -148,8 +147,7 @@ class SubjectsApproved(Approves):
         note = (payload.get("feedback") or "").strip() or None
         rec = ApprovalRecord(gate=H_ENV, approver=approver, pins={c.p(ENV_SPEC): version},
                              note=note)
-        rec.attestation = c.write_record("control/approvals/environment.json", rec).attestation
-        c.change.approvals[H_ENV] = rec
+        rec.attestation = c.write_record("control/approvals/environment.json", rec).attestation   # projected
         await self._adopt_mise(c, EnvironmentSpec.model_validate(c.json_doc(ENV_SPEC, version)))
 
     async def _adopt_mise(self, c: ChangeCore, spec: EnvironmentSpec) -> None:
@@ -207,7 +205,6 @@ class ChangeAccepted(Approves):
             raise WorkflowError(str(e)) from None
         missing = [r.gate for r in governance.h3_attestations(c) if r.status != "attested"]
         rec = ApprovalRecord(gate=H_CHANGE, approver=approver, head=head, note=note)
-        rec.attestation = c.write_record("control/approvals/change.json", rec).attestation
-        ch.approvals[H_CHANGE] = rec
+        rec.attestation = c.write_record("control/approvals/change.json", rec).attestation   # projected
         return Approved(ActionResult(warnings=[f"{g} has no passing attestation: H-3 waits for it"
                                                for g in missing]), answered=True)

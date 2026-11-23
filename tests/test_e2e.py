@@ -122,7 +122,7 @@ async def _full_workflow(tmp_path):
         assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
         assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
-        assert ctl2.docs.latest_version(f"changes/{old.cid}/control/workflow.json")
+        assert ctl2.svc.journal.fold(old.cid)["workflow"]["inputs"]         # the journal
         assert not ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
     assert ctl2.auth.identity.tokens.verify(old_token) is None     # signing key never persisted
     assert all(r.sandbox_ref for _, r in ctl2.all_runs())
@@ -495,9 +495,10 @@ def test_document_listing_hides_controller_records_unless_asked(tmp_path):
             every = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}&all=1")).json()]
         assert default == [prefix + "intake/requirements.md", prefix + "intake/risk.json"]
         control = set(every) - set(default)
-        assert {prefix + p for p in ("control/change.json", "control/workflow.json",
-                                     "control/goal.md")} <= control
-        assert any("/control/runs/" in p for p in control) and any("/control/logs/" in p for p in control)
+        assert prefix + "control/goal.md" in control           # the records are the journal's
+        assert any("/control/logs/" in p for p in control)
+        assert not any(p.endswith(("/control/change.json", "/control/workflow.json"))
+                       or "/control/runs/" in p or "/control/nodes/" in p for p in control)
     asyncio.run(go())
 
 

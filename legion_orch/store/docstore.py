@@ -10,6 +10,7 @@ import hashlib
 import re
 import sqlite3
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 
@@ -113,6 +114,8 @@ class DocStore:
         self.conn = conn
         self.lock = lock
         self.schemas = schemas
+        # called with each new version once committed (the controller publishes it on its bus)
+        self.on_write: list[Callable[[DocMeta], None]] = []
         with self.lock:
             self.conn.executescript(SCHEMA)
             cols = {r[1] for r in self.conn.execute("PRAGMA table_info(documents)")}
@@ -176,7 +179,10 @@ class DocStore:
                 (v.path, v.version, v.content, v.sha256, v.author, v.role, v.created_at,
                  v.schema, v.schema_sha))
             self.conn.commit()
-            return v
+        meta = v.meta()
+        for listener in self.on_write:
+            listener(meta)
+        return v
 
     def read(self, path: str, version: int | None = None) -> DocVersion:
         with self.lock:
