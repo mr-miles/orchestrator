@@ -14,6 +14,9 @@ never run `a2a auth login`. You see and reach only this change's agents.
   `urn:air:legion:agent:<role>@<step>`, e.g. `urn:air:legion:agent:implementer@build:T2`.
   Every agent of a step in progress has one, also before its work starts (a message then starts
   it, so expect a slower answer) and after it reported. Your own card is `$LEGION_A2A_CARD`.
+- **Whom to ask**: `workflow_context()` (MCP) names the cards relevant to your work – the task
+  you build on, tasks touching nearby files, the oracle, the planner – and `step_status(node)`
+  shows any step's state before you message its agents.
 - **The orchestrator** is the controller itself, not a model, and it is the CLI's default agent
   (`$A2ACLI_AGENT_CARD`):
   - `a2a send "/list_cards"` lists the cards (`-o json` for details);
@@ -28,8 +31,10 @@ never run `a2a auth login`. You see and reach only this change's agents.
 - **Your inbox** (`inbox()`, MCP) holds your work – the orchestrator's task – and messages other
   agents sent you. Check it at each milestone and before you end your task, and answer every
   message with `a2a_reply(task_id, text, state)`: `completed` answers it, `input-required` asks
-  the sender something back (they reply on the same task: `a2a send --task-id <id> …`),
-  `rejected` declines it with the reason. A message you
+  the sender something back (it arrives in their inbox as a `question`; they answer with
+  `a2a_reply` on the same task, and the conversation goes on),
+  `rejected` declines it with the reason. Every `a2a_reply` returns what is still in your inbox
+  (`inbox`), so you need not call `inbox()` again to see it. A message you
   leave unanswered is put to you again in a separate turn once your run ends.
 
 Use A2A for questions that another agent's work can answer, such as an interface, a decision it
