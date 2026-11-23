@@ -192,7 +192,7 @@ class Tickets:
         """The ticket's commit is merged into its parent's branch, whose head is now ``head``."""
         x = self._merging(tid)
         x.merging = False
-        self.t[x.parent].sha = head
+        self.t[self.merges_into(tid)].sha = head
         self._passed(x)
         return self._take()
 
@@ -236,6 +236,14 @@ class Tickets:
             self.root.paused.remove(reason)
         self._wake()
         return self._take()
+
+    def merges_into(self, tid: str) -> str:
+        """The ticket whose branch ``tid``'s commit merges into (and its branch starts from):
+        its nearest ancestor that owns a branch."""
+        p = self.t[self.t[tid].parent]                 # type: ignore[index]
+        while not p.owns_branch:
+            p = self.t[p.parent]                       # type: ignore[index]
+        return p.id
 
     def active(self) -> list[str]:
         return [x.id for x in self.t.values() if x.status in ACTIVE]
@@ -361,7 +369,7 @@ class Tickets:
         merge goes on even then: it concludes work already done (paused, it could be lost)."""
         if held == "merge":
             x.status, x.merging = Status.MERGING, True
-            self._effects.append(Merge(x.id, x.sha, x.parent))       # type: ignore[arg-type]
+            self._effects.append(Merge(x.id, x.sha, self.merges_into(x.id)))  # type: ignore[arg-type]
         elif self.paused:
             x.status, x.held = Status.PAUSED, held      # type: ignore[assignment]
         elif held == "retry":

@@ -28,10 +28,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 from typing import Protocol
 
-from ...git.branches import Branches, ticket_branch
+from ...git.branches import Branches, integration_branch, ticket_branch
 from ...git.remote import GitError
 from .executors import Done, Executors, Fault, Judged, Merger, Outcome, Work, apply, merge_outcome
-from .model import GROUPING, Remedy, Status, Ticket, Waiting
+from .model import Remedy, Status, Ticket, Waiting
 from .rules import Effect, Ended, Escalate, Merge, Replan, StartWork, StopWork, TicketError, Tickets
 from .spec import TIER, WorkflowSpec, check_policy
 
@@ -223,16 +223,23 @@ class Runner:
 
     # ------------------------------------------------------------------ work and branches
     def branch_name(self, tid: str) -> str:
+        """A branch owner's branch: the root's is the change's integration branch."""
         x = self.t.t[tid]
-        return f"legion/{self.change}/{x.branch}" if x.branch else ticket_branch(self.change, tid)
+        return integration_branch(self.change) if x.parent is None else ticket_branch(self.change, tid)
+
+    def owner(self, tid: str) -> str:
+        """The ticket whose branch ``tid`` works on: itself if it owns one, else the nearest
+        ancestor that does."""
+        return tid if self.t.t[tid].owns_branch else self.t.merges_into(tid)
 
     async def branch(self, tid: str) -> str:
-        """The ticket's branch, made if it has none yet: from its parent's head (the root's,
-        from the change's base)."""
-        x, name = self.t.t[tid], self.branch_name(tid)
+        """The branch ``tid`` works on (:meth:`owner`'s), made if there is none yet: from the
+        head of the branch it merges into (the root's, from the change's base)."""
+        tid = self.owner(tid)
+        name = self.branch_name(tid)
         if await self.branches.head(name) is None:
-            at = self.base if x.parent is None else await self.branches.head(
-                await self.branch(x.parent))
+            at = self.base if self.t.t[tid].parent is None else await self.branches.head(
+                await self.branch(self.t.merges_into(tid)))
             if at is None:
                 raise GitError(f"no head to start {name} from")
             await self.branches.create(name, at)
@@ -248,11 +255,10 @@ class Runner:
             if x.role == "criterion":                 # it judges its owner's commit
                 owner = self.t.t[x.parent]
                 judged = owner.sha or await self.branches.head(await self.branch(owner.id))
-                into = await self.branch(owner.parent) if owner.parent else None
+                into = await self.branch(self.t.merges_into(owner.id)) if owner.parent else None
                 return replace(work, judged=judged, into=into)
-            parent = await self.branch(x.parent)
-            base = await self.branches.head(parent)
-            if x.type.startswith("agent:") or x.type == GROUPING:
+            base = await self.branches.head(await self.branch(self.t.merges_into(x.id)))
+            if x.owns_branch:
                 return replace(work, branch=await self.branch(x.id), base=base)
             return replace(work, base=base)
         except GitError as e:                         # the executor's faults say it, later

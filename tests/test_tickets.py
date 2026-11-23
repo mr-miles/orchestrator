@@ -56,16 +56,16 @@ def build() -> Tickets:
 def test_groups_run_in_order_and_a_groups_tickets_in_parallel():
     t = build()
     assert started(t.start()) == ["T1", "T2"]
-    assert t.work_done("T2", "b" * 40) == [Merge("T2", "b" * 40, "delivery")]
+    # delivery has no criteria, so no branch: the builds merge into the root's
+    assert not t.t["delivery"].owns_branch and t.t["change"].owns_branch
+    assert t.work_done("T2", "b" * 40) == [Merge("T2", "b" * 40, "change")]
     assert t.t["T2"].status == Status.MERGING and t.merged("T2", "c" * 40) == []
     assert started(t.work_done("T1", "a" * 40)) == ["rev:T1"]     # T1's criterion; T3 waits
-    assert t.verdict("rev:T1", True) == [Merge("T1", "a" * 40, "delivery")]
+    assert t.verdict("rev:T1", True) == [Merge("T1", "a" * 40, "change")]
     assert started(t.merged("T1", "d" * 40)) == ["T3"]
-    assert t.t["delivery"].sha == "d" * 40                          # its branch head
+    assert t.t["change"].sha == "d" * 40 and t.t["delivery"].sha is None   # the root's head
     eff = t.work_done("T3")                                         # no commit: nothing to merge
-    assert eff == [Merge("delivery", "d" * 40, "change")]           # delivery's branch, into the root's
-    assert started(t.merged("delivery", "e" * 40)) == ["H-3"]
-    assert t.t["delivery"].status == Status.PASSED and t.t["change"].sha == "e" * 40
+    assert started(eff) == ["H-3"] and t.t["delivery"].status == Status.PASSED   # nor delivery
     assert t.verdict("H-3", True) == [Ended(Status.PASSED)]
 
 
@@ -75,7 +75,7 @@ def test_a_merge_conflict_is_a_rework_and_a_merge_error_is_retried_without_an_at
     t.work_done("T2", "b" * 40)
     t.system_error("T2")                                            # the merge's backoff ran out
     assert t.t["T2"].waiting == Waiting.SYSTEM and t.t["T2"].attempt == 1
-    assert t.decide("T2", Remedy.RETRY) == [Merge("T2", "b" * 40, "delivery")]
+    assert t.decide("T2", Remedy.RETRY) == [Merge("T2", "b" * 40, "change")]
     eff = t.merge_conflict("T2", ["G-A2: rebase onto c"])
     assert eff == [StartWork("T2", 2, ("G-A2: rebase onto c",))]
     assert not t.t["T2"].merging
@@ -388,7 +388,7 @@ def test_a_pause_stops_everything_at_its_next_conclusion_but_merges_conclude():
     t = build()
     assert started(t.start()) == ["T1", "T2"]
     t.pause()
-    assert t.work_done("T2", "b" * 40) == [Merge("T2", "b" * 40, "delivery")]   # concludes
+    assert t.work_done("T2", "b" * 40) == [Merge("T2", "b" * 40, "change")]   # concludes
     assert t.merged("T2", "c" * 40) == []
     assert t.work_done("T1", "a" * 40) == []               # its criterion does not start
     assert t.t["T1"].status == Status.CHECKING and t.active() == []

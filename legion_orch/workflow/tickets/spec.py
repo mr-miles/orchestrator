@@ -47,7 +47,6 @@ class TicketSpec(_Strict):
     severity: Severity | None = None            # (criteria) default: rework; escalate on grouping
     signs: list[str] = []
     applies: str | None = None
-    branch: str | None = None
     tiers: list[str] | None = None              # linked only at these tiers
 
     @field_validator("subtasks", mode="before")
@@ -187,7 +186,7 @@ class WorkflowSpec(_Strict):
             return None
         x = Ticket(id=s.id, parent=parent.id if parent else None, type=s.type, goal=s.goal,
                    role=role, labels=s.labels, inputs=s.inputs,  # type: ignore[arg-type]
-                   signs=s.signs, applies=s.applies, branch=s.branch)
+                   signs=s.signs, applies=s.applies)
         if role == "criterion":            # a grouping ticket's criteria escalate (R4)
             x.severity = s.severity or (Severity.ESCALATE if parent and parent.type == GROUPING
                                         else Severity.REWORK)

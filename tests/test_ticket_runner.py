@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import sqlite3
+import subprocess
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -127,7 +128,12 @@ async def test_a_change_runs_from_its_skeleton_to_its_publication(tmp_path):
     assert ran.index("H-2") < min(ran.index("T1"), ran.index("T2"))
     assert max(ran.index("review:T1"), ran.index("review:T2")) < ran.index("integration")
     # merged up the tree into the integration branch, the root's, then published into main
-    assert r.branch_name("delivery") == "legion/c1/integration"
+    assert r.branch_name("change") == "legion/c1/integration"
+    made = set(subprocess.run(["git", "for-each-ref", "--format=%(refname:lstrip=5)",
+                               "refs/heads/legion/c1/t/"], cwd=ch.hub.repo, check=True,
+                              capture_output=True, text=True).stdout.split())
+    assert not made & {"requirements", "plan", "acceptance", "delivery", "release"}   # no criteria
+    assert {"T1", "T2", "oracle", "evaluate"} <= made          # agents', and evaluate's (H-3)
     assert {"T1.txt", "T2.txt", "oracle.txt"} <= set(files_at(ch.hub, "main"))
     assert all(x.status == Status.PASSED for x in r.t.t.values())
     assert r.t.t["design"].limit == 3                      # the tier's limits, set at H-1
@@ -160,7 +166,7 @@ async def test_a_conflict_at_merge_is_a_rework_onto_the_new_head(tmp_path):
     r = await ch.runner()
 
     def same_file(work):
-        base = work.base if work.attempt == 1 else r.t.t["delivery"].sha
+        base = work.base if work.attempt == 1 else r.t.t["change"].sha
         return Done(commit(ch.hub, base, {"shared.txt": f"{work.ticket.id} {work.attempt}\n"},
                            f"{work.ticket.id}-{work.attempt}"))
     ch.script.outcomes["T1"] = ch.script.outcomes["T2"] = same_file

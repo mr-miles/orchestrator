@@ -25,6 +25,11 @@ def ticket_branch(change: str, ticket: str) -> str:
     return f"legion/{change}/t/{_UNSAFE.sub('_', ticket)}"
 
 
+def integration_branch(change: str) -> str:
+    """The change's integration branch: its root ticket's (what is published)."""
+    return GitRemote.integration_branch(change)
+
+
 @dataclass(frozen=True)
 class MergeCheck:
     """Whether ``sha`` merges cleanly into the branch at ``head``; ``conflicts``: the paths that

@@ -4,7 +4,9 @@
 # A ticket is its own work (by its type), then its subtask groups in order – a list item is one
 # ticket, or a list of tickets that run in parallel – then its criteria, in order. Sign-offs name
 # what they sign: documents in the change (a ticket's under tickets/<id>/), `git:<ticket>` for a
-# ticket's branch head. `applies`: what a sign-off's pass applies – `tier` (the tickets marked
+# ticket's branch head (the root's – `change` – is the change's integration branch; a ticket has
+# its own branch if it is an agent's or a grouping ticket with criteria, and merges into its nearest
+# ancestor's that has one). `applies`: what a sign-off's pass applies – `tier` (the tickets marked
 # with `tiers`, once H-1 has signed the tier off) or a replan document (the planner's tickets).
 
 hooks:
@@ -62,7 +64,6 @@ skeleton:
                   type: "human:signoff"
                   signs: [tickets/baseline/report.md]
     - id: delivery
-      branch: integration           # the change's integration branch
       # the planner's builds, then the integration ticket as the last group
     - id: evaluate
       subtasks:
@@ -70,7 +71,7 @@ skeleton:
       criteria:
         - id: H-3
           type: "human:signoff"
-          signs: ["git:delivery", tickets/describe/pr.md]
+          signs: ["git:change", tickets/describe/pr.md]
     - id: release
       subtasks:
         - {id: publish, type: "controller:publish", goal: "the change, published"}

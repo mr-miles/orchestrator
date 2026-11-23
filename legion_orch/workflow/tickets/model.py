@@ -82,12 +82,11 @@ class Ticket(BaseModel):
     signs: list[str] = []                  # (human:signoff) what it signs: documents at versions
     applies: str | None = None             # (sign-offs) what its pass applies: a replan document,
                                            # or ``tier`` (the tier's skeleton tickets)
-    branch: str | None = None              # a named branch instead of its own (``integration``)
     limit: int = 3                         # attempts allowed (its own work's reruns)
     # state
     status: Status = Status.PENDING
     attempt: int = 0                       # rounds of its own work so far (0: not started)
-    sha: str | None = None                 # its commit: the accepted report's; a grouping ticket's
+    sha: str | None = None                 # its commit: the accepted report's; a branch owner's
                                            # branch head once a child merged (merged on pass)
     findings: list[str] = []               # (a ticket) the failed criterion's findings, for its rework
     waiting: Waiting | None = None
@@ -99,6 +98,15 @@ class Ticket(BaseModel):
     @property
     def has_work(self) -> bool:
         return self.type != GROUPING
+
+    @property
+    def owns_branch(self) -> bool:
+        """Whether it has a branch of its own (decided by the tree, never by a plan): the root
+        (the change's result), an agent's ticket (its work may commit), a grouping ticket with
+        criteria (they judge its head: its subtree's work alone). Anything else works on, and
+        merges into, its nearest ancestor's that has one."""
+        return self.parent is None or (self.role != "criterion" and self.type.startswith("agent:")) \
+            or (self.type == GROUPING and bool(self.criteria))
 
     @property
     def leaf(self) -> bool:
