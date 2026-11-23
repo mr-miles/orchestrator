@@ -14,7 +14,7 @@ from ..config import Config
 from ..git import GitRemote
 from ..store import DocStore, DocVersion
 from .model import Change, Run
-from .tickets import Tickets
+from .tickets import Ticket, Tickets
 
 
 class ChangeView(Protocol):
@@ -33,6 +33,11 @@ class ChangeView(Protocol):
 
     @property
     def runs(self) -> dict[str, Run]: ...
+
+    @property
+    def hooks(self) -> dict[str, Ticket]:
+        """Its side processes' tickets, outside the tree (the retrospective)."""
+        ...
 
     def p(self, rel: str) -> str:
         """Qualify a path into the change namespace (changes/<id>/...)."""

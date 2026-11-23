@@ -226,10 +226,12 @@ class IdentityConfig(Section):
     dev_spire: bool | None = None        # in-process SPIRE stand-in; defaults to runner == local
 
 
-# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates, escalations and
-# agents' questions (A2A ask_human), and the inbox's ended changes and retrospective reports.
-ATTENTION_KINDS = ("gate", "escalation", "not_ready", "question", "change_ended", "retrospective")
-AttentionKind = Literal["gate", "escalation", "not_ready", "question", "change_ended",
+# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking sign-offs, escalations,
+# a paused workflow, a workspace that did not sync and agents' questions (A2A ask_human), and the
+# inbox's ended changes and retrospective reports.
+ATTENTION_KINDS = ("gate", "escalation", "paused", "unsynced", "question", "change_ended",
+                   "retrospective")
+AttentionKind = Literal["gate", "escalation", "paused", "unsynced", "question", "change_ended",
                         "retrospective"]
 
 
@@ -265,7 +267,7 @@ class NotifyConfig(Section):
     # Base URL of the operator UI, for links to the item (e.g. https://legion.example/).
     ui_url: str | None = None
     # Item kinds to notify: gate and escalation (blocking), change_ended, retrospective (inbox).
-    items: list[AttentionKind] = ["gate", "escalation", "not_ready", "question"]
+    items: list[AttentionKind] = ["gate", "escalation", "paused", "unsynced", "question"]
     # Repeat a blocking item while it is still waiting (seconds; 0 = never). Inbox items are
     # sent once.
     remind_after_s: int = 3600

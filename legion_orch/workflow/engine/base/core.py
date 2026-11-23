@@ -79,6 +79,10 @@ class ChangeCore:
             self._tickets = Tickets.over(self.st.tickets)
         return self._tickets
 
+    @property
+    def hooks(self) -> dict[str, Ticket]:
+        return self.st.hooks
+
     def ticket(self, tid: str) -> Ticket | None:
         """A ticket of the tree, or of a side process outside it (the retrospective)."""
         return self.st.tickets.get(tid) or self.st.hooks.get(tid)
@@ -163,8 +167,12 @@ class ChangeCore:
     def seed_attention(self) -> None:
         """After loading from the store: take the current statuses and items as known, so a
         restart neither re-stamps nor re-raises (nobody is notified again for old items)."""
-        self._statuses = {tid: t.status for tid, t in self.st.tickets.items()}
+        self._statuses = self._statuses_now()
         self._attention = {i.key: i for i in attention.items(self)}
+
+    def _statuses_now(self) -> dict[str, str]:
+        return {tid: t.status for tid, t in self.st.tickets.items()} | {
+            "hook:" + tid: t.status for tid, t in self.st.hooks.items()}
 
     def _stamp_statuses(self) -> None:
         """A ticket that started waiting on a human is an escalation (the resolver hears)."""
@@ -174,7 +182,10 @@ class ChangeCore:
                 t.since = now
                 if t.status == Status.WAITING:
                     self.emit(Escalated(self.cid, tid))
-        self._statuses = {tid: t.status for tid, t in self.st.tickets.items()}
+        for tid, t in self.st.hooks.items():
+            if self._statuses.get("hook:" + tid) != t.status:
+                t.since = now
+        self._statuses = self._statuses_now()
 
     def _update_attention(self) -> None:
         cur = {i.key: i for i in attention.items(self)}

@@ -17,7 +17,7 @@ from legion_orch import cli
 from legion_orch.config import ATTENTION_KINDS, NotifyConfig, NotifySink, load_config
 from legion_orch.notify import Notifier
 from legion_orch.workflow import attention
-from legion_orch.workflow.model import AWAITING_HUMAN, ESCALATED, ChangeStatus
+from legion_orch.workflow.model import ChangeStatus
 
 
 def _events(f: Flow, kind: str) -> list[dict]:
@@ -51,37 +51,54 @@ async def _flow_with(tmp_path, *sinks: NotifySink, **notify) -> Flow:
 
 # ====================================================================== items
 @scenario()
-async def test_a_gate_is_raised_once_and_resolved_with_its_wait(f: Flow):
+async def test_a_signoff_is_raised_once_and_resolved_with_its_wait(f: Flow):
     assert f.ce.attention_items == []
     await f.intake()
-    assert f.status("H-1") == AWAITING_HUMAN
+    assert f.status("H-1") == "working"
     [item] = f.ce.attention_items
-    assert (item.kind, item.node, item.blocking) == ("gate", "H-1", True)
-    assert item.since == f.ce.nodes["H-1"].status_since and item.since
+    assert (item.kind, item.ticket, item.blocking) == ("gate", "H-1", True)
+    assert item.since == f.ticket("H-1").since and item.since
     f.ce.save()                                   # saving again raises nothing new
     assert [e["message"] for e in _events(f, "attention")] == [f"raised: {item.title}"]
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     resolved = [e["message"] for e in _events(f, "attention") if e["message"].startswith("resolved")]
     assert len(resolved) == 1 and resolved[0].endswith(item.title) and " after " in resolved[0]
-    assert not any(i.node == "H-1" for i in f.ce.attention_items)
+    assert not any(i.ticket == "H-1" for i in f.ce.attention_items)
+
+
+async def blocked(f: Flow) -> None:
+    r = f.run("intake")
+    await f.report(r, [], status="BLOCKED", blocked_reason="the goal is ambiguous",
+                   missing_decision="greet in which language?")
 
 
 @scenario()
 async def test_an_escalation_is_an_item_with_its_reason(f: Flow):
-    await f.exit_agent(f.run("intake"), rc=1)           # the agent died: run_failed
-    assert f.status("intake") == ESCALATED
+    await blocked(f)
+    t = f.ticket("intake")
+    assert (t.status, t.waiting) == ("waiting", "blocked")
     [item] = f.ce.attention_items
-    esc = f.ce.nodes["intake"].escalation
-    assert (item.kind, item.detail, item.since, item.blocking) == ("escalation", esc.kind, esc.at, True)
+    assert (item.kind, item.detail, item.since, item.blocking) == ("escalation", "blocked",
+                                                                   t.since, True)
     assert item.reason and len(item.reason) <= attention.REASON_MAX
-    await f.human("intake", "retry")
+    await f.human("intake", "retry", answer="English")
+    assert f.ce.attention_items == []
+
+
+@scenario()
+async def test_a_paused_workflow_is_an_item_until_it_resumes(f: Flow):
+    await f.change_action("pause")
+    [item] = f.ce.attention_items
+    assert (item.kind, item.blocking) == ("paused", True)
+    await f.change_action("resume")
     assert f.ce.attention_items == []
 
 
 @scenario()
 async def test_an_ended_change_goes_to_the_inbox(f: Flow):
-    await f.exit_agent(f.run("intake"), rc=1)
-    await f.human("intake", "abandon", reason="the goal was a duplicate of another change")
+    await blocked(f)
+    await f.change_action("abandon", reason="the goal was a duplicate of another change")
+    await f.settle()
     assert f.ce.change.status == ChangeStatus.ABANDONED
     [item] = [i for i in f.ce.attention_items if i.kind == attention.CHANGE_ENDED]
     assert not item.blocking and item.detail == "ABANDONED" and "duplicate" in item.reason
@@ -89,21 +106,22 @@ async def test_an_ended_change_goes_to_the_inbox(f: Flow):
 
 
 @scenario()
-async def test_a_shipped_change_and_its_retrospective_go_to_the_inbox(f: Flow):
-    await f.to_build("R1")
-    await f.implement()
-    await f.review(verdict="PASS")
+async def test_a_published_change_and_its_retrospective_go_to_the_inbox(f: Flow):
+    await f.to_end()
     assert f.ce.change.status == ChangeStatus.READY
     [ended] = f.ce.attention_items
-    assert (ended.kind, ended.detail, ended.node, ended.blocking) == \
-        ("change_ended", "READY", "H-3", False)
+    assert (ended.kind, ended.detail, ended.ticket, ended.blocking) == \
+        ("change_ended", "READY", None, False)
     await f.change_action("retrospective")
+    await f.settle()
     run_ = f.run("retrospective")
-    doc = await f.write(run_, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
-    await f.report(run_, [doc])
+    doc = await f.write(run_, "report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
+    await f.report(run_, [doc], outputs={"report": doc})
     retro = [i for i in f.ce.attention_items if i.kind == attention.RETROSPECTIVE]
-    assert [(i.node, i.detail, i.blocking) for i in retro] == [("retrospective", "cycle-1", False)]
+    assert [(i.ticket, i.detail, i.blocking) for i in retro] == [
+        ("retrospective", "attempt-1", False)]
     await f.change_action("retrospective")           # asked again: the next report is a new item
+    await f.settle()
     assert not [i for i in f.ce.attention_items if i.kind == attention.RETROSPECTIVE]
 
 
@@ -118,12 +136,12 @@ async def test_a_gate_notifies_its_sinks_once_and_records_the_delivery(tmp_path)
     f = await _flow_with(tmp_path, sink, ui_url="https://legion.example/")
     await f.intake()
     [msg] = _sent(out)
-    assert (msg["event"], msg["kind"], msg["node"], msg["change"]) == \
+    assert (msg["event"], msg["kind"], msg["ticket"], msg["change"]) == \
         ("raised", "gate", "H-1", f.ce.cid)
     assert msg["url"] == f"https://legion.example/#{f.ce.cid}/overview/H-1"
     assert msg["project"] == "engine-test" and msg["approvers"] == ["miles", "ana"]
     assert [e for e in _events(f, "notified") if "sent" in e["message"]]
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     assert len(_sent(out)) == 1                  # resolved is off by default
 
 
@@ -132,9 +150,10 @@ async def test_inbox_items_are_sent_only_to_sinks_that_ask_for_them(tmp_path):
     sink, out = _recorder(tmp_path)
     sink.items = ["change_ended"]
     f = await _flow_with(tmp_path, sink)
-    await f.exit_agent(f.run("intake"), rc=1)     # an escalation: not this sink's kind
+    await blocked(f)                              # an escalation: not this sink's kind
     assert _sent(out) == []
-    await f.human("intake", "abandon")
+    await f.change_action("abandon")
+    await f.settle()
     [msg] = _sent(out)
     assert msg["kind"] == "change_ended" and msg["blocking"] is False
 
@@ -148,7 +167,7 @@ async def test_a_failing_sink_is_retried_then_recorded_without_disturbing_the_ch
 
     f = await _flow_with(tmp_path, bad)
     await f.intake()
-    assert f.status("H-1") == AWAITING_HUMAN
+    assert f.status("H-1") == "working"
     assert attempts.read_text() == "xxx"
     [ev] = _events(f, "notified")
     assert "raised via pager: failed: RuntimeError: exit 3" in ev["message"]
@@ -159,7 +178,7 @@ async def test_resolved_notifications_when_configured(tmp_path):
     sink, out = _recorder(tmp_path)
     f = await _flow_with(tmp_path, sink, resolved=True)
     await f.intake()
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     assert [m["event"] for m in _sent(out)] == ["raised", "resolved"]
 
 
@@ -168,10 +187,10 @@ def test_reminders_repeat_blocking_items_only():
     cfg = NotifyConfig(remind_after_s=60, items=list(ATTENTION_KINDS),
                        sinks=[NotifySink(kind="command", argv=["x"])])
     n = Notifier(cfg, "p", ["miles"], spawn=lambda c: c.close(), on_result=lambda *a: None)
-    n._send = lambda item, event: sent.append((item.node, event))
-    gate = attention.AttentionItem(change="c1", goal="g", node="H-2", kind="gate", detail="H-2",
+    n._send = lambda item, event: sent.append((item.ticket, event))
+    gate = attention.AttentionItem(change="c1", goal="g", ticket="H-2", kind="gate", detail="H-2",
                                    title="H-2", since="t", blocking=True)
-    inbox = attention.AttentionItem(change="c1", goal="g", node=None, kind="change_ended",
+    inbox = attention.AttentionItem(change="c1", goal="g", ticket=None, kind="change_ended",
                                     detail="READY", title="done", since="t", blocking=False)
     n.raised(gate)
     n.raised(inbox)
@@ -193,7 +212,7 @@ async def test_a_restart_does_not_raise_or_notify_again(tmp_path):
     f.ce.flush_timeline(force=True)
     ctl2, ce2 = await f.restart()
     assert [i.key for i in ce2.attention_items] == [i.key for i in f.ce.attention_items]
-    assert ce2.nodes["H-1"].status_since == f.ce.nodes["H-1"].status_since
+    assert ce2.st.tickets["H-1"].since == f.ticket("H-1").since
     async with ctl2.svc.lock:
         ce2.recover()                              # saves
     await asyncio.sleep(0.2)
@@ -248,7 +267,7 @@ async def test_webhook_and_ntfy_sinks(tmp_path, monkeypatch):
         wh = by_path["/hook"]
         want = "sha256=" + hmac.new(b"s3cret", wh["body"], hashlib.sha256).hexdigest()
         assert wh["headers"]["x-legion-signature"] == want
-        assert json.loads(wh["body"])["node"] == "H-1"
+        assert json.loads(wh["body"])["ticket"] == "H-1"
         nt = json.loads(by_path["/"]["body"])
         assert nt["topic"] == "legion-topic" and nt["priority"] == 4
         assert nt["click"] == f"https://ui/#{f.ce.cid}/overview/H-1"
@@ -284,7 +303,7 @@ async def test_operator_api_lists_attention_and_digest(f: Flow):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(f.ctl)),
                                  base_url="http://op") as c:
         a = (await c.get("/api/attention")).json()
-        assert [i["node"] for i in a["needs_you"]] == ["H-1"] and a["inbox"] == []
+        assert [i["ticket"] for i in a["needs_you"]] == ["H-1"] and a["inbox"] == []
         assert a["needs_you"][0]["key"]
         [summary] = (await c.get("/api/changes")).json()
         assert summary["needs_you"] == 1
@@ -292,13 +311,13 @@ async def test_operator_api_lists_attention_and_digest(f: Flow):
         d = (await c.get("/api/digest", params={"since": "2000-01-01T00:00:00.000Z"})).json()
         [ch] = d["changes"]
         assert ch["id"] == f.ce.cid and ch["counts"]["runs started"] == 1
-        assert [i["node"] for i in d["needs_you"]] == ["H-1"]
+        assert [i["ticket"] for i in d["needs_you"]] == ["H-1"]
         d = (await c.get("/api/digest", params={"since": "2999-01-01T00:00:00.000Z"})).json()
         assert d["changes"] == [] and len(d["needs_you"]) == 1      # waiting items always shown
 
 
 def test_cli_attention_prints_items_with_links(tmp_path, monkeypatch, capsys):
-    item = {"change": "c1", "node": "H-2", "title": "H-2: Approve spec & oracle",
+    item = {"change": "c1", "ticket": "H-2", "title": "H-2: Approve spec & oracle",
             "since": "2026-11-18T00:33:00.000Z", "reason": "", "blocking": True}
     monkeypatch.setattr(cli.OperatorClient, "attention",
                         lambda self: {"needs_you": [item], "inbox": []})
