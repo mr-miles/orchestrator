@@ -271,12 +271,10 @@ class ReviewResult(Record):
 
 
 class ReviewReport(Record):
-    """A judge's report as accepted (``<review>.report.json``, beside its review document): the
-    review it records on its node (``node.reviews[key]``, projected) and the report itself."""
+    """A judge's report as accepted (``<step records>/reports/<role>-cycle-<n>.json``): the
+    review it records on its node (``node.reviews``, projected) and the report itself."""
     run: str
     role: str
-    node: str
-    key: str                         # where its review sits on the node
     review: ReviewResult
     status: str
     summary: str = ""
@@ -304,8 +302,6 @@ class Verification(Record):
     attestation: str | None = None   # the stored verification record
     run: str | None = None           # the verification service's run (VerificationRun.id)
     cached: bool = False             # the result of an earlier run of the same key
-    node: str | None = None          # a step's record: its node, and its key there (the cycle,
-    key: str | None = None           # or – not a task – the node's kind); projected onto it
 
 
 class VerificationState(StrEnum):
@@ -350,7 +346,6 @@ class PanelDecision(Record):
     each citing its review document. What the merge checks (G-A1), with the verification."""
     sha: str
     cycle: int
-    node: str | None = None              # whose panel it is (projected onto it)
     judges: list[str] = []               # the roles that sat (none: an empty panel)
     reviews: list[str] = []              # attestations of their review documents
     at: str = Field(default_factory=now_iso)
@@ -443,6 +438,30 @@ class Node(Record):
 
     def current_panel(self) -> PanelDecision | None:
         return self.panel.get(str(self.cycle))
+
+    @property
+    def records(self) -> str:
+        """Where the controller files this step's records (relative to the change): a build
+        task's ``tasks/<task_id>``, any other step's ``control/steps/<node id>``. Each kind in
+        its own directory, per cycle – ``verification/cycle-<n>.json``, ``panel/cycle-<n>.json``,
+        ``reports/<role>-cycle-<n>.json`` – so the path says whose record it is."""
+        return f"tasks/{self.task.id}" if self.task else f"control/steps/{self.id}"
+
+
+def step_record(rel: str) -> tuple[str, str, str] | None:
+    """``(node id, kind, name)`` of a step record's path (relative to the change) – the inverse
+    of :attr:`Node.records`; ``None`` for any other path."""
+    parts = rel.split("/")
+    if len(parts) == 4 and parts[0] == "tasks":
+        return f"build:{parts[1]}", parts[2], parts[3]
+    if len(parts) == 5 and parts[:2] == ["control", "steps"]:
+        return parts[2], parts[3], parts[4]
+    return None
+
+
+def cycle_of(name: str) -> int:
+    """The cycle of a per-cycle record's file name (``cycle-2.json``, ``reviewer-cycle-2.json``)."""
+    return int(name.rsplit("cycle-", 1)[1].removesuffix(".json"))
 
 
 # ---------------------------------------------------------------------------- run records

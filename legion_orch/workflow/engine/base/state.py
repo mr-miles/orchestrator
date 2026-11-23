@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -33,9 +32,6 @@ class StateStore:
     tree: the record ``workflow`` (:class:`.FlowRuntime`'s tree and inputs), which orders the
     nodes once it is rebuilt.
 
-    A change saved before the journal existed has documents instead (``control/change.json``,
-    ``control/workflow.json``, ``control/nodes/<id>.json``, ``control/runs/<id>.json``): it is
-    loaded from them once, then journalled; the documents stay, never written again.
     """
 
     SNAPSHOT_EVERY = 1000
@@ -51,16 +47,6 @@ class StateStore:
         self.workflow: dict[str, Any] | None = None   # set by FlowRuntime before each save
         self._last: dict[str, dict[str, Any]] = {}   # record -> its fields as last journalled
         self._since = 0                              # entries since the latest snapshot
-
-    @staticmethod
-    def change_ids(docs: DocStore, journal: Journal) -> list[str]:
-        """Every change in the store: journalled, or saved before the journal (documents)."""
-        ids = journal.changes()
-        for m in docs.list("changes/"):
-            parts = m.path.split("/")
-            if len(parts) == 4 and parts[2:] == ["control", "change.json"] and parts[1] not in ids:
-                ids.append(parts[1])
-        return ids
 
     # ------------------------------------------------------------- persistence
     def _current(self) -> dict[str, dict[str, Any]]:
@@ -111,8 +97,6 @@ class StateStore:
 
     def load(self) -> None:
         records = self.journal.fold(self.cid)
-        if not records:
-            records = self._legacy()
         self.change = Change.model_validate(records[CHANGE])
         self.workflow = records.get(WORKFLOW)
         for record, data in records.items():
@@ -121,23 +105,6 @@ class StateStore:
                 attr = getattr(self, _KINDS[kind][0])
                 attr[key] = (Node if kind == "node" else Run).model_validate(data)
         self._snapshot(self._current())
-
-    def _legacy(self) -> dict[str, dict[str, Any]]:
-        """The records of a change saved before the journal, from its documents."""
-        out = {CHANGE: self._read(self.root + "change.json")}
-        if self.docs.latest_version(self.root + "workflow.json"):
-            out[WORKFLOW] = self._read(self.root + "workflow.json")
-        for m in self.docs.list(self.root + "nodes/"):
-            data = self._read(m.path)
-            if not data.get("removed"):
-                out[f"node:{data['id']}"] = data
-        for m in self.docs.list(self.root + "runs/"):
-            data = self._read(m.path)
-            out[f"run:{data['id']}"] = data
-        return out
-
-    def _read(self, path: str) -> Any:
-        return json.loads(self.docs.read(path).content)
 
     # ------------------------------------------------------------- transactions
     @contextlib.contextmanager

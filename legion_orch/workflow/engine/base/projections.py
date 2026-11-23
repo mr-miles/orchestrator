@@ -25,6 +25,7 @@ from ...model import (
     AttestationRecord,
     EnvironmentBuild,
     GateOverride,
+    Node,
     Oracle,
     PanelDecision,
     ProtectedPathApproval,
@@ -32,6 +33,8 @@ from ...model import (
     ReviewReport,
     SurfacePin,
     Verification,
+    cycle_of,
+    step_record,
 )
 
 if TYPE_CHECKING:
@@ -55,8 +58,6 @@ def approval_key(rec: Approval) -> str:
 
 def _approval(c: ChangeCore, doc: DocVersion) -> None:
     data = json.loads(doc.content)
-    if "gate" not in data:          # a protected-path approval of an older store (same schema)
-        return
     if data.get("revoked"):                       # e.g. the environment provisioned again
         c.change.approvals.pop(data["gate"], None)
         return
@@ -124,30 +125,41 @@ def _accepted(c: ChangeCore, doc: DocVersion) -> None:
         c.change.risk = None if content is None else risk.derive_tier(content)
 
 
+def _step(c: ChangeCore, doc: DocVersion) -> tuple[Node, str] | None:
+    """The step a record is filed under (its path: :attr:`Node.records`) and its file name."""
+    found = step_record(doc.path[len(c.p("")):])
+    node = c.nodes.get(found[0]) if found else None
+    return (node, found[2]) if node is not None else None
+
+
 def _verification(c: ChangeCore, doc: DocVersion) -> None:
-    """A step's verification: the node keeps a compact copy (the record has the output)."""
-    rec = _record(Verification, doc)
-    node = c.nodes.get(rec.node or "")
-    if node is None or rec.key is None:      # an older store's record says neither: not projected
+    """A step's verification: the node keeps a compact copy (the record has the output), by
+    cycle – or, not a task, by its kind."""
+    if (step := _step(c, doc)) is None:
         return
-    node.verification[rec.key] = rec.model_copy(update={
+    node, name = step
+    rec = _record(Verification, doc)
+    key = str(cycle_of(name)) if node.task else str(node.kind)
+    node.verification[key] = rec.model_copy(update={
         "results": [r.model_copy(update={"output": ""}) for r in rec.results]})
 
 
 def _panel(c: ChangeCore, doc: DocVersion) -> None:
-    rec = _record(PanelDecision, doc)
-    if (node := c.nodes.get(rec.node or "")) is not None:
-        node.panel[str(rec.cycle)] = rec
+    if (step := _step(c, doc)) is not None:
+        rec = _record(PanelDecision, doc)
+        step[0].panel[str(rec.cycle)] = rec
 
 
 def _review(c: ChangeCore, doc: DocVersion) -> None:
-    """A judge's accepted report: its review on the node. Only the controller's own record
-    counts (agents may not write ``*.report.json``, G-W1)."""
-    if doc.author != "controller":
+    """A judge's accepted report: its review on the node (the integration verifier's has one
+    place, ``integration``). Only the controller's own record counts (G-W1)."""
+    if doc.author != "controller" or (step := _step(c, doc)) is None:
         return
+    node, name = step
     rec = ReviewReport.model_validate(json.loads(doc.content))
-    if (node := c.nodes.get(rec.node)) is not None:
-        node.reviews[rec.key] = rec.review
+    key = ("integration" if rec.role == "integration"
+           else node.review_key(cycle_of(name), rec.role))
+    node.reviews[key] = rec.review
 
 
 # schema -> what a new version of a document of it projects into

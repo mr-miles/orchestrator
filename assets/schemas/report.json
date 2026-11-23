@@ -1,12 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "A judge's report as the controller accepted it (<review>.report.json, beside the review document): who reported, on which node, the review it records there, and the report itself – status, summary, attestations and its structured data (validated against the role's report_schema when reported).",
+  "description": "A judge's report as the controller accepted it (<step records>/reports/<role>-cycle-<n>.json): who reported, the review it records on its step, and the report itself – status, summary, attestations and its structured data (validated against the role's report_schema when reported).",
   "type": "object",
   "required": [
     "run",
     "role",
-    "node",
-    "key",
     "review",
     "status",
     "at"
@@ -16,12 +14,6 @@
       "type": "string"
     },
     "role": {
-      "type": "string"
-    },
-    "node": {
-      "type": "string"
-    },
-    "key": {
       "type": "string"
     },
     "review": {

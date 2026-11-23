@@ -20,7 +20,7 @@ async def test_a_verification_that_raises_escalates_and_a_retry_verifies_again(f
     fail = [True]
 
     def write_record(rel, content):              # one ordinary failure in Verify.result
-        if fail[0] and rel.endswith("verification.json"):
+        if fail[0] and "/verification/" in rel:
             raise OSError("disk full")
         return real_write(rel, content)
     f.ce.write_record = write_record

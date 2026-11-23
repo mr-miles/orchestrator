@@ -165,7 +165,8 @@ and its runs' git credentials reach its hub and no other. `legion/*` is the hub'
 | Where | What |
 | --- | --- |
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
-| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
+| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); its step records (controller): `verification/cycle-<n>.json`, `panel/cycle-<n>.json` (the panel's pass), `reports/<role>-cycle-<n>.json` (each judge's report as accepted: its review on the step, status, summary, attestations and structured data); `feedback/<n>.md`, `decisions/<n>.md` (the escalation's question, then the human's answer) |
+| `changes/<id>/control/steps/<node>/` | any other step's records, laid out as a build task's (`verification/`, `panel/`, `reports/`, per cycle). A fix round's steps are new nodes with their own names (`plan.2`, `integration.2`), so every record's path says whose it is |
 | `changes/<id>/control/pr.json` | the published pull request (§5.10c): url, number, branch, head, labels |
 | `changes/<id>/control/logs/<run>.log` (`<run>.2.log`, …) | the agent's whole output, archived when it exits, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB). Each stream-json event carries `legion_ts`, the time the controller received it. Not readable by agents |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
@@ -842,7 +843,7 @@ the change started from existing code. Accepted tasks are never reopened: a roun
 Round 1 is the original plan; each fix round `n ≥ 2` is a **Round stage** of Delivery, inserted
 before integration: its own Design (plan, critique ◆H-E1), its own Oracle stage (provision and the
 oracle only if the round changes them, preflight, baseline ◆H-2) and its new tasks; then
-integration runs again. Its nodes are suffixed `@n` (`plan@2`, `H-E1@2`, `oracle@2`, …); every
+integration runs again. Its nodes are new nodes, suffixed `.n` (`plan.2`, `H-E1.2`, `oracle.2`, …); every
 earlier node keeps its record. A round **revises the plan documents in place**: it appends tasks to
 `plan/taskgraph.json` (and revises the spec, a delta spec, the oracle or the environment only
 when the fix needs it); the store's versions and the approval pins record what each round added.
@@ -854,7 +855,7 @@ can then still be answered, overridden at the gates or abandoned. The round is r
 integration run's report documents and the failed verification record). The integration node's
 escalation is cleared and Delivery is sent back: its policy appends the Round stage, integration
 returns to `PENDING` (its finished runs superseded, their sandboxes deleted after they reflect)
-and runs again after the round, a new cycle. The round's `plan@n` starts it.
+and runs again after the round, a new cycle. The round's `plan.n` starts it.
 
 **Plan (planner, fix mode).** A fresh planner sandbox and session, at the integration head. Its
 assignment adds the round (`{{fix_round}}`: the failure, the comment, every task already built
@@ -884,10 +885,10 @@ as usual (the latest plan documents); G-C2 counts the round's own cycles.
 the `plan` subject stale, as does any revised spec or delta spec; unchanged subjects keep their
 approval. Then what the round changed runs again:
 
-* **Environment.** Unchanged ⇒ the build stands (`provision@n` passes at once). Changed (the
+* **Environment.** Unchanged ⇒ the build stands (`provision.n` passes at once). Changed (the
   latest `plan/environment.json` is not the one H-E1 pinned) ⇒ the round's H-E1 approves the new
-  version with the plan and `provision@n` builds it, as in round 1 (§5.3a).
-* **Oracle.** Unchanged ⇒ `oracle@n` passes at once: the oracle commit, protected paths and
+  version with the plan and `provision.n` builds it, as in round 1 (§5.3a).
+* **Oracle.** Unchanged ⇒ `oracle.n` passes at once: the oracle commit, protected paths and
   surface pins stand. Changed ⇒ the test engineer works at the integration head (its own branch
   for the round) and its commit must stay within the (new) protected paths (G-O1, G-O2); it is
   merged and becomes the oracle commit that G-INT2 and `protected_oracle` compare against, and its

@@ -59,7 +59,7 @@ from ...model import (
 )
 from ...results import Escalate, Ok, PhaseResult, Redo, Rework
 from ...ship import evaluate
-from ..base.common import WorkflowError, _slug
+from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 from ..base.ids import in_round
 from ..sandboxes.plan import JUDGE, SandboxPlan
@@ -658,11 +658,9 @@ class Panel(Phase):
         their reviews – stored, and kept on the node (what the merge checks, G-A1)."""
         node, c = active.node, active.c
         reviews = [r.doc for r in (node.review(node.cycle, role) for role in roles) if r and r.doc]
-        decision = PanelDecision(sha=node.candidate_sha, cycle=node.cycle, node=node.id,
-                                 judges=list(roles), reviews=reviews)
-        path = (f"tasks/{node.task.id}/panel.json" if node.task
-                else f"control/panel/{_slug(node.id)}.json")
-        c.write_record(path, decision)                  # projected: node.panel
+        decision = PanelDecision(sha=node.candidate_sha, cycle=node.cycle, judges=list(roles),
+                                 reviews=reviews)
+        c.write_record(f"{node.records}/panel/cycle-{node.cycle}.json", decision)   # -> node.panel
 
     def _roles(self, active: ActivePhase) -> tuple[str, ...]:
         """Its judges, for this change."""
@@ -915,9 +913,8 @@ class Verify(Phase):
             return None
         c, res = active.c, done
         assert isinstance(res, Verification)
-        path, key = self._record(active)
-        att = c.write_record(path, res.model_copy(update={"node": node.id, "key": key})
-                             ).attestation               # projected: node.verification
+        att = c.write_record(f"{node.records}/verification/cycle-{node.cycle}.json",
+                             res).attestation            # projected: node.verification
         result = self._interpret(res, node.cycle, att)
         if isinstance(result, Ok):
             for kind, text in self.notes(c, node, res) if self.notes else []:
@@ -931,13 +928,6 @@ class Verify(Phase):
         """The commands it runs, for this change and node."""
         commands = self.commands
         return commands if isinstance(commands, tuple) else tuple(commands(active.c, active.node))
-
-    def _record(self, active: ActivePhase) -> tuple[str, str]:
-        """Where the verification is stored, and its key on the node: a task's per cycle."""
-        node = active.node
-        if node.task:
-            return f"tasks/{node.task.id}/verification.json", str(node.cycle)
-        return f"control/verification/{_slug(node.id)}.json", str(node.kind)
 
 
 def setup_failure(res: Verification) -> CommandResult | None:

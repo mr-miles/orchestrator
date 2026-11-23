@@ -61,7 +61,7 @@ async def test_a_fix_round_adds_tasks_on_top_of_the_integration_head(f: Flow):
     assert integ.verification["integration"].attestation in rnd.failure
     assert f.ce.latest("control/rounds/2.json") == 1
     assert integ.status == PENDING and integ.escalation is None
-    assert "plan@2" in f.ce.nodes and f.ce.nodes["plan@2"].round == 2
+    assert "plan.2" in f.ce.nodes and f.ce.nodes["plan.2"].round == 2
     assert f.status("H-2") == PENDING and f.ce.nodes["H-2"].status == ACCEPTED   # round 1's stands
     assert f.status("build:T1") == ACCEPTED
     # a fresh planner, told about the round
@@ -141,17 +141,17 @@ async def test_revise_sends_the_round_back_and_restart_restarts_the_plan(f: Flow
     await f.critique("PASS")
     assert "build:T2" in f.ce.nodes
     await f.human("H-E1", "revise", feedback="T2 must also fix the docs")
-    plan = f.ce.nodes["plan@2"]                        # the round's design starts over
+    plan = f.ce.nodes["plan.2"]                        # the round's design starts over
     assert plan.status == RUNNING and plan.cycle == 2 and f.ce.change.round == 2
     assert f.status("build:T2") == PENDING and f.status("build:T1") == ACCEPTED
     assert "T2 must also fix the docs" in f.run("plan").template_vars["feedback"]
     await f.plan(tasks=TASKS + [T2])
     await f.critique("PASS")
     assert f.status("H-E1") == AWAITING_HUMAN
-    assert "send_back:stage:plan" in f.ce.workflow.actions("H-E1@2")
+    assert "send_back:stage:plan" in f.ce.workflow.actions("H-E1.2")
     await f.human("H-E1", "send_back", stage="plan", feedback="start again from the requirements")
     ch = f.ce.change
-    assert ch.round == 1 and ch.rounds == [] and "plan@2" not in f.ce.nodes
+    assert ch.round == 1 and ch.rounds == [] and "plan.2" not in f.ce.nodes
     assert f.status("plan") == RUNNING and f.ce.nodes["plan"].round == 1
     assert [b.id for b in f.ce.build_nodes()] == ["build:T1"] and f.status("build:T1") == PENDING
     assert ch.integration_head == ch.base_sha and ch.oracle_sha is None
@@ -166,10 +166,10 @@ async def test_a_revised_oracle_runs_again_from_the_integration_head(f: Flow):
     assert (await f.plan(tasks=TASKS + [T2], oracle=oracle)).accepted
     await f.critique("PASS")
     await f.human("H-E1", "approve")
-    node = f.ce.nodes["oracle@2"]                      # changed: the round's oracle runs
+    node = f.ce.nodes["oracle.2"]                      # changed: the round's oracle runs
     assert node.status == RUNNING
     run = f.run("oracle")
-    assert run.base_sha == head and run.branch.endswith("/oracle-2")
+    assert run.base_sha == head and run.branch.endswith("/oracle.2")
     await f.oracle({"tests/acceptance/test_greet.sh":
                     "grep -q hello src/greet.txt\ngrep -c '' src/greet.txt\n"})
     assert node.status == ACCEPTED and f.ce.change.oracle_sha == node.accepted_sha
@@ -211,7 +211,7 @@ async def test_r3_reruns_the_baseline_and_needs_a_new_attestation(f: Flow):
     await f.plan(tasks=TASKS + [T2])
     await f.critique("PASS")
     await f.human("H-E1", "approve")
-    base = f.ce.nodes["baseline@2"]                    # the round's baseline, at its head
+    base = f.ce.nodes["baseline.2"]                    # the round's baseline, at its head
     assert base.status == RUNNING
     await _baseline(f)
     assert base.status == ACCEPTED and f.status("H-2") == AWAITING_HUMAN
@@ -231,11 +231,11 @@ async def test_a_change_in_a_fix_round_is_rebuilt_from_the_store(f: Flow):
     ctl2.load()
     ce2 = ctl2.changes[f.ce.cid]
     assert ce2.change.round == 2 and ce2.change.rounds[0].comment == "why"
-    assert ce2.nodes["build:T2"].round == 2 and ce2.nodes["plan@2"].round == 2
-    assert ce2.nodes["H-E1@2"].status == AWAITING_HUMAN and REWORK != ce2.nodes["plan@2"].status
+    assert ce2.nodes["build:T2"].round == 2 and ce2.nodes["plan.2"].round == 2
+    assert ce2.nodes["H-E1.2"].status == AWAITING_HUMAN and REWORK != ce2.nodes["plan.2"].status
     # the workflow is rebuilt from its record: the same state, the same actions
     assert ce2.workflow.to_json() == f.ce.workflow.to_json()
-    assert ce2.workflow.actions("H-E1@2") == f.ce.workflow.actions("H-E1@2")
+    assert ce2.workflow.actions("H-E1.2") == f.ce.workflow.actions("H-E1.2")
 
 
 @scenario(environment={})

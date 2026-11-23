@@ -13,7 +13,6 @@
 - {pattern: "tasks/*/evidence/*.md", schema: evidence}
 - {pattern: "release/plan.md", schema: release-plan}
 # ---- controller documents
-- {pattern: "*.report.json", schema: report}     # a judge's report, beside its review
 - {pattern: "control/change.json", schema: change}
 - {pattern: "control/graph.json", schema: graph}
 - {pattern: "control/nodes/*.json", schema: node}
@@ -24,10 +23,14 @@
 - {pattern: "control/attestations/*.json", schema: attestation}
 - {pattern: "control/overrides/*.json", schema: override}
 - {pattern: "control/surfaces/*.json", schema: surface-pin}
-- {pattern: "control/verification/*.json", schema: verification}
-- {pattern: "tasks/*/verification.json", schema: verification}
-- {pattern: "tasks/*/panel.json", schema: panel-decision}
-- {pattern: "control/panel/*.json", schema: panel-decision}
+# a step's records (Node.records): a build task's under tasks/<task_id>/, any other step's under
+# control/steps/<node id>/ – per cycle, so the path says whose record it is
+- {pattern: "tasks/*/verification/*.json", schema: verification}
+- {pattern: "control/steps/*/verification/*.json", schema: verification}
+- {pattern: "tasks/*/panel/*.json", schema: panel-decision}
+- {pattern: "control/steps/*/panel/*.json", schema: panel-decision}
+- {pattern: "tasks/*/reports/*.json", schema: report}
+- {pattern: "control/steps/*/reports/*.json", schema: report}
 - {pattern: "control/ship/readiness.json", schema: readiness}
 - {pattern: "control/environment/build.json", schema: environment-build}
 - {pattern: "control/accepted/*.json", schema: accepted}

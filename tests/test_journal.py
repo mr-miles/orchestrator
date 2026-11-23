@@ -5,7 +5,7 @@ import json
 
 from engine_harness import TASKS, Flow, scenario
 
-from legion_orch.store.journal import Journal, apply, diff
+from legion_orch.store.journal import apply, diff
 from legion_orch.workflow.engine import Controller
 from legion_orch.workflow.engine.base.state import StateStore
 
@@ -114,32 +114,3 @@ async def test_a_line_cut_short_by_a_crash_is_skipped_and_the_next_save_starts_a
         ce2.save()
     _, ce3 = _reload(f)
     assert ce3.change.goal == "after the crash"
-
-
-@scenario()
-async def test_a_change_saved_as_documents_is_loaded_once_then_journalled(f: Flow):
-    """A store written before the journal: its records are documents."""
-    await f.intake()
-    await f.human("H-1", "accept")
-    before = _dumps(f.ce)
-    root, docs = f"changes/{f.ce.cid}/control/", f.ctl.docs
-
-    def put(rel, data):
-        docs.write(root + rel, json.dumps(data), author="controller", role="controller")
-    change, nodes, runs = before
-    put("change.json", change)
-    put("workflow.json", f.ce.st.workflow)
-    for k, n in nodes.items():
-        put(f"nodes/{k}.json", n)
-    put("nodes/gone.json", {"id": "gone", "removed": True})
-    for k, r in runs.items():
-        put(f"runs/{k}.json", r)
-    f.ctl.svc.journal.path(f.ce.cid).unlink()
-
-    fresh = Journal(f.cfg.state_dir / "journal")
-    assert StateStore.change_ids(docs, fresh) == [f.ce.cid]       # found by its documents
-    _, ce2 = _reload(f)
-    assert _dumps(ce2) == before
-    assert f.ctl.svc.journal.path(f.ce.cid).exists()              # journalled from now on
-    _, ce3 = _reload(f)
-    assert _dumps(ce3) == before

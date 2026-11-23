@@ -142,13 +142,13 @@ async def test_verification_is_recorded_per_task_cycle_or_per_node(f: Flow):
         await f.ce._runner.of(n).at(step_for(n).phase(Verify)).result(ver(0))
         (key, v), = n.verification.items()
         return key, v.attestation
-    build = Node(id="T3", kind=BUILD, title="t", cycle=2)
+    build = Node(id="build:T3", kind=BUILD, title="t", cycle=2)
     build.task = T()  # type: ignore[assignment]
     key, att = await recorded(build)
-    assert key == "2" and "tasks/T3/verification.json" in att
+    assert key == "2" and "tasks/T3/verification/cycle-2.json" in att
     for kind in (BASELINE, PREFLIGHT, INTEGRATION):
         key, att = await recorded(Node(id=f"{kind}-node", kind=kind, title="x"))
-        assert key == str(kind) and "control/verification/" in att
+        assert key == str(kind) and f"control/steps/{kind}-node/verification/cycle-1.json" in att
 
 
 def test_every_phase_says_every_hook_and_what_its_readiness_needs():
