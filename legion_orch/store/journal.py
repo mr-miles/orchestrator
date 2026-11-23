@@ -10,6 +10,9 @@ A record's state is the fold of its entries:
 
 * an entry's data is a JSON object of top-level fields: each one replaces the field's value;
 * a key ``+<field>`` extends a list field with the items given (a list that only grew);
+* a key ``~<field>`` changes an object field in place: its value is the same kind of entry,
+  one level down, with ``-`` listing the keys that went (so the workflow core's snapshot – one
+  field – journals only the steps whose state changed);
 * ``{"$removed": true}`` removes the record.
 
 A record's first entry carries all its fields, so folding a journal from its start gives every
@@ -115,19 +118,35 @@ def apply(records: dict[str, dict[str, Any]], record: str, data: dict[str, Any])
     if data.get(REMOVED):
         records.pop(record, None)
         return
-    cur = records.setdefault(record, {})
+    records[record] = _apply(records.get(record, {}), data)
+
+
+def _apply(cur: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(cur)
+    for k in data.get(GONE, ()):
+        out.pop(k, None)
     for k, v in data.items():
+        if k == GONE:
+            continue
         if k.startswith("+"):
-            cur[k[1:]] = [*cur.get(k[1:], []), *v]
+            out[k[1:]] = [*out.get(k[1:], []), *v]
+        elif k.startswith("~"):
+            out[k[1:]] = _apply(out.get(k[1:]) or {}, v)
         else:
-            cur[k] = v
+            out[k] = v
+    return out
 
 
 def diff(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:
     """The entry that takes a record from ``old`` to ``new`` (all of it if it is new): the
-    fields that changed; a list that only grew, as its new items (``+field``)."""
+    fields that changed; a list that only grew, as its new items (``+field``); an object that
+    changed, as what changed in it (``~field``)."""
     if old is None:
         return dict(new)
+    return _diff(old, new)
+
+
+def _diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for k, v in new.items():
         was = old.get(k, _MISSING)
@@ -136,9 +155,14 @@ def diff(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:
         if (isinstance(v, list) and isinstance(was, list) and len(v) > len(was)
                 and v[:len(was)] == was):
             out["+" + k] = v[len(was):]
+        elif isinstance(v, dict) and isinstance(was, dict) and was:
+            out["~" + k] = _diff(was, v)
         else:
             out[k] = v
+    if gone := [k for k in old if k not in new]:
+        out[GONE] = gone
     return out
 
 
+GONE = "-"
 _MISSING = object()

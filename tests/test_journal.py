@@ -35,9 +35,21 @@ def test_entries_fold_to_the_record():
     recs = {"r": dict(old)}
     apply(recs, "r", e)
     assert recs["r"] == new
-    assert diff(new, new) == {}
     apply(recs, "r", {"$removed": True})
     assert recs == {}
+    # an object changes in place: only what changed in it, and the keys that went
+    core = {"states": {"plan": {"status": "running", "attempt": 1}, "intake": {"status": "done"},
+                       "old": {"status": "done"}}, "ended": None}
+    later = {"states": {"plan": {"status": "done", "attempt": 1}, "intake": {"status": "done"},
+                        "H-1": {"status": "running"}}, "ended": None}
+    e2 = diff(core, later)
+    assert e2 == {"~states": {"~plan": {"status": "done"}, "H-1": {"status": "running"},
+                              "-": ["old"]}}
+    recs = {"w": core}
+    apply(recs, "w", e2)
+    assert recs["w"] == later
+    assert diff(new, new) == {}
+
 
 
 @scenario()
@@ -91,6 +103,9 @@ async def test_the_journal_is_only_appended_to_and_a_save_appends_what_changed(f
     assert base == "control/steps/intake/runs/r0001"
     assert f.ce.latest(f"{base}/assignment.json") <= 3 and f.ce.latest(f"{base}/outcome.json") <= 4
     assert not any(e[0].startswith("run:") for x in lines for e in x["entries"])
+    # the workflow core is one field: after its first entry, only the steps that changed
+    wf = [d for x in lines for r, d in x["entries"] if r == "workflow"]
+    assert len(wf) > 2 and all("core" not in d for d in wf[1:])
     # one save, one line: a quiet save writes nothing
     n = len(lines)
     async with f.ctl.svc.lock:
