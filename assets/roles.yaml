@@ -25,16 +25,16 @@ critic:
 oracle:
   soul: test-engineer
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
-  write: ["oracle/"]
-  required_docs: ["oracle/tests.md"]
+  write: ["{{step}}/"]
+  required_docs: ["{{step}}/tests.md"]
   git: commit
   report_schema: report-none
   repo: true
 baseline:
   soul: baseline-verifier
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol]
-  write: ["baseline/"]
-  required_docs: ["baseline/report.md"]
+  write: ["{{step}}/"]
+  required_docs: ["{{step}}/report.md"]
   git: head
   report_schema: report-baseline
   repo: true
@@ -66,8 +66,8 @@ security:
 integration:
   soul: integration-verifier
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format]
-  write: ["integration/"]
-  required_docs: ["integration/report.md"]
+  write: ["{{step}}/"]
+  required_docs: ["{{step}}/report.md"]
   git: head
   report_schema: report-integration
   repo: true

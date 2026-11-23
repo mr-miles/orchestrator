@@ -486,13 +486,13 @@ class Flow:
     async def oracle(self, files: dict | None = None):
         r = self.run("oracle")
         sha = self.commit(r, files or {"tests/acceptance/test_greet.sh": "grep -q hello src/greet.txt\n"})
-        doc = await self.write(r, "oracle/tests.md", "AC-1 -> tests/acceptance/test_greet.sh")
+        doc = await self.write(r, f"{r.node_id}/tests.md", "AC-1 -> tests/acceptance/test_greet.sh")
         return await self.report(r, [f"git:{REPO}@{sha}", doc])
 
     async def integration(self, verdict: str = "PASS", *, describe: bool = True):
         r = self.run("integration")
         cmds = self.ce.oracle_commands()
-        doc = await self.write(r, "integration/report.md", "results")
+        doc = await self.write(r, f"{r.node_id}/report.md", "results")
         out = await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {
             "verdict": verdict, "findings": [],
             "results": [{"command": c, "exit_code": 0} for c in cmds]})

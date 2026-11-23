@@ -34,6 +34,7 @@ from .approvals import (
     spec_doc,
     stale_approvals,
     stale_environment,
+    step_doc,
     subject_status,
     work_to,
 )
@@ -59,7 +60,7 @@ from .surfaces import pin_surfaces, surface_commands, surface_drift, surfaces
 
 __all__ = [
     "BASELINE_SUBJECT", "BaselineSubject", "baseline_subject",
-    "ENV_FILE", "PLAN_FILES", "draft", "env_spec", "pinned", "plan_docs", "spec_doc",
+    "ENV_FILE", "PLAN_FILES", "draft", "env_spec", "pinned", "plan_docs", "spec_doc", "step_doc",
     "work_to", "PLAN_RECORD", "ENVIRONMENT_SUBJECT",
     "oracle_subjects", "plan_subjects", "subject_status",
     "H3_GATES", "GateAttestation", "h3_attestations",

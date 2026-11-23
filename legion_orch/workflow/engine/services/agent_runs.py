@@ -633,6 +633,7 @@ class AgentRuns:
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
             # the plan's directory: its own for the plan step's agents, else the plan worked to
             "plan": node.id if node.kind == PLAN else ch.plan_node,
+            "step": node.id,                     # its own step: where its documents go
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
             "fix_round": "", "scaffold": "", "sandbox_tools": self._sandbox_tools(role),
         } | handler_for(role).extra_variables(self.roles, node)

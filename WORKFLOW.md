@@ -164,7 +164,8 @@ and its runs' git credentials reach its hub and no other. `legion/*` is the hub'
 
 | Where | What |
 | --- | --- |
-| `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
+| `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `release/`, …) |
+| `changes/<id>/<step>/` | a step agent's documents, under its step's node id (`{{step}}`): `oracle/tests.md`, `baseline/report.md`, `integration/report.md` – a fix round's are its own (`oracle.2/tests.md`, `baseline.2/report.md`) |
 | `changes/<id>/<plan step>/` | a plan's documents, under its step's node id: `plan/` (a fix round's `plan.2/`, seeded from the plan worked to when the round's plan step starts) – `spec.md`, `specs/REQ-<n>.md`, `oracle.json`, `taskgraph.json`, `environment.json`, and its critiques `critique/cycle-<n>.md` |
 | `changes/<id>/control/plan.json` | the plan worked to: its step (`plan`, `plan.2`) and the approved version of each of its documents. Written when H-E1 approves a plan, updated as its subjects are approved, reset when the plan restarts; every role after the plan reads the plan's documents through it (`{{plan}}`) |
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); its step records (controller): `verification/cycle-<n>.json`, `panel/cycle-<n>.json` (the panel's pass), `reports/<role>-cycle-<n>.json` (each judge's report as accepted: its review on the step, status, summary, attestations and structured data); `feedback/<n>.md`, `decisions/<n>.md` (the escalation's question, then the human's answer) |

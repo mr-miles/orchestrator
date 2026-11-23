@@ -12,6 +12,7 @@ from ..model import (
     AttestationVerdict,
 )
 from ..view import ChangeView
+from .approvals import step_doc
 from .common import GovernanceError, resolve_or_raise
 
 ATTESTATION_KINDS = {k.value for k in AttestationKind}
@@ -110,7 +111,7 @@ def _suggested(e: ChangeView, gate: str) -> list[SuggestedSource]:
         iv = e.current(INTEGRATION)
         if iv is not None:
             ver = iv.verification.get("integration")
-            out.append(("integration report", e.latest_att("integration/report.md")))
+            out.append(("integration report", e.latest_att(f"{iv.id}/report.md")))
             out.append(("controller's oracle run at the head", ver.attestation if ver else None))
     else:
         out += [("release/rollback.md", e.latest_att("release/rollback.md")),
@@ -145,7 +146,7 @@ def h3_attestations(e: ChangeView) -> list[GateAttestation]:
             row.waivable = True
             head = e.change.integration_head
             row.waiver_sources = [a for a in (
-                e.latest_att("integration/report.md")
+                e.latest_att(step_doc(e, INTEGRATION, "report.md"))
                 or (f"git:{e.workspace}@{head}" if head else None),) if a]
         rows.append(row)
     return rows
