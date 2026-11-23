@@ -224,6 +224,14 @@ class Tickets:
                    Waiting.SYSTEM)
         return self._take()
 
+    def blocked(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
+        """Its agent is blocked on a human (a decision it lacks): wait – not an attempt; a retry
+        runs the same attempt again, told what it was missing (``findings``)."""
+        x = self._working(tid)
+        x.findings = list(findings)
+        self._wait(x, Waiting.BLOCKED)
+        return self._take()
+
     def budget_exceeded(self, tid: str) -> list[Effect]:
         self._wait(self._working(tid), Waiting.BUDGET)
         return self._take()

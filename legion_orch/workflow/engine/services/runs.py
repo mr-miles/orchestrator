@@ -14,24 +14,23 @@ from ...model import (
     R_ACCEPTED,
     R_FAILED,
     R_REPORTED,
-    R_SUPERSEDED,
     FailureSource,
-    Node,
     Run,
     RunFailure,
 )
-from ...results import Escalate
-from ...roles import handler_for
+from ...tickets import Ticket
 from ..base.auth import open_task
 from ..base.common import _parse_ts
 from ..base.core import ChangeCore
+from ..sandboxes.plan import held
 
 if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
 
 
 def log_part(run_id: str, n: int) -> str:
-    return f"control/logs/{run_id}.log" if n == 1 else f"control/logs/{run_id}.{n}.log"
+    """A run's archived log, in parts: audit, with its other documents (``control/runs/<run>/``)."""
+    return f"control/runs/{run_id}/log" if n == 1 else f"control/runs/{run_id}/log.{n}"
 
 
 def split_lines(text: str, limit: int) -> list[str]:
@@ -107,96 +106,77 @@ class RunLifecycle:
             self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
         elif run.status == R_REPORTED:
             self.c.event("agent", f"the agent did not end its turn {self.END_TURN_GRACE_S}s after "
-                         "its accepted report: stopped", run.node_id, run.id)
+                         "its accepted report: stopped", run.ticket, run.id)
         proc.kill()
         return True
 
     def release_sandboxes(self) -> bool:
-        """Delete kept sandboxes whose hold has ended (their gate passed, or the change ended)
-        once no run uses them. Returns whether anything changed."""
+        """Delete the sandboxes of closed tickets (passed, failed, cancelled: nothing reworks
+        there any more), and – the change ended – every sandbox, once no run uses them.
+        Returns whether anything changed."""
         changed = False
-        for node in self.c.nodes.values():
-            sb = node.sandbox
-            if not sb or self.sandboxes.holds(node) or any(
-                    r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
+        live = {r.sandbox for r in self.c.runs.values() if r.status in LIVE_RUN}
+        for t in self.c.tickets.t.values():
+            if held(t):
                 continue
-            stopped = node.sandbox_stopped
-            node.sandbox, node.sandbox_stopped, changed = None, False, True
-            if any(r.sandbox == sb and not r.sandbox_deleted for r in self.c.runs.values()):
-                self.c.event("sandbox", f"releasing {sb}: {node.id} is not reworked any more",
-                             node.id)
-                self.sandboxes.delete_later(sb, stopped)
+            mine = {self.c.runs[r].sandbox for r in t.runs if r in self.c.runs} | (
+                {t.sandbox} if t.sandbox else set())
+            if t.sandbox and t.sandbox not in live:
+                t.sandbox, changed = None, True
+            for sb in mine - live - self.sandboxes.retiring - self._ended - {None}:
+                if any(r.sandbox == sb and not r.sandbox_deleted for r in self.c.runs.values()) \
+                        and not any(held(x) and x.sandbox == sb for x in self.c.tickets.t.values()):
+                    self.c.event("sandbox", f"releasing {sb}: {t.id} is closed", t.id)
+                    self._ended.add(sb)
+                    self.sandboxes.delete_later(sb, self._stopped(sb))
+                    changed = True
         if self.c.change.status != "ACTIVE":     # the change ended: no sandbox is needed any more
             for r in self.c.runs.values():
                 sb = r.sandbox
                 if (sb and not r.sandbox_deleted and sb not in self.sandboxes.retiring
-                        and sb not in self._ended and not any(x.sandbox == sb and x.status in LIVE_RUN
-                                    for x in self.c.runs.values())):
+                        and sb not in self._ended and sb not in live):
                     self.c.event("sandbox", f"releasing {sb}: the change has ended",
-                                 r.node_id, r.id)
+                                 r.ticket, r.id)
                     self._ended.add(sb)
                     self.sandboxes.delete_later(sb)
                     changed = True
         return changed
 
-    def _consulted(self, node: Node, roles: set[str] | None = None) -> set[str]:
-        """Sandboxes of the node's agents started early (A2A consults) that no run of the
-        node took over: they go with the step."""
-        taken = {self.c.runs[r].sandbox for r in node.runs if r in self.c.runs}
-        return {r.sandbox for r in self.c.runs.values()
-                if r.consult and r.node_id == node.id and (not roles or r.role in roles)
-                and r.sandbox and not r.sandbox_deleted and r.sandbox not in taken}
-
-    def retire_runs(self, node: Node) -> None:
-        """The node starts again with a new run in a new sandbox (an escalation resumed): its
-        finished runs are superseded and their sandboxes deleted (after their agents reflect),
-        except the one the node holds for rework."""
-        retired: set[str] = set()
-        for rid in node.runs:
-            r = self.c.runs[rid]
-            if r.status == R_REPORTED:
-                r.status = R_SUPERSEDED
-            sb = r.sandbox
-            if (not sb or sb in retired or sb in self.sandboxes.retiring or r.sandbox_deleted
-                    or sb == node.sandbox
-                    or any(x.sandbox == sb and x.status in LIVE_RUN for x in self.c.runs.values())):
-                continue
-            retired.add(sb)
-            self.c.event("sandbox", f"releasing {sb}: {node.id} starts again", node.id, rid)
-            self.sandboxes.delete_later(sb)
+    def _stopped(self, sandbox: str) -> bool:
+        """Whether a sandbox is stopped (the gateway's word, on the runs in it)."""
+        return any(r.sandbox == sandbox and r.sandbox_stopped for r in self.c.runs.values())
 
     def fail_run(self, run: Run, reason: str, source: FailureSource,
                  exit_code: int | None = None) -> None:
-        """No automatic retries (principle 5): a failed run escalates to a human – its agent is
-        stopped, and the run's work returns :meth:`escalation` to its phase. ``source`` says
-        whether the agent failed or what it runs on (see :class:`FailureSource`)."""
+        """A failed run's agent is stopped; how the run ended goes to its ticket (its work's
+        outcome: an agent's failure is an attempt, the system's is retried, a timeout exceeds
+        the budget). ``source`` says whether the agent failed or what it runs on (see
+        :class:`FailureSource`)."""
         run.status = R_FAILED
         run.ended_at = now_iso()
         run.failure = RunFailure(source=source, stage=run.stage, reason=reason, exit_code=exit_code)
-        node = self.c.nodes.get(run.node_id)
+        ticket = self.c.tickets.t.get(run.ticket)
         where = f" while {run.stage.lower()}" if run.stage and run.stage != "EXITED" else ""
-        self.c.event("run_failed", f"{source.lower()} error{where}: {reason}", run.node_id, run.id)
+        self.c.event("run_failed", f"{source.lower()} error{where}: {reason}", run.ticket, run.id)
         proc = self.c.procs.get(run.id)
         if proc is not None and proc.returncode is None:
-            proc.kill()                      # its exit ends the run's work (AgentRuns.launch)
-        if node is None:
+            proc.kill()                      # its exit ends the run's work (AgentRuns.work)
+        if ticket is None:
             return
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
-            # a failed run's sandbox is not kept for rework either: the retry starts afresh
-            if node.sandbox == run.sandbox:
-                node.sandbox, node.sandbox_stopped = None, False
+            # a failed run's sandbox is not kept for the next round either: it starts afresh
+            if ticket.sandbox == run.sandbox:
+                ticket.sandbox = None
             self.c.spawn(self.sandboxes.delete(run.sandbox))
 
-    def escalation(self, run: Run) -> Escalate:
-        """What a failed run means: a human decides (no automatic retries); where the step
-        resumes is the step's to say."""
+    def why_failed(self, run: Run) -> str:
+        """A failed run, in words: who failed, how far it had got, why – and its log's end."""
         f = run.failure
         source = f.source if f else FailureSource.SYSTEM
         where = f" while {f.stage.lower()}" if f and f.stage and f.stage != "EXITED" else ""
-        who = f"{run.role} run {run.id}" if handler_for(run.role).panel else f"run {run.id}"
-        return Escalate("run_failed", f"{who} ({source.lower()} error{where}): "
-                        f"{f.reason if f else 'failed'}", None, log_tail=self.log_tail(run.id, 40),
-                        run=run.id, source=source)     # where it resumes: its step's decision
+        tail = self.log_tail(run.id, 40)
+        return (f"{run.role} run {run.id} ({source.lower()} error{where}): "
+                f"{f.reason if f else 'failed'}" + (f"\n\nlog tail:\n{tail}" if tail else ""))
 
     def archive_log(self, run: Run) -> None:
         """Move the whole agent log into the store (agents cannot read control/logs/), in parts
@@ -209,7 +189,7 @@ class RunLifecycle:
         if run.resumed_session and run.session_id and run.session_id != run.resumed_session:
             self.c.event("agent", f"run {run.id} was to continue session {run.resumed_session} "
                                   f"but ran in {run.session_id}: it started without that "
-                                  "session's history", run.node_id, run.id)
+                                  "session's history", run.ticket, run.id)
         self.c.write_record(f"control/digests/{run.id}.json", agentlog.digest(text))
 
     def store_log(self, log_id: str) -> str | None:
@@ -264,26 +244,10 @@ class RunLifecycle:
                 + self.c.doc(log_part(run_id, n)).content
         return "\n".join(text.splitlines()[-lines:])
 
-    def accept_runs(self, node: Node, roles: set[str] | None = None) -> None:
-        """Mark the node's reported runs ACCEPTED and delete their sandboxes (principle 8),
-        except one a node still holds for rework (see :meth:`.Sandboxes.holds`)."""
-        sandboxes = set()
-        for rid in node.runs:
-            r = self.c.runs[rid]
-            if roles and r.role not in roles:
-                continue
-            if r.status == R_REPORTED:
+    def accept_runs(self, ticket: Ticket) -> None:
+        """A ticket's reported runs are accepted (its work's outcome went to it); their
+        sandboxes go once the ticket is closed (:meth:`release_sandboxes`)."""
+        for rid in ticket.runs:
+            if (r := self.c.runs.get(rid)) is not None and r.status == R_REPORTED:
                 r.status = R_ACCEPTED
-            if r.sandbox and not r.sandbox_deleted and r.status in (R_ACCEPTED, R_SUPERSEDED, R_FAILED):
-                sandboxes.add(r.sandbox)
-        sandboxes |= self._consulted(node, roles)
-        held = self.sandboxes.held()
-        for sb in sandboxes - held - self.sandboxes.retiring:     # retiring already: a judge's
-            if any(r.sandbox == sb and r.status in LIVE_RUN for r in self.c.runs.values()):
-                continue
-            stopped = False
-            for n in self.c.nodes.values():
-                if n.sandbox == sb:
-                    stopped = stopped or n.sandbox_stopped
-                    n.sandbox, n.sandbox_stopped = None, False
-            self.sandboxes.delete_later(sb, stopped)
+

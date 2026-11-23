@@ -528,7 +528,7 @@ class AgentRuns:
         G-D2 binds them). A ticket writes only in its own directory."""
         ch, work = self.c.change, ticket.work
         own = ticket_dir(ticket.id)
-        outputs = [o.rstrip("*") for o in self.c.assets.roles[role].outputs]
+        outputs = list(self.c.assets.roles[role].outputs)     # ``name*``: a list
         variables = {
             "change_id": ch.id, "goal": ch.goal, "tier": ch.tier or "unassessed",
             "repo_name": self.c.workspace,
@@ -549,7 +549,8 @@ class AgentRuns:
         context = self._context_refs(ticket, role, tw)
         variables.update({
             "write_scope": ", ".join(f"`{w}`" for w in write) or "(none)",
-            "required_docs": ", ".join(f"`{o}`" for o in outputs) or "(none)",
+            "required_docs": ", ".join(f"`{o.rstrip('*')}`" + (" (a list)" if o.endswith("*")
+                                       else "") for o in outputs) or "(none)",
             "context_refs": "\n".join(f"- {c}" for c in context) or "(none)",
             "feedback": self._findings_text(tw),
         })

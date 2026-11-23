@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ...model import FailureSource, Verdict
-from .base import Backoff, Done, Fault, GaveUp, Judged, Outcome, OverBudget, Work, attempt
+from .base import Backoff, Blocked, Done, Fault, GaveUp, Judged, Outcome, OverBudget, Work, attempt
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,7 @@ class AgentEnd:
     failure: FailureSource | None = None        # who a failed run's failure came from
     detail: str = ""
     outputs: dict[str, Any] = field(default_factory=dict)   # the report's named documents
+    blocked: bool = False                       # its report said BLOCKED (``detail``: why)
 
 
 class AgentPort(Protocol):
@@ -40,6 +41,8 @@ class AgentPort(Protocol):
 
 
 def agent_outcome(end: AgentEnd, criterion: bool) -> Outcome:
+    if end.blocked:
+        return Blocked(end.detail, end.findings)
     if end.accepted:
         if criterion:
             return Judged(end.verdict == Verdict.PASS, end.findings)

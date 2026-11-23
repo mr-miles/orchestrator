@@ -45,6 +45,7 @@ class Waiting(StrEnum):
     ESCALATED = "escalated"    # an ``escalate`` criterion failed
     SYSTEM = "system"          # a system error outlasted its backoff (never an attempt)
     BUDGET = "budget"          # its budget is exceeded (never an attempt)
+    BLOCKED = "blocked"        # its agent is blocked on a human (a BLOCKED report: never an attempt)
     EMPTY = "empty"            # a grouping ticket with no subtasks
 
 
@@ -61,6 +62,7 @@ REMEDIES: dict[Waiting, set[Remedy]] = {
     Waiting.ESCALATED: {Remedy.WAIVE, Remedy.REPLAN},
     Waiting.SYSTEM: {Remedy.RETRY, Remedy.REPLAN},
     Waiting.BUDGET: {Remedy.RETRY, Remedy.REPLAN},
+    Waiting.BLOCKED: {Remedy.RETRY, Remedy.REPLAN},
     Waiting.EMPTY: {Remedy.REPLAN},
 }
 

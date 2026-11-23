@@ -5,6 +5,7 @@ from .agent import AgentEnd, AgentExecutor, AgentPort, agent_outcome
 from .base import (
     Attempts,
     Backoff,
+    Blocked,
     Done,
     Executor,
     Executors,
@@ -23,7 +24,7 @@ from .publish import PublishExecutor, RemotePort
 from .signoff import Decision, SignoffExecutor, SignoffPort
 from .verify import VerifyExecutor, VerifyPort, verification_outcome
 
-__all__ = ["AgentEnd", "AgentExecutor", "AgentPort", "Attempts", "Backoff", "CanMergeExecutor",
+__all__ = ["AgentEnd", "AgentExecutor", "AgentPort", "Attempts", "Backoff", "Blocked", "CanMergeExecutor",
            "Decision", "Done", "Executor", "Executors", "Fault", "GaveUp", "Judged", "Merger",
            "Outcome", "OverBudget", "ProvisionExecutor", "ProvisionPort", "PublishExecutor",
            "RemotePort", "SignoffExecutor", "SignoffPort", "VerifyExecutor", "VerifyPort", "Work",

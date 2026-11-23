@@ -462,6 +462,7 @@ class RunReport(Record):
     summary: str
     attestations: list[str] = []
     data: dict[str, Any] = {}         # role-specific, validated against the role's report schema
+    outputs: dict[str, Any] = {}      # the role's outputs: name -> its document(s), pinned
     blocked_reason: str | None = None
     missing_decision: str | None = None
     at: str = Field(default_factory=now_iso)

@@ -89,7 +89,14 @@ class OverBudget:
     detail: str
 
 
-Outcome = Done | Judged | GaveUp | Fault | OverBudget
+@dataclass(frozen=True)
+class Blocked:
+    """The agent is blocked on a human: what it lacks (never an attempt)."""
+    detail: str
+    findings: tuple[str, ...] = ()
+
+
+Outcome = Done | Judged | GaveUp | Fault | OverBudget | Blocked
 
 
 def apply(tickets: Tickets, tid: str, outcome: Outcome) -> list[Effect]:
@@ -108,6 +115,8 @@ def apply(tickets: Tickets, tid: str, outcome: Outcome) -> list[Effect]:
             return tickets.work_failed(tid, findings)
         case OverBudget():
             return tickets.budget_exceeded(tid)
+        case Blocked(detail, findings):
+            return tickets.blocked(tid, [detail, *findings] if detail else findings)
         case _:
             return tickets.system_error(tid)
 
