@@ -20,12 +20,12 @@ from .base import (
 from .merging import CanMergeExecutor, Merger, merge_outcome
 from .provision import ProvisionExecutor, ProvisionPort
 from .publish import PublishExecutor, RemotePort
-from .signoff import Decision, SignoffExecutor, SignoffPort, subjects_of
+from .signoff import Decision, SignoffExecutor, SignoffPort
 from .verify import VerifyExecutor, VerifyPort, verification_outcome
 
 __all__ = ["AgentEnd", "AgentExecutor", "AgentPort", "Attempts", "Backoff", "CanMergeExecutor",
            "Decision", "Done", "Executor", "Executors", "Fault", "GaveUp", "Judged", "Merger",
            "Outcome", "OverBudget", "ProvisionExecutor", "ProvisionPort", "PublishExecutor",
            "RemotePort", "SignoffExecutor", "SignoffPort", "VerifyExecutor", "VerifyPort", "Work",
-           "agent_outcome", "apply", "attempt", "merge_outcome", "subjects_of",
+           "agent_outcome", "apply", "attempt", "merge_outcome",
            "verification_outcome"]

@@ -18,6 +18,7 @@ from legion_orch.git.branches import Branches
 from legion_orch.git.remote import GitRemote
 from legion_orch.store.journal import Journal
 from legion_orch.store.state_tables import StateTables
+from legion_orch.workflow.assets import Assets
 from legion_orch.workflow.tickets import Add, Replan, Severity, Status, Ticket, Tickets, Waiting
 from legion_orch.workflow.tickets.executors import (
     Backoff,
@@ -34,6 +35,7 @@ from legion_orch.workflow.tickets.store import TicketRecords
 
 pytestmark = pytest.mark.anyio
 SPEC = WorkflowSpec.load(Path(__file__).resolve().parent.parent / "assets/workflow.yaml")
+ASSETS = Assets(Path(__file__).resolve().parent.parent / "assets")
 NOW = Backoff(tries=2, first=0, cap=0)
 
 
@@ -65,10 +67,12 @@ class Hooks:
         """Until ``tid`` has escalated."""
         await asyncio.wait_for(self._escalated[tid].wait(), timeout)
 
-    def tier(self):
-        return self._tier
+    def tier(self, pointers):
+        self.pointers = dict(pointers)
+        return self._tier if "risk" in pointers else None   # from the approved risk
 
-    async def replan(self, signoff):
+    async def replan(self, signoff, ref):
+        self.replanned = ref
         return self.plan.__class__(add=[Add(a.ticket.model_copy(deep=True), a.into, a.group,
                                             a.new_group, a.criterion,
                                             [d.model_copy(deep=True) for d in a.tree])
@@ -95,7 +99,7 @@ class Change:
 
     async def runner(self, tickets: list[Ticket] | None = None) -> Runner:
         await self.hub.ensure()
-        self.script = Script(self.hub)
+        self.script = Script(self.hub, ASSETS.role_outputs())
         branches = Branches(self.hub)
 
         async def pr_text(work):
@@ -137,6 +141,18 @@ async def test_a_change_runs_from_its_skeleton_to_its_publication(tmp_path):
     assert {"T1.txt", "T2.txt", "oracle.txt"} <= set(files_at(ch.hub, "main"))
     assert all(x.status == Status.PASSED for x in r.t.t.values())
     assert r.t.t["design"].limit == 3                      # the tier's limits, set at H-1
+    # each sign-off moved the change's pointers to exactly what it approved
+    ptr = r.t.root.pointers
+    assert ptr["requirements"] == "doc:tickets/intake/requirements@1"     # H-1
+    assert ptr["spec"] == "doc:tickets/design/spec@1"                     # H-E1
+    assert ptr["tests"] == "doc:tickets/oracle/tests@1"                   # H-2
+    assert ptr["pr"] == "doc:tickets/describe/pr@1"                       # H-3, from its subtree
+    assert ptr["head"].startswith("git:") and "baseline" not in r.t.t      # R2
+    assert "risk" in ch.hooks.pointers                                    # the tier came from it
+    assert ch.hooks.replanned == "doc:tickets/design/tickets@1"           # the plan H-E1 signed
+    # consumers were given the approved versions
+    assert ch.script.works["provision"].inputs == {"environment": ptr["environment"]}
+    assert ch.script.works["oracle"].inputs["spec"] == ptr["spec"]
     # persisted: the tables hold every ticket as it ended
     assert {x.id: x.status for x in ch.records.load()} == {x.id: x.status for x in r.t.t.values()}
 
@@ -150,7 +166,7 @@ async def test_a_plan_that_breaks_the_tier_policy_fails_its_signoff(tmp_path):
         attempts.append(work.findings)
         if len(attempts) == 2:                             # it reworks: the plan, fixed
             ch.hooks.plan = planned(build("T1", "verify", "review", "can-merge"))
-        return Done()
+        return Done(outputs=ch.script.outputs(work))
     ch.script.outcomes["design"] = planner
     await r.start()
     await r.settle()
@@ -296,7 +312,7 @@ async def test_a_signoff_that_applies_a_plan_waits_for_the_others_to_drain(tmp_p
             Ticket(id="plan", parent="c", subtasks=[["design"]]),
             Ticket(id="design", parent="plan", type="agent:planner", criteria=["H-E1"]),
             Ticket(id="H-E1", parent="design", role="criterion", type="human:signoff",
-                   applies="tickets/design/tickets.json"),
+                   signs=["tickets"], applies="tickets"),
             Ticket(id="side", parent="c", type="agent:researcher"),
             Ticket(id="delivery", parent="c")]
     ch = Change(tmp_path, Replan(add=[Add(Ticket(id="T1", type="agent:implementer"),
@@ -307,7 +323,7 @@ async def test_a_signoff_that_applies_a_plan_waits_for_the_others_to_drain(tmp_p
 
     def signoff(work):
         signed.set()
-        return Judged(True)
+        return Judged(True, signed=work.subjects)
     ch.script.outcomes["H-E1"] = signoff
     await r.start()
     await asyncio.wait_for(signed.wait(), 10)
@@ -354,3 +370,42 @@ def test_the_order_rules_judge_where_tickets_run_whatever_they_are_called():
              *planned(build("T1", "verify", "review", "can-merge")).add])))
     assert renamed.t["plan"].subtasks[1] == ["rebuild-env"]
     assert check_policy(SPEC, "R2", renamed.t) == []
+
+
+def test_signoff_subjects_resolve_against_the_work_they_check():
+    from legion_orch.workflow.tickets.outputs import resolve
+    t = {x.id: x for x in [
+        Ticket(id="c", role="root", subtasks=[["ev"]]),
+        Ticket(id="ev", parent="c", subtasks=[["a", "b"]], criteria=["H"]),
+        Ticket(id="a", parent="ev", type="agent:describer", outputs={"pr": "doc:tickets/a/pr@2"}),
+        Ticket(id="b", parent="ev", type="agent:describer"),
+        Ticket(id="H", parent="ev", role="criterion", type="human:signoff", signs=["pr", "head"])]}
+    assert resolve(t, "H", "f" * 40) == ({"pr": "doc:tickets/a/pr@2", "head": "git:" + "f" * 40}, [])
+    t["b"].outputs = {"pr": "doc:tickets/b/pr@1"}                  # two producers: which?
+    assert "several tickets produce it (a, b)" in resolve(t, "H", "f" * 40)[1][0]
+    t["a"].outputs = t["b"].outputs = {}
+    assert "ev has no ticket that produces it" in resolve(t, "H", None)[1][0]
+    assert "no commit to judge" in resolve(t, "H", None)[1][1]
+
+
+def test_check_refuses_signoffs_nobody_can_satisfy(tmp_path):
+    import shutil
+
+    import yaml
+
+    from legion_orch.workflow.assets import AssetError
+    root = Path(__file__).resolve().parent.parent / "assets"
+    for n, (change, says) in enumerate([
+            (lambda d: d["skeleton"]["subtasks"][3]["criteria"][0]["signs"].append("nothing"),
+             "evaluate has no ticket that produces it"),
+            (lambda d: d["skeleton"]["subtasks"][3]["criteria"][0].update(applies="pr2"),
+             "which it does not sign"),
+            (lambda d: d["skeleton"]["subtasks"][3]["subtasks"][0].update(inputs=["secret"]),
+             "input 'secret' is no sign-off's output")]):
+        d = tmp_path / str(n)
+        shutil.copytree(root, d)
+        data = yaml.safe_load((d / "workflow.yaml").read_text())
+        change(data)
+        (d / "workflow.yaml").write_text(yaml.safe_dump(data))
+        with pytest.raises(AssetError, match=says):
+            Assets(d)

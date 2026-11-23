@@ -152,18 +152,24 @@ class Tickets:
         self._start(root)
         return self._take()
 
-    def work_done(self, tid: str, sha: str | None = None) -> list[Effect]:
-        """The ticket's own work is done: its accepted report (``sha``: the commit it attests)."""
+    def work_done(self, tid: str, sha: str | None = None,
+                  outputs: dict[str, str | list[str]] | None = None) -> list[Effect]:
+        """The ticket's own work is done: its accepted report (``sha``: the commit it attests;
+        ``outputs``: the documents it names, pinned)."""
         x = self._working(tid, criterion=False)
         x.sha = sha
+        x.outputs = dict(outputs or {})
         self._after_work(x)
         return self._take()
 
     def verdict(self, tid: str, passed: bool, findings: Iterable[str] = (),
-                apply: Replan | None = None) -> list[Effect]:
+                apply: Replan | None = None,
+                signed: dict[str, str | list[str]] | None = None) -> list[Effect]:
         """A criterion's outcome. ``apply``: the replan its pass applies (a sign-off of the
         planner's tickets, of a replan document, of the tier) – in the same step, so nothing
-        starts before it is applied; every other ticket must be inactive."""
+        starts before it is applied; every other ticket must be inactive. ``signed``: what a
+        sign-off approved (name -> the exact versions) – its pass moves the change's pointers
+        to them, in the same step."""
         c = self._working(tid, criterion=True)
         if apply is not None and passed:
             self._inactive(but=tid)
@@ -171,6 +177,8 @@ class Tickets:
             c.findings = list(findings)
             c.status = Status.PASSED if passed else Status.REJECTED
             parent = self.t[c.parent]
+            if passed and signed:
+                self.root.pointers.update(signed)
             if not passed:
                 self._criterion_failed(parent, c)
             elif apply is not None and not self._edit(apply):

@@ -41,9 +41,10 @@ class Script:
 
     CODE = frozenset({"agent:implementer", "agent:oracle", "agent:baseline"})
 
-    def __init__(self, hub: GitRemote):
-        self.hub = hub
+    def __init__(self, hub: GitRemote, outputs: dict[str, list[str]] | None = None):
+        self.hub, self.role_outputs = hub, outputs or {}
         self.calls: list[tuple[str, int]] = []
+        self.works: dict[str, Work] = {}                # each ticket's last work
         self.stopped: list[str] = []
         self.outcomes: dict[str, Callable[[Work], Outcome]] = {}
         self.gates: dict[str, asyncio.Event] = {}
@@ -52,17 +53,25 @@ class Script:
     async def run(self, work: Work) -> Outcome:
         tid = work.ticket.id
         self.calls.append((tid, work.attempt))
+        self.works[tid] = work
         self._started[tid].set()
         if gate := self.gates.get(tid):
             await gate.wait()
         if f := self.outcomes.get(tid):
             return f(work)
         if work.ticket.role == "criterion":
-            return Judged(True)
+            return Judged(True, signed=work.subjects) if work.subjects else Judged(True)
+        outputs = self.outputs(work)
         if work.ticket.type in self.CODE and work.base:
             return Done(commit(self.hub, work.base, {f"{tid}.txt": f"{tid} {work.attempt}\n"},
-                               f"{tid}-{work.attempt}"))
-        return Done()
+                               f"{tid}-{work.attempt}"), outputs)
+        return Done(outputs=outputs)
+
+    def outputs(self, work: Work) -> dict[str, str]:
+        """What an agent's report names: each of its role's outputs, a document of its ticket."""
+        role = work.ticket.type.partition(":")[2] if work.ticket.type.startswith("agent:") else ""
+        return {name: f"doc:tickets/{work.ticket.id}/{name}@{work.attempt}"
+                for name in self.role_outputs.get(role, [])}
 
     async def reached(self, ticket: str, timeout: float = 10) -> None:
         await asyncio.wait_for(self._started[ticket].wait(), timeout)

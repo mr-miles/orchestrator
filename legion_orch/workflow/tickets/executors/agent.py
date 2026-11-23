@@ -12,8 +12,8 @@ its source (``FailureSource``) – which decides the outcome's kind:
 * a timeout: its budget is exceeded – escalated at once."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 from ...model import FailureSource, Verdict
 from .base import Backoff, Done, Fault, GaveUp, Judged, Outcome, OverBudget, Work, attempt
@@ -28,6 +28,7 @@ class AgentEnd:
     findings: tuple[str, ...] = ()              # a judge's blocking findings; a failure's detail
     failure: FailureSource | None = None        # who a failed run's failure came from
     detail: str = ""
+    outputs: dict[str, Any] = field(default_factory=dict)   # the report's named documents
 
 
 class AgentPort(Protocol):
@@ -42,7 +43,7 @@ def agent_outcome(end: AgentEnd, criterion: bool) -> Outcome:
     if end.accepted:
         if criterion:
             return Judged(end.verdict == Verdict.PASS, end.findings)
-        return Done(end.sha)
+        return Done(end.sha, dict(end.outputs))
     match end.failure:
         case FailureSource.TIMEOUT:
             return OverBudget(end.detail or "the run's time budget is used up")

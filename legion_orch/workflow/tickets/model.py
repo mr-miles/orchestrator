@@ -79,9 +79,9 @@ class Ticket(BaseModel):
     criteria: list[str] = []               # child ids, run in order after the work and subtasks
     severity: Severity = Severity.REWORK   # (criteria) what a failure does to the parent
     waivable: bool = True                  # (criteria) whether a human may waive a failure
-    signs: list[str] = []                  # (human:signoff) what it signs: documents at versions
-    applies: str | None = None             # (sign-offs) what its pass applies: a replan document,
-                                           # or ``tier`` (the tier's skeleton tickets)
+    signs: list[str] = []                  # (sign-offs) the outputs it signs (by name; ``head``)
+    applies: str | None = None             # (sign-offs) what its pass applies: the output it signs
+                                           # that is a replan (``tickets``), or ``tier``
     limit: int = 3                         # attempts allowed (its own work's reruns)
     # state
     status: Status = Status.PENDING
@@ -91,6 +91,8 @@ class Ticket(BaseModel):
     findings: list[str] = []               # (a ticket) the failed criterion's findings, for its rework
     waiting: Waiting | None = None
     waived: bool = False                   # (criteria) passed by a human's waiver
+    outputs: dict[str, str | list[str]] = {}  # what its accepted report attests: name -> doc ref(s)
+    pointers: dict[str, str | list[str]] = {}  # (the root) the approved version of each output
     held: Literal["start", "retry"] | None = None   # (paused) what it does on resume
     paused: list[str] = []                 # (the root) why the workflow is paused: none – it runs
     merging: bool = False                  # its merge is owed (merging, or waiting after a merge error)

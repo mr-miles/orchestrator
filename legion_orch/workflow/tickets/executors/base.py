@@ -21,7 +21,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from ..model import GROUPING, Ticket
 from ..rules import Effect, Tickets
@@ -48,6 +48,9 @@ class Work:
     judged: str | None = None
     into: str | None = None
     labels: frozenset[str] = frozenset()       # its effective risk labels (inherited)
+    subjects: dict[str, Any] | None = None     # (sign-offs) what it is asked to approve: each
+                                               # output's pinned documents, ``head`` the commit
+    inputs: dict[str, Any] = field(default_factory=dict)   # its inputs: the approved versions
 
     @property
     def kind(self) -> str:
@@ -60,12 +63,14 @@ class Work:
 @dataclass(frozen=True)
 class Done:
     sha: str | None = None                     # the commit its accepted report attests
+    outputs: dict[str, Any] = field(default_factory=dict)  # name -> the documents it names
 
 
 @dataclass(frozen=True)
 class Judged:
     passed: bool
     findings: tuple[str, ...] = ()
+    signed: dict[str, Any] | None = None       # (sign-offs) exactly what was approved
 
 
 @dataclass(frozen=True)
@@ -93,12 +98,12 @@ def apply(tickets: Tickets, tid: str, outcome: Outcome) -> list[Effect]:
     fault (an executor's bug, not the agent's)."""
     criterion = tickets.t[tid].role == "criterion"
     match outcome:
-        case Judged(passed, findings) if criterion:
-            return tickets.verdict(tid, passed, findings)
+        case Judged(passed, findings, signed) if criterion:
+            return tickets.verdict(tid, passed, findings, signed=signed)
         case Done() if criterion:
             return tickets.verdict(tid, True)
-        case Done(sha):
-            return tickets.work_done(tid, sha)
+        case Done(sha, outputs):
+            return tickets.work_done(tid, sha, outputs)
         case GaveUp(findings):
             return tickets.work_failed(tid, findings)
         case OverBudget():

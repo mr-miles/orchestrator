@@ -3,6 +3,7 @@ intake:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, risk-signals, blocked-protocol]
   write: ["intake/"]
   required_docs: ["intake/requirements.md", "intake/risk.json"]
+  outputs: [requirements, risk]
   git: none
   report_schema: report-none
   repo: true
@@ -11,6 +12,7 @@ planner:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, taskgraph-schema, sandbox-environment, blocked-protocol, language-preferences]
   write: ["{{plan}}/spec.md", "{{plan}}/specs/", "{{plan}}/oracle.json", "{{plan}}/taskgraph.json", "{{plan}}/environment.json"]
   required_docs: ["{{plan}}/spec.md", "{{plan}}/oracle.json", "{{plan}}/taskgraph.json"]
+  outputs: [spec, oracle, tickets, environment, "specs*"]
   git: none
   report_schema: report-none
   repo: true
@@ -19,6 +21,7 @@ critic:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, pre-mortem, finding-format, language-preferences]
   write: ["{{plan}}/critique/"]
   required_docs: ["{{plan}}/critique/cycle-{{cycle}}.md"]
+  outputs: [critique]
   git: none
   report_schema: report-critique
   repo: true
@@ -27,6 +30,7 @@ oracle:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
   write: ["{{step}}/"]
   required_docs: ["{{step}}/tests.md"]
+  outputs: [tests]
   git: commit
   report_schema: report-none
   repo: true
@@ -35,6 +39,7 @@ baseline:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol]
   write: ["{{step}}/"]
   required_docs: ["{{step}}/report.md"]
+  outputs: [report]
   git: head
   report_schema: report-baseline
   repo: true
@@ -44,6 +49,7 @@ implementer:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol, language-preferences]
   write: ["tasks/{{task_id}}/evidence/"]
   required_docs: ["tasks/{{task_id}}/evidence/cycle-{{cycle}}.md"]
+  outputs: [evidence]
   git: commit
   report_schema: report-none
   repo: true
@@ -52,6 +58,7 @@ reviewer:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format, language-preferences]
   write: ["tasks/{{task_id}}/reviews/reviewer-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md"]
+  outputs: [review]
   git: candidate
   report_schema: report-review
   repo: true
@@ -60,6 +67,7 @@ security:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format, security-checklist]
   write: ["tasks/{{task_id}}/reviews/security-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/security-cycle-{{cycle}}.md"]
+  outputs: [review]
   git: candidate
   report_schema: report-review
   repo: true
@@ -68,6 +76,7 @@ integration:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format]
   write: ["{{step}}/"]
   required_docs: ["{{step}}/report.md"]
+  outputs: [report]
   git: head
   report_schema: report-integration
   repo: true
@@ -76,6 +85,7 @@ describer:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, blocked-protocol]
   write: ["delivery/pr.md"]
   required_docs: ["delivery/pr.md"]
+  outputs: [pr]
   git: head
   report_schema: report-none
   repo: true
@@ -84,6 +94,7 @@ pr-reviewer:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format]
   write: ["delivery/reviews/pr-reviewer-"]
   required_docs: ["delivery/reviews/pr-reviewer-cycle-{{cycle}}.md"]
+  outputs: [review]
   git: head
   report_schema: report-critique
   repo: true
@@ -92,6 +103,7 @@ release:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format]
   write: ["release/"]
   required_docs: ["release/plan.md", "release/rollback.md"]
+  outputs: [plan, rollback]
   git: none
   report_schema: report-none
   repo: true
@@ -100,6 +112,7 @@ architecture:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, git-protocol, finding-format, architecture-checklist]
   write: ["tasks/{{task_id}}/reviews/architecture-"]   # own files only: panel members cannot touch each other's
   required_docs: ["tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md"]
+  outputs: [review]
   git: candidate
   report_schema: report-review
   repo: true
@@ -108,6 +121,7 @@ retrospective:
   skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format]
   write: ["retro/"]
   required_docs: ["retro/report.md"]
+  outputs: [report]
   git: none
   report_schema: report-none
   repo: true
@@ -116,6 +130,7 @@ resolver:
   skills: [resolution-protocol, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, blocked-protocol]
   write: []                      # it proposes; the controller records its proposals
   required_docs: []
+  outputs: []
   git: none
   report_schema: report-none
   repo: true

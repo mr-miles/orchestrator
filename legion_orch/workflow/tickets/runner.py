@@ -24,16 +24,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from ...git.branches import Branches, integration_branch, ticket_branch
 from ...git.remote import GitError
 from .executors import Done, Executors, Fault, Judged, Merger, Outcome, Work, apply, merge_outcome
 from .model import Remedy, Status, Ticket, Waiting
+from .outputs import TIER, resolve
 from .rules import Effect, Ended, Escalate, Merge, Replan, StartWork, StopWork, TicketError, Tickets
-from .spec import TIER, WorkflowSpec, check_policy
+from .spec import WorkflowSpec, check_policy
 
 log = logging.getLogger(__name__)
 
@@ -41,9 +42,9 @@ log = logging.getLogger(__name__)
 class Hooks(Protocol):
     """What the runner needs from the rest of the controller."""
 
-    def tier(self) -> str | None: ...
+    def tier(self, pointers: Mapping[str, Any]) -> str | None: ...   # from the approved risk
 
-    async def replan(self, signoff: Ticket) -> Replan: ...       # the document it signs, read
+    async def replan(self, signoff: Ticket, ref: Any) -> Replan: ...  # the signed replan, read
 
     async def escalated(self, ticket: Ticket, reason: Waiting) -> None: ...
 
@@ -84,7 +85,7 @@ class Runner:
         """A replan signed off outside a criterion (a human's, on an escalation): applied
         while the workflow is paused and nothing is active."""
         async with self.lock:
-            if (tier := self.hooks.tier()) and (v := self._policy(plan, tier)):
+            if (tier := self._tier()) and (v := self._policy(plan, tier)):
                 raise TicketError("; ".join(v))
             await self._carry(self.t.replan(plan))
 
@@ -182,23 +183,31 @@ class Runner:
         """The outcome as the rules' event – a passing sign-off that applies something applies
         it (or fails, with why)."""
         if x.role == "criterion" and x.applies and _passed(outcome):
+            signed = outcome.signed if isinstance(outcome, Judged) else None
             try:
-                plan, violations = await self._applied(x)
+                plan, violations = await self._applied(x, signed or {})
                 if not violations:
-                    return self.t.verdict(x.id, True, apply=plan)
+                    return self.t.verdict(x.id, True, apply=plan, signed=signed)
             except (TicketError, ValueError) as e:    # refused: nothing of it was applied
                 violations = [f"the plan cannot be applied: {e}"]
             return self.t.verdict(x.id, False, violations)
         return apply(self.t, x.id, outcome)
 
-    async def _applied(self, x: Ticket) -> tuple[Replan, list[str]]:
+    def _tier(self, signed: Mapping[str, Any] | None = None) -> str | None:
+        """The approved tier – with what is being signed now (H-1 signs the risk it comes from)."""
+        return self.hooks.tier({**self.t.root.pointers, **(signed or {})})
+
+    async def _applied(self, x: Ticket, signed: Mapping[str, Any]
+                       ) -> tuple[Replan, list[str]]:
         """What a sign-off applies, and what is wrong with the tree it makes (the policy)."""
-        tier = self.hooks.tier()
+        tier = self._tier(signed)
         if x.applies == TIER:
             if tier is None:
                 raise ValueError("no tier has been assessed")
             return self.spec.tier_additions(tier, self.t.t), []
-        plan = await self.hooks.replan(x)
+        if x.applies not in signed:
+            raise ValueError(f"it applies {x.applies!r}, which it did not sign")
+        plan = await self.hooks.replan(x, signed[x.applies])
         for a in plan.add:                            # what the workflow says of their types
             for y in [a.ticket, *a.tree]:
                 self.spec.prepare(y, tier)
@@ -245,10 +254,21 @@ class Runner:
             await self.branches.create(name, at)
         return name
 
+    def _subjects(self, x: Ticket, judged: str | None) -> dict[str, Any] | None:
+        """A sign-off's subjects, resolved (None: they cannot be – logged, its executor faults)."""
+        if not x.signs:
+            return None
+        found, errs = resolve(self.t.t, x.id, judged)
+        if errs:
+            log.warning("ticket %s: %s", x.id, "; ".join(errs))
+            return None
+        return found
+
     async def _work_of(self, e: StartWork) -> Work:
         x = self.t.t[e.ticket]
         work = Work(ticket=x.model_copy(deep=True), attempt=e.attempt, findings=e.findings,
                     change=self.change, labels=frozenset(self.t.labels(x.id)))
+        work = replace(work, inputs={i: self.t.root.pointers.get(i) for i in x.inputs})
         if x.parent is None:
             return work
         try:
@@ -256,7 +276,7 @@ class Runner:
                 owner = self.t.t[x.parent]
                 judged = owner.sha or await self.branches.head(await self.branch(owner.id))
                 into = await self.branch(self.t.merges_into(owner.id)) if owner.parent else None
-                return replace(work, judged=judged, into=into)
+                return replace(work, judged=judged, into=into, subjects=self._subjects(x, judged))
             base = await self.branches.head(await self.branch(self.t.merges_into(x.id)))
             if x.owns_branch:
                 return replace(work, branch=await self.branch(x.id), base=base)

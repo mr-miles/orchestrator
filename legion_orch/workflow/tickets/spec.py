@@ -16,7 +16,7 @@ tickets (run in parallel). :func:`render` writes the whole as the ``workflow`` s
 planner and the resolver."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -24,9 +24,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .model import GROUPING, Severity, Status, Ticket
+from .outputs import TIER, subjects
 from .rules import Add, Replan, precedes, validate
 
-TIER = "tier"                                   # what H-1's sign-off applies
 CLOSED = {Status.FAILED, Status.CANCELLED}
 
 
@@ -138,6 +138,30 @@ class WorkflowSpec(_Strict):
                 if tier not in self.tiers:
                     out.append(f"skeleton {t.id}: unknown tier {tier!r}")
         return out
+
+    def subjects_problems(self, role_outputs: Mapping[str, list[str]]) -> list[str]:
+        """Whether every sign-off in the skeleton (at every tier) signs outputs its owner's work
+        produces – the roles' declared outputs standing in for reports –, applies ``tier`` or one
+        of them, and whether every input names an output some sign-off approves."""
+        def has(x: Ticket, name: str) -> bool:
+            return x.type.startswith("agent:") and x.role != "criterion" \
+                and name in role_outputs.get(x.type.partition(":")[2], [])
+        out: list[str] = []
+        signed: set[str] = set()
+        for name in self.tiers:
+            built = {t.id: t for t in self.skeleton_at(name)}
+            for x in built.values():
+                if not x.signs and not x.applies:
+                    continue
+                _, errs = subjects(built, x.id, has)
+                out += [f"skeleton at {name}: {e}" for e in errs if e not in out]
+                signed |= set(x.signs)
+                if x.applies and x.applies != TIER and x.applies not in x.signs:
+                    out.append(f"{x.id} applies {x.applies!r}, which it does not sign")
+        for t in self.skeleton.walk():
+            out += [f"{t.id}: input {i!r} is no sign-off's output" for i in t.inputs
+                    if i not in signed]
+        return list(dict.fromkeys(out))
 
     def policy(self, tier: str) -> TierPolicy:
         """The tier's policy with what it extends folded in."""

@@ -42,7 +42,9 @@ TEMPLATE_VARS = {
     "write_scope", "required_docs", "workdir", "task_soul", "environment", "fix_round", "scaffold",
     "sandbox_tools", "change_base_sha",
 }
-ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema"}
+ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema",
+             "outputs"}
+OUTPUT_RE = re.compile(r"^[a-z][a-z0-9-]*\*?$")
 
 
 class AssetError(Exception):
@@ -68,6 +70,7 @@ class Role:
     repo: bool = True
     souls_allowed: list[str] = field(default_factory=list)
     report_schema: str = "report-none"
+    outputs: list[str] = field(default_factory=list)   # names it must produce (``x*``: a list)
 
 
 SKILL_PREFIX = "legion-"
@@ -185,6 +188,10 @@ class Assets:
         self.skill_descriptions[WORKFLOW_SKILL] = WORKFLOW_SKILL_DESCRIPTION
         return spec
 
+    def role_outputs(self) -> dict[str, list[str]]:
+        """Each role's output names (a list output without its ``*``)."""
+        return {r.name: [o.rstrip("*") for o in r.outputs] for r in self.roles.values()}
+
     def _workflow_roles(self) -> list[str]:
         """Every role the workflow names: its agent tickets', its policies', its hooks'."""
         spec = self.workflow
@@ -268,9 +275,14 @@ class Assets:
                 self.skill(sk)
             self.prompt(role.name)
         self.skill("harness-contract")              # every prompt tells the agent to load it
+        for role in self.roles.values():
+            if bad := [o for o in role.outputs if not OUTPUT_RE.match(o)]:
+                raise AssetError(f"roles.yaml {role.name}: bad output names {bad}")
         if self.workflow is not None:
             if unknown := sorted(set(self._workflow_roles()) - set(self.roles)):
                 raise AssetError(f"{WORKFLOW}: roles not in roles.yaml: {unknown}")
+            if errs := self.workflow.subjects_problems(self.role_outputs()):
+                raise AssetError(f"{WORKFLOW}: " + "; ".join(errs))
         used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
         for r in self.roles.values():
             if r.report_schema not in self.schemas.schemas:

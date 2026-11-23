@@ -3,11 +3,13 @@
 #
 # A ticket is its own work (by its type), then its subtask groups in order – a list item is one
 # ticket, or a list of tickets that run in parallel – then its criteria, in order. Sign-offs name
-# what they sign: documents in the change (a ticket's under tickets/<id>/), `git:<ticket>` for a
-# ticket's branch head (the root's – `change` – is the change's integration branch; a ticket has
-# its own branch if it is an agent's or a grouping ticket with criteria, and merges into its nearest
-# ancestor's that has one). `applies`: what a sign-off's pass applies – `tier` (the tickets marked
-# with `tiers`, once H-1 has signed the tier off) or a replan document (the planner's tickets).
+# the outputs they sign (roles.yaml `outputs`; the agent's report says which documents they are),
+# resolved against the work they check – their owner, else the one producer in its subtree – and
+# `head`, the commit their owner's criteria judge. A pass moves the change's pointers to exactly
+# what was signed; tickets name the pointers they consume in `inputs`. `applies`: what a pass
+# applies – `tier` (the tickets marked with `tiers`) or a signed output that is a replan (the
+# planner's `tickets`). A ticket has its own branch if it is the root (the change's integration
+# branch), an agent's, or a grouping ticket with criteria; it merges into its nearest ancestor's.
 
 hooks:
   on_complete: retrospective        # after any ending: passed, abandoned, failed
@@ -29,49 +31,57 @@ skeleton:
           criteria:                 # on the intake: a rejection reworks it
             - id: H-1
               type: "human:signoff"
-              signs: [intake/requirements.md, intake/risk.json]
+              signs: [requirements, risk]
               applies: tier
     - id: plan
       subtasks:
         - id: design
           type: "agent:planner"
           goal: "the spec, the oracle, the environment and the tickets"
+          inputs: [requirements, risk]
           criteria:
             - {id: critique, type: "agent:critic"}
             - id: H-E1
               type: "human:signoff"
-              signs: [tickets/design/spec.md, tickets/design/tickets.json,
-                      tickets/design/environment.json]
-              applies: tickets/design/tickets.json
-        - {id: provision, type: "controller:provision", goal: "the signed-off environment, built"}
+              signs: [spec, specs, oracle, environment, tickets]
+              applies: tickets
+        - id: provision
+          type: "controller:provision"
+          goal: "the signed-off environment, built"
+          inputs: [environment]
         - id: acceptance
           tiers: [R2, R3]
           subtasks:
             - id: oracle
               type: "agent:oracle"
               goal: "the acceptance tests, failing before any build"
+              inputs: [spec, specs, oracle]
               criteria:             # on the oracle: a rejection reworks it
                 - {id: preflight, type: "controller:verify"}
                 - id: H-2
                   type: "human:signoff"
-                  signs: [tickets/oracle/tests.md]
+                  signs: [tests]
             - id: baseline
               type: "agent:baseline"
               tiers: [R3]
               goal: "the baseline: what passes and fails before any build"
+              inputs: [spec, oracle]
               criteria:             # its own sign-off: a rejection reworks it
                 - id: H-2b
                   type: "human:signoff"
-                  signs: [tickets/baseline/report.md]
+                  signs: [report]
     - id: delivery
       # the planner's builds, then the integration ticket as the last group
     - id: evaluate
       subtasks:
-        - {id: describe, type: "agent:describer", goal: "the pull request's description"}
+        - id: describe
+          type: "agent:describer"
+          goal: "the pull request's description"
+          inputs: [requirements, spec]
       criteria:
         - id: H-3
           type: "human:signoff"
-          signs: ["git:change", tickets/describe/pr.md]
+          signs: [head, pr]
     - id: release
       subtasks:
         - {id: publish, type: "controller:publish", goal: "the change, published"}

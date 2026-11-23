@@ -35,7 +35,6 @@ from legion_orch.workflow.tickets.executors import (
     apply,
     attempt,
     merge_outcome,
-    subjects_of,
     verification_outcome,
 )
 
@@ -198,45 +197,32 @@ async def test_verification_judges_the_owners_commit():
 
 
 # ------------------------------------------------------------------------------- sign-off
-class Docs:
-    """Documents and a decision owner: ``changes`` – a version bump while they decide."""
+class Owner:
+    """A decision owner: their decisions in turn, and what they were asked."""
 
-    def __init__(self, versions, decisions, changes=()):
-        self.v, self.decisions, self.changes, self.asked = dict(versions), iter(decisions), \
-            list(changes), []
-
-    async def versions(self, paths):
-        return {p: self.v.get(p) for p in paths}
+    def __init__(self, *decisions):
+        self.decisions, self.asked = iter(decisions), []
 
     async def decide(self, w, subjects):
         self.asked.append(dict(subjects))
-        if self.changes:
-            path, version = self.changes.pop(0)
-            self.v[path] = version
         return next(self.decisions)
 
     async def stop(self, ticket):
         pass
 
 
-async def test_a_signoff_is_about_the_versions_it_names():
-    assert subjects_of(["spec.md@3", "plan.md"]) == {"spec.md": "3", "plan.md": None}
-    h = T("H-E1", "plan", role="criterion", type="human:signoff", signs=["spec.md", "plan.md@2"])
-    docs = Docs({"spec.md": "1", "plan.md": "2"}, [Decision(True)])
-    assert await SignoffExecutor(docs, NOW).run(work(h)) == Judged(True)
-    assert docs.asked == [{"spec.md": "1", "plan.md": "2"}]
-    docs = Docs({"spec.md": "1", "plan.md": "2"}, [Decision(False, "too broad")])
-    assert await SignoffExecutor(docs, NOW).run(work(h)) == Judged(False, ("too broad",))
-    # spec.md changed while they decided: asked again, about the new version
-    docs = Docs({"spec.md": "1", "plan.md": "2"}, [Decision(True), Decision(True)],
-                changes=[("spec.md", "2")])
-    assert await SignoffExecutor(docs, NOW).run(work(h)) == Judged(True)
-    assert [a["spec.md"] for a in docs.asked] == ["1", "2"]
-    # a named version that is no longer current, or a missing document: a human fixes the plan
-    stale = await SignoffExecutor(Docs({"spec.md": "1", "plan.md": "3"}, []), NOW).run(work(h))
-    assert isinstance(stale, Fault) and "plan.md@2 (now @3)" in stale.detail
-    missing = await SignoffExecutor(Docs({"plan.md": "2"}, []), NOW).run(work(h))
-    assert isinstance(missing, Fault) and not missing.transient
+async def test_a_signoff_approves_exactly_the_subjects_it_was_shown():
+    h = T("H-E1", "design", role="criterion", type="human:signoff", signs=["spec", "head"])
+    shown = {"spec": "doc:tickets/design/spec.md@3", "head": "git:" + "a" * 40}
+    owner = Owner(Decision(True))
+    assert await SignoffExecutor(owner, NOW).run(work(h, subjects=shown)) == \
+        Judged(True, signed=shown)                         # what the pointers move to
+    assert owner.asked == [shown]
+    rejected = await SignoffExecutor(Owner(Decision(False, "too broad")), NOW).run(
+        work(h, subjects=shown))
+    assert rejected == Judged(False, ("too broad",)) and rejected.signed is None
+    unresolved = await SignoffExecutor(Owner(), NOW).run(work(h))     # nobody produced it
+    assert isinstance(unresolved, Fault) and not unresolved.transient
 
 
 # ------------------------------------------------------------------------------- branches
