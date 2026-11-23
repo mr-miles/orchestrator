@@ -378,7 +378,8 @@ async def _identity_checks(ctl, cfg):
         del ce.runs["r9999"]
 
 
-def test_operator_api_errors(tmp_path):
+@pytest.mark.anyio
+async def test_operator_api_errors(tmp_path):
     """Writes need the operator token; malformed input is a 400, never a 500."""
     import httpx
 
@@ -388,26 +389,25 @@ def test_operator_api_errors(tmp_path):
     cfg.server.operator_token = "op-secret"
     app = build_app(Controller(cfg))          # no lifespan: the controller is not started
 
-    async def go():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://op") as c:
-            assert (await c.get("/api/changes")).json() == []
-            r = await c.post("/api/changes", json={"goal": "x"})
-            assert r.status_code == 403
-            tok = {"X-Operator-Token": "op-secret"}
-            r = await c.post("/api/changes", content=b"{not json", headers=tok)
-            assert r.status_code == 400 and "JSON" in r.json()["error"]
-            r = await c.post("/api/changes", json=["a"], headers=tok)
-            assert r.status_code == 400
-            r = await c.post("/api/changes/nope/action", json={"action": "attest"}, headers=tok)
-            assert r.status_code == 400 and "unknown change" in r.json()["error"]
-            assert (await c.get("/api/doc")).status_code == 400
-            assert (await c.get("/api/doc?path=nope.md")).status_code == 404
-            assert (await c.get("/api/doc?path=x&version=abc")).status_code == 400
-    asyncio.run(go())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://op") as c:
+        assert (await c.get("/api/changes")).json() == []
+        r = await c.post("/api/changes", json={"goal": "x"})
+        assert r.status_code == 403
+        tok = {"X-Operator-Token": "op-secret"}
+        r = await c.post("/api/changes", content=b"{not json", headers=tok)
+        assert r.status_code == 400 and "JSON" in r.json()["error"]
+        r = await c.post("/api/changes", json=["a"], headers=tok)
+        assert r.status_code == 400
+        r = await c.post("/api/changes/nope/action", json={"action": "attest"}, headers=tok)
+        assert r.status_code == 400 and "unknown change" in r.json()["error"]
+        assert (await c.get("/api/doc")).status_code == 400
+        assert (await c.get("/api/doc?path=nope.md")).status_code == 404
+        assert (await c.get("/api/doc?path=x&version=abc")).status_code == 400
 
 
-def test_the_built_ui_is_served(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_the_built_ui_is_served(tmp_path, monkeypatch):
     """The bundle bun builds into static/dist: index without caching, hashed assets cached for
     good, nothing outside dist; without a build, a page that says how to make one."""
     import httpx
@@ -418,29 +418,27 @@ def test_the_built_ui_is_served(tmp_path, monkeypatch):
     dist = tmp_path / "dist"
     monkeypatch.setattr(web, "UI_DIST", dist)
 
-    async def go():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                     base_url="http://op") as c:
-            r = await c.get("/")
-            assert r.status_code == 503 and "bun run build" in r.text
-            assert "script-src 'self'" in r.headers["content-security-policy"]
-            (dist / "assets").mkdir(parents=True)
-            (dist / "index.html").write_text('<script type="module" src="/assets/index-1.js">'
-                                             "</script>")
-            (dist / "assets/index-1.js").write_text("export {}")
-            (dist / "favicon.svg").write_text("<svg/>")
-            (tmp_path / "secret.txt").write_text("no")
-            r = await c.get("/")
-            assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
-            r = await c.get("/assets/index-1.js")
-            assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
-            assert r.headers["content-type"].startswith("text/javascript")
-            assert (await c.get("/favicon.svg")).status_code == 200
-            for bad in ("/../secret.txt", "/assets/../../secret.txt", "/%2e%2e/secret.txt",
-                        "/index.html", "/assets/missing.js"):
-                assert (await c.get(bad)).status_code == 404, bad
-            assert (await c.get("/api/changes")).json() == []      # the API still comes first
-    asyncio.run(go())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url="http://op") as c:
+        r = await c.get("/")
+        assert r.status_code == 503 and "bun run build" in r.text
+        assert "script-src 'self'" in r.headers["content-security-policy"]
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text('<script type="module" src="/assets/index-1.js">'
+                                         "</script>")
+        (dist / "assets/index-1.js").write_text("export {}")
+        (dist / "favicon.svg").write_text("<svg/>")
+        (tmp_path / "secret.txt").write_text("no")
+        r = await c.get("/")
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+        r = await c.get("/assets/index-1.js")
+        assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+        assert r.headers["content-type"].startswith("text/javascript")
+        assert (await c.get("/favicon.svg")).status_code == 200
+        for bad in ("/../secret.txt", "/assets/../../secret.txt", "/%2e%2e/secret.txt",
+                    "/index.html", "/assets/missing.js"):
+            assert (await c.get(bad)).status_code == 404, bad
+        assert (await c.get("/api/changes")).json() == []      # the API still comes first
 
 
 def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
@@ -479,30 +477,30 @@ def test_serve_stops_on_ctrl_c_with_a_ui_stream_open(tmp_path):
         proc.stdout.close()
 
 
-def test_document_listing_hides_controller_records_unless_asked(tmp_path):
+@pytest.mark.anyio
+async def test_document_listing_hides_controller_records_unless_asked(tmp_path):
     import httpx
     from engine_harness import Flow
 
     from legion_orch.server.web import build_app
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        await f.intake()
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(f.ctl)),
-                                     base_url="http://op") as c:
-            prefix = f"changes/{f.ce.cid}/"
-            default = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}")).json()]
-            every = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}&all=1")).json()]
-        assert default == [prefix + "intake/requirements.md", prefix + "intake/risk.json"]
-        control = set(every) - set(default)
-        assert prefix + "control/goal.md" in control           # the records are the journal's
-        assert any("/control/logs/" in p for p in control)
-        assert not any(p.endswith(("/control/change.json", "/control/workflow.json"))
-                       or "/control/runs/" in p or "/control/nodes/" in p for p in control)
-    asyncio.run(go())
+    f = await Flow.create(tmp_path)
+    await f.intake()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(f.ctl)),
+                                 base_url="http://op") as c:
+        prefix = f"changes/{f.ce.cid}/"
+        default = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}")).json()]
+        every = [d["path"] for d in (await c.get(f"/api/docs?prefix={prefix}&all=1")).json()]
+    assert default == [prefix + "intake/requirements.md", prefix + "intake/risk.json"]
+    control = set(every) - set(default)
+    assert prefix + "control/goal.md" in control           # the records are the journal's
+    assert any("/control/logs/" in p for p in control)
+    assert not any(p.endswith(("/control/change.json", "/control/workflow.json"))
+                   or "/control/runs/" in p or "/control/nodes/" in p for p in control)
 
 
-def test_mcp_server_offers_tools_only(tmp_path):
+@pytest.mark.anyio
+async def test_mcp_server_offers_tools_only(tmp_path):
     """The SDK's MCPServer always advertises prompts and resources (python-sdk #2473), so
     clients call methods the gateway policy denies. Over HTTP, on both handshakes (initialize
     for 2025 revisions, server/discover for 2026-07-28), only tools are advertised, and
@@ -515,41 +513,40 @@ def test_mcp_server_offers_tools_only(tmp_path):
     from legion_orch.server import MCP_TOOLS
     from legion_orch.server.web import build_mcp_app
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        port = _free_port()
-        srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
-                                            port=port, log_level="warning"))
-        task = asyncio.create_task(srv.serve())
-        while not srv.started:
-            await asyncio.sleep(0.02)
-        url = f"http://127.0.0.1:{port}/mcp"
-        hdr = {"Accept": "application/json, text/event-stream"}
-        try:
-            async with httpx.AsyncClient() as c:
-                init = await c.post(url, headers=hdr, json={
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-                        "protocolVersion": "2025-11-25", "capabilities": {},
-                        "clientInfo": {"name": "t", "version": "1"}}})
-                assert set(init.json()["result"]["capabilities"]) == {"tools"}
-                for method in ("resources/list", "resources/read", "prompts/list"):
-                    r = await c.post(url, headers=hdr | {"Mcp-Protocol-Version": "2025-11-25"},
-                                     json={"jsonrpc": "2.0", "id": 2, "method": method, "params": {}})
-                    assert r.json()["error"]["code"] == -32601, method
-            async with Client(url) as cl:
-                assert cl.protocol_version == "2026-07-28"          # server/discover handshake
-                caps = cl.server_capabilities.model_dump(exclude_none=True)
-                assert set(caps) == {"tools"}, caps
-                with pytest.raises(MCPError, match="Method not found"):
-                    await cl.list_resources()
-                assert {t.name for t in (await cl.list_tools()).tools} == set(MCP_TOOLS)
-        finally:
-            srv.should_exit = True
-            await task
-    asyncio.run(go())
+    f = await Flow.create(tmp_path)
+    port = _free_port()
+    srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
+                                        port=port, log_level="warning"))
+    task = asyncio.create_task(srv.serve())
+    while not srv.started:
+        await asyncio.sleep(0.02)
+    url = f"http://127.0.0.1:{port}/mcp"
+    hdr = {"Accept": "application/json, text/event-stream"}
+    try:
+        async with httpx.AsyncClient() as c:
+            init = await c.post(url, headers=hdr, json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "t", "version": "1"}}})
+            assert set(init.json()["result"]["capabilities"]) == {"tools"}
+            for method in ("resources/list", "resources/read", "prompts/list"):
+                r = await c.post(url, headers=hdr | {"Mcp-Protocol-Version": "2025-11-25"},
+                                 json={"jsonrpc": "2.0", "id": 2, "method": method, "params": {}})
+                assert r.json()["error"]["code"] == -32601, method
+        async with Client(url) as cl:
+            assert cl.protocol_version == "2026-07-28"          # server/discover handshake
+            caps = cl.server_capabilities.model_dump(exclude_none=True)
+            assert set(caps) == {"tools"}, caps
+            with pytest.raises(MCPError, match="Method not found"):
+                await cl.list_resources()
+            assert {t.name for t in (await cl.list_tools()).tools} == set(MCP_TOOLS)
+    finally:
+        srv.should_exit = True
+        await task
 
 
-def test_agent_connects_at_start_up_not_first_tool_call(tmp_path):
+@pytest.mark.anyio
+async def test_agent_connects_at_start_up_not_first_tool_call(tmp_path):
     """The agent CLI connects (initialize, tools/list) as it starts and may think for minutes
     before its first tool call. Any MCP message from the run's sandbox marks it RUNNING."""
     import httpx
@@ -558,36 +555,35 @@ def test_agent_connects_at_start_up_not_first_tool_call(tmp_path):
 
     from legion_orch.server.web import build_mcp_app
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        run = f.run("intake")
-        assert (run.status, run.stage) == ("STARTING", "LAUNCHING")
-        token = f.ctl.auth.identity.tokens.issue(WorkloadBinding(
-            sandbox=run.sandbox, change=f.ce.cid, task=run.node_id, role=run.role), "x")
-        port = _free_port()
-        srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
-                                            port=port, log_level="warning"))
-        task = asyncio.create_task(srv.serve())
-        while not srv.started:
-            await asyncio.sleep(0.02)
-        hdr = {"Accept": "application/json, text/event-stream"}
-        body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2025-11-25", "capabilities": {},
-            "clientInfo": {"name": "t", "version": "1"}}}
-        try:
-            async with httpx.AsyncClient() as c:
-                await c.post(f"http://127.0.0.1:{port}/mcp", headers=hdr, json=body)
-                assert (run.status, run.stage) == ("STARTING", "LAUNCHING")   # no identity
-                await c.post(f"http://127.0.0.1:{port}/mcp", json=body,
-                             headers=hdr | {"Authorization": f"Bearer {token}"})
-        finally:
-            srv.should_exit = True
-            await task
-        assert (run.status, run.stage) == ("ACTIVE", "RUNNING")
-    asyncio.run(go())
+    f = await Flow.create(tmp_path)
+    run = f.run("intake")
+    assert (run.status, run.stage) == ("STARTING", "LAUNCHING")
+    token = f.ctl.auth.identity.tokens.issue(WorkloadBinding(
+        sandbox=run.sandbox, change=f.ce.cid, task=run.node_id, role=run.role), "x")
+    port = _free_port()
+    srv = uvicorn.Server(uvicorn.Config(await build_mcp_app(f.ctl), host="127.0.0.1",
+                                        port=port, log_level="warning"))
+    task = asyncio.create_task(srv.serve())
+    while not srv.started:
+        await asyncio.sleep(0.02)
+    hdr = {"Accept": "application/json, text/event-stream"}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {},
+        "clientInfo": {"name": "t", "version": "1"}}}
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.post(f"http://127.0.0.1:{port}/mcp", headers=hdr, json=body)
+            assert (run.status, run.stage) == ("STARTING", "LAUNCHING")   # no identity
+            await c.post(f"http://127.0.0.1:{port}/mcp", json=body,
+                         headers=hdr | {"Authorization": f"Bearer {token}"})
+    finally:
+        srv.should_exit = True
+        await task
+    assert (run.status, run.stage) == ("ACTIVE", "RUNNING")
 
 
-def test_agent_listeners_keep_idle_connections_open(tmp_path):
+@pytest.mark.anyio
+async def test_agent_listeners_keep_idle_connections_open(tmp_path):
     """The gateway relays each agent connection to one controller connection; if the controller
     closes it while the model is busy writing (uvicorn's default is 5 s idle), the agent's next
     request fails with ECONNRESET. The agent listeners use server.agent_keep_alive_s."""
@@ -600,37 +596,35 @@ def test_agent_listeners_keep_idle_connections_open(tmp_path):
     from legion_orch.server.web import build_servers
     assert ServerConfig().agent_keep_alive_s >= 300
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        f.cfg.server.agent_keep_alive_s = 1            # short, to see the setting take effect
-        servers = await build_servers(f.ctl)
-        assert [s.config.timeout_keep_alive for s in servers[1:]] == [1, 1, 1, 1]
-        mcp = servers[1]
-        mcp.config.port = port = _free_port()
-        task = asyncio.create_task(mcp.serve())
-        while not mcp.started:
-            await asyncio.sleep(0.02)
+    f = await Flow.create(tmp_path)
+    f.cfg.server.agent_keep_alive_s = 1            # short, to see the setting take effect
+    servers = await build_servers(f.ctl)
+    assert [s.config.timeout_keep_alive for s in servers[1:]] == [1, 1, 1, 1]
+    mcp = servers[1]
+    mcp.config.port = port = _free_port()
+    task = asyncio.create_task(mcp.serve())
+    while not mcp.started:
+        await asyncio.sleep(0.02)
 
-        def ping_twice(idle):
-            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            hdr = {"Content-Type": "application/json", "Mcp-Protocol-Version": "2025-11-25",
-                   "Accept": "application/json, text/event-stream"}
-            body = '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+    def ping_twice(idle):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        hdr = {"Content-Type": "application/json", "Mcp-Protocol-Version": "2025-11-25",
+               "Accept": "application/json, text/event-stream"}
+        body = '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+        try:
+            c.request("POST", "/mcp", body, hdr)
+            c.getresponse().read()
+            time.sleep(idle)
             try:
                 c.request("POST", "/mcp", body, hdr)
-                c.getresponse().read()
-                time.sleep(idle)
-                try:
-                    c.request("POST", "/mcp", body, hdr)
-                    return c.getresponse().status
-                except OSError as e:
-                    return type(e).__name__
-            finally:
-                c.close()
-        try:
-            assert await asyncio.to_thread(ping_twice, 0.2) == 200       # within the keep-alive
-            assert await asyncio.to_thread(ping_twice, 2) != 200         # closed after 1 s idle
+                return c.getresponse().status
+            except OSError as e:
+                return type(e).__name__
         finally:
-            mcp.should_exit = True
-            await task
-    asyncio.run(go())
+            c.close()
+    try:
+        assert await asyncio.to_thread(ping_twice, 0.2) == 200       # within the keep-alive
+        assert await asyncio.to_thread(ping_twice, 2) != 200         # closed after 1 s idle
+    finally:
+        mcp.should_exit = True
+        await task

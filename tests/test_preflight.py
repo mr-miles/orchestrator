@@ -3,7 +3,6 @@ oracle's acceptance commands in a fresh verifier sandbox before the baseline and
 first in every verifier (G-V3), install-only commands kept out of the oracle's lists (G-P13)."""
 from __future__ import annotations
 
-import asyncio
 import functools
 import subprocess
 
@@ -22,8 +21,9 @@ ACCEPT = ORACLE["acceptance_commands"][0]
 
 def with_setup(fn):
     """Run ``fn(flow)`` on a change whose base branch has a mise.toml with a setup task."""
+    @pytest.mark.anyio
     @functools.wraps(fn)
-    def test(tmp_path):
+    async def test(tmp_path):
         path = tmp_path / "src-repo"
         make_source_repo(path)
         (path / "mise.toml").write_text(MISE)
@@ -31,9 +31,7 @@ def with_setup(fn):
         g("add", "-A")
         g("commit", "-q", "-m", "mise")
 
-        async def go():
-            await fn(await Flow.create(tmp_path))
-        asyncio.run(go())
+        await fn(await Flow.create(tmp_path))
     import inspect
     test.__signature__ = inspect.Signature(
         [inspect.Parameter("tmp_path", inspect.Parameter.POSITIONAL_OR_KEYWORD)])

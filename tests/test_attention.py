@@ -117,59 +117,55 @@ def test_attention_kinds_match_the_config():
 
 
 # ====================================================================== notifications
-def test_a_gate_notifies_its_sinks_once_and_records_the_delivery(tmp_path):
-    async def go():
-        sink, out = _recorder(tmp_path)
-        f = await _flow_with(tmp_path, sink, ui_url="https://legion.example/")
-        await f.intake()
-        [msg] = _sent(out)
-        assert (msg["event"], msg["kind"], msg["node"], msg["change"]) == \
-            ("raised", "gate", "H-1", f.ce.cid)
-        assert msg["url"] == f"https://legion.example/#{f.ce.cid}/overview/H-1"
-        assert msg["project"] == "engine-test" and msg["approvers"] == ["miles", "ana"]
-        assert [e for e in _events(f, "notified") if "sent" in e["message"]]
-        await f.human("H-1", "accept")
-        assert len(_sent(out)) == 1                  # resolved is off by default
-    run(go())
+@pytest.mark.anyio
+async def test_a_gate_notifies_its_sinks_once_and_records_the_delivery(tmp_path):
+    sink, out = _recorder(tmp_path)
+    f = await _flow_with(tmp_path, sink, ui_url="https://legion.example/")
+    await f.intake()
+    [msg] = _sent(out)
+    assert (msg["event"], msg["kind"], msg["node"], msg["change"]) == \
+        ("raised", "gate", "H-1", f.ce.cid)
+    assert msg["url"] == f"https://legion.example/#{f.ce.cid}/overview/H-1"
+    assert msg["project"] == "engine-test" and msg["approvers"] == ["miles", "ana"]
+    assert [e for e in _events(f, "notified") if "sent" in e["message"]]
+    await f.human("H-1", "accept")
+    assert len(_sent(out)) == 1                  # resolved is off by default
 
 
-def test_inbox_items_are_sent_only_to_sinks_that_ask_for_them(tmp_path):
-    async def go():
-        sink, out = _recorder(tmp_path)
-        sink.items = ["change_ended"]
-        f = await _flow_with(tmp_path, sink)
-        await f.exit_agent(f.run("intake"), rc=1)     # an escalation: not this sink's kind
-        assert _sent(out) == []
-        await f.human("intake", "abandon")
-        [msg] = _sent(out)
-        assert msg["kind"] == "change_ended" and msg["blocking"] is False
-    run(go())
+@pytest.mark.anyio
+async def test_inbox_items_are_sent_only_to_sinks_that_ask_for_them(tmp_path):
+    sink, out = _recorder(tmp_path)
+    sink.items = ["change_ended"]
+    f = await _flow_with(tmp_path, sink)
+    await f.exit_agent(f.run("intake"), rc=1)     # an escalation: not this sink's kind
+    assert _sent(out) == []
+    await f.human("intake", "abandon")
+    [msg] = _sent(out)
+    assert msg["kind"] == "change_ended" and msg["blocking"] is False
 
 
-def test_a_failing_sink_is_retried_then_recorded_without_disturbing_the_change(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_a_failing_sink_is_retried_then_recorded_without_disturbing_the_change(tmp_path, monkeypatch):
     monkeypatch.setattr(Notifier, "RETRY_DELAYS_S", (0.0, 0.0))
     attempts = tmp_path / "attempts"
     code = f"import sys; open({str(attempts)!r}, 'a').write('x'); sys.exit(3)"
     bad = NotifySink(kind="command", argv=[sys.executable, "-c", code], name="pager")
 
-    async def go():
-        f = await _flow_with(tmp_path, bad)
-        await f.intake()
-        assert f.status("H-1") == AWAITING_HUMAN
-        assert attempts.read_text() == "xxx"
-        [ev] = _events(f, "notified")
-        assert "raised via pager: failed: RuntimeError: exit 3" in ev["message"]
-    run(go())
+    f = await _flow_with(tmp_path, bad)
+    await f.intake()
+    assert f.status("H-1") == AWAITING_HUMAN
+    assert attempts.read_text() == "xxx"
+    [ev] = _events(f, "notified")
+    assert "raised via pager: failed: RuntimeError: exit 3" in ev["message"]
 
 
-def test_resolved_notifications_when_configured(tmp_path):
-    async def go():
-        sink, out = _recorder(tmp_path)
-        f = await _flow_with(tmp_path, sink, resolved=True)
-        await f.intake()
-        await f.human("H-1", "accept")
-        assert [m["event"] for m in _sent(out)] == ["raised", "resolved"]
-    run(go())
+@pytest.mark.anyio
+async def test_resolved_notifications_when_configured(tmp_path):
+    sink, out = _recorder(tmp_path)
+    f = await _flow_with(tmp_path, sink, resolved=True)
+    await f.intake()
+    await f.human("H-1", "accept")
+    assert [m["event"] for m in _sent(out)] == ["raised", "resolved"]
 
 
 def test_reminders_repeat_blocking_items_only():
@@ -193,27 +189,26 @@ def test_reminders_repeat_blocking_items_only():
     assert len(sent) == 4
 
 
-def test_a_restart_does_not_raise_or_notify_again(tmp_path):
-    async def go():
-        sink, out = _recorder(tmp_path)
-        f = await _flow_with(tmp_path, sink)
-        await f.intake()
-        assert len(_sent(out)) == 1
-        f.ce.flush_timeline(force=True)
-        ctl2 = Controller(f.cfg, runner=f.runner)
-        ctl2.load()
-        ce2 = ctl2.changes[f.ce.cid]
-        assert [i.key for i in ce2.attention_items] == [i.key for i in f.ce.attention_items]
-        assert ce2.nodes["H-1"].status_since == f.ce.nodes["H-1"].status_since
-        async with ctl2.svc.lock:
-            ce2.recover()                              # saves
-        await asyncio.sleep(0.2)
-        assert len(_sent(out)) == 1
-        assert len([e for e in ce2.timeline_events() if e["kind"] == "attention"]) == 1
-        ctl2.notifier.remind(ctl2.attention_items())   # seeded at start-up: not due yet
-        await asyncio.sleep(0.2)
-        assert len(_sent(out)) == 1
-    run(go())
+@pytest.mark.anyio
+async def test_a_restart_does_not_raise_or_notify_again(tmp_path):
+    sink, out = _recorder(tmp_path)
+    f = await _flow_with(tmp_path, sink)
+    await f.intake()
+    assert len(_sent(out)) == 1
+    f.ce.flush_timeline(force=True)
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    ce2 = ctl2.changes[f.ce.cid]
+    assert [i.key for i in ce2.attention_items] == [i.key for i in f.ce.attention_items]
+    assert ce2.nodes["H-1"].status_since == f.ce.nodes["H-1"].status_since
+    async with ctl2.svc.lock:
+        ce2.recover()                              # saves
+    await asyncio.sleep(0.2)
+    assert len(_sent(out)) == 1
+    assert len([e for e in ce2.timeline_events() if e["kind"] == "attention"]) == 1
+    ctl2.notifier.remind(ctl2.attention_items())   # seeded at start-up: not due yet
+    await asyncio.sleep(0.2)
+    assert len(_sent(out)) == 1
 
 
 # ====================================================================== sinks over HTTP
@@ -243,29 +238,28 @@ class _Server:
         writer.close()
 
 
-def test_webhook_and_ntfy_sinks(tmp_path, monkeypatch):
+@pytest.mark.anyio
+async def test_webhook_and_ntfy_sinks(tmp_path, monkeypatch):
     monkeypatch.setenv("HOOK_SECRET", "s3cret")
 
-    async def go():
-        async with _Server() as srv:
-            hook = NotifySink(kind="webhook", url=f"{srv.url}/hook", secret_env="HOOK_SECRET")
-            ntfy = NotifySink(kind="ntfy", url=f"{srv.url}/legion-topic")
-            f = await _flow_with(tmp_path, hook, ntfy, ui_url="https://ui/")
-            await f.intake()
-            for _ in range(50):
-                if len(srv.requests) == 2:
-                    break
-                await asyncio.sleep(0.05)
-            by_path = {r["line"].split()[1]: r for r in srv.requests}
-            wh = by_path["/hook"]
-            want = "sha256=" + hmac.new(b"s3cret", wh["body"], hashlib.sha256).hexdigest()
-            assert wh["headers"]["x-legion-signature"] == want
-            assert json.loads(wh["body"])["node"] == "H-1"
-            nt = json.loads(by_path["/"]["body"])
-            assert nt["topic"] == "legion-topic" and nt["priority"] == 4
-            assert nt["click"] == f"https://ui/#{f.ce.cid}/overview/H-1"
-            assert nt["title"].startswith("H-1: ")
-    run(go())
+    async with _Server() as srv:
+        hook = NotifySink(kind="webhook", url=f"{srv.url}/hook", secret_env="HOOK_SECRET")
+        ntfy = NotifySink(kind="ntfy", url=f"{srv.url}/legion-topic")
+        f = await _flow_with(tmp_path, hook, ntfy, ui_url="https://ui/")
+        await f.intake()
+        for _ in range(50):
+            if len(srv.requests) == 2:
+                break
+            await asyncio.sleep(0.05)
+        by_path = {r["line"].split()[1]: r for r in srv.requests}
+        wh = by_path["/hook"]
+        want = "sha256=" + hmac.new(b"s3cret", wh["body"], hashlib.sha256).hexdigest()
+        assert wh["headers"]["x-legion-signature"] == want
+        assert json.loads(wh["body"])["node"] == "H-1"
+        nt = json.loads(by_path["/"]["body"])
+        assert nt["topic"] == "legion-topic" and nt["priority"] == 4
+        assert nt["click"] == f"https://ui/#{f.ce.cid}/overview/H-1"
+        assert nt["title"].startswith("H-1: ")
 
 
 # ====================================================================== config

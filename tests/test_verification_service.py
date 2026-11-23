@@ -118,22 +118,21 @@ async def test_a_newer_push_cancels_the_older_tips_verification_that_has_not_sta
     assert len(verifiers(f)) == 2
 
 
-def test_the_cap_serves_by_priority_then_in_order():
-    async def go():
-        cap, order = PriorityCap(1), []
-        await cap.acquire(0)                              # held
+@pytest.mark.anyio
+async def test_the_cap_serves_by_priority_then_in_order():
+    cap, order = PriorityCap(1), []
+    await cap.acquire(0)                              # held
 
-        async def take(p, name):
-            await cap.acquire(p)
-            order.append(name)
-            cap.release()
-        tasks = [asyncio.ensure_future(take(p, n)) for p, n in
-                 ((3, "agent"), (2, "push-1"), (0, "step"), (2, "push-2"))]
-        await asyncio.sleep(0)
+    async def take(p, name):
+        await cap.acquire(p)
+        order.append(name)
         cap.release()
-        await asyncio.gather(*tasks)
-        assert order == ["step", "push-1", "push-2", "agent"]
-    asyncio.run(go())
+    tasks = [asyncio.ensure_future(take(p, n)) for p, n in
+             ((3, "agent"), (2, "push-1"), (0, "step"), (2, "push-2"))]
+    await asyncio.sleep(0)
+    cap.release()
+    await asyncio.gather(*tasks)
+    assert order == ["step", "push-1", "push-2", "agent"]
 
 
 @scenario()

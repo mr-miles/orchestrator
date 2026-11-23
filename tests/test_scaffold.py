@@ -187,10 +187,10 @@ async def test_restart_plan_drops_the_scaffold_and_builds_it_again(f: Flow):
     assert f.status("build:T3") == RUNNING and f.status("oracle") == PENDING
 
 
-def test_a_blank_repository_does_not_pin_its_base_setup(tmp_path):
+@pytest.mark.anyio
+async def test_a_blank_repository_does_not_pin_its_base_setup(tmp_path):
     """README + mise.toml is blank (it gets its scaffold), and the base's setup task is not
     pinned: what it needs (a package.json) comes with the scaffold."""
-    import asyncio
     import subprocess
     path = tmp_path / "src-repo"
     path.mkdir()
@@ -201,10 +201,8 @@ def test_a_blank_repository_does_not_pin_its_base_setup(tmp_path):
     g("add", "-A")
     g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        assert f.ce.change.blank_repo and f.ce.change.setup_pin is None
-    asyncio.run(go())
+    f = await Flow.create(tmp_path)
+    assert f.ce.change.blank_repo and f.ce.change.setup_pin is None
 
 
 @scenario(blank_repo=True, environment={})

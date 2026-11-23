@@ -42,3 +42,9 @@ def pytest_collection_modifyitems(items):
             continue
         path = item.path.relative_to(item.config.rootpath / "tests").parts
         item.add_marker(pytest.mark.e2e if path[0] in E2E else pytest.mark.unit)
+
+
+@pytest.fixture
+def anyio_backend():
+    """Async tests (``@pytest.mark.anyio``) run on asyncio, as the controller does."""
+    return "asyncio"

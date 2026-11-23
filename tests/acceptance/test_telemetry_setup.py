@@ -118,8 +118,9 @@ def test_AC_11_auto_mode_without_the_sdk_keeps_serving_and_sends_nothing():
 
 
 # ================================================================================== AC-12
-@pytest.mark.parametrize("name", ["test_telemetry_config", "test_telemetry", "test_telemetry_wiring",
-                                  "test_telemetry_steps", "test_telemetry_engine"])
+# (the wiring tests were folded into test_telemetry_engine)
+@pytest.mark.parametrize("name", ["test_telemetry_config", "test_telemetry", "test_telemetry_steps",
+                                  "test_telemetry_engine"])
 def test_AC_12_the_implementer_test_files_exist_with_tests(name):
     f = ROOT / "tests" / f"{name}.py"
     assert f.is_file(), f"{f.name} is missing"
