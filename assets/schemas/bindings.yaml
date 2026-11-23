@@ -19,6 +19,7 @@
 - {pattern: "control/runs/*/assignment.json", schema: run-assignment}
 - {pattern: "control/runs/*/outcome.json", schema: run-outcome}
 - {pattern: "control/runs/*/log*", schema: text}
+- {pattern: "control/verifications/*/record.json", schema: verification}
 - {pattern: "control/environment/build.json", schema: environment-build}
 - {pattern: "control/environment/*.log", schema: text}
 # ---- everything else

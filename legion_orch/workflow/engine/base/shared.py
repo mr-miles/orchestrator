@@ -77,7 +77,7 @@ class Services:
 class EngineHost(Protocol):
     """The controller operations a ChangeEngine may call."""
 
-    def spawn(self, coro: Coroutine, on_error: Callable[[Exception], Any] | None = None) -> None:
+    def spawn(self, coro: Coroutine, on_error: Callable[[Exception], Any] | None = None) -> Any:
         """Run a background task; failures are logged (and passed to ``on_error``)."""
 
     def changed(self) -> None:

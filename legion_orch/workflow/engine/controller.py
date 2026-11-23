@@ -185,7 +185,7 @@ class Controller:
             for w in waits:
                 w.cancel()
 
-    def spawn(self, coro, on_error=None) -> None:
+    def spawn(self, coro, on_error=None) -> asyncio.Task:
         async def wrapper():
             try:
                 await coro
@@ -196,6 +196,7 @@ class Controller:
         t = asyncio.create_task(wrapper())
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
+        return t
 
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:

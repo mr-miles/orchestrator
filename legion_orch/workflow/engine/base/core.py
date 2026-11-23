@@ -240,9 +240,10 @@ class ChangeCore:
                 out.append(ev)
         return out
 
-    def spawn(self, coro) -> None:
-        """Run a background task; the controller logs a failure, the event marks the change."""
-        self.host.spawn(coro, on_error=lambda e: self.event("error", f"internal error: {e}"))
+    def spawn(self, coro) -> asyncio.Task:
+        """Run a background task (tracked: the controller waits for it, cancels it on stop);
+        the controller logs a failure, the event marks the change."""
+        return self.host.spawn(coro, on_error=lambda e: self.event("error", f"internal error: {e}"))
 
     # ------------------------------------------------------------------ documents
     @property

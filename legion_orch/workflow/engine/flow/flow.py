@@ -80,7 +80,8 @@ class TicketFlow:
             self.runner = Runner(self.c.cid, self.c.tickets, executors=self.executors,
                                  branches=self.branches, base=self.c.change.base_sha or "",
                                  spec=self.spec, hooks=self, save=self._saved,
-                                 merger=Merger(self.branches), lock=self.c.lock)
+                                 merger=Merger(self.branches), lock=self.c.lock,
+                                 spawner=self.c.spawn)
         return self.runner
 
     # ------------------------------------------------------------------ lifecycle

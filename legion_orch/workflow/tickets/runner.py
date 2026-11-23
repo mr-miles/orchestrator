@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import replace
 from typing import Any, Protocol
 
@@ -57,11 +57,13 @@ class Runner:
     def __init__(self, change: str, tickets: Tickets, *, executors: Executors, branches: Branches,
                  base: str, spec: WorkflowSpec, hooks: Hooks,
                  save: Callable[[Iterable[Ticket]], None], merger: Merger | None = None,
-                 lock: asyncio.Lock | None = None):
+                 lock: asyncio.Lock | None = None,
+                 spawner: Callable[[Coroutine], asyncio.Task] | None = None):
         self.change, self.t, self.executors, self.branches = change, tickets, executors, branches
         self.base, self.spec, self.hooks, self.save = base, spec, hooks, save
         self.merger = merger or Merger(branches)
         self.lock = lock or asyncio.Lock()        # the engine's: the change's own lock
+        self.spawner = spawner or asyncio.ensure_future   # the engine's: its tasks are tracked
         self._work: dict[str, asyncio.Task] = {}        # ticket -> its round's task
         self._tasks: set[asyncio.Task] = set()          # every task until it is done
         self._held: tuple[str, Outcome] | None = None   # a sign-off's verdict, until quiet
@@ -144,7 +146,7 @@ class Runner:
             await self._carry(await self._outcome(self.t.t[tid], outcome))
 
     def _spawn(self, coro) -> asyncio.Task:
-        task = asyncio.ensure_future(coro)
+        task = self.spawner(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         task.add_done_callback(_report)

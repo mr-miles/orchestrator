@@ -75,7 +75,9 @@ def verification_of(sha: str, outcome: Outcome) -> Verification:
 
 
 def record_path(run_id: str) -> str:
-    return f"control/verifications/{run_id}.json"
+    """A verification's whole record (its log is ``control/runs/<sandbox>/log``): audit, under
+    its unique id."""
+    return f"control/verifications/{run_id}/record.json"
 
 
 class Verifications:
