@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..config import Config
-from ..util import now_iso, stop_process
+from ..util import now_iso, run_command
 from .names import check_name
 from .templates import base_values, label_value, render, sandbox_providers, spec_to_args
 
@@ -108,18 +108,11 @@ def _selects(selector: dict[str, str], labels: dict[str, str]) -> bool:
 
 async def _run(argv: list[str], timeout: float, env: dict | None = None,
                cwd: str | None = None) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT, env=env, cwd=cwd)
+    """A command's exit code and output; a timeout is exit 124, as timeout(1) has it."""
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+        return await run_command(argv, timeout, env=env, cwd=cwd)
     except TimeoutError:
-        await stop_process(proc)
         return 124, f"timeout after {timeout}s"
-    except BaseException:                 # cancelled (e.g. at shutdown): do not leave it running
-        await stop_process(proc)
-        raise
-    return proc.returncode, out.decode(errors="replace")
 
 
 class LoggedProcess:

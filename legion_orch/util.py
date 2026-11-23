@@ -1,6 +1,7 @@
 """Small shared helpers with no orchestrator dependencies."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 from datetime import UTC, datetime
@@ -34,3 +35,19 @@ async def stop_process(proc: Any) -> None:
             proc.kill()
     with contextlib.suppress(Exception):
         await proc.wait()
+
+
+async def run_command(argv, timeout: float, *, env: dict | None = None,
+                      cwd: str | None = None) -> tuple[int, str]:
+    """Run ``argv`` (no stdin; stderr into stdout) and return its exit code and output. Raises
+    ``TimeoutError`` after ``timeout`` seconds; the process never outlives the call – timed out,
+    failed or cancelled (:func:`stop_process`)."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, env=env, cwd=cwd)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except BaseException:                 # timed out or cancelled: do not leave it running
+        await stop_process(proc)
+        raise
+    return proc.returncode, out.decode(errors="replace")

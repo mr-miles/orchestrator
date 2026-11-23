@@ -13,7 +13,7 @@ import shutil
 import stat
 from pathlib import Path
 
-from ..util import stop_process
+from ..util import run_command
 
 PRE_RECEIVE = r"""#!/bin/sh
 # legion-orch: a run token may only update its own branch; never delete refs.
@@ -43,21 +43,13 @@ class GitError(Exception):
 
 async def run(*args: str, cwd: Path | None = None, check: bool = True,
               timeout: float = 300, env: dict | None = None) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *args, cwd=str(cwd) if cwd else None, env=env,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+        rc, text = await run_command(args, timeout, env=env, cwd=str(cwd) if cwd else None)
     except TimeoutError:
-        await stop_process(proc)
         raise GitError(f"timeout: {' '.join(args)}") from None
-    except BaseException:                 # cancelled (e.g. at shutdown): do not leave it running
-        await stop_process(proc)
-        raise
-    text = out.decode(errors="replace")
-    if check and proc.returncode != 0:
-        raise GitError(f"{' '.join(args)} failed ({proc.returncode}): {text.strip()[:2000]}")
-    return proc.returncode, text
+    if check and rc != 0:
+        raise GitError(f"{' '.join(args)} failed ({rc}): {text.strip()[:2000]}")
+    return rc, text
 
 
 def path_matches(path: str, pattern: str) -> bool:
