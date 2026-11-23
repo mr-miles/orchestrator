@@ -15,7 +15,7 @@ from legion_orch.workflow.engine.runtime.workflow_tree import (
     stage_id,
     task_steps,
 )
-from legion_orch.workflow.flow import ActionError, Stage, Step, walk
+from legion_orch.workflow.flow import ActionError, Completed, FlowState, Stage, Step, walk
 from legion_orch.workflow.flow.testing import ScriptedRuntime
 
 GRAPH = {"tasks": [
@@ -245,3 +245,59 @@ def test_a_step_can_be_redone_only_while_its_stage_runs():
         rt.redo("oracle")                       # its stage has not started
     with pytest.raises(ActionError, match="not a step directly in a stage"):
         rt.redo(TASKS)                          # a group, not a step
+
+
+# ---------------------------------------------------------------------------- persistence
+def _restored(rt: ScriptedRuntime, rank: int) -> FlowState:
+    """The core restored from its snapshot (through JSON, as it is stored) into a fresh tree."""
+    import json
+    snap = json.loads(json.dumps(rt.flow.snapshot()))
+    return FlowState.restore(build_workflow(rank, environment=True, blank_repo=False,
+                                            publish=False), snap)
+
+
+def _same(a: FlowState, b: FlowState) -> None:
+    assert b.snapshot() == a.snapshot()
+    order = [n.id for s in a.workflow.stages for n in walk(s)]
+    assert [n.id for s in b.workflow.stages for n in walk(s)] == order
+    assert {n: b.status(n) for n in order} == {n: a.status(n) for n in order}
+    assert {n: b.actions(n) for n in order} == {n: a.actions(n) for n in order}
+    assert b.waiting() == a.waiting()
+
+
+def test_the_core_is_restored_exactly_from_its_snapshot_and_goes_on_the_same():
+    rt = failing_integration()
+    _same(rt.flow, _restored(rt, 3))                        # tasks defined, integration escalated
+    rt.act("integration", "send_back:stage:delivery", text="T2 breaks the API")
+    rt.define("tasks.2", [Step("build:T3", overridable=True)])
+    restored = _restored(rt, 3)                              # a round inserted, its tasks defined
+    _same(rt.flow, restored)
+    # both go on alike: the same input gives the same effects and state
+    a = rt.flow.on(Completed("plan.2"))
+    b = restored.on(Completed("plan.2"))
+    assert a == b
+    _same(rt.flow, restored)
+
+
+def test_a_send_back_that_dropped_a_round_keeps_its_attempts_in_the_snapshot():
+    rt = failing_integration()
+    rt.act("integration", "send_back:stage:delivery", text="fix it")
+    rt.finish("plan.2")
+    rt.act("H-E1.2", "send_back:stage:plan", text="start again")
+    restored = _restored(rt, 3)
+    _same(rt.flow, restored)
+    assert restored._past_attempts.get("plan.2") == rt.flow._past_attempts.get("plan.2") == 1
+
+
+def test_a_tree_rebuilt_for_another_tier_keeps_what_both_have():
+    rt = run(3)
+    rt.approve("H-1")
+    snap = rt.flow.snapshot()
+    lower = FlowState.restore(build_workflow(1, environment=True, blank_repo=False,
+                                             publish=False), snap)
+    for nid in lower.state:
+        if nid in rt.flow.state:
+            assert lower.status(nid) == rt.flow.status(nid)
+    gone = set(rt.flow.state) - set(lower.state)
+    assert gone and all(lower._past_attempts.get(n, 0) == rt.flow.attempt(n)
+                        for n in gone if rt.flow.attempt(n))
