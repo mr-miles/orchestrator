@@ -7,19 +7,9 @@ from .model import Record
 
 
 class ActionResult(Record):
-    """The result of a human action on a node or on the change."""
+    """The result of a human action on a ticket or on the change."""
     status: str | None = None               # the ticket's status afterwards (ticket actions)
-    attestation: str | None = None          # the governance record written, if any
-    warnings: list[str] = []
-    note: str | None = None                 # something the operator should know
-    # H-1 accept
-    tier: str | None = None
-    panel: list[str] | None = None
-    # H-2 approve: subjects approved now, and what still blocks the gate
-    approved: list[str] | None = None
-    pending: list[str] | None = None
-    # approve_surface
-    surfaces: list[str] | None = None
+    note: str | None = None                 # what happened, or something the operator should know
 
 
 class ReportOutcome(Record):

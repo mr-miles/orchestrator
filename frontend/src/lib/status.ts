@@ -1,37 +1,28 @@
-import type { ChangeSummary, FailureSource, Node, NodeStatus, Run, RunStage } from './types'
+import type {
+  ChangeSummary,
+  FailureSource,
+  Run,
+  RunStage,
+  Ticket,
+  TicketStatus,
+  Waiting,
+} from './types'
 
-export const STATUSES: NodeStatus[] = [
-  'PENDING',
-  'READY',
-  'RUNNING',
-  'VERIFYING',
-  'REVIEWING',
-  'DEFINING',
-  'MERGING',
-  'REWORK',
-  'AWAITING_HUMAN',
-  'ESCALATED',
-  'ACCEPTED',
-  'FAILED',
+/** Ticket statuses, finished on the left, then work in hand, waiting on the right (progress). */
+export const PROGRESS_ORDER: TicketStatus[] = [
+  'passed',
+  'failed',
+  'waiting',
+  'paused',
+  'merging',
+  'checking',
+  'working',
+  'subtasks',
+  'pending',
 ]
 
-/** Progress bar order: finished on the left, then work in hand, waiting on the right. */
-export const PROGRESS_ORDER: NodeStatus[] = [
-  'ACCEPTED',
-  'FAILED',
-  'ESCALATED',
-  'AWAITING_HUMAN',
-  'REWORK',
-  'MERGING',
-  'DEFINING',
-  'REVIEWING',
-  'VERIFYING',
-  'RUNNING',
-  'READY',
-  'PENDING',
-]
-
-/** The colour of a status (or run stage), a CSS variable defined in index.css. */
+/** The colour of a status (a ticket's, a run's, a change's or a run stage), a CSS variable
+ * defined in index.css. */
 export const statusColor = (s: string) => `var(--status-${s})`
 
 export const STAGE_TEXT: Record<RunStage, string> = {
@@ -48,37 +39,45 @@ export const SOURCE_TEXT: Record<FailureSource, string> = {
   CONTROLLER: 'controller error',
 }
 
+/** Why a ticket waits on a human, in words. */
+export const WAITING_TEXT: Record<Waiting, string> = {
+  attempts: 'its attempts are used up',
+  repeated: 'the same findings came back',
+  escalated: 'a criterion failed',
+  system: 'a system error outlasted its retries',
+  budget: 'its time budget is used up',
+  blocked: 'its agent is blocked on a decision',
+  empty: 'it has nothing to do',
+}
+
 export const isLive = (r: Run) => r.status === 'STARTING' || r.status === 'ACTIVE'
 
 export const humanize = (s: string) => s.toLowerCase().replaceAll('_', ' ')
 
-/** What a node is doing: until its live runs' agents connect, how far they got; a plan under
- * review is being critiqued. */
-export function nodeState(n: Node, live: Run[]): string {
+/** What a ticket is doing: until its live run's agent connects, how far it got. */
+export function ticketState(t: Ticket, live: Run[]): string {
   const waiting =
     live.find((r) => r.stage === 'PREPARING') ?? live.find((r) => r.stage === 'LAUNCHING')
-  if (n.status === 'RUNNING' && waiting?.stage) return STAGE_TEXT[waiting.stage]
-  if (n.kind === 'plan' && n.status === 'REVIEWING') return 'critique'
-  return humanize(n.status)
+  if (t.status === 'working' && waiting?.stage) return STAGE_TEXT[waiting.stage]
+  if (t.status === 'waiting' && t.waiting) return `waiting: ${t.waiting}`
+  return t.status
 }
 
-/** A node's short label: human gates by id and title, stages by the part before the colon. */
-export const nodeLabel = (n: Node) =>
-  n.kind === 'human' ? `${n.id} ${n.title}` : (n.title.split(':')[0] ?? n.title)
+/** A ticket's kind, from its type: ``agent:planner`` -> ``planner``, a sign-off, a
+ * controller's action, a grouping ticket. */
+export function kindOf(t: Pick<Ticket, 'type'>): string {
+  const [family, rest] = t.type.split(':')
+  if (family === 'human') return 'sign-off'
+  return rest ?? family ?? t.type
+}
 
 export const shortSha = (sha?: string | null) => (sha ? sha.slice(0, 10) : '—')
 
-/** A change's status drawn as a node status (its colour). */
+/** A change's status drawn as a ticket status (its colour). */
 export const CHANGE_DOT: Record<ChangeSummary['status'], string> = {
-  ACTIVE: 'RUNNING',
-  READY: 'ACCEPTED',
-  NOT_READY: 'FAILED',
-  ABANDONED: 'FAILED',
+  ACTIVE: 'working',
+  READY: 'passed',
+  ABANDONED: 'cancelled',
 }
 
-export const CHANGE_STATUSES: ChangeSummary['status'][] = [
-  'ACTIVE',
-  'NOT_READY',
-  'READY',
-  'ABANDONED',
-]
+export const CHANGE_STATUSES: ChangeSummary['status'][] = ['ACTIVE', 'READY', 'ABANDONED']

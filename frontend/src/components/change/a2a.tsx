@@ -22,8 +22,8 @@ function OpenQuestion({ q }: { q: AgentQuestion }) {
   return (
     <div className="space-y-2 rounded-md border p-3">
       <p className="text-sm">
-        <Button variant="link" className="h-auto p-0" onClick={() => nav.openNode(q.node)}>
-          {q.role}@{q.node}
+        <Button variant="link" className="h-auto p-0" onClick={() => nav.openTicket(q.ticket)}>
+          {q.role}@{q.ticket}
         </Button>{' '}
         asks:
       </p>
@@ -32,7 +32,7 @@ function OpenQuestion({ q }: { q: AgentQuestion }) {
         value={answer}
         onChange={(e) => setAnswer(e.target.value)}
         placeholder="Your answer (sent to the agent as is)"
-        aria-label={`Answer to ${q.role}@${q.node}`}
+        aria-label={`Answer to ${q.role}@${q.ticket}`}
       />
       <Button
         size="sm"
@@ -48,9 +48,9 @@ function OpenQuestion({ q }: { q: AgentQuestion }) {
 }
 
 /** Agents' questions to the decision owners (A2A ask_human): the open ones, to answer, then
- * the answered and withdrawn ones. ``node`` limits them to one step. */
-export function AgentQuestions({ state, node }: { state: ChangeState; node?: string }) {
-  const qs = (state.a2a?.questions ?? []).filter((q) => !node || q.node === node)
+ * the answered and withdrawn ones. ``ticket`` limits them to one ticket's agents. */
+export function AgentQuestions({ state, ticket }: { state: ChangeState; ticket?: string }) {
+  const qs = (state.a2a?.questions ?? []).filter((q) => !ticket || q.ticket === ticket)
   if (!qs.length) return null
   const open = qs.filter((q) => q.answer == null && q.withdrawn == null)
   const done = qs.filter((q) => !open.includes(q))
@@ -69,7 +69,7 @@ export function AgentQuestions({ state, node }: { state: ChangeState; node?: str
         {done.map((q) => (
           <div key={q.id} className="text-sm text-muted-foreground">
             <b>
-              {q.role}@{q.node}
+              {q.role}@{q.ticket}
             </b>
             : {q.question} —{' '}
             {q.answer != null ? `${q.answered_by}: ${q.answer}` : `withdrawn (${q.withdrawn})`}
@@ -89,8 +89,8 @@ export function AgentCards({ cards }: { cards: A2ACard[] }) {
       <CardHeader>
         <CardTitle>A2A cards</CardTitle>
         <CardDescription>
-          The orchestrator, and every agent of each step in progress (a message to one that is
-          stopped or not started yet starts it for an answer).
+          The orchestrator, the resolver, and every agent that has started on a ticket (a message to
+          one that is stopped resumes it for an answer). Agents find them in the change's catalog.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -98,19 +98,18 @@ export function AgentCards({ cards }: { cards: A2ACard[] }) {
           <TableHeader>
             <TableRow>
               <TableHead>Card</TableHead>
-              <TableHead>Sandbox</TableHead>
-              <TableHead>State</TableHead>
+              <TableHead>Agent</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {cards.map((c) => (
               <TableRow key={c.id}>
                 <TableCell className="font-mono">
-                  {c.node ? (
+                  {c.ticket && c.role !== 'resolver' ? (
                     <Button
                       variant="link"
                       className="h-auto p-0 font-mono"
-                      onClick={() => nav.openNode(c.node!)}
+                      onClick={() => nav.openTicket(c.ticket!)}
                     >
                       {c.id}
                     </Button>
@@ -118,15 +117,8 @@ export function AgentCards({ cards }: { cards: A2ACard[] }) {
                     c.id
                   )}
                 </TableCell>
-                <TableCell className="font-mono">{c.sandbox ?? '—'}</TableCell>
                 <TableCell>
-                  {c.node ? (
-                    <Badge variant={c.sandbox && !c.stopped ? 'outline' : 'secondary'}>
-                      {!c.sandbox ? 'not started' : c.stopped ? 'stopped' : 'running'}
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline">controller</Badge>
-                  )}
+                  <Badge variant={c.state === 'running' ? 'outline' : 'secondary'}>{c.state}</Badge>
                 </TableCell>
               </TableRow>
             ))}

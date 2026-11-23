@@ -1,5 +1,4 @@
 import type {
-  Acceptance,
   ActionResult,
   AgentQuestion,
   Attention,
@@ -13,7 +12,6 @@ import type {
   GitRef,
   GitTree,
   Meta,
-  Traceability,
   Workspace,
 } from './types'
 
@@ -63,11 +61,6 @@ export function getDocDiff(path: string, from: number, to?: number) {
   return api<DocDiff>(`/api/doc/diff?path=${encodeURIComponent(path)}&from=${from}${t}`)
 }
 
-export const getTrace = (cid: string) =>
-  api<Traceability>(`/api/changes/${encodeURIComponent(cid)}/trace`)
-export const getAcceptance = (cid: string) =>
-  api<Acceptance>(`/api/changes/${encodeURIComponent(cid)}/acceptance`)
-
 export function listDocs(prefix: string, all: boolean) {
   return api<DocMeta[]>(`/api/docs?prefix=${encodeURIComponent(prefix)}${all ? '&all=1' : ''}`)
 }
@@ -81,15 +74,17 @@ export function startChange(goal: string, workspace: string, who: Who) {
   return api<{ change: string }>('/api/changes', { goal, workspace }, who.token)
 }
 
-export function nodeAction(
+/** A decision on a ticket: a sign-off's ``approve`` / ``reject``, a waiting ticket's remedy
+ * (``retry``, ``waive:<criterion>``, ``replan``). */
+export function ticketAction(
   cid: string,
-  node: string,
+  ticket: string,
   action: string,
   payload: Record<string, unknown>,
   who: Who,
 ) {
   return api<ActionResult>(
-    `/api/changes/${encodeURIComponent(cid)}/nodes/${encodeURIComponent(node)}/action`,
+    `/api/changes/${encodeURIComponent(cid)}/tickets/${encodeURIComponent(ticket)}/action`,
     { action, approver: who.approver, payload },
     who.token,
   )

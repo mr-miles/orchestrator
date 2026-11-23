@@ -35,11 +35,11 @@ function LiveRun({ run }: { run: Run }) {
           <span className="font-normal">{run.role}</span>
         </CardTitle>
         <CardDescription>
-          <Button variant="link" className="h-auto p-0" onClick={() => nav.openNode(run.node_id)}>
-            {run.node_id}
+          <Button variant="link" className="h-auto p-0" onClick={() => nav.openTicket(run.ticket)}>
+            {run.ticket}
           </Button>{' '}
           · soul {run.soul} · sandbox <code className="font-mono">{run.sandbox}</code> · reports{' '}
-          {run.attempts}
+          {run.attempts} · attempt {run.attempt}
           {(run.turns?.length ?? 0) > 1 && <> · turn {run.turns?.at(-1)?.n}</>}
         </CardDescription>
         <CardAction>
@@ -94,8 +94,8 @@ export function AgentsTab({ runs, cards = [] }: { runs: Run[]; cards?: A2ACard[]
               <TableRow>
                 <TableHead>Run</TableHead>
                 <TableHead>Role</TableHead>
-                <TableHead>Node</TableHead>
-                <TableHead>Cycle</TableHead>
+                <TableHead>Ticket</TableHead>
+                <TableHead>Attempt</TableHead>
                 <TableHead>Turns</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Log</TableHead>
@@ -110,12 +110,12 @@ export function AgentsTab({ runs, cards = [] }: { runs: Run[]; cards?: A2ACard[]
                     <Button
                       variant="link"
                       className="h-auto p-0"
-                      onClick={() => nav.openNode(r.node_id)}
+                      onClick={() => nav.openTicket(r.ticket)}
                     >
-                      {r.node_id}
+                      {r.ticket}
                     </Button>
                   </TableCell>
-                  <TableCell>{r.cycle}</TableCell>
+                  <TableCell>{r.attempt}</TableCell>
                   <TableCell>{r.turns?.length ?? 0}</TableCell>
                   <TableCell>
                     <StatusBadge status={r.status} />

@@ -18,7 +18,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   Every claim is an attestation (`file:<path>@<version>`, `git:<repo>/<path>@<sha>`) that the controller
   resolves before anything moves forward.
 * The web UI shows the tickets, agent progress, reviews, verification and documents, and it is where
-  humans sign off, choose remedies for escalations and replan. (It is being rebuilt on tickets.)
+  humans sign off, choose remedies for escalations and replan.
 * A ticket's agent keeps its sandbox, stopped between rounds, with its session until the ticket is
   closed – the intake until H-1 passes, the planner until H-E1, the oracle until H-2 – so a rework
   continues the same conversation. Judges get a fresh sandbox every round.

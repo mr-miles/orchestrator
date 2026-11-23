@@ -11,27 +11,27 @@ describe('routes', () => {
       '#/ws/app',
       '#/ws/app/documents',
       '#/ws/app/repository',
-      '#/ws/app/c/c1/gates',
+      '#/ws/app/c/c1/agents',
     ])
       expect(formatHash(parseHash(h))).toBe(h)
   })
 
-  test('a change link opens its node once; the hash keeps the page only', () => {
+  test('a change link opens its ticket once; the hash keeps the page only', () => {
     const r = parseHash('#/ws/app/c/c1/overview/H-2')
     expect(r).toMatchObject({ page: 'change', ws: 'app', cid: 'c1', tab: 'overview' })
-    expect(r.page === 'change' && r.focus?.node).toBe('H-2')
+    expect(r.page === 'change' && r.focus?.ticket).toBe('H-2')
     expect(formatHash(r)).toBe('#/ws/app/c/c1/overview')
   })
 
   test('an old-style link (notifications) is a change in an unknown workspace', () => {
     const r = parseHash('#c1/overview/H-1')
     expect(r).toMatchObject({ page: 'change', ws: '', cid: 'c1', tab: 'overview' })
-    expect(r.page === 'change' && r.focus?.node).toBe('H-1')
+    expect(r.page === 'change' && r.focus?.ticket).toBe('H-1')
   })
 
   test('an old-style link is the same page as its change in a workspace', () => {
     expect(samePage(parseHash('#c1/overview'), parseHash('#/ws/app/c/c1/overview'))).toBe(true)
-    expect(samePage(parseHash('#c1/gates'), parseHash('#/ws/app/c/c1/overview'))).toBe(false)
+    expect(samePage(parseHash('#c1/agents'), parseHash('#/ws/app/c/c1/overview'))).toBe(false)
     expect(samePage(parseHash('#/ws/a/c/c1/overview'), parseHash('#/ws/b/c/c1/overview'))).toBe(
       false,
     )

@@ -1,9 +1,9 @@
 import { toast } from 'sonner'
-import { answerQuestion, changeAction, nodeAction } from '@/lib/api'
+import { answerQuestion, changeAction, ticketAction } from '@/lib/api'
 import { useSettings } from '@/lib/settings'
 import type { ActionResult } from '@/lib/types'
 
-/** Human decisions: a node action or a change-level action, as the configured approver. The
+/** Human decisions: a ticket action or a change-level action, as the configured approver. The
  * outcome is a toast; the new state arrives over the change's event stream. */
 export function useAct(cid: string) {
   const who = useSettings()
@@ -14,8 +14,7 @@ export function useAct(cid: string) {
     }
     try {
       const r = await fn()
-      if (r.warnings?.length) r.warnings.forEach((w) => toast.warning(w))
-      else if (r.note) toast.info(r.note)
+      if (r.note) toast.info(r.note)
       else if (done) toast.success(done)
       return true
     } catch (e) {
@@ -24,8 +23,12 @@ export function useAct(cid: string) {
     }
   }
   return {
-    node: (node: string, action: string, payload: Record<string, unknown> = {}, done?: string) =>
-      run(() => nodeAction(cid, node, action, payload, who), done),
+    ticket: (
+      ticket: string,
+      action: string,
+      payload: Record<string, unknown> = {},
+      done?: string,
+    ) => run(() => ticketAction(cid, ticket, action, payload, who), done),
     change: (action: string, payload: Record<string, unknown> = {}, done?: string) =>
       run(() => changeAction(cid, action, payload, who), done),
     answer: (qid: string, answer: string) =>

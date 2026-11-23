@@ -2,20 +2,18 @@ import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isLive } from '@/lib/status'
-import { docsVersion } from '@/lib/trace'
+import { docsVersion, needsDecision } from '@/lib/tickets'
 import type { ChangeState } from '@/lib/types'
 import { AgentsTab } from './agents-tab'
 import { DocSheet, type DocRef } from './doc-sheet'
 import { DocumentsTab } from './documents-tab'
-import { GatesTab } from './gates-tab'
 import { LogSheet } from './log-sheet'
 import { NavContext, TABS, type Nav, type TabId } from './nav'
-import { NodeSheet } from './node-sheet'
 import { OverviewTab } from './overview-tab'
-import { PlanTab } from './plan-tab'
+import { TicketSheet } from './ticket-sheet'
 import { WorkflowTab } from './workflow-tab'
 
-/** One change: its tabs, and sheets for a node, an agent log or a document over them. */
+/** One change: its tabs, and sheets for a ticket, an agent log or a document over them. */
 export function ChangeView({
   cid,
   state,
@@ -27,15 +25,15 @@ export function ChangeView({
   state: ChangeState
   tab: TabId
   setTab: (t: TabId) => void
-  /** A node to open (from a link or an attention item); ``n`` changes on every request. */
-  focus?: { node: string; n: number } | null
+  /** A ticket to open (from a link or an attention item); ``n`` changes on every request. */
+  focus?: { ticket: string; n: number } | null
 }) {
-  const [node, setNode] = useState<string | null>(focus?.node ?? null)
-  // a new request to open a node (React's "adjust state when a prop changes")
+  const [ticket, setTicket] = useState<string | null>(focus?.ticket ?? null)
+  // a new request to open a ticket (React's "adjust state when a prop changes")
   const [focused, setFocused] = useState(focus?.n)
   if (focus && focus.n !== focused) {
     setFocused(focus.n)
-    setNode(focus.node)
+    setTicket(focus.ticket)
   }
   const [log, setLog] = useState<string | null>(null)
   const [doc, setDoc] = useState<DocRef | null>(null)
@@ -44,7 +42,7 @@ export function ChangeView({
       cid,
       tab,
       setTab,
-      openNode: setNode,
+      openTicket: setTicket,
       openLog: setLog,
       openDoc: (path, version) => setDoc({ path, version }),
       openDiff: (path, from) => setDoc({ path, diffFrom: from }),
@@ -52,9 +50,7 @@ export function ChangeView({
     [cid, tab, setTab],
   )
   const live = state.runs.filter(isLive).length
-  const awaiting = state.nodes.filter(
-    (n) => n.status === 'AWAITING_HUMAN' || n.status === 'ESCALATED',
-  )
+  const awaiting = needsDecision(state)
   return (
     <NavContext value={nav}>
       <Tabs value={tab} onValueChange={(v) => setTab(v as TabId)}>
@@ -72,16 +68,10 @@ export function ChangeView({
           ))}
         </TabsList>
         <TabsContent value="overview">
-          <OverviewTab state={state} selected={node} />
+          <OverviewTab state={state} selected={ticket} />
         </TabsContent>
         <TabsContent value="agents">
           <AgentsTab runs={state.runs} cards={state.a2a?.cards} />
-        </TabsContent>
-        <TabsContent value="gates">
-          <GatesTab state={state} />
-        </TabsContent>
-        <TabsContent value="plan">
-          <PlanTab state={state} />
         </TabsContent>
         <TabsContent value="documents">
           <DocumentsTab version={docsVersion(state)} />
@@ -90,7 +80,7 @@ export function ChangeView({
           <WorkflowTab assetsSha={state.assets_sha} />
         </TabsContent>
       </Tabs>
-      <NodeSheet state={state} nodeId={node} onClose={() => setNode(null)} />
+      <TicketSheet state={state} ticketId={ticket} onClose={() => setTicket(null)} />
       <LogSheet run={log} onClose={() => setLog(null)} />
       <DocSheet doc={doc} onOpen={setDoc} onClose={() => setDoc(null)} />
     </NavContext>

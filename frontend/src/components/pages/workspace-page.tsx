@@ -125,7 +125,7 @@ export function WorkspacePage({
   const w = workspaces.find((x) => x.id === ws)
   const mine = changes.filter((c) => (c.workspace ?? ws) === ws)
   // the store moves on whenever a change does
-  const version = mine.map((c) => `${c.id}:${c.status}:${c.accepted}:${c.live_runs}`).join()
+  const version = mine.map((c) => `${c.id}:${c.status}:${c.passed}:${c.live_runs}`).join()
   return (
     <div className="space-y-4">
       <Card>
