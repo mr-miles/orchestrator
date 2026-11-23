@@ -250,7 +250,7 @@ async def test_transition_failure_rolls_back_and_escalates(f: Flow, monkeypatch=
     finally:
         intake_role.Intake.on_done = original
     # the report is accepted; what it means is applied when the agent's turn ends
-    assert out.accepted and "End your turn" in out.instruction
+    assert out.accepted and "a2a_reply" in out.instruction
     assert f.ce.change.goal == "Say hello"     # ... is rolled back
     assert f.status("intake") == ESCALATED and f.ce.runs["r0001"].status == R_FAILED
     assert "controller error" in f.ce.nodes["intake"].escalation.reason
@@ -795,11 +795,23 @@ async def test_agent_ending_with_an_error_is_an_agent_error(f: Flow):
 
 
 @scenario()
-async def test_agent_finishing_without_report_is_an_agent_error(f: Flow):
+async def test_agent_finishing_without_report_is_asked_again_then_an_agent_error(f: Flow):
+    """A turn that ends with the run's task open is answered by the orchestrator – another turn
+    of the same run, in the agent's session – within the report attempts."""
     r = f.run("intake")
-    agent_log(f, r, {"type": "result", "subtype": "success", "is_error": False, "result": "All done!"})
-    await f.exit_agent(r, rc=0)
-    assert r.failure.source == FailureSource.AGENT and "without an accepted report" in r.failure.reason
+    limit = f.cfg.limits.max_report_attempts
+    for turn in range(1, limit + 2):
+        agent_log(f, r, {"type": "result", "subtype": "success", "is_error": False,
+                         "result": "All done!"})
+        await f.exit_agent(r, rc=0)
+        if r.failure:
+            break
+        assert len(r.asked) == turn and "no accepted report" in r.asked[-1]
+        assert r.id in f.ctl.svc.procs                       # its next turn runs
+        assert "The orchestrator, on your task" in f.runner.payloads.get(r.sandbox, {}).get(
+            "prompt.md", "") or any("LEGION_RUN_ID=" + r.id in e for e in f.runner.run_envs)
+    assert len(r.asked) == limit and r.failure.source == FailureSource.AGENT
+    assert "not ended" in r.failure.reason
 
 
 @scenario(max_report_attempts=1)
@@ -1152,7 +1164,7 @@ async def test_an_accepted_report_is_taken_when_the_agents_turn_ends(f: Flow):
     atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
             await f.write(run, "intake/risk.json", signals())]
     out = await f.report(run, atts, exit_agent=False)
-    assert out.accepted and "End your turn" in out.instruction
+    assert out.accepted and "a2a_reply" in out.instruction
     assert run.status == "REPORTED" and not run.concluded
     assert f.status("intake") == RUNNING and f.status("H-1") == PENDING     # nothing moved yet
     await f.exit_agent(run)                                  # the turn ends: control returns
@@ -1167,6 +1179,7 @@ async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
     atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
             await f.write(run, "intake/risk.json", signals())]
     await f.report(run, atts, exit_agent=False)
+    await f.reply(run)                                  # the task ended: the grace starts
     grace, RunLifecycle.END_TURN_GRACE_S = RunLifecycle.END_TURN_GRACE_S, 0
     f.ce.notify()                                       # its timer reads the state again
     try:

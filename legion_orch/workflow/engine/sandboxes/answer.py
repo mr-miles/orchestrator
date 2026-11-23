@@ -2,7 +2,7 @@
 
 A step's card stays registered for as long as its agent's sandbox exists, also while it is
 stopped between turns. A message for a step with a live run is delivered to its agent's inbox
-(the MCP ``a2a_inbox`` tool); otherwise the controller queues it here: it starts the sandbox if it
+(the MCP ``inbox`` tool); otherwise the controller queues it here: it starts the sandbox if it
 was stopped, resumes the agent's session for one turn on the message, sends back what the agent
 answers, and stops the sandbox again if it found it stopped. One turn at a time per sandbox,
 under its lock, so a rework launched meanwhile waits for the answer (and an answer never

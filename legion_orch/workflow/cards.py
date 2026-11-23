@@ -1,7 +1,7 @@
 """The A2A cards of a change, derived from its state alone (like :mod:`.attention`).
 
-* The **orchestrator** card – the controller itself, not a model: it lists the change's cards,
-  relays a message to a step and asks a human – registered for as long as the change is active.
+* The **orchestrator** card – the controller itself, not a model: it lists the change's cards
+  and asks a human – registered for as long as the change is active.
 * One card per **step agent** – a role of a step (``implementer@build:T1``,
   ``reviewer@build:T1``, ``security@build:T1``) – from the step's start to its end, whether its
   agent has a sandbox yet or not: a message to an agent not started starts it (and its run

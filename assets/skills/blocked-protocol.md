@@ -11,5 +11,9 @@ unresolved, or success cannot be verified.
 `report(status="BLOCKED", summary=…, attestations=[…evidence…], blocked_reason="<what stops you>",
 missing_decision="<the single narrow question a human must answer>")`
 
+Once it is accepted, end your task with `a2a_reply(task_id=<your run id>, text=<the question in
+one line>, state="input-required")`, then end your turn. Before you block, ask the agent whose
+work the question is about (`legion-a2a-protocol`) – its answer may be all you need.
+
 A human answers in the UI; you (or a successor run) will receive the answer as attested feedback.
 Never mark planned work as deferred or done-later on your own authority.

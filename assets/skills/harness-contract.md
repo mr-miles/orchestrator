@@ -6,7 +6,10 @@ description: "MANDATORY for every legion run: load it before your first action. 
 
 You follow `read-before-write -> evidence-before-action -> minimal diff -> verify-before-report`.
 
-- Call `get_assignment()` first. Read every attestation listed under `context` before acting.
+- Call `inbox()` first. Your work is the task from the orchestrator (its `task_id` is your run
+  id): its first message is your assignment (`assignment` holds it structured, as
+  `get_assignment()` does). Messages from other agents of the change arrive in the same inbox.
+  Read every attestation listed under `context` before acting.
   A `file:<path>@<version>` attestation is a **document in the document store**, not a file in
   your working copy: read it with `docs_read` (searching the checkout finds nothing). `git:`
   attestations are commits in the repository.
@@ -22,12 +25,15 @@ You follow `read-before-write -> evidence-before-action -> minimal diff -> verif
   exit code is unknown until its completion notice arrives. Wait for that notice before you
   record the result or report; never report while a task you started is still running. Stop
   any background process you no longer need before you report.
-- Finish with exactly one `report(...)` call whose status is `DONE` or `BLOCKED`, then **end
-  your turn**: ending it is what hands your work back to the controller. Never end your turn
-  without an accepted report – if you cannot finish, report `BLOCKED` (blocked-protocol); a turn
-  that ends without one fails the run. Once a report is accepted, end your turn at once: nothing
-  you do after it counts. If the controller rejects the report it returns the violated guard
-  ids – fix the cause and report again. You have a limited number of attempts. Check first with the same call and
-  `dry_run=true`: it runs every guard, returns `would_accept` and the violations, and uses no
-  attempt.
+- **File your results with `report(...)`** (status `DONE` or `BLOCKED`): it records them – the
+  documents, attestations and data – and ends nothing. If the controller rejects the report it
+  returns the violated guard ids – fix the cause and report again. You have a limited number of
+  attempts. Check first with the same call and `dry_run=true`: it runs every guard, returns
+  `would_accept` and the violations, and uses no attempt.
+- **Then end your task with `a2a_reply(task_id=<your run id>, text=<one line>, state=...)`**:
+  `completed` after an accepted DONE report, `input-required` after an accepted BLOCKED one
+  (blocked-protocol), `failed` only to give up. Answer the messages in your inbox first. Then
+  **end your turn**: that hands your work back to the controller, and nothing you do after it
+  counts. If the reply does not match your record, or your turn ends with the task still open,
+  the orchestrator tells you what is missing – each time uses one of your attempts.
 - Call `progress(message)` at meaningful milestones so the operator can follow your work.

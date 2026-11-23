@@ -12,9 +12,9 @@ The URLs name no change: each request is answered for the caller's own change, w
 identity names.
 
 The cards are those of :mod:`legion_orch.workflow.cards`: the change's **orchestrator** – this
-module, deterministic, no model: ``list_cards``, ``relay`` and ``ask_human`` – and one per
+module, deterministic, no model: ``list_cards`` and ``ask_human`` – and one per
 **step** whose agent has a sandbox. A message to a step becomes a task that waits for its
-agent's answer: delivered to its inbox (MCP ``a2a_inbox`` / ``a2a_reply``) while it has a live
+agent's answer: delivered to its inbox (MCP ``inbox`` / ``a2a_reply``) while it has a live
 run, otherwise answered in one resumed turn of its session, its sandbox started first if it was
 stopped (``engine/sandboxes/answer.py``).
 
@@ -67,12 +67,6 @@ ORCHESTRATOR_SKILLS = [
                description="The cards of this change you can message: the orchestrator and every "
                            "step whose agent has a sandbox (its roles, and whether it is stopped).",
                tags=["registry"], examples=["/list_cards"]),
-    AgentSkill(id="relay", name="Relay a message",
-               description="Pass a message to a step's agent and return its answer. A step's card "
-                           "takes messages directly too; relay is for a step you know only by id.",
-               tags=["messaging"],
-               examples=["/relay build:T2 Which module owns the config loader?",
-                         '{"skill": "relay", "to": "build:T2", "text": "…"}']),
     AgentSkill(id="ask_human", name="Ask a human",
                description="Ask the change's decision owners a question. The task completes with "
                            "their answer, which can take hours: send with --async and poll. Ask "
@@ -122,7 +116,7 @@ class CallerContext(DefaultServerCallContextBuilder):
 
 @dataclass
 class InboxItem:
-    """A message waiting for a running step's agent (MCP ``a2a_inbox``)."""
+    """A message waiting for a running step's agent (MCP ``inbox``)."""
     task_id: str
     node: str
     sender: str
@@ -183,9 +177,9 @@ class A2AHub:
     def agent_card(self, ce: ChangeEngine, card: StepCard) -> AgentCard:
         if card.node is None:
             desc = (f"The orchestrator of change {ce.cid} ({ce.change.goal[:200]}): the controller "
-                    "itself, not a model. Lists the change's cards, relays messages to its steps "
-                    "and asks its decision owners. Skills are named in a data part "
-                    '{"skill": …} or by a leading /<skill> in the text.')
+                    "itself, not a model. Lists the change's cards and asks its decision owners. "
+                    'Skills are named in a data part {"skill": …} or by a leading /<skill> in the '
+                    "text.")
             skills = ORCHESTRATOR_SKILLS
         else:
             desc = (f"The {card.role} agent of step {card.node} in change {ce.cid}: {card.title}."
@@ -256,15 +250,16 @@ class A2AHub:
     def pending(self, cid: str, card: str) -> list[InboxItem]:
         return list(self.inbox.get((cid, card), {}).values())
 
-    def reply(self, cid: str, card: str, task_id: str, text: str) -> bool:
+    def reply(self, cid: str, card: str, task_id: str, text: str,
+              state: str = "completed") -> bool:
         item = self.inbox.get((cid, card), {}).pop(task_id, None)
         if item is None or item.reply.done():
             return False
-        item.reply.set_result(text)
+        item.reply.set_result((state, text))
         return True
 
     async def deliver(self, ce: ChangeEngine, card: StepCard, sender: WorkloadBinding, text: str,
-                      task_id: str) -> str:
+                      task_id: str) -> tuple[str, str]:
         """``text`` from ``sender`` to the step agent of ``card``; its answer. While the step has a live
         run the message waits in its inbox; when it has none (also once a run ends without
         answering) one resumed turn of its session answers. Raises :class:`Undeliverable` once
@@ -295,7 +290,7 @@ class A2AHub:
                 if item.reply.done():
                     return item.reply.result()
                 try:
-                    return await ce.a2a_answer(node, role, item.sender, text)
+                    return "completed", await ce.a2a_answer(node, role, item.sender, text)
                 except AgentBusy:                   # a run started meanwhile: its inbox
                     await asyncio.sleep(0.2)
                 except NoAgent as e:
@@ -306,6 +301,18 @@ class A2AHub:
 
 def _text(updater: TaskUpdater, text: str):
     return updater.new_agent_message([new_text_part(text)])
+
+
+async def finish(up: TaskUpdater, who: str, state: str, text: str) -> None:
+    """The recipient's reply, as the task's state: completed (its answer, an artifact),
+    input-required (it asks something back: send again with this task id), rejected."""
+    if state == "rejected":
+        await up.reject(_text(up, text))
+    elif state == "input-required":
+        await up.requires_input(_text(up, text))
+    else:
+        await up.add_artifact([new_text_part(text)], name=f"answer from {who}")
+        await up.complete()
 
 
 class _Executor(AgentExecutor):
@@ -344,13 +351,12 @@ class StepExecutor(_Executor):
             await up.reject(_text(up, "empty message"))
             return
         await up.start_work(_text(up, f"delivered to {self.card.id}; waiting for its answer"))
-        answer = await self.hub.deliver(self.ce, self.card, caller, body, task_id)
-        await up.add_artifact([new_text_part(answer)], name=f"answer from {self.card.id}")
-        await up.complete()
+        await finish(up, self.card.id, *await self.hub.deliver(self.ce, self.card, caller, body,
+                                                               task_id))
 
 
-HELP = ("Name a skill: a data part {\"skill\": \"list_cards\" | \"relay\" | \"ask_human\", …} or "
-        "text starting /list_cards, /relay <card> <message>, /ask_human <question>.")
+HELP = ("Name a skill: a data part {\"skill\": \"list_cards\" | \"ask_human\", …} or text "
+        "starting /list_cards or /ask_human <question>. Message another agent at its own card.")
 
 
 def parse_skill(text: str, data: list[dict]) -> tuple[str, dict[str, Any]]:
@@ -360,9 +366,6 @@ def parse_skill(text: str, data: list[dict]) -> tuple[str, dict[str, Any]]:
     if text.startswith("/"):
         head, _, rest = text[1:].partition(" ")
         rest = rest.strip()
-        if head == "relay":
-            to, _, msg = rest.partition(" ")
-            return head, {"to": to, "text": msg.strip()}
         if head == "ask_human":
             return head, {"question": rest}
         return head, {}
@@ -378,30 +381,10 @@ class OrchestratorExecutor(_Executor):
             await up.add_artifact([new_data_part({"cards": self.hub.registry(self.ce, caller)})],
                                   name="cards")
             await up.complete()
-        elif skill == "relay":
-            await self.relay(up, task_id, caller, str(args.get("to") or ""),
-                             str(args.get("text") or "").strip())
         elif skill == "ask_human":
             await self.ask_human(up, task_id, caller, str(args.get("question") or "").strip())
         else:
             await up.reject(_text(up, (f"unknown skill {skill!r}. " if skill else "") + HELP))
-
-    async def relay(self, up, task_id, caller, to: str, body: str) -> None:
-        card = self.hub.find(self.ce, to)
-        if card is None or card.node is None:
-            await up.reject(_text(up, f"{to!r} is not a step card of change {self.ce.cid} "
-                                      "(see /list_cards)"))
-            return
-        if (card.node, card.role) == (caller.task, caller.role):
-            await up.reject(_text(up, "that is your own card"))
-            return
-        if not body:
-            await up.reject(_text(up, "relay needs a message"))
-            return
-        await up.start_work(_text(up, f"relayed to {to}; waiting for its answer"))
-        answer = await self.hub.deliver(self.ce, card, caller, body, task_id)
-        await up.add_artifact([new_text_part(answer)], name=f"answer from {to}")
-        await up.complete()
 
     async def ask_human(self, up, task_id, caller, question: str) -> None:
         ce = self.ce

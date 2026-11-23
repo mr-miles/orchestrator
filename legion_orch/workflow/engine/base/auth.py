@@ -27,8 +27,18 @@ from ....identity import (
     SvidVerifier,
     WorkloadBinding,
 )
-from ...model import LIVE_RUN, Run
+from ...model import LIVE_RUN, R_REPORTED, Run
 from .common import log
+
+
+def open_task(r: Run) -> bool:
+    """A run reported, its task not ended yet: its agent still replies (a2a_reply) – and is
+    asked again if it does not (services/run_tasks.py)."""
+    if r.status != R_REPORTED or r.consult or r.concluded or r.report is None:
+        return False
+    wanted = "input-required" if str(r.report.status) == "BLOCKED" else "completed"
+    return r.reply is None or r.reply.state != wanted
+
 
 # Every run of every change, as (change id, run).
 RunSource = Callable[[], Iterable[tuple[str, Run]]]
@@ -85,7 +95,7 @@ class WorkloadAuth:
         if b is None:
             return None
         for cid, r in self._runs():
-            if r.sandbox_ref == b.sandbox and r.status in LIVE_RUN:
+            if r.sandbox_ref == b.sandbox and (r.status in LIVE_RUN or open_task(r)):
                 if (cid, r.node_id, r.role) == (b.change, b.task, b.role):
                     return cid, r
                 log.warning("token for %s does not match live run %s", b, r.id)

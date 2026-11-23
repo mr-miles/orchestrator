@@ -39,10 +39,12 @@ from ...model import (
     Resume,
     Run,
     RunStage,
+    TaskReply,
 )
 from ...results import Escalate, PhaseResult
 from ...roles import handler_for
 from ...view import RoleContext
+from ..base.auth import open_task
 from ..base.common import ENV_SPEC, PLAN_DOCS, SKILLS_DIR, WorkflowError, _slug, write_skills
 from ..base.core import ChangeCore
 from ..base.work import AGENT, Command, Outcome, Session, Work
@@ -52,6 +54,7 @@ from .runs import RunLifecycle
 
 if TYPE_CHECKING:
     from .reports import Reports
+    from .run_tasks import RunTasks
     from .verification import Verifications
 
 
@@ -97,6 +100,22 @@ class Ended:
     result: PhaseResult | None
 
 
+START_PROMPT = """You are the `{role}` agent of `{node}` in change {change}.
+
+Your work is a task in your inbox: call `inbox()` (legion MCP) first – task `{task}`, from the
+orchestrator, holds your assignment; messages from other agents of the change arrive there too.
+Load the `legion-harness-contract` skill before your first action. File your results with
+`report(...)`, then end the task with `a2a_reply(task_id="{task}", text=..., state=...)`:
+`completed` after an accepted DONE report, `input-required` after an accepted BLOCKED one.
+"""
+
+CONTINUE_PROMPT = """The orchestrator, on your task `{task}`:
+
+{message}
+
+Your inbox (`inbox()`) has the task and any messages for you.
+"""
+
 CONSULT_PROMPT = """# A message before your work starts
 
 You are the `{role}` agent of `{node}` in change {change}. Your work on this step has not
@@ -119,9 +138,12 @@ Your instructions for that work, as they stand now (do not start on them in this
 
 @dataclass
 class AgentTurn(Command):
-    """The agent's turn: start the agent and await its process (its timers stop it: the run
-    timeout while it is live, the end-of-turn grace after its accepted report). When it exits
-    the run's record is completed (exit code, a live run failed with why, the log archived)."""
+    """The agent's turns: start the agent and await its process (its timers stop it: the run
+    timeout while its task is open, the end-of-turn grace after it ended it). A turn that ends
+    with the run's task still open – no accepted report, or no reply ending the task – is asked
+    again (services/run_tasks.py): the agent's session is resumed for another turn of the same
+    run, with the orchestrator's message. Then the run's record is completed (exit code, a live
+    run failed with why, the log archived)."""
     runs: AgentRuns | None = None
     of: Run | None = None                   # the run whose agent this is
 
@@ -135,6 +157,21 @@ class AgentTurn(Command):
                     run.node_id, run.id)
             c.save()
         rc = await runs._turn(run, proc)
+        turn = 1
+        while True:
+            async with c.lock:
+                again = runs.ask_again_after(run, rc)
+                c.save()
+            if again is None:
+                break
+            turn += 1
+            proc = await runs.continue_turn(run, again, turn)
+            async with c.lock:
+                c.procs[run.id] = proc
+                c.event("agent", f"turn {turn}: the agent's session resumed with the "
+                                 "orchestrator's message", run.node_id, run.id)
+                c.save()
+            rc = await runs._turn(run, proc)
         async with c.lock:
             c.procs.pop(run.id, None)
             run.exit_code = rc
@@ -160,6 +197,75 @@ class AgentRuns:
         self.c, self.lifecycle, self.sandboxes, self.roles = core, lifecycle, sandboxes, roles
         self.reports: Reports = None  # type: ignore[assignment]   # set once it exists
         self.verifications: Verifications | None = None      # set once it exists (G-V0)
+        self.tasks: RunTasks | None = None                   # set once it exists
+
+    # ------------------------------------------------------------------ the run's task
+    def ask_again_after(self, run: Run, rc: int) -> str | None:
+        """Under the lock, after a turn of ``run`` ended (exit ``rc``): the orchestrator's
+        message for another turn, or None – the task is over, or the exit was a failure (the
+        caller fails it as before), or no attempt is left. Asks used up with an accepted report
+        leave the report's word as the reply (it is the record that matters)."""
+        tasks = self.tasks
+        if run.consult or tasks is None or tasks.ended(run) or rc != 0:
+            return None
+        if not (run.status in LIVE_RUN or open_task(run)):
+            return None
+        # only an agent that ended its turn is asked again: a CLI that crashed, failed or exited
+        # waiting on its background tasks fails the run as before (_exit_reason)
+        result = agentlog.agent_result(self.lifecycle.log_tail(run.id, 2000))
+        if result is None or result.is_error or result.pending:
+            return None
+        msg = tasks.ask_again(run)
+        if msg is None and open_task(run):
+            run.reply = TaskReply(state=tasks.wanted(run),
+                                  text="(no reply: the accepted report's status is taken)")
+            self.c.event("agent", "the task was not ended: its accepted report stands",
+                         run.node_id, run.id)
+        return msg
+
+    async def continue_turn(self, run: Run, message: str, turn: int):
+        """Resume ``run``'s agent session for another turn on ``message`` (its full tools and
+        MCP, as its first turn), its log appended to the run's."""
+        sid = run.session_id or agentlog.session_id(self.lifecycle.log_tail(run.id, 100_000))
+        d = self.c.run_dir(f"{run.id}-turn{turn}") / "payload"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "prompt.md").write_text(CONTINUE_PROMPT.format(task=run.id, message=message))
+        soul = self.c.assets.soul(run.soul) if run.soul in self.c.assets.souls_ else ""
+        (d / "soul.md").write_text(soul)
+        (d / "mcp.json").write_text(self._mcp_json())
+        env = self._env(run) | {"LEGION_NEEDS_REPO": "0"}
+        if sid:
+            env["LEGION_RESUME_SESSION"] = sid
+        (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
+        for name, text in payload_scripts().items():
+            (d / name).write_text(text)
+        await self.sandboxes.upload(run.sandbox, d)
+        return await self.sandboxes.start_agent(run.sandbox, self.c.run_dir(run.id) / "agent.log")
+
+    def _mcp_json(self) -> str:
+        # No credential: the OpenShell gateway injects the bearer for the controller endpoint.
+        # With the local runner the bearer is in the process env (gateway emulation) and Claude
+        # Code expands ${LEGION_ACCESS_TOKEN} in the MCP config at start-up.
+        # alwaysLoad: the controller's tools load at start, not deferred behind a tool search
+        server = {"type": "http", "url": self.c.mcp_url, "alwaysLoad": True}
+        if self.c.cfg.identity.dev_spire:
+            server["headers"] = {"Authorization": "Bearer ${LEGION_ACCESS_TOKEN}"}
+        return json.dumps({"mcpServers": {"legion": server}}, indent=2)
+
+    def _env(self, run: Run) -> dict[str, str]:
+        env = {
+            "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
+            "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
+            "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
+        }
+        # A2A (server/a2a.py): run-agent.sh registers the change's AI Catalog with the a2a CLI;
+        # its default agent is the change's orchestrator
+        a2a = self.c.cfg.server.a2a_url
+        orchestrator = cards.card_url(a2a, cards.ORCHESTRATOR)
+        return env | {"LEGION_A2A_CATALOG": cards.catalog_url(a2a),
+                      "LEGION_A2A_ORCHESTRATOR": orchestrator,
+                      "LEGION_A2A_CARD": cards.card_id(run.role, run.node_id),
+                      "A2ACLI_AGENT_CARD": orchestrator}
 
     # ------------------------------------------------------------------ A2A: an early start
     async def consult(self, node_id: str, role: str, sender: str, text: str) -> str:
@@ -507,29 +613,15 @@ class AgentRuns:
         d = self.c.run_dir(run.id) / "payload"
         d.mkdir(parents=True, exist_ok=True)
         (d / "soul.md").write_text(rendered.soul)
-        (d / "prompt.md").write_text(rendered.prompt)
+        if run.consult:                       # an A2A answer turn: its prompt is the message
+            (d / "prompt.md").write_text(rendered.prompt)
+        else:                                 # the assignment is its task's first message
+            run.instructions = rendered.prompt
+            (d / "prompt.md").write_text(START_PROMPT.format(
+                role=run.role, node=run.node_id, change=self.c.cid, task=run.id))
         write_skills(d / SKILLS_DIR, rendered.skills)
-        # No credential: the OpenShell gateway injects the bearer for the controller endpoint.
-        # With the local runner the bearer is in the process env (gateway emulation) and Claude
-        # Code expands ${LEGION_ACCESS_TOKEN} in the MCP config at start-up.
-        # alwaysLoad: the controller's tools load at start, not deferred behind a tool search
-        server = {"type": "http", "url": self.c.mcp_url, "alwaysLoad": True}
-        if self.c.cfg.identity.dev_spire:
-            server["headers"] = {"Authorization": "Bearer ${LEGION_ACCESS_TOKEN}"}
-        (d / "mcp.json").write_text(json.dumps({"mcpServers": {"legion": server}}, indent=2))
-        env = {
-            "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
-            "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
-            "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox),
-        }
-        # A2A (server/a2a.py): run-agent.sh registers the change's AI Catalog with the a2a CLI;
-        # its default agent is the change's orchestrator
-        a2a = self.c.cfg.server.a2a_url
-        orchestrator = cards.card_url(a2a, cards.ORCHESTRATOR)
-        env |= {"LEGION_A2A_CATALOG": cards.catalog_url(a2a),
-                "LEGION_A2A_ORCHESTRATOR": orchestrator,
-                "LEGION_A2A_CARD": cards.card_id(run.role, run.node_id),
-                "A2ACLI_AGENT_CARD": orchestrator}
+        (d / "mcp.json").write_text(self._mcp_json())
+        env = self._env(run)
         if found := self._resumable_session(run, plan):
             run.resumed_from, run.resumed_session = found
             env["LEGION_RESUME_SESSION"] = run.resumed_session
