@@ -23,7 +23,9 @@ Rules:
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
+from typing import Any
 
 from .states import (
     StageState,
@@ -138,6 +140,59 @@ class FlowState:
         self._effects: list[Effect] = []
         for s in workflow.stages:
             self._register(s, None)
+
+    # ------------------------------------------------------------------ persistence
+    def snapshot(self) -> dict[str, Any]:
+        """The core's state as plain data – what :meth:`restore` makes it again from (the
+        structure itself is rebuilt: the tree, the rounds inserted, the groups' steps)."""
+        states: dict[str, Any] = {}
+        for nid, st in self.state.items():
+            if isinstance(st, StepState):
+                states[nid] = {"status": str(st.status), "attempt": st.attempt,
+                               "cycles": st.cycles, "feedback": list(st.feedback),
+                               "escalation": list(st.escalation) if st.escalation else None,
+                               "in_place": st.in_place}
+            else:
+                states[nid] = {"status": str(st.status)}
+        groups = {nid: [dataclasses.asdict(s) for s in n.steps] for nid, n in self.nodes.items()
+                  if isinstance(n, Parallel) and n.steps}
+        return {"states": states, "rounds": {k: list(v) for k, v in self.rounds.items()},
+                "groups": groups, "ended": self.ended,
+                "past_attempts": dict(self._past_attempts)}
+
+    @classmethod
+    def restore(cls, workflow: Workflow, snap: dict[str, Any]) -> FlowState:
+        """The core as ``snap`` left it, in ``workflow``: its rounds inserted again, its groups'
+        steps defined again, each node's state as it was. A node ``workflow`` does not have (a
+        tree rebuilt for another tier) is skipped, its attempts kept – so an attempt number is
+        never reused."""
+        flow = cls(workflow, snap.get("past_attempts"))
+        for stage_id, ids in snap.get("rounds", {}).items():
+            stage = flow.nodes.get(stage_id)
+            if isinstance(stage, Stage) and isinstance(stage.rework, AppendRound):
+                for _ in ids:
+                    flow._insert_round(stage)
+        for gid, steps in snap.get("groups", {}).items():
+            node = flow.nodes.get(gid)
+            if isinstance(node, Parallel):
+                node.steps = [Step(**s) for s in steps]
+                for st in node.steps:
+                    flow._register(st, node)
+        for nid, s in snap.get("states", {}).items():
+            m = flow.state.get(nid)
+            if m is None:
+                if "attempt" in s:
+                    flow._past_attempts[nid] = max(flow._past_attempts.get(nid, 0), s["attempt"])
+                continue
+            if isinstance(m, StepState):
+                m._status = StepStatus(s["status"])
+                m.attempt, m.cycles, m.in_place = s["attempt"], s["cycles"], s["in_place"]
+                m.feedback = list(s["feedback"])
+                m.escalation = tuple(s["escalation"]) if s["escalation"] else None
+            else:
+                m._status = StageStatus(s["status"])
+        flow.ended = snap.get("ended")
+        return flow
 
     # ------------------------------------------------------------------ state access
     def step(self, nid: str) -> StepState:
@@ -433,7 +488,8 @@ class FlowState:
         last = max(order.index(n) for n in inside)
         return order[last + 1:]
 
-    def _append_round(self, stage: Stage) -> str | None:
+    def _insert_round(self, stage: Stage) -> tuple[Stage, int]:
+        """The structure of a round: the stage's next one, inserted where its policy says."""
         policy = stage.rework
         assert isinstance(policy, AppendRound)
         rounds = self.rounds.setdefault(stage.id, [])
@@ -443,6 +499,10 @@ class FlowState:
         stage.children.insert(at, rnd)
         self._register(rnd, stage)
         rounds.append(rnd.id)
+        return rnd, at
+
+    def _append_round(self, stage: Stage) -> str | None:
+        rnd, at = self._insert_round(stage)
         for child in stage.children[at + 1:]:
             self._reset(child)
         if stage.gate is not None:

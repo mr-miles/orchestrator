@@ -122,7 +122,7 @@ async def _full_workflow(tmp_path):
         assert {k: n.status for k, n in new.nodes.items()} == {k: n.status for k, n in old.nodes.items()}
         assert {k: r.status for k, r in new.runs.items()} == {k: r.status for k, r in old.runs.items()}
         assert ctl2.docs.list(f"changes/{old.cid}/control/logs/"), "agent logs archived in store"
-        assert ctl2.svc.journal.fold(old.cid)["workflow"]["inputs"]         # the journal
+        assert ctl2.svc.journal.fold(old.cid)["workflow"]["core"]["states"]  # its history
         assert not ctl2.docs.latest_version(f"changes/{old.cid}/control/graph.json")
     assert ctl2.auth.identity.tokens.verify(old_token) is None     # signing key never persisted
     assert all(r.sandbox_ref for _, r in ctl2.all_runs())

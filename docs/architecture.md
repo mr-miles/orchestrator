@@ -87,7 +87,7 @@ flowchart TB
 | Layer | Decides | Knows nothing about |
 | --- | --- | --- |
 | **Workflow core** (`flow/`) | Between steps: what starts when (a stage's gate is its last step), send-backs and their rework policies, fix rounds, the end | Agents, sandboxes, git, the store, node kinds, what a gate checks or who approves it |
-| **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persistence by replay | What a step does inside |
+| **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persisting the core's state (snapshot and restore) | What a step does inside |
 | **Steps** (`steps/`) | What each kind of node is made of | How a phase does its work |
 | **Phases** | Their own work and its result: ok, rework or escalate | Which kind of node they serve (policies are passed in) |
 | **Agent layer** (role handlers) | A role's guards, context, prompt variables, what its report records | Sandboxes, the next phase |
@@ -640,7 +640,7 @@ stateDiagram-v2
 | Boundary | Rule | Checked by |
 | --- | --- | --- |
 | Workflow core | Pure: no I/O, no engine imports; state only through its machines' transitions | `tests/test_flow.py` (invariants after every event, hypothesis), `test_flow_states.py` |
-| FlowRuntime ↔ core | The core's state is its inputs; replaying them rebuilds it exactly | `tests/test_runtime.py` |
+| FlowRuntime ↔ core | The core's state is stored as it stands (`FlowState.snapshot`) and restored into the rebuilt tree (`FlowState.restore`): the same statuses, actions and effects from then on | `tests/test_workflow_tree.py`, `tests/test_runtime.py` |
 | Engine layers | One package per layer – `runtime/` > `steps/` > `services/` > `sandboxes/` > `base/` – importing only downward; `compose.py` alone builds them; the facade (`change.py`) never sees the step layer; nothing outside the engine imports more than `legion_orch.workflow.engine`'s own names | the import contracts in `pyproject.toml` (`lint-imports`; `test_units.py::test_the_engine_keeps_its_layers`), `test_units.py::test_the_facade_names_none_of_the_step_layer` |
 | Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
 | The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner tells the runtime (through `StepEvents`, its only view of the layer above), the runtime the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
