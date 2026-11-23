@@ -96,10 +96,14 @@ class GatewaySandbox:
 
 @dataclass(frozen=True)
 class Listing:
-    """The gateway's sandboxes; ``complete``: every one of them (one page, read in full) – only
-    a complete listing says a sandbox is gone."""
+    """The gateway's sandboxes matching a selector, every page read; ``complete`` is False only
+    when it gave up before the last page – and only a complete listing says a sandbox is gone."""
     sandboxes: tuple[GatewaySandbox, ...]
     complete: bool = True
+
+
+def _selects(selector: dict[str, str], labels: dict[str, str]) -> bool:
+    return all(labels.get(k) == v for k, v in selector.items())
 
 
 async def _run(argv: list[str], timeout: float, env: dict | None = None,
@@ -190,8 +194,8 @@ class Runner:
         """Stop a sandbox kept between runs; its workspace (and agent session) is preserved."""
     async def start(self, name: str) -> None:
         """Start a stopped sandbox again."""
-    async def list(self) -> Listing:
-        """Every sandbox of the workspace, as the gateway knows them."""
+    async def list(self, selector: dict[str, str] | None = None) -> Listing:
+        """The workspace's sandboxes whose labels match ``selector`` (all: none)."""
         return Listing(())
 
 
@@ -258,15 +262,26 @@ class OpenShellRunner(Runner):
     async def start(self, name):
         await self._os("sandbox", "start", name, timeout=900)
 
-    async def list(self) -> Listing:
-        """``sandbox list --output json`` (the workspace's). A further page (a
-        ``next_page_token``) is not read: the listing is then incomplete."""
-        out = json.loads(await self._os("sandbox", "list", "--output", "json", timeout=120))
-        found = tuple(GatewaySandbox(name=s.get("name", ""), id=s.get("id", ""),
+    MAX_PAGES = 100
+
+    async def list(self, selector: dict[str, str] | None = None) -> Listing:
+        """``sandbox list --output json [--selector k=v,…]``, every page (``--page-token``)."""
+        args = ["sandbox", "list", "--output", "json"]
+        if selector:
+            args += ["--selector", ",".join(f"{k}={v}" for k, v in selector.items())]
+        found: list[GatewaySandbox] = []
+        token = ""
+        for _ in range(self.MAX_PAGES):
+            out = json.loads(await self._os(*args, *(["--page-token", token] if token else []),
+                                            timeout=120))
+            found += [GatewaySandbox(name=s.get("name", ""), id=s.get("id", ""),
                                      phase=s.get("phase", ""), labels=s.get("labels") or {},
                                      annotations=s.get("annotations") or {})
-                      for s in out.get("sandboxes", []))
-        return Listing(found, complete=not out.get("next_page_token"))
+                      for s in out.get("sandboxes", [])]
+            token = out.get("next_page_token") or ""
+            if not token:
+                return Listing(tuple(found))
+        return Listing(tuple(found), complete=False)       # it would not end: not concluded
 
 
 class LocalRunner(Runner):
@@ -338,11 +353,13 @@ class LocalRunner(Runner):
     async def delete(self, name):
         shutil.rmtree(self._root(name), ignore_errors=True)
 
-    async def list(self) -> Listing:
+    async def list(self, selector: dict[str, str] | None = None) -> Listing:
         """The local sandboxes (their directories); never stopped (stop is a no-op here)."""
         found = []
         for meta in sorted(self.root.glob("*/.legion-sandbox.json")) if self.root.exists() else []:
             data = json.loads(meta.read_text())
+            if not _selects(selector or {}, data.get("labels", {})):
+                continue
             found.append(GatewaySandbox(name=meta.parent.name, id=meta.parent.name, phase="Ready",
                                         labels=data.get("labels", {}),
                                         annotations=data.get("annotations", {})))

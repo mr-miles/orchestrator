@@ -14,6 +14,7 @@ from ...git import GitRemote
 from ...identity import WorkloadBinding
 from ...notify import Notifier
 from ...sandbox import (
+    CHANGE_LABEL,
     EnvironmentBuilder,
     Listing,
     Runner,
@@ -226,28 +227,25 @@ class Controller:
         self._loop_task = asyncio.create_task(self._remind())
 
     async def adopt_sandboxes(self) -> None:
-        """After :meth:`load`: each change's sandboxes as the gateway lists them – which exist,
-        which are stopped (not recorded: the gateway's word)."""
-        listing = await self._listing()
-        if listing is None:
-            return
-        async with self.svc.lock:
-            for ce in self.changes.values():
-                label = label_value(ce.cid)
-                ce.adopt_sandboxes({s.name: s for s in listing.sandboxes if s.change == label},
-                                   listing.complete)
+        """After :meth:`load`: each change's sandboxes as the gateway lists them (those labelled
+        ``legion.change=<id>``) – which exist, which are stopped (not recorded: the gateway's
+        word). A change whose listing failed keeps what it has."""
+        for ce in list(self.changes.values()):
+            listing = await self._listing(ce.cid)
+            if listing is None:
+                continue
+            async with self.svc.lock:
+                ce.adopt_sandboxes({s.name: s for s in listing.sandboxes}, listing.complete)
 
-    async def _listing(self) -> Listing | None:
-        """The gateway's sandboxes – which of each change's exist, and which are stopped (none:
-        the gateway did not answer; the changes keep what their records say)."""
+    async def _listing(self, cid: str) -> Listing | None:
         try:
-            listing = await self.svc.runner.list()
+            listing = await self.svc.runner.list({CHANGE_LABEL: label_value(cid)})
         except (SandboxError, ValueError, OSError) as e:
-            log.warning("listing the gateway's sandboxes failed: %s", e)
+            log.warning("listing change %s's sandboxes failed: %s", cid, e)
             return None
         if not listing.complete:
-            log.warning("the gateway listed more sandboxes than one page: missing ones are not "
-                        "taken to be gone")
+            log.warning("change %s's sandboxes did not list to the end: missing ones are not "
+                        "taken to be gone", cid)
         return listing
 
     STOP_WAIT_S = 10

@@ -157,16 +157,18 @@ class FakeRunner(Runner):
         self.deleted.append(name)
         self.phase.pop(name, None)
 
-    async def list(self):
-        """The gateway's listing: every sandbox created and not deleted, labelled as created."""
+    async def list(self, selector=None):
+        """The gateway's listing: every sandbox created and not deleted, labelled as created,
+        those matching ``selector``."""
         from legion_orch.sandbox import GatewaySandbox, Listing
         from legion_orch.sandbox.templates import label_value
-        return Listing(tuple(
-            GatewaySandbox(name=n, id=n, phase=ph, labels={k: label_value(v) for k, v in (
-                ("legion.change", s.change), ("legion.task", s.task), ("legion.role", s.role),
-                ("legion.run", s.run)) if v}, annotations={"legion.task": s.task})
-            for n, ph in self.phase.items() if (s := self.specs.get(n)) is not None),
-            complete=self.list_complete)
+        found = (GatewaySandbox(name=n, id=n, phase=ph, labels={k: label_value(v) for k, v in (
+                     ("legion.change", s.change), ("legion.task", s.task), ("legion.role", s.role),
+                     ("legion.run", s.run)) if v}, annotations={"legion.task": s.task})
+                 for n, ph in self.phase.items() if (s := self.specs.get(n)) is not None)
+        return Listing(tuple(sb for sb in found
+                             if all(sb.labels.get(k) == v for k, v in (selector or {}).items())),
+                       complete=self.list_complete)
 
 
 class FakeBuilder(EnvironmentBuilder):
