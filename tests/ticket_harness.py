@@ -70,7 +70,7 @@ class Script:
     def outputs(self, work: Work) -> dict[str, str]:
         """What an agent's report names: each of its role's outputs, a document of its ticket."""
         role = work.ticket.type.partition(":")[2] if work.ticket.type.startswith("agent:") else ""
-        return {name: f"doc:tickets/{work.ticket.id}/{name}@{work.attempt}"
+        return {name: f"file:tickets/{work.ticket.id}/{name}@{work.attempt}"
                 for name in self.role_outputs.get(role, [])}
 
     async def reached(self, ticket: str, timeout: float = 10) -> None:

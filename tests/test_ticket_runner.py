@@ -150,13 +150,13 @@ async def test_a_change_runs_from_its_skeleton_to_its_publication(tmp_path):
     assert r.t.t["design"].limit == 3                      # the tier's limits, set at H-1
     # each sign-off moved the change's pointers to exactly what it approved
     ptr = r.t.root.pointers
-    assert ptr["requirements"] == "doc:tickets/intake/requirements@1"     # H-1
-    assert ptr["spec"] == "doc:tickets/design/spec@1"                     # H-E1
-    assert ptr["tests"] == "doc:tickets/oracle/tests@1"                   # H-2
-    assert ptr["pr"] == "doc:tickets/describe/pr@1"                       # H-3, from its subtree
+    assert ptr["requirements"] == "file:tickets/intake/requirements@1"     # H-1
+    assert ptr["spec"] == "file:tickets/design/spec@1"                     # H-E1
+    assert ptr["tests"] == "file:tickets/oracle/tests@1"                   # H-2
+    assert ptr["pr"] == "file:tickets/describe/pr@1"                       # H-3, from its subtree
     assert ptr["head"].startswith("git:") and "baseline" not in r.t.t      # R2
     assert "risk" in ch.hooks.pointers                                    # the tier came from it
-    assert ch.hooks.replanned == "doc:tickets/design/tickets@1"           # the plan H-E1 signed
+    assert ch.hooks.replanned == "file:tickets/design/tickets@1"           # the plan H-E1 signed
     # consumers were given the approved versions
     assert ch.script.works["provision"].inputs == {"environment": ptr["environment"]}
     assert ch.script.works["oracle"].inputs["spec"] == ptr["spec"]
@@ -384,11 +384,11 @@ def test_signoff_subjects_resolve_against_the_work_they_check():
     t = {x.id: x for x in [
         Ticket(id="c", role="root", subtasks=[["ev"]]),
         Ticket(id="ev", parent="c", subtasks=[["a", "b"]], criteria=["H"]),
-        Ticket(id="a", parent="ev", type="agent:describer", outputs={"pr": "doc:tickets/a/pr@2"}),
+        Ticket(id="a", parent="ev", type="agent:describer", outputs={"pr": "file:tickets/a/pr@2"}),
         Ticket(id="b", parent="ev", type="agent:describer"),
         Ticket(id="H", parent="ev", role="criterion", type="human:signoff", signs=["pr", "head"])]}
-    assert resolve(t, "H", "f" * 40) == ({"pr": "doc:tickets/a/pr@2", "head": "git:" + "f" * 40}, [])
-    t["b"].outputs = {"pr": "doc:tickets/b/pr@1"}                  # two producers: which?
+    assert resolve(t, "H", "f" * 40) == ({"pr": "file:tickets/a/pr@2", "head": "git:" + "f" * 40}, [])
+    t["b"].outputs = {"pr": "file:tickets/b/pr@1"}                  # two producers: which?
     assert "several tickets produce it (a, b)" in resolve(t, "H", "f" * 40)[1][0]
     t["a"].outputs = t["b"].outputs = {}
     assert "ev has no ticket that produces it" in resolve(t, "H", None)[1][0]

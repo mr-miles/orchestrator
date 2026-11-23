@@ -499,10 +499,10 @@ class Turn(Record):
 
 class Run(Record):
     id: str
-    node_id: str
+    ticket: str                           # the ticket whose work it is
     role: str
     soul: str
-    cycle: int
+    attempt: int                          # the ticket's attempt it is a run of
     status: RunStatus = R_STARTING
     stage: RunStage | None = None
     failure: RunFailure | None = None
@@ -520,7 +520,7 @@ class Run(Record):
     resumed_session: str | None = None    # the agent session this run continued
     resumed_from: str | None = None       # the earlier run that session belongs to
     write_scope: list[str] = []
-    required_docs: list[str] = []
+    outputs: list[str] = []               # the output names its report must name (its role's)
     context_refs: list[str] = []
     # The rendered assignment returned to the agent by get_assignment() (template variables,
     # task contract, context, feedback); an opaque bag passed through verbatim.

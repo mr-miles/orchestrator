@@ -94,6 +94,8 @@ class Ticket(BaseModel):
     waiting: Waiting | None = None
     waived: bool = False                   # (criteria) passed by a human's waiver
     outputs: dict[str, str | list[str]] = {}  # what its accepted report attests: name -> doc ref(s)
+    runs: list[str] = []                   # its agent runs, in order (the current: the last)
+    sandbox: str | None = None             # the sandbox its own work keeps across its attempts
     pointers: dict[str, str | list[str]] = {}  # (the root) the approved version of each output
     held: Literal["start", "retry"] | None = None   # (paused) what it does on resume
     paused: list[str] = []                 # (the root) why the workflow is paused: none – it runs

@@ -213,7 +213,7 @@ class Owner:
 
 async def test_a_signoff_approves_exactly_the_subjects_it_was_shown():
     h = T("H-E1", "design", role="criterion", type="human:signoff", signs=["spec", "head"])
-    shown = {"spec": "doc:tickets/design/spec.md@3", "head": "git:" + "a" * 40}
+    shown = {"spec": "file:tickets/design/spec.md@3", "head": "git:" + "a" * 40}
     owner = Owner(Decision(True))
     assert await SignoffExecutor(owner, NOW).run(work(h, subjects=shown)) == \
         Judged(True, signed=shown)                         # what the pointers move to

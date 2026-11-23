@@ -1,7 +1,7 @@
 """Named outputs, and what a sign-off signs (plan: ~/plans/tickets-3b.md).
 
 A role declares the output names it must produce; an agent's accepted report says which documents
-they are, and the ticket pins them (``Ticket.outputs``: name -> ``doc:<path>@<version>``, or a list
+they are, and the ticket pins them (``Ticket.outputs``: name -> ``file:<path>@<version>``, or a list
 of them). A sign-off names outputs, never paths – ``signs: [spec, tickets]`` – and they resolve
 against the work it checks: its owner's outputs, else the one ticket in the owner's subtree that
 produces the name. ``head`` is the commit the owner's criteria judge. A passing sign-off moves the
