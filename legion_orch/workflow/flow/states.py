@@ -83,7 +83,6 @@ class StepState(Machine):
     def __init__(self):
         super().__init__()
         self.attempt = 0                      # how many times the core started it
-        self.cycles = 0                       # its own rework loops (informational)
         self.feedback: list[str] = []         # for its next start (a send-back's)
         self.escalation: tuple[str, str] | None = None     # (kind, question)
         self.in_place = False                 # running again after it was done (rerun)
@@ -103,10 +102,6 @@ class StepState(Machine):
         self.attempt += 1
         fb, self.feedback = tuple(self.feedback), []
         return fb
-
-    @transition(S.RUNNING, to=S.RUNNING)
-    def rework(self) -> None:
-        self.cycles += 1
 
     @transition(S.RUNNING, to=S.DONE)
     def complete(self) -> None:

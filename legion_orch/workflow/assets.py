@@ -201,6 +201,10 @@ class Assets:
     def soul(self, name: str) -> str:
         return self._get(self.souls_, "souls", name)
 
+    def soul_text(self, name: str) -> str:
+        """A soul's text, or none (a soul no longer in the asset set)."""
+        return self.souls_.get(name, "")
+
     def skill(self, name: str) -> str:
         return self._get(self.skills_, "skills", name)
 

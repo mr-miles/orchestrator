@@ -16,7 +16,7 @@ anywhere is the same count.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from . import risk
 from .model import (
@@ -49,6 +49,7 @@ class AttentionItem(BaseModel):
     blocking: bool
     proposal: str = ""        # an escalation: the resolver's proposal, in one line
 
+    @computed_field
     @property
     def key(self) -> str:
         """Identity across saves: the same decision raised again later is a new item."""

@@ -43,7 +43,6 @@ REMOVED = "removed"                  # a node dropped with its round (in the tra
 @dataclass(frozen=True)
 class Completed:
     step: str
-    outcome: str = "ok"               # ok | unchanged
     attempt: int | None = None        # the attempt it is about (None: the current one)
 
 
@@ -55,13 +54,7 @@ class Escalated:
     attempt: int | None = None
 
 
-@dataclass(frozen=True)
-class Reworking:
-    """The step's own loop went round (informational: the core counts it)."""
-    step: str
-
-
-Event = Completed | Escalated | Reworking
+Event = Completed | Escalated
 
 
 # ---------------------------------------------------------------------------- effects
@@ -149,7 +142,7 @@ class FlowState:
         for nid, st in self.state.items():
             if isinstance(st, StepState):
                 states[nid] = {"status": str(st.status), "attempt": st.attempt,
-                               "cycles": st.cycles, "feedback": list(st.feedback),
+                               "feedback": list(st.feedback),
                                "escalation": list(st.escalation) if st.escalation else None,
                                "in_place": st.in_place}
             else:
@@ -186,7 +179,7 @@ class FlowState:
                 continue
             if isinstance(m, StepState):
                 m._status = StepStatus(s["status"])
-                m.attempt, m.cycles, m.in_place = s["attempt"], s["cycles"], s["in_place"]
+                m.attempt, m.in_place = s["attempt"], s["in_place"]
                 m.feedback = list(s["feedback"])
                 m.escalation = tuple(s["escalation"]) if s["escalation"] else None
             else:
@@ -270,9 +263,6 @@ class FlowState:
             self.step(event.step).complete()
         elif isinstance(event, Escalated):
             self.step(event.step).escalate(event.kind, event.question)
-        elif isinstance(event, Reworking):
-            if self.status(event.step) == StepStatus.RUNNING:
-                self.step(event.step).rework()
         self._advance()
         return self._take()
 

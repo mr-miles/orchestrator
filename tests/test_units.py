@@ -1,4 +1,3 @@
-import importlib
 import re
 import sqlite3
 import threading
@@ -45,15 +44,13 @@ class StubHost:
     def new_sandbox_name(self, prefix):
         return f"{prefix}-stub"
 
-def test_workflow_doc_guard_ids_match_code():
-    assert set(GUARD_ID_RE.findall(DOC)) == set(guards.GUARDS)
-
-
-def test_every_guard_is_referenced_outside_the_registry():
-    catalog = ROOT / "legion_orch/workflow/guards/catalog.py"
-    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py") if p != catalog)
-    missing = [g for g in guards.GUARDS if g not in src and not g.startswith("H-")]
-    assert not missing, missing
+def test_the_guards_in_the_workflow_doc_are_the_guards_in_the_code():
+    """WORKFLOW.md documents every guard the code enforces, and nothing else (the gates, H-*,
+    are the workflow's steps, not code)."""
+    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py"))
+    doc, code = set(GUARD_ID_RE.findall(DOC)), set(re.findall(r"\bG-[A-Z]+[0-9]+\b", src))
+    assert not {g for g in doc - code if not g.startswith("H-")}, "documented, not in the code"
+    assert not code - doc, "in the code, not documented"
 
 
 def test_workflow_doc_links_every_asset_and_links_resolve():
@@ -849,11 +846,8 @@ def test_plan_guard_branches():
     assert "cites unknown requirement REQ-9" in msgs(check([t("T1", ["a"], reqs=("REQ-1", "REQ-9"))]))
     blank = t("T1", ["a"]) | {"verification": ["  "]}       # schema-valid, but no real command
     assert {"G-P4"} == ids(check([blank]))
-    # path shape is the schema's (G-P1); paths_valid re-checks it in case the schema loosens
-    plan_guards = importlib.import_module("legion_orch.workflow.guards.plan")  # (shadowed by plan())
-    assert plan_guards.paths_valid([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]) == [
-        "G-P6: task T1 has empty files_modified", "G-P6: task T1 has invalid path '/etc/passwd'",
-        "G-P6: task T1 has invalid path 'a/../b'"]
+    # path shape is the schema's (G-P1), checked before any other guard
+    assert {"G-P1"} == ids(check([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]))
     crit = dict(ORACLE, criteria=[{"id": "AC-1", "requirement": "REQ-7", "text": "t"}])
     assert "must reference an accepted requirement" in msgs(check([t("T1", ["a"])], oracle=crit))
     # parallel overlap: exact/exact, pattern/exact, exact/pattern, glob/glob
@@ -919,13 +913,13 @@ def test_workspaces_are_checked_at_load(tmp_path):
                                          "sandbox: {runner: local}\n")
         return load_config(tmp_path / "c.yaml")
     for ws, msg in [("repo: {name: app}", "replaced by workspaces"),
-                    ("workspaces: []", "at least one"),
+                    ("workspaces: []", r"workspaces\n.*at least 1 item"),
                     ("workspaces: [{name: a}, {name: a}]", "unique"),
                     ("workspaces: [{name: ../x}]", "path segment"),
                     ("workspaces: [{name: x.git}]", "path segment"),
                     ("workspaces: [{name: a, publish_prefix: legion/}]", "outside legion/"),
                     ("workspaces: [{name: a, publish_prefix: 'bad..'}]", "valid branch name"),
-                    ("workspaces: [{name: a, path: x}]", "unknown WorkspaceConfig keys")]:
+                    ("workspaces: [{name: a, path: x}]", r"workspaces\.0\.path\n.*Extra inputs")]:
         with pytest.raises(ValueError, match=msg):
             load(ws)
     cfg = load("workspaces: [{name: a}, {name: b, publish_prefix: bots/legion-}]")

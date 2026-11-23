@@ -233,10 +233,6 @@ class ChangeEngine(ChangeCore):
         """A step agent as an A2A recipient: "live", "idle" or None (see RunLifecycle)."""
         return self._lifecycle.agent_state(node_id, role)
 
-    async def a2a_answer(self, node_id: str, role: str, sender: str, text: str) -> str:
-        """A step agent, not running, answers ``text`` in one resumed turn."""
-        return await self._lifecycle.answer(node_id, role, sender, text)
-
     def ask_human(self, qid: str, node_id: str, role: str, run: str | None,
                   question: str) -> AgentQuestion:
         """Record an agent's question for a decision owner (the caller holds the lock): it is an

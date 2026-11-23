@@ -18,22 +18,6 @@ SETUP = '[tools]\npython = "3.12"\nuv = "0.9"\n\n[tasks.setup]\nrun = "uv sync -
 TOOLS_ONLY = '[tools]\npython = "3.12"\n'
 
 
-def repo_with(tmp_path, mise: str | None) -> None:
-    """The source repository the change starts from, with this mise.toml on main."""
-    path = tmp_path / "src-repo"
-    make_source_repo(path)
-    if mise is not None:
-        (path / "mise.toml").write_text(mise)
-        g = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
-        g("add", "-A")
-        g("commit", "-q", "-m", "mise")
-
-
-def run(coro):
-    import asyncio
-    return asyncio.run(coro)
-
-
 def envs(f: Flow) -> list[dict[str, str]]:
     """Each dispatched run's run.env."""
     import shlex
@@ -45,85 +29,80 @@ def first(f: Flow, node: str, key: str):
 
 
 # ====================================================================== the base branch's setup
-def test_a_base_setup_task_runs_first_in_every_verifier_and_agent_sandbox(tmp_path):
-    repo_with(tmp_path, SETUP)
+@pytest.mark.anyio
+async def test_a_base_setup_task_runs_first_in_every_verifier_and_agent_sandbox(tmp_path):
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        pin = f.ce.change.setup_pin
-        assert pin and pin.source == "base" and pin.blob == setup.blob_sha(SETUP)
-        assert pin.blob == subprocess.run(["git", "rev-parse", "HEAD:mise.toml"],
-                                          cwd=tmp_path / "src-repo", capture_output=True,
-                                          text=True).stdout.strip()
-        [intake] = f.runs("intake")
-        assert ["mise-setup.sh", pin.blob] not in f.steps(intake)   # intake only reads the tree
-        await f.to_build()
-        await f.implement()
-        r = first(f, "build:T1", "1")
-        assert (r.command, r.setup, r.exit_code) == ("mise run setup", True, 0)
-        [impl], [rev] = f.runs("build:T1", "implementer"), f.runs("build:T1", "reviewer")
-        assert f.steps(impl)[-1] == f.steps(rev)[-1] == ["mise-setup.sh", pin.blob]
-    run(go())
-
-
-def test_no_setup_task_means_no_setup(tmp_path):
-    repo_with(tmp_path, TOOLS_ONLY)
-
-    async def go():
-        f = await Flow.create(tmp_path)
-        assert f.ce.change.setup_pin is None
-        await f.to_build()
-        await f.implement()
-        assert not first(f, "build:T1", "1").setup
-        assert not any(a[1].endswith("mise-setup.sh") for _, a in f.runner.execs
-                       if a[0] == "bash")
-    run(go())
+    f = await Flow.create(tmp_path)
+    pin = f.ce.change.setup_pin
+    assert pin and pin.source == "base" and pin.blob == setup.blob_sha(SETUP)
+    assert pin.blob == subprocess.run(["git", "rev-parse", "HEAD:mise.toml"],
+                                      cwd=tmp_path / "src-repo", capture_output=True,
+                                      text=True).stdout.strip()
+    [intake] = f.runs("intake")
+    assert ["mise-setup.sh", pin.blob] not in f.steps(intake)   # intake only reads the tree
+    await f.to_build()
+    await f.implement()
+    r = first(f, "build:T1", "1")
+    assert (r.command, r.setup, r.exit_code) == ("mise run setup", True, 0)
+    [impl], [rev] = f.runs("build:T1", "implementer"), f.runs("build:T1", "reviewer")
+    assert f.steps(impl)[-1] == f.steps(rev)[-1] == ["mise-setup.sh", pin.blob]
 
 
-def test_a_failing_setup_stops_a_build_verification_as_a_failure(tmp_path):
-    repo_with(tmp_path, SETUP)
+@pytest.mark.anyio
+async def test_no_setup_task_means_no_setup(tmp_path):
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": TOOLS_ONLY})
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        f.runner.commands[f.ce.change.setup_pin.blob] = (1, "lockfile out of date\n")
-        await f.to_build()
-        await f.implement()
-        node = f.ce.nodes["build:T1"]
-        assert [r.command for r in node.verification["1"].results] == ["mise run setup"]
-        assert node.cycle == 2 and any("mise run setup" in fb.text for fb in node.feedback)
-    run(go())
-
-
-def test_a_failing_setup_escalates_the_baseline(tmp_path):
-    repo_with(tmp_path, SETUP)
-
-    async def go():
-        f = await Flow.create(tmp_path)
-        await f.to_h2(tier="R3")
-        f.runner.commands[f.ce.change.setup_pin.blob] = (1, "network unreachable\n")
-        # the preflight verified the same commands at this head: what broke since is outside
-        # the verification's key (the network), so it would be reused – forget it here
-        f.ce.change.verifications.clear()
-        r = f.run("baseline")
-        doc = await f.write(r, "baseline/report.md", "results")
-        await f.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {"results": [
-            {"command": c, "exit_code": 1} for c in f.ce.baseline_commands()]})
-        base = f.ce.nodes["baseline"]
-        assert base.status == "ESCALATED" and base.escalation.kind == "setup_failed"
-        assert "network unreachable" in base.escalation.log_tail
-    run(go())
+    f = await Flow.create(tmp_path)
+    assert f.ce.change.setup_pin is None
+    await f.to_build()
+    await f.implement()
+    assert not first(f, "build:T1", "1").setup
+    assert not any(a[1].endswith("mise-setup.sh") for _, a in f.runner.execs
+                   if a[0] == "bash")
 
 
-def test_a_task_may_not_change_the_pinned_mise_toml(tmp_path):
-    repo_with(tmp_path, SETUP)
+@pytest.mark.anyio
+async def test_a_failing_setup_stops_a_build_verification_as_a_failure(tmp_path):
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
 
-    async def go():
-        f = await Flow.create(tmp_path)
-        await f.to_build()
-        out = await f.implement(files={"src/greet.txt": "hello\n", "mise.toml": SETUP + "#\n"})
-        assert not out.accepted and any("mise.toml is a protected path" in v
-                                        for v in out.violations), out
-    run(go())
+    f = await Flow.create(tmp_path)
+    f.runner.commands[f.ce.change.setup_pin.blob] = (1, "lockfile out of date\n")
+    await f.to_build()
+    await f.implement()
+    node = f.ce.nodes["build:T1"]
+    assert [r.command for r in node.verification["1"].results] == ["mise run setup"]
+    assert node.cycle == 2 and any("mise run setup" in fb.text for fb in node.feedback)
+
+
+@pytest.mark.anyio
+async def test_a_failing_setup_escalates_the_baseline(tmp_path):
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
+
+    f = await Flow.create(tmp_path)
+    await f.to_h2(tier="R3")
+    f.runner.commands[f.ce.change.setup_pin.blob] = (1, "network unreachable\n")
+    # the preflight verified the same commands at this head: what broke since is outside
+    # the verification's key (the network), so it would be reused – forget it here
+    f.ce.change.verifications.clear()
+    r = f.run("baseline")
+    doc = await f.write(r, "baseline/report.md", "results")
+    await f.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {"results": [
+        {"command": c, "exit_code": 1} for c in f.ce.baseline_commands()]})
+    base = f.ce.nodes["baseline"]
+    assert base.status == "ESCALATED" and base.escalation.kind == "setup_failed"
+    assert "network unreachable" in base.escalation.log_tail
+
+
+@pytest.mark.anyio
+async def test_a_task_may_not_change_the_pinned_mise_toml(tmp_path):
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
+
+    f = await Flow.create(tmp_path)
+    await f.to_build()
+    out = await f.implement(files={"src/greet.txt": "hello\n", "mise.toml": SETUP + "#\n"})
+    assert not out.accepted and any("mise.toml is a protected path" in v
+                                    for v in out.violations), out
 
 
 # ====================================================================== proposed at the environment stage
@@ -134,50 +113,44 @@ def env_spec(**kw) -> dict:
     return s
 
 
-def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provision(tmp_path):
-    repo_with(tmp_path, None)
-
-    async def go():
-        f = Flow(tmp_path, environment={})
-        await f.git.ensure()
-        f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-        f.ce = await f.ctl.start_change("Say hello", REPO)
-        await f.settle()
-        assert f.ce.change.setup_pin is None                   # nothing on the base branch
-        await f.intake()
-        await f.human("H-1", "accept")
-        await f.plan(environment=env_spec())
-        await f.critique("PASS")
-        before = f.ce.change.integration_head
-        await f.human("H-E1", "approve")
-        ch = f.ce.change
-        assert ch.integration_head != before
-        assert await f.git.blob(ch.integration_head, "mise.toml") == setup.blob_sha(SETUP)
-        assert ch.setup_pin.source == "H-E1" and ch.setup_pin.blob == setup.blob_sha(SETUP)
-        assert f.status("provision") == "ACCEPTED"
-        assert any("setup ran in the verifier" in e["message"] for e in f.ce.timeline_events())
-    run(go())
+@pytest.mark.anyio
+async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provision(tmp_path):
+    f = Flow(tmp_path, environment={})
+    await f.git.ensure()
+    f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
+    f.ce = await f.ctl.start_change("Say hello", REPO)
+    await f.settle()
+    assert f.ce.change.setup_pin is None                   # nothing on the base branch
+    await f.intake()
+    await f.human("H-1", "accept")
+    await f.plan(environment=env_spec())
+    await f.critique("PASS")
+    before = f.ce.change.integration_head
+    await f.human("H-E1", "approve")
+    ch = f.ce.change
+    assert ch.integration_head != before
+    assert await f.git.blob(ch.integration_head, "mise.toml") == setup.blob_sha(SETUP)
+    assert ch.setup_pin.source == "H-E1" and ch.setup_pin.blob == setup.blob_sha(SETUP)
+    assert f.status("provision") == "ACCEPTED"
+    assert any("setup ran in the verifier" in e["message"] for e in f.ce.timeline_events())
 
 
-def test_a_setup_that_fails_at_provision_escalates_it(tmp_path):
-    repo_with(tmp_path, None)
-
-    async def go():
-        f = Flow(tmp_path, environment={})
-        await f.git.ensure()
-        f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-        f.ce = await f.ctl.start_change("Say hello", REPO)
-        await f.settle()
-        f.runner.commands[setup.blob_sha(SETUP)] = (1, "uv: lockfile missing\n")
-        await f.intake()
-        await f.human("H-1", "accept")
-        await f.plan(environment=env_spec())
-        await f.critique("PASS")
-        await f.human("H-E1", "approve")
-        node = f.ce.nodes["provision"]
-        assert node.status == "ESCALATED" and node.escalation.kind == "provision_failed"
-        assert "G-PV3" in node.escalation.reason
-    run(go())
+@pytest.mark.anyio
+async def test_a_setup_that_fails_at_provision_escalates_it(tmp_path):
+    f = Flow(tmp_path, environment={})
+    await f.git.ensure()
+    f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
+    f.ce = await f.ctl.start_change("Say hello", REPO)
+    await f.settle()
+    f.runner.commands[setup.blob_sha(SETUP)] = (1, "uv: lockfile missing\n")
+    await f.intake()
+    await f.human("H-1", "accept")
+    await f.plan(environment=env_spec())
+    await f.critique("PASS")
+    await f.human("H-E1", "approve")
+    node = f.ce.nodes["provision"]
+    assert node.status == "ESCALATED" and node.escalation.kind == "provision_failed"
+    assert "G-PV3" in node.escalation.reason
 
 
 # ====================================================================== G-E8 and the mise.toml helpers

@@ -24,7 +24,6 @@ from .model import (
     Readiness,
     ReadinessVerdict,
     Verdict,
-    _parse_ts_safe,
 )
 from .view import ChangeView
 
@@ -92,7 +91,7 @@ class GateEvaluator:
                 if not governance.coverage_ok(r, self.task_ids):
                     return _g(UNSAT, f"{r.kind}: covers {r.covers}, not every task")
                 started = self.ch.round_first_build_at()
-                if need_before_build and started and _parse_ts_safe(r.at) >= _parse_ts_safe(started):
+                if need_before_build and started and r.at >= started:    # (canonical timestamps)
                     return _g(UNSAT, f"{r.kind} recorded after execution started")
                 how = "waived (not_applicable)" if r.verdict == AttestationVerdict.NOT_APPLICABLE else "pass"
                 return _g(SAT, f"{r.kind} {how} by {r.attested_by}: {', '.join(r.sources)}", True)
@@ -136,7 +135,7 @@ class GateEvaluator:
         # the current round's builds ran under these approvals; earlier rounds' builds were
         # dispatched only while every approval of their time was fresh (G-B1)
         last, started = governance.last_h2_approval_at(self.e), self.ch.round_first_build_at()
-        if started and _parse_ts_safe(last) >= _parse_ts_safe(started):
+        if started and last and last >= started:
             return _g(UNSAT, "last approval recorded after build started")
         return _g(SAT, f"last approval {last} before first build {started}")
 

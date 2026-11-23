@@ -2,10 +2,9 @@
 the core's effects from scripts instead of sandboxes and agents, checking the invariants after
 every event – so any structure and any sequence of actions can be tested in isolation.
 
-A step's script is a list of outcomes, consumed one per start, resume or retry:
-``ok`` and ``unchanged`` complete it, ``rework`` goes round its own loop once and continues,
-``escalate:<kind>`` escalates it. A step with no script (or an exhausted one) completes ``ok``
-– except a gate step that ``needs_approval``: until a human approves it (:meth:`approve`, an
+A step's script is a list of outcomes, consumed one per start, resume or retry: ``ok``
+completes it, ``escalate:<kind>`` escalates it. A step with no script (or an exhausted one)
+completes ``ok`` – except a gate step that ``needs_approval``: until a human approves it (:meth:`approve`, an
 answer) it escalates ``awaiting_approval``, as the engine's approval phase does.
 """
 from __future__ import annotations
@@ -22,7 +21,6 @@ from .core import (
     FlowState,
     ResumeStep,
     RetryStep,
-    Reworking,
     StartStep,
     StopStep,
 )
@@ -128,20 +126,15 @@ class ScriptedRuntime:
 
     def _next(self, step: str) -> list:
         script = self.scripts.get(step)
-        out = []
-        while True:
-            default = "escalate:awaiting_approval" if self.needs_approval(step) \
-                and step not in self.approved else "ok"
-            entry = script.popleft() if script else default
-            if entry != "rework":
-                return out + self._outcome(step, entry, events_only=True)
-            out.append(Reworking(step))
+        default = "escalate:awaiting_approval" if self.needs_approval(step) \
+            and step not in self.approved else "ok"
+        return self._outcome(step, script.popleft() if script else default, events_only=True)
 
     def _outcome(self, step: str, entry: str, events_only: bool = False,
                  attempt: int | None = None):
         attempt = attempt or self.attempt(step)
-        if entry in ("ok", "unchanged"):
-            ev = Completed(step, entry, attempt)
+        if entry == "ok":
+            ev = Completed(step, attempt)
         elif entry.startswith("escalate:"):
             kind = entry.split(":", 1)[1]
             ev = Escalated(step, kind, f"{step}: {kind}", attempt)

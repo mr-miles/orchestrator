@@ -1,1 +1,2 @@
 bun.lock
+src/lib/api.gen.ts

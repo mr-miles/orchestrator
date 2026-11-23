@@ -344,15 +344,6 @@ class TierPanel(JudgeSource):
         return tuple(c.change.panel)
 
 
-@dataclass(frozen=True)
-class Judges(JudgeSource):
-    """A fixed set of judges (the plan's critic)."""
-    roles: tuple[str, ...]
-
-    def __call__(self, c: ChangeCore) -> tuple[str, ...]:
-        return self.roles
-
-
 def _judges(source: JudgeSource | tuple[str, ...], c: ChangeCore | None) -> tuple[str, ...]:
     return source if isinstance(source, tuple) else source(c)
 

@@ -4,34 +4,34 @@ from __future__ import annotations
 import asyncio
 import inspect
 
+import pytest
 from engine_harness import Flow, scenario
 
 from legion_orch import bus as bus_mod
 from legion_orch.bus import Bus, CardsPublished, Escalated, Event, ItemAdded
 
 
-def test_scoping_order_failures_and_coroutine_handlers():
-    async def go():
-        spawned = []
-        b = Bus(lambda coro: spawned.append(asyncio.ensure_future(coro)))
-        seen = []
-        b.subscribe(ItemAdded, lambda e: seen.append(("any", e.card)))
-        b.subscribe(ItemAdded, lambda e: seen.append(("c1", e.card)), cid="c1")
-        b.subscribe(ItemAdded, lambda e: 1 / 0)                         # a failing subscriber
+@pytest.mark.anyio
+async def test_scoping_order_failures_and_coroutine_handlers():
+    spawned = []
+    b = Bus(lambda coro: spawned.append(asyncio.ensure_future(coro)))
+    seen = []
+    b.subscribe(ItemAdded, lambda e: seen.append(("any", e.card)))
+    b.subscribe(ItemAdded, lambda e: seen.append(("c1", e.card)), cid="c1")
+    b.subscribe(ItemAdded, lambda e: 1 / 0)                         # a failing subscriber
 
-        async def later(e):
-            seen.append(("async", e.card))
-        b.subscribe(ItemAdded, later)
-        b.publish(ItemAdded("c1", "a@x"))
-        b.publish(ItemAdded("c2", "b@y"))                           # not c1's
-        assert seen == [("any", "a@x"), ("c1", "a@x"), ("any", "b@y")]   # in order, at once
-        await asyncio.gather(*spawned)
-        assert ("async", "a@x") in seen and ("async", "b@y") in seen
-        b.drop("c1")
-        seen.clear()
-        b.publish(ItemAdded("c1", "c@z"))
-        assert ("c1", "c@z") not in seen and ("any", "c@z") in seen
-    asyncio.run(go())
+    async def later(e):
+        seen.append(("async", e.card))
+    b.subscribe(ItemAdded, later)
+    b.publish(ItemAdded("c1", "a@x"))
+    b.publish(ItemAdded("c2", "b@y"))                           # not c1's
+    assert seen == [("any", "a@x"), ("c1", "a@x"), ("any", "b@y")]   # in order, at once
+    await asyncio.gather(*spawned)
+    assert ("async", "a@x") in seen and ("async", "b@y") in seen
+    b.drop("c1")
+    seen.clear()
+    b.publish(ItemAdded("c1", "c@z"))
+    assert ("c1", "c@z") not in seen and ("any", "c@z") in seen
 
 
 @scenario()

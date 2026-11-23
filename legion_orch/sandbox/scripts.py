@@ -1,4 +1,9 @@
 """Bootstrap scripts uploaded into sandboxes (they never contain credentials)."""
+from __future__ import annotations
+
+import shlex
+from pathlib import Path
+from typing import Any
 
 # Under OpenShell, requests to the controller are authenticated by the gateway (it injects the
 # bearer); nothing here holds a credential. LEGION_ACCESS_TOKEN only exists with LocalRunner.
@@ -114,3 +119,18 @@ def payload_scripts() -> dict[str, str]:
     """The step scripts every payload carries (agent and verifier alike)."""
     return {"clone.sh": CLONE_SH, "checkout.sh": CHECKOUT_SH, "branch.sh": BRANCH_SH,
             "mise-setup.sh": MISE_SETUP_SH, "run-agent.sh": RUN_AGENT_SH}
+
+
+def write_payload(d: Path, env: dict[str, Any], *, prompt: str | None = None,
+                  soul: str | None = None, mcp: str | None = None) -> Path:
+    """A payload directory as run-agent.sh and the step scripts read it: ``run.env`` (``env``,
+    shell-quoted), every step script and – for an agent – its ``prompt.md``, ``soul.md`` and
+    ``mcp.json``. Returns ``d``."""
+    d.mkdir(parents=True, exist_ok=True)
+    for name, text in (("prompt.md", prompt), ("soul.md", soul), ("mcp.json", mcp)):
+        if text is not None:
+            (d / name).write_text(text)
+    (d / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n" for k, v in env.items()))
+    for name, text in payload_scripts().items():
+        (d / name).write_text(text)
+    return d

@@ -112,12 +112,6 @@ def test_tasks_run_as_their_dependencies_allow():
     assert rt.status("T2") == "done" and rt.status("integration") == "done"
 
 
-def test_a_steps_own_rework_loop_stays_inside_it():
-    rt = runtime(steps={"T1": ["rework", "rework", "ok"]}).start()
-    to_h3(rt)
-    assert rt.attempt("T1") == 1 and rt.flow.step("T1").cycles == 2 and rt.status("T1") == "done"
-
-
 # ====================================================================== escalations
 def test_an_escalated_step_offers_every_enclosing_stage_to_send_back():
     rt = runtime(steps={"preflight": ["escalate:verify_unrunnable"]}).start()
@@ -269,10 +263,10 @@ def test_a_round_made_again_after_a_restart_continues_its_attempts():
 
 
 def test_every_status_change_is_a_declared_transition():
-    rt = runtime(steps={"T1": ["rework", "escalate:blocked", "ok"]}).start()
+    rt = runtime(steps={"T1": ["escalate:blocked", "ok"]}).start()
     to_h3(rt).act("T1", "answer", text="go on").approve("H-3")
     names = {(n, t) for n, t, _, _ in rt.flow.log}
-    assert {("T1", "start"), ("T1", "rework"), ("T1", "escalate"), ("T1", "resume"),
+    assert {("T1", "start"), ("T1", "escalate"), ("T1", "resume"),
             ("T1", "complete"), ("H-3", "start"), ("H-3", "escalate"), ("H-3", "complete"),
             ("plan", "complete")} <= names
 
@@ -383,7 +377,7 @@ def _structures(draw):
     return Workflow([stage(0) for _ in range(draw(st.integers(1, 3)))])
 
 
-OUTCOMES = st.sampled_from(["ok", "ok", "ok", "rework", "escalate:blocked", "escalate:failed"])
+OUTCOMES = st.sampled_from(["ok", "ok", "ok", "escalate:blocked", "escalate:failed"])
 
 
 @settings(max_examples=150, deadline=None, suppress_health_check=[HealthCheck.too_slow])

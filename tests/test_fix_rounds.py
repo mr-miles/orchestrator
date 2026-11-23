@@ -9,7 +9,7 @@ from engine_harness import ORACLE, REPO, TASKS, Flow, scenario
 
 from legion_orch.server import views
 from legion_orch.workflow import governance
-from legion_orch.workflow.engine import Controller, WorkflowError
+from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -229,9 +229,7 @@ async def test_a_change_in_a_fix_round_is_rebuilt_from_the_store(f: Flow):
     await _to_round(f, comment="why")
     await f.plan(tasks=TASKS + [T2])
     await f.critique("PASS")
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
+    ctl2, ce2 = await f.restart()
     assert ce2.change.round == 2 and ce2.change.rounds[0].comment == "why"
     assert ce2.nodes["build:T2"].round == 2 and ce2.nodes["plan.2"].round == 2
     assert ce2.nodes["H-E1.2"].status == AWAITING_HUMAN and REWORK != ce2.nodes["plan.2"].status
@@ -366,6 +364,5 @@ async def test_each_rounds_plan_has_its_own_documents_and_the_pointer_follows_th
     assert ptr.node == "plan.2" and ptr.approved["plan.2/taskgraph.json"] == \
         f.ce.latest("plan.2/taskgraph.json")
     assert "plan/taskgraph.json" not in ptr.approved
-    ctl2 = Controller(f.cfg, runner=f.runner)       # the pointer is projected from its record
-    ctl2.load()
+    ctl2, _ = await f.restart()       # the pointer is projected from its record
     assert ctl2.changes[f.ce.cid].change.plan == ptr

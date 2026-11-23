@@ -199,7 +199,8 @@ class FakeBuilder(EnvironmentBuilder):
         return recipe.tag, f"built {recipe.tag}"
 
 
-def make_source_repo(path: Path) -> None:
+def make_source_repo(path: Path, files: dict[str, str] | None = None) -> None:
+    """The source repository a change starts from; ``files``: committed on top (a mise.toml)."""
     path.mkdir()
     git = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
     git("init", "-q", "-b", "main")
@@ -210,6 +211,11 @@ def make_source_repo(path: Path) -> None:
     (path / "README.md").write_text("demo\n")
     git("add", "-A")
     git("commit", "-q", "-m", "init")
+    for rel, text in (files or {}).items():
+        (path / rel).write_text(text)
+    if files:
+        git("add", "-A")
+        git("commit", "-q", "-m", "files")
 
 
 def make_config(tmp_path: Path, *, blank_repo: bool = False, environment: dict | None = None,
@@ -275,10 +281,11 @@ ENVIRONMENT = {
 class Flow:
     """One change driven step by step. ``await Flow.create(tmp_path)`` to start."""
 
-    def __init__(self, tmp_path: Path, *, blank_repo: bool = False, **limits):
+    def __init__(self, tmp_path: Path, *, blank_repo: bool = False,
+                 repo_files: dict[str, str] | None = None, **limits):
         self.tmp = tmp_path
         if not blank_repo and not (tmp_path / "src-repo").exists():
-            make_source_repo(tmp_path / "src-repo")
+            make_source_repo(tmp_path / "src-repo", repo_files)
         self.cfg = make_config(tmp_path, blank_repo=blank_repo, **limits)
         self.cfg.retrospective.reflect = False      # tests that want reflections turn them on
         self.cfg.resolver.enabled = False           # ... and the resolver on escalations
@@ -299,6 +306,19 @@ class Flow:
         return f
 
     # ------------------------------------------------------------------ driving
+    async def restart(self, *, recover: bool = False) -> tuple[Controller, ChangeEngine]:
+        """The controller started again on this one's state – its tables, documents and the
+        gateway's sandboxes, as :meth:`Controller.start` loads them (without its loops);
+        ``recover``: and what start() does next (live runs failed, steps taken up again)."""
+        ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
+        ctl.load()
+        await ctl.adopt_sandboxes()
+        ce = ctl.changes[self.ce.cid]
+        if recover:
+            async with ctl.svc.lock:
+                ce.recover()
+        return ctl, ce
+
     async def settle(self, timeout: float = 20) -> None:
         """Wait until nothing changes and every pending task waits legitimately: on an agent
         process that has not exited, on its step's waits, or for a slot.

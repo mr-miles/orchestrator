@@ -8,14 +8,6 @@ import json
 from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import OpenShellRunner, SandboxError
-from legion_orch.workflow.engine import Controller
-
-
-async def _restart(f: Flow) -> tuple[Controller, object]:
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    await ctl2.adopt_sandboxes()
-    return ctl2, ctl2.changes[f.ce.cid]
 
 
 async def _planned(f: Flow):
@@ -32,13 +24,13 @@ async def _planned(f: Flow):
 @scenario()
 async def test_the_gateway_says_which_sandboxes_are_stopped(f: Flow):
     planner = await _planned(f)
-    _, ce2 = await _restart(f)
+    _, ce2 = await f.restart()
     assert ce2.runs[planner.id].sandbox_stopped and ce2.nodes["plan"].sandbox_stopped
     critic = f.run("plan", "critic")
     assert not ce2.runs[critic.id].sandbox_stopped                # running on the gateway
     # started by hand while the controller was down: it is running now
     f.runner.phase[planner.sandbox] = "Ready"
-    _, ce3 = await _restart(f)
+    _, ce3 = await f.restart()
     assert not ce3.runs[planner.id].sandbox_stopped and not ce3.nodes["plan"].sandbox_stopped
 
 
@@ -46,12 +38,12 @@ async def test_the_gateway_says_which_sandboxes_are_stopped(f: Flow):
 async def test_a_sandbox_gone_from_the_gateway_is_gone(f: Flow):
     planner = await _planned(f)
     del f.runner.phase[planner.sandbox]                            # deleted by hand
-    _, ce2 = await _restart(f)
+    _, ce2 = await f.restart()
     assert ce2.runs[planner.id].sandbox_deleted and not ce2.runs[planner.id].sandbox_stopped
     assert not ce2.nodes["plan"].sandbox_stopped
     # a partial listing (more than one page) says nothing of what it does not list
     f.runner.list_complete = False
-    _, ce3 = await _restart(f)
+    _, ce3 = await f.restart()
     assert not ce3.runs[planner.id].sandbox_deleted
 
 
@@ -64,7 +56,7 @@ async def test_a_sandbox_of_the_change_no_run_knows_is_deleted_on_start(f: Flow)
     other = type(spec)(**{**spec.__dict__, "change": "c999999-zzzz"})
     f.runner.specs["lg-theirs"] = other                            # another change's
     f.runner.phase["lg-theirs"] = "Ready"
-    ctl2, ce2 = await _restart(f)
+    ctl2, ce2 = await f.restart()
     for _ in range(50):
         if "lg-orphan" in f.runner.deleted:
             break
@@ -80,7 +72,7 @@ async def test_a_gateway_that_does_not_answer_leaves_the_change_as_it_was(f: Flo
     async def broken(selector=None):
         raise SandboxError("gateway unreachable")
     f.runner.list = broken
-    _, ce2 = await _restart(f)
+    _, ce2 = await f.restart()
     assert not ce2.runs[planner.id].sandbox_deleted               # nothing concluded
 
 

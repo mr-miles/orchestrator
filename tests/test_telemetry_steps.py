@@ -2,8 +2,6 @@
 runner turns those into NodeMoves for the change's trace."""
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from engine_harness import REPO, Flow
 
@@ -106,39 +104,38 @@ class StubTelemetry:
         return None
 
 
-def test_runner_reports_moves(tmp_path):
-    async def go():
-        f = Flow(tmp_path)
-        tel = StubTelemetry()
-        f.ctl.svc.telemetry = tel
-        await f.git.ensure()
-        f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-        f.ce = await f.ctl.start_change("Say hello", REPO)
-        await f.settle()
-        await f.intake()
-        moves = tel.rec.moves
-        mine = [m for m in moves if m.node_id == "intake"]
-        i = next(i for i, m in enumerate(mine) if m.to == "READY")
-        assert (mine[i].phase, mine[i].order) == ("Produce", 0)
-        j = next(j for j, m in enumerate(mine) if j > i and m.to == "RUNNING")
-        assert mine[j].phase == "Produce"
-        k = next(k for k, m in enumerate(mine) if k > j and m.to == "ACCEPTED")
-        assert mine[k].phase is None
+@pytest.mark.anyio
+async def test_runner_reports_moves(tmp_path):
+    f = Flow(tmp_path)
+    tel = StubTelemetry()
+    f.ctl.svc.telemetry = tel
+    await f.git.ensure()
+    f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
+    f.ce = await f.ctl.start_change("Say hello", REPO)
+    await f.settle()
+    await f.intake()
+    moves = tel.rec.moves
+    mine = [m for m in moves if m.node_id == "intake"]
+    i = next(i for i, m in enumerate(mine) if m.to == "READY")
+    assert (mine[i].phase, mine[i].order) == ("Produce", 0)
+    j = next(j for j, m in enumerate(mine) if j > i and m.to == "RUNNING")
+    assert mine[j].phase == "Produce"
+    k = next(k for k, m in enumerate(mine) if k > j and m.to == "ACCEPTED")
+    assert mine[k].phase is None
 
-        h = [m for m in moves if m.node_id == "H-1" and m.to == "AWAITING_HUMAN"]
-        assert h and h[0].expected is True and h[0].phase is None
-        assert isinstance(h[0].escalation_kind, str) and h[0].escalation_kind
+    h = [m for m in moves if m.node_id == "H-1" and m.to == "AWAITING_HUMAN"]
+    assert h and h[0].expected is True and h[0].phase is None
+    assert isinstance(h[0].escalation_kind, str) and h[0].escalation_kind
 
-        await f.human("H-1", "accept")
-        assert any(m.node_id == "H-1" and m.to == "ACCEPTED" for m in moves)
+    await f.human("H-1", "accept")
+    assert any(m.node_id == "H-1" and m.to == "ACCEPTED" for m in moves)
 
-        runner = f.ce._runner
-        before = len(moves)
-        runner.adopted(f.ce.nodes["H-1"])        # accepted: nothing
-        assert len(moves) == before
-        live = next(node for node in f.ce.nodes.values()
-                    if node.status not in (PENDING, ACCEPTED, FAILED))
-        runner.adopted(live)
-        assert len(moves) == before + 1
-        assert moves[-1].before is None and moves[-1].to == str(live.status)
-    asyncio.run(go())
+    runner = f.ce._runner
+    before = len(moves)
+    runner.adopted(f.ce.nodes["H-1"])        # accepted: nothing
+    assert len(moves) == before
+    live = next(node for node in f.ce.nodes.values()
+                if node.status not in (PENDING, ACCEPTED, FAILED))
+    runner.adopted(live)
+    assert len(moves) == before + 1
+    assert moves[-1].before is None and moves[-1].to == str(live.status)

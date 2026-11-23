@@ -27,7 +27,7 @@ from legion_orch.sandbox import (
 )
 from legion_orch.sandbox.images import dockerfile, image_tag, mise_toml
 from legion_orch.workflow.assets import Assets
-from legion_orch.workflow.engine import Controller, WorkflowError
+from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.environment import (
     EnvironmentSpec,
     Kind,
@@ -412,18 +412,13 @@ async def test_environment_survives_a_restart_and_provisioning_resumes(f: Flow):
     assert f.ce.nodes["provision"].status == RUNNING
     await f.ctl.stop()                                  # the controller dies mid-build
     f.builder.hold.set()
-    ctl2 = Controller(f.cfg, runner=f.runner, builder=f.builder)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
-    async with ctl2.svc.lock:
-        ce2.recover()
+    ctl2, ce2 = await f.restart(recover=True)
     for _ in range(100):
         await asyncio.sleep(0.02)
         if ce2.nodes["provision"].status == "ACCEPTED":
             break
     assert ce2.nodes["provision"].status == "ACCEPTED"
-    ctl3 = Controller(f.cfg, runner=f.runner, builder=f.builder)      # and the build persists
-    ctl3.load()
+    ctl3, _ = await f.restart()      # and the build persists
     assert ctl3.changes[f.ce.cid].change.environment == ce2.change.environment
 
 

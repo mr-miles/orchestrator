@@ -109,9 +109,6 @@ class FlowRuntime:
                                     blank_repo=self.tree["blank_repo"],
                                     publish=self.tree["publish"]))
 
-    def _new_flow(self) -> FlowState:
-        return FlowState(self._workflow())
-
     def _apply(self, inp: list[Any]) -> list:
         """One input to the core; returns its effects."""
         op = inp[0]
@@ -185,9 +182,6 @@ class FlowRuntime:
                 "publish": self.c.svc.github.repo_of(self.c.git.source) is not None}
 
     # ------------------------------------------------------------------ queries
-    def has(self, nid: str) -> bool:
-        return nid in self.flow.nodes
-
     def status(self, nid: str) -> str | None:
         return self.flow.status(nid) if nid in self.flow.state else None
 
@@ -406,10 +400,6 @@ class FlowRuntime:
                                    if transition == "reset" and was != "pending"))
         self.c.spawn(self._sent_back(reset))
         self._carry_out(effects)
-
-    def end_at(self, node: Node) -> None:
-        """The change ended at this node (abandoned at its escalation, rejected at H-3)."""
-        self.runner.end(node)
 
     def _end(self, status: str) -> None:
         self.c.trace.end(status)

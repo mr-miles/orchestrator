@@ -142,30 +142,29 @@ def test_github_sources_name_their_repository():
         assert gh.repo_of(src) is None, src
 
 
-def test_a_push_is_never_forced(tmp_path):
+@pytest.mark.anyio
+async def test_a_push_is_never_forced(tmp_path):
     def git(cwd, *a):
         return subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True,
                               text=True).stdout.strip()
 
-    async def go():
-        work, remote = tmp_path / "work", tmp_path / "remote.git"
-        git(tmp_path, "init", "-q", "--bare", str(remote))
-        git(tmp_path, "init", "-q", "-b", "main", str(work))
-        for k, v in (("user.email", "t@t"), ("user.name", "t")):
-            git(work, "config", k, v)
-        (work / "a").write_text("1")
-        git(work, "add", "a")
-        git(work, "commit", "-qm", "one")
-        one = git(work, "rev-parse", "HEAD")
-        gh = GitHub()
-        await gh.push(Path(work), str(remote), one, "agent/c1")
-        assert git(remote, "rev-parse", "refs/heads/agent/c1") == one
-        git(work, "commit", "-q", "--amend", "-m", "rewritten")        # history rewritten
-        other = git(work, "rev-parse", "HEAD")
-        with pytest.raises(GitHubError, match="pushing agent/c1"):
-            await gh.push(Path(work), str(remote), other, "agent/c1")
-        assert git(remote, "rev-parse", "refs/heads/agent/c1") == one   # not forced
-    asyncio.run(go())
+    work, remote = tmp_path / "work", tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    git(tmp_path, "init", "-q", "-b", "main", str(work))
+    for k, v in (("user.email", "t@t"), ("user.name", "t")):
+        git(work, "config", k, v)
+    (work / "a").write_text("1")
+    git(work, "add", "a")
+    git(work, "commit", "-qm", "one")
+    one = git(work, "rev-parse", "HEAD")
+    gh = GitHub()
+    await gh.push(Path(work), str(remote), one, "agent/c1")
+    assert git(remote, "rev-parse", "refs/heads/agent/c1") == one
+    git(work, "commit", "-q", "--amend", "-m", "rewritten")        # history rewritten
+    other = git(work, "rev-parse", "HEAD")
+    with pytest.raises(GitHubError, match="pushing agent/c1"):
+        await gh.push(Path(work), str(remote), other, "agent/c1")
+    assert git(remote, "rev-parse", "refs/heads/agent/c1") == one   # not forced
 
 
 def test_gh_calls_are_built_as_gh_expects(tmp_path):

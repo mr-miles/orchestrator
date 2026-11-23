@@ -31,7 +31,6 @@ from legion_orch.workflow.model import (
     READY,
     REVIEWING,
     REWORK,
-    ROLE_FOR_KIND,
     RUNNING,
     VERIFYING,
     CommandResult,
@@ -79,7 +78,6 @@ def test_every_kind_is_a_list_of_phases():
 
 
 def test_agent_steps_are_the_roles_kinds_and_only_they_have_a_sandbox_plan():
-    assert {k: s.role for k, s in STEP_TYPES.items() if s.role} == ROLE_FOR_KIND
     assert all((s.role is None) == (s.sandbox is None) for s in STEP_TYPES.values())
     for s in STEP_TYPES.values():
         if s.role:

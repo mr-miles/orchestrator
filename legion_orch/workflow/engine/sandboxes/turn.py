@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shlex
 import shutil
 from typing import TYPE_CHECKING
 
 from ....config import agent_command
-from ....sandbox import RUN_AGENT_SH
+from ....sandbox.scripts import write_payload
 from ....util import stop_process
 from ...model import Run
 from ..base.core import ChangeCore
@@ -25,21 +24,15 @@ async def resumed_turn(c: ChangeCore, sandboxes: Sandboxes, sandbox: str, run: R
     """Resume ``run``'s session in ``sandbox`` for one turn on ``prompt`` (``wake``: start the
     stopped sandbox first). Returns the agent's exit code and log; raises on a timeout or a
     sandbox that cannot be used. The payload is removed and the process stopped however it ends."""
-    soul = c.assets.soul(run.soul) if run.soul in c.assets.souls_ else ""
     d = c.run_dir(turn_id)
-    payload, log_file = d / "payload", d / "agent.log"
-    payload.mkdir(parents=True, exist_ok=True)
-    (payload / "prompt.md").write_text(prompt)
-    (payload / "soul.md").write_text(soul)
-    (payload / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
+    log_file = d / "agent.log"
     # No skills in this payload: the sandbox still has those of its last run, and run-agent.sh
     # keeps installed skills when a payload brings none.
-    env = {"LEGION_RUN_ID": turn_id, "LEGION_ROLE": run.role, "LEGION_NEEDS_REPO": "0",
-           "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
-           "LEGION_RESUME_SESSION": run.session_id, "LEGION_REQUIRE_SESSION": "1"}
-    (payload / "run.env").write_text("".join(f"{k}={shlex.quote(str(v))}\n"
-                                             for k, v in env.items()))
-    (payload / "run-agent.sh").write_text(RUN_AGENT_SH)
+    payload = write_payload(d / "payload", {
+        "LEGION_RUN_ID": turn_id, "LEGION_ROLE": run.role, "LEGION_NEEDS_REPO": "0",
+        "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
+        "LEGION_RESUME_SESSION": run.session_id, "LEGION_REQUIRE_SESSION": "1"},
+        prompt=prompt, soul=c.assets.soul_text(run.soul), mcp=json.dumps({"mcpServers": {}}))
     proc = None
     try:
         if wake:

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import shlex
 import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -20,7 +19,7 @@ from ....sandbox import (
     SandboxError,
     SandboxSpec,
     is_name_clash,
-    payload_scripts,
+    write_payload,
 )
 from ... import governance
 from ...assets import GitMode
@@ -114,11 +113,7 @@ class VerifierSession:
     async def open(self) -> None:
         c = self.sb.c
         for attempt in range(3):
-            payload = self._base / "payload"
-            payload.mkdir(parents=True, exist_ok=True)
-            (payload / "run.env").write_text(f"LEGION_GIT_URL={shlex.quote(c.git_url)}\n")
-            for script, text in payload_scripts().items():
-                (payload / script).write_text(text)
+            payload = write_payload(self._base / "payload", {"LEGION_GIT_URL": c.git_url})
             env = sandbox_env(c.change, VERIFIER)
             policy = c.svc.write_policy(self._base / "policy.yaml", agent=False,
                                         network=env.network if env else None)

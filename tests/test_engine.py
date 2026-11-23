@@ -8,7 +8,7 @@ import json
 import pytest
 from engine_harness import REPO, TASKS, Flow, scenario, signals
 
-from legion_orch.workflow.engine import Controller, WorkflowError
+from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -1002,11 +1002,7 @@ async def test_restart_fails_live_runs_and_resumes_verification(f: Flow):
     live_intake_like = f.ce.runs[node.current_run]
     assert live_intake_like.status != R_FAILED
     f.runner.setup_rc = 0
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
-    async with ctl2.svc.lock:
-        ce2.recover()
+    ctl2, ce2 = await f.restart(recover=True)
     for _ in range(100):
         await asyncio.sleep(0.02)
         if ce2.nodes["build:T1"].status != VERIFYING:
@@ -1017,11 +1013,7 @@ async def test_restart_fails_live_runs_and_resumes_verification(f: Flow):
 @scenario()
 async def test_restart_fails_runs_that_were_live(f: Flow):
     r = f.run("intake")
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
-    async with ctl2.svc.lock:
-        ce2.recover()
+    ctl2, ce2 = await f.restart(recover=True)
     assert ce2.runs[r.id].status == R_FAILED
     assert ce2.nodes["intake"].status == ESCALATED
     assert "controller restarted" in ce2.nodes["intake"].escalation.reason
@@ -1196,11 +1188,7 @@ async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restar
     atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
             await f.write(run, "intake/risk.json", signals())]
     await f.report(run, atts, exit_agent=False)
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
-    async with ctl2.svc.lock:
-        ce2.recover()
+    ctl2, ce2 = await f.restart(recover=True)
     for _ in range(50):
         await asyncio.sleep(0.02)
         if ce2.runs[run.id].concluded:

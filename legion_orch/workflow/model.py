@@ -5,7 +5,6 @@ Every record is persisted as a versioned document in the store (see engine/state
 """
 from __future__ import annotations
 
-from datetime import UTC
 from enum import StrEnum
 from typing import Any
 
@@ -167,12 +166,6 @@ PENDING, READY, RUNNING, VERIFYING, REVIEWING, MERGING, REWORK, ACCEPTED, ESCALA
 ACTIVE_NODE = {RUNNING, VERIFYING, REVIEWING, DEFINING, MERGING}
 R_STARTING, R_ACTIVE, R_REPORTED, R_ACCEPTED, R_SUPERSEDED, R_FAILED = tuple(RunStatus)
 LIVE_RUN = {R_STARTING, R_ACTIVE}
-
-# Which agent role executes each node kind
-ROLE_FOR_KIND = {INTAKE: "intake", PLAN: "planner", ORACLE: "oracle",
-                 BASELINE: "baseline", BUILD: "implementer", INTEGRATION: "integration",
-                 DESCRIBE: "describer", RELEASE: "release", RETRO: "retrospective"}
-
 
 class Record(BaseModel):
     """Base for persisted records: unknown keys from older stores are ignored."""
@@ -424,7 +417,6 @@ class Node(Record):
     # the cycle it started at (the round's critique budget and feedback count from there)
     round: int = 1
     round_start_cycle: int = 1
-    updated_at: str = Field(default_factory=now_iso)
 
     @staticmethod
     def review_key(cycle: int, role: str) -> str:
@@ -758,7 +750,6 @@ class Card(Record):
     node: str | None = None          # the step (None: the orchestrator)
     role: str | None = None
     title: str
-    published_at: str = Field(default_factory=now_iso)
 
 
 class PlanPointer(Record):
@@ -821,8 +812,3 @@ class Change(Record):
         None while the round has built nothing. Approvals and the independent baseline must
         precede it."""
         return self.rounds[-1].first_build_at if self.rounds else self.first_build_at
-
-
-def _parse_ts_safe(ts: str):
-    from datetime import datetime
-    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)

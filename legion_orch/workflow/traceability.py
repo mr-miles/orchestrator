@@ -100,13 +100,20 @@ class Results(BaseModel):
     attestation: str | None = None
 
 
+class TraceSummary(BaseModel):
+    requirements: int
+    tasks: int
+    criteria: int
+    warnings: int
+
+
 class Traceability(BaseModel):
     built: bool                         # any task merged: verification and results columns apply
     requirements: list[RequirementTrace]
     tasks: list[TaskTrace]
     warnings: list[TraceWarning]
     results: Results | None = None
-    summary: dict[str, int]
+    summary: TraceSummary
 
 
 def _requirement_texts(e: ChangeView) -> dict[str, str]:

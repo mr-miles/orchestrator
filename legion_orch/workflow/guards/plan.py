@@ -21,8 +21,6 @@ def _reachable(graph: dict[str, list[str]], start: str) -> set[str]:
     return seen
 
 
-_BAD_PATH = re.compile(r"(^/|\\|(^|/)\.\.?(/|$)|^$)")
-_SURFACE_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 Graph = dict[str, list[str]]
 
 
@@ -40,8 +38,7 @@ def plan(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
     v = dependencies(tasks, graph)
     v += traceability(tasks, requirements)
     v += task_fields(tasks, implementer_souls)
-    v += paths_valid(tasks)
-    if not v:      # needs an acyclic graph and valid paths
+    if not v:      # needs an acyclic graph
         v += parallel_overlap(tasks, graph)
         v += scaffold(tasks, graph, blank_repo)
     v += protected_untouched(tasks, oracle, protected_cfg)
@@ -79,12 +76,9 @@ def fix_round(taskgraph: Any, oracle: Any, requirements: list[str], tier: str,
     v += dependencies(tasks, graph)
     known = set(requirements)
     for t in new:
-        if not t["requirements"]:
-            v.append(f"G-FR1: task {t['id']} cites no requirement")
         v += [f"G-FR1: task {t['id']} cites unknown requirement {r}"
               for r in t["requirements"] if r not in known]
     v += task_fields(new, implementer_souls)
-    v += paths_valid(new)
     v += [f"G-P11: task {t['id']} is marked scaffold; only the first round of a blank "
           "repository has a scaffold task" for t in new if t.get("scaffold")]
     if not v:      # accepted tasks have finished: only the new ones may run in parallel
@@ -128,11 +122,10 @@ def dependencies(tasks: list[dict], graph: Graph) -> list[str]:
 
 
 def traceability(tasks: list[dict], requirements: list[str]) -> list[str]:
-    """G-P3: every task cites known requirements; every requirement is covered."""
+    """G-P3: every task cites known requirements (at least one: the schema's); every requirement
+    is covered."""
     req_set, covered, v = set(requirements), set(), []
     for t in tasks:
-        if not t["requirements"]:
-            v.append(f"G-P3: task {t['id']} cites no requirement")
         for r in t["requirements"]:
             if r not in req_set:
                 v.append(f"G-P3: task {t['id']} cites unknown requirement {r}")
@@ -142,28 +135,16 @@ def traceability(tasks: list[dict], requirements: list[str]) -> list[str]:
 
 
 def task_fields(tasks: list[dict], implementer_souls: list[str]) -> list[str]:
-    """G-P4: a verification command and an acceptance criterion; G-P5: a known soul."""
+    """G-P4: a verification command that is not blank (an acceptance criterion is the schema's);
+    G-P5: a known soul."""
     v = []
     for t in tasks:
         if not _commands(t["verification"]):
             v.append(f"G-P4: task {t['id']} has no verification command")
-        if not t["acceptance"]:
-            v.append(f"G-P4: task {t['id']} has no acceptance criterion")
         if t["soul"] not in implementer_souls:
             v.append(f"G-P5: task {t['id']} soul {t['soul']!r} not in {implementer_souls}")
     return v
 
-
-def paths_valid(tasks: list[dict]) -> list[str]:
-    """G-P6 (paths): files_modified is non-empty and every path is relative and normalised."""
-    v = []
-    for t in tasks:
-        if not t["files_modified"]:
-            v.append(f"G-P6: task {t['id']} has empty files_modified")
-        for p in t["files_modified"] + t.get("files_forbidden", []):
-            if not _valid_path(p):
-                v.append(f"G-P6: task {t['id']} has invalid path {p!r}")
-    return v
 
 
 def parallel_overlap(tasks: list[dict], graph: Graph) -> list[str]:
@@ -231,8 +212,6 @@ def criterion_links(oracle: dict) -> list[str]:
     tests, cmds = set(oracle.get("acceptance_tests") or []), set(oracle.get("acceptance_commands") or [])
     v = []
     for c in oracle.get("criteria") or []:
-        if not isinstance(c, dict):
-            continue
         v += [f"G-P12: criterion {c.get('id')} names test {t!r}, which is not in "
               "oracle.acceptance_tests" for t in c.get("tests") or [] if t not in tests]
         v += [f"G-P12: criterion {c.get('id')} names command {x!r}, which is not in "
@@ -258,32 +237,22 @@ def setup_steps(oracle: dict) -> list[str]:
 
 
 def surfaces(oracle: dict) -> list[str]:
-    """G-P10 (tier >= 2): at least one verification surface; each has a unique id, commands
-    and valid pinned paths."""
-    found = oracle.get("surfaces")
-    if not isinstance(found, list) or not found:
+    """G-P10 (tier >= 2): at least one verification surface, with unique ids and commands that
+    are not blank (each surface's shape – id, commands, pinned paths – is the schema's)."""
+    found = oracle.get("surfaces") or []
+    if not found:
         return ["G-P10: oracle.surfaces must declare at least one verification surface"]
-    v, ids = [], []
-    for sf in found:
-        if not isinstance(sf, dict) or not str(sf.get("id") or "").strip():
-            v.append("G-P10: every surface needs an id")
-            continue
-        ids.append(sf["id"])
-        if not _commands(sf.get("commands") or []):
-            v.append(f"G-P10: surface {sf['id']} needs at least one command")
-        if not sf.get("pins") or not all(_valid_path(p) for p in sf["pins"]):
-            v.append(f"G-P10: surface {sf['id']} must pin at least one valid repository path")
-    if len(ids) != len(set(ids)) or not all(_SURFACE_ID.match(i) for i in ids):
-        v.append("G-P10: surface ids must be unique lowercase-dashed names")
+    ids = [sf["id"] for sf in found]
+    v = [f"G-P10: surface {sf['id']} needs at least one command"
+         for sf in found if not _commands(sf["commands"])]
+    if len(ids) != len(set(ids)):
+        v.append("G-P10: surface ids must be unique")
     return v
 
 
 def _commands(cmds: list) -> list[str]:
     return [c for c in cmds if isinstance(c, str) and c.strip()]
 
-
-def _valid_path(p: Any) -> bool:
-    return isinstance(p, str) and not _BAD_PATH.search(p)
 
 
 def waves(tasks: list[dict]) -> dict[str, int]:

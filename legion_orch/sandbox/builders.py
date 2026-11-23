@@ -6,13 +6,12 @@ is simply found and kept. (Network policies need no building: they go into the s
 """
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from pathlib import Path
 
 from ..config import Config
-from ..util import stop_process
 from .images import CHANGE_LABEL, ImageRecipe
+from .runner import _run
 
 
 class BuildError(Exception):
@@ -36,18 +35,6 @@ class NoBuilder(EnvironmentBuilder):
         return None, f"local runner: {recipe.tag} not built (default image)\n"
 
 
-async def _run(argv: list[str], timeout: float) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.STDOUT)
-    try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
-    except TimeoutError:
-        await stop_process(proc)
-        return 124, f"timeout after {timeout}s"
-    except BaseException:                 # cancelled (e.g. at shutdown): do not leave it running
-        await stop_process(proc)
-        raise
-    return proc.returncode, out.decode(errors="replace")
 
 
 class PodmanBuilder(EnvironmentBuilder):

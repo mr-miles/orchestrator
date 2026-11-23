@@ -13,6 +13,9 @@ import type { Change, EnvironmentSpec as Spec } from '@/lib/types'
 import { Attestations, Muted, Pre } from '../status'
 import { useNav } from './nav'
 
+/** A provisioned network policy entry (the backend keeps them as OpenShell sends them). */
+type NetworkPolicy = { name: string; endpoints?: { host: string; port: number }[] }
+
 /** The sandbox environment spec: profiles (tools, network, resources), the role map, and the
  * proposed library entries a profile uses (flagged: new, reviewed here first). */
 export function EnvironmentSpec({ env }: { env: Spec | null }) {
@@ -158,7 +161,7 @@ export function EnvironmentBuild({ change }: { change: Change | null }) {
                 {x.image ?? 'default'}
               </TableCell>
               <TableCell className="font-mono text-xs whitespace-normal">
-                {Object.values(x.network ?? {})
+                {(Object.values(x.network ?? {}) as NetworkPolicy[])
                   .map(
                     (n) =>
                       `${n.name}: ${(n.endpoints ?? []).map((e) => `${e.host}:${e.port}`).join(', ')}`,

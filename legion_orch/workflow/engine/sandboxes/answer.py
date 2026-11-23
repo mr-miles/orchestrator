@@ -8,7 +8,6 @@ separate resumed "answer" turn this module used to run is gone.)
 from __future__ import annotations
 
 import asyncio
-import itertools
 from typing import TYPE_CHECKING
 
 from ...model import LIVE_RUN, Run
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
 class Answerer:
     def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
         self.c, self.sandboxes = core, sandboxes
-        self._ids = itertools.count(1)
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def lock(self, node_id: str, role: str) -> asyncio.Lock:

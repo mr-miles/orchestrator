@@ -35,7 +35,8 @@ def test_example_yaml_disables_telemetry():
 def test_parses_values(tmp_path):
     cfg = _load(tmp_path, "telemetry: {enabled: true, endpoint: 'http://localhost:4318', "
                           "service_name: x, timeout_s: 3}\n")
-    assert cfg.telemetry == TelemetryConfig(True, "http://localhost:4318", "x", 3)
+    assert cfg.telemetry == TelemetryConfig(enabled=True, endpoint="http://localhost:4318",
+                                            service_name="x", timeout_s=3)
 
 
 @pytest.mark.parametrize("body", ["{endpoint: 'localhost:4318'}", "{timeout_s: 0}"])

@@ -1,4 +1,13 @@
 import { mock } from 'bun:test'
+import {
+  AttentionItemDefaults,
+  ChangeDefaults,
+  CriterionTraceDefaults,
+  NodeDefaults,
+  RunDefaults,
+  TaskTraceDefaults,
+  TraceWarningDefaults,
+} from '@/lib/api.gen'
 import type { Attention, ChangeState, ChangeSummary, Node, Run, Traceability } from '@/lib/types'
 
 /** An EventSource the test drives: ``emit`` delivers a named event to the latest connection. */
@@ -66,24 +75,16 @@ export function install() {
 }
 
 export const node = (n: Partial<Node> & Pick<Node, 'id' | 'kind' | 'title'>): Node => ({
-  depends_on: [],
-  status: 'PENDING',
-  cycle: 1,
-  runs: [],
-  feedback: [],
-  reviews: {},
-  verification: {},
+  ...NodeDefaults,
   ...n,
 })
 
 export const run = (r: Partial<Run> & Pick<Run, 'id' | 'node_id' | 'role'>): Run => ({
+  ...RunDefaults,
   soul: 'intake-analyst',
   cycle: 1,
   status: 'ACTIVE',
   stage: 'RUNNING',
-  attempts: 0,
-  violations: [],
-  progress: [],
   sandbox: 'lg-sb',
   ...r,
 })
@@ -109,8 +110,10 @@ export function stateAtH1(): ChangeState {
     decision_owners: ['miles'],
     assets_sha: 'sha256:abc',
     change: {
+      ...ChangeDefaults,
       id: 'c1',
       goal: 'Say hello',
+      workspace: 'app',
       status: 'ACTIVE',
       base_sha: '0123456789abcdef',
       integration_head: '0123456789abcdef',
@@ -166,7 +169,12 @@ export function stateAtH1(): ChangeState {
 
 /** What the controller's attention view says at H-1 (plus an ended change in the inbox). */
 export function attentionAtH1(): Attention {
-  const base = { goal: 'Say hello', reason: '', since: '2026-01-01T00:00:00.000Z' }
+  const base = {
+    ...AttentionItemDefaults,
+    goal: 'Say hello',
+    reason: '',
+    since: '2026-01-01T00:00:00.000Z',
+  }
   return {
     needs_you: [
       {
@@ -231,11 +239,14 @@ export function traceAtH2(): Traceability {
         text: 'greet.txt says hello',
         spec: { path: spec, status: 'stale', approved: 1, latest: 2 },
         tasks: ['T1'],
-        criteria: [{ id: 'AC-1', text: 'says hello', tests: [], commands: [] }],
+        criteria: [
+          { ...CriterionTraceDefaults, id: 'AC-1', text: 'says hello', tests: [], commands: [] },
+        ],
       },
     ],
     tasks: [
       {
+        ...TaskTraceDefaults,
         id: 'T1',
         title: 'greet',
         requirements: ['REQ-1'],
@@ -249,13 +260,18 @@ export function traceAtH2(): Traceability {
     ],
     warnings: [
       {
+        ...TraceWarningDefaults,
         kind: 'stale',
         message: 'plan/specs/REQ-1.md changed since miles approved v1 (now v2)',
         requirement: 'REQ-1',
         path: spec,
         version: 1,
       },
-      { kind: 'unlinked_criterion', message: 'AC-1 names no test or command that checks it' },
+      {
+        ...TraceWarningDefaults,
+        kind: 'unlinked_criterion',
+        message: 'AC-1 names no test or command that checks it',
+      },
     ],
     results: null,
     summary: { requirements: 1, tasks: 1, criteria: 1, warnings: 2 },
