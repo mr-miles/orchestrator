@@ -102,10 +102,6 @@ class EngineHost(Protocol):
     def fail_message(self, cid: str, card: str, task_id: str, why: str) -> None:
         """The card's agent can no longer answer a message: it fails with why."""
 
-    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
-        """Send ``sender``'s reply to a question back as the next message on its A2A task (the
-        A2A layer carries it, as the sender would with ``a2a send --task-id``)."""
-
     def next_run_id(self) -> str: ...
 
     def new_sandbox_name(self, prefix: str) -> str:

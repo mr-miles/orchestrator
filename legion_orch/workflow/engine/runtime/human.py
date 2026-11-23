@@ -151,9 +151,6 @@ class HumanGates:
         await self.flow.decide(node, "retry", approver)     # its gate step checks again
         return ActionResult()
 
-    async def _reject_change(self, node: Node, approver: str, payload: dict) -> ActionResult:
-        return await self._end_change(node, approver, payload, "reject")
-
     async def _end_change(self, node: Node, approver: str, payload: dict,
                           action: str) -> ActionResult:
         """Abandon the change (at an escalation, or rejected at H-3): record who, where and
@@ -170,7 +167,7 @@ class HumanGates:
             await self.flow.act(node.id, "reject", approver, reason or "")
         else:
             await self.flow.act(CHANGE, "abandon", approver)
-        self.flow.end_at(node)
+        self.runner.end(node)          # the change ended at this node
         verb = "abandoned the change" if action == "abandon" else "rejected the change"
         c.event("abandoned", f"{approver} {verb} at {node.id}: {reason or '(no reason given)'}",
                 node.id)

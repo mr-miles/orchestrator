@@ -149,9 +149,6 @@ class Controller:
     def fail_message(self, cid, card, task_id, why):
         self._a2a().inbox.fail(cid, card, task_id, why)
 
-    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
-        await self._a2a().follow_up(cid, sender, task_id, text)
-
 
 
     def replay_cards(self) -> None:

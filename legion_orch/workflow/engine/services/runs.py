@@ -72,9 +72,6 @@ class RunLifecycle:
         """On start: the runs' sandboxes as the gateway lists them (:meth:`Sandboxes.adopt`)."""
         self.sandboxes.adopt(found, complete)
 
-    def live_runs(self) -> list[Run]:
-        return [r for r in self.c.runs.values() if r.status in LIVE_RUN]
-
     # an agent still in its turn this long after its report was accepted is stopped
     END_TURN_GRACE_S = 300
 

@@ -29,7 +29,6 @@ GATES_BY_TIER: dict[str, list[str]] = {
 # For a workflow that updates a live system (a release step: release/plan.md, rollback.md), in
 # no tier today; a change can still be given them (an add_gate override).
 RELEASE_GATES = ["release_observation_plan", "rollback_or_forward_fix_evidence"]
-WAIVABLE_GATES = {"release_observation_plan"}
 
 
 def rank(tier: str) -> int:

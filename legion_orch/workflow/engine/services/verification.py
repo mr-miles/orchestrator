@@ -112,9 +112,6 @@ class Verifications:
         r = self.latest(key)
         return r if r is not None and r.state in V_FINAL else None
 
-    def for_sha(self, sha: str) -> list[VerificationRun]:
-        return [r for r in self.c.change.verifications.values() if r.sha == sha]
-
     # ------------------------------------------------------------------ requests
     def request(self, key: VerificationKey, by: str, priority: int, *, node: str | None = None,
                 branch: str | None = None, force: bool = False,
