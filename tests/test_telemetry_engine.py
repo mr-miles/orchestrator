@@ -9,7 +9,7 @@ import pytest
 from engine_harness import REPO, Flow
 
 from legion_orch import telemetry
-from legion_orch.telemetry import Telemetry, trace_id_for
+from legion_orch.telemetry import NullTrace, Telemetry, trace_id_for
 from legion_orch.workflow.engine import Controller
 from legion_orch.workflow.model import ChangeStatus
 
@@ -29,8 +29,11 @@ async def traced(tmp_path, exporter=None, goal="Say hello") -> Flow:
     return f
 
 
-async def r1(f: Flow, **intake) -> None:
+async def r1(f: Flow, after_intake=None, **intake) -> None:
     await f.intake(**intake)
+    if after_intake:
+        await f.settle()
+        after_intake()
     await f.human("H-1", "accept")
     await f.plan()
     await f.critique("PASS")
@@ -61,7 +64,10 @@ def test_r1_route_tree(tmp_path):
     async def go():
         exp = InMemorySpanExporter()
         f = await traced(tmp_path, exp)
-        await r1(f)
+
+        def h1_open():                       # a gate's step is open until the human acts
+            assert not named(exp.get_finished_spans(), "step H-1")
+        await r1(f, after_intake=h1_open)
         await f.settle()
         assert f.ce.change.status == ChangeStatus.READY
         spans = exp.get_finished_spans()
@@ -79,6 +85,7 @@ def test_r1_route_tree(tmp_path):
                 nid = s.name[len("step "):]
                 p = by_id[s.parent.span_id].attributes
                 assert p.get("legion.stage.id", p.get("legion.group.id")) == flow.parent[nid].id
+                assert attr(s, "legion.node.kind") == str(f.ce.nodes[nid].kind)
                 assert attr(s, "legion.outcome") == "accepted"
                 assert s.status.status_code != StatusCode.ERROR
             elif s.name.startswith("phase "):
@@ -89,6 +96,31 @@ def test_r1_route_tree(tmp_path):
                 assert s.status.status_code != StatusCode.ERROR
         assert {"step intake", "step H-1", "step plan", "step H-E1", "step build:T1"} <= {
             s.name for s in spans}
+    run(go())
+
+
+def test_off_by_default(tmp_path):
+    async def go():
+        f = await Flow.create(tmp_path)
+        assert f.ctl.svc.telemetry.enabled is False and isinstance(f.ce.trace, NullTrace)
+        await r1(f)
+        assert f.ce.change.status == ChangeStatus.READY
+    run(go())
+
+
+def test_controller_stores_telemetry(tmp_path):
+    f = Flow(tmp_path)
+    tel = Telemetry.for_exporter(InMemorySpanExporter())
+    assert Controller(f.cfg, runner=f.runner, builder=f.builder, telemetry=tel).svc.telemetry is tel
+
+
+def test_stop_interrupts_open_spans(tmp_path):
+    async def go():
+        exp = InMemorySpanExporter()
+        f = await traced(tmp_path, exp)
+        assert not named(exp.get_finished_spans(), f"change {f.ce.cid}")
+        await f.ctl.stop()
+        assert attr(one(exp.get_finished_spans(), f"change {f.ce.cid}"), "legion.outcome") == "interrupted"
     run(go())
 
 
