@@ -300,7 +300,13 @@ class Flow:
         self.runner = FakeRunner()
         self.builder = FakeBuilder()
         self.ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
+        self.ctls = [self.ctl]         # every controller started (restarts too): stopped at the end
         self.ce: ChangeEngine = None   # type: ignore[assignment]
+
+    async def stop(self) -> None:
+        """Stop every controller this flow started, as a controller stops (in order)."""
+        for ctl in self.ctls:
+            await asyncio.wait_for(ctl.stop(), 10)
 
     @classmethod
     async def create(cls, tmp_path: Path, goal: str = "Say hello", *, blank_repo: bool = False,
@@ -318,6 +324,7 @@ class Flow:
         gateway's sandboxes, as :meth:`Controller.start` loads them (without its loops);
         ``recover``: and what start() does next (live runs ended, tickets taken up again)."""
         ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
+        self.ctls.append(ctl)
         ctl.load()
         await ctl.adopt_sandboxes()
         ce = ctl.changes[self.ce.cid]
@@ -623,7 +630,11 @@ def scenario(**limits):
         @functools.wraps(fn)
         def test(tmp_path):
             async def go():
-                await fn(await Flow.create(tmp_path, **limits))
+                f = await Flow.create(tmp_path, **limits)
+                try:
+                    await fn(f)
+                finally:
+                    await f.stop()
             asyncio.run(go())
         test.__signature__ = inspect.Signature(
             [inspect.Parameter("tmp_path", inspect.Parameter.POSITIONAL_OR_KEYWORD)])
