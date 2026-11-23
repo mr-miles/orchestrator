@@ -6,7 +6,7 @@
   its criteria and their verdicts, its runs, the findings it was told to fix.
 * :func:`workflow_context` – how a ticket fits the change: the goal and tier, its place in the
   tree (its parent, the groups around it, what runs before and after it), its inputs (the
-  approved versions it consumes), who judges it, and whom to ask.
+  approved versions it consumes) and who judges it (whom to ask: the A2A catalog's cards).
 
 Agents read these to decide, never to override what their assignment says.
 """
@@ -50,5 +50,4 @@ def workflow_context(e: ChangeView, ticket_id: str) -> dict[str, Any]:
                   and x.type != "grouping"][:50],
         "inputs": {i: e.tickets.root.pointers.get(i) for i in t.inputs},
         "judged_by": [c for c in t.criteria],
-        "cards": [c.id for c in e.a2a_cards()],
     }

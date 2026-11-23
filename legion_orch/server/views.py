@@ -11,6 +11,7 @@ from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
 from ..workflow.model import LIVE_RUN
 from ..workflow.tickets import Status
+from .a2a import A2AHub
 
 
 def change_list(ctl: Controller) -> list[dict]:
@@ -75,7 +76,7 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "verifying": dict(ce.verifying),
             "verifications": [v.model_dump(mode="json") for v in ce.verifications()],
             "a2a": {"cards": [c.model_dump(mode="json") | {"state": cards.agent_state(ce, c)}
-                              for c in ce.a2a_cards()],
+                              for c in A2AHub.of(ctl).cards(ce)],
                     "questions": [q.model_dump(mode="json")
                                   for q in ce.change.questions.values()]}}
 

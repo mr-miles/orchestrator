@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ....bus import TurnEnded
+from ....bus import AgentStarted, TurnEnded
 from ....config import agent_command
 from ....sandbox import (
     AGENT_PREFIX,
@@ -149,27 +149,6 @@ Your instructions:
 {prompt}
 """
 
-CONSULT_PROMPT = """# A message before your work starts
-
-You are the `{role}` agent of ticket `{node}` in change {change}. Your work on this step has not
-started yet, but `{sender}` – another agent of this change – sent you this message over A2A:
-
-<message from="{sender}">
-{text}
-</message>
-
-Answer it. Read what you need – your assignment (get_assignment), the documents, the repository
-checkout – but change nothing: no commits, no document writes, no report. Reply with
-`a2a_reply(task_id="{task}", text=...)`, or end with your answer as your final message. If you
-cannot answer yet, say so and why.
-
-When the step gets to your work, it continues this session: what you learn now stays with you.
-Your instructions for that work, as they stand now (do not start on them in this turn):
-
-{prompt}
-"""
-
-
 @dataclass
 class AgentTurn(Command):
     """The agent's turns: start the agent, then the agent runner takes its turns
@@ -287,13 +266,11 @@ class AgentRuns:
         – the one way an agent takes a turn outside its ticket's work (a consult run: not one of
         the ticket's runs, read-only, never reporting).
 
-        * **Not started:** its sandbox is created (pushing roles get the push provider their run
-          will need), with its soul, skills and assignment as it stands; its run, when the
-          ticket gets to it, continues this sandbox and session.
-        * **Started:** its sandbox – stopped or not – is resumed **in place**, its session
-          continued, with only the Skill tool and its MCP tools (it may not touch its working
-          copy), under the sandbox's lock for the whole turn: a rework launched meanwhile waits.
-          The resolver answers in its own sandbox with all its tools.
+        Only an agent that has started answers (one that has not has no card): its sandbox –
+        stopped or not – is resumed **in place**, its session continued, with only the Skill tool
+        and its MCP tools (it may not touch its working copy), under the sandbox's lock for the
+        whole turn: a rework launched meanwhile waits. The resolver answers in its own sandbox
+        with all its tools.
 
         It replies with ``a2a_reply`` on ``task_id``; failing that, its final message is the
         answer (returned). Afterwards the sandbox is stopped, not deleted."""
@@ -355,6 +332,8 @@ class AgentRuns:
         except AssetError as e:
             raise WorkflowError(f"{role}@{ticket_id}: {e}") from None
         kept = self.sandboxes.answerer.session_run(ticket_id, role)   # its sandbox, if it has one
+        if kept is None and role != cards.RESOLVER:      # only agents that have started answer
+            raise NoAgent(f"{role}@{ticket_id} has not started: a message waits until it has")
         if kept is not None and kept.sandbox in self.sandboxes.retiring:
             raise NoAgent(f"{role}@{ticket_id} finished its work (its sandbox is being retired)")
         in_place = kept is not None and role != cards.RESOLVER
@@ -366,8 +345,7 @@ class AgentRuns:
                   sandbox=kept.sandbox if kept else self.c.host.new_sandbox_name(AGENT_PREFIX),
                   sandbox_ref=kept.sandbox_ref if kept else None)
         self.c.runs[run.id] = run
-        template = (RESOLVER_PROMPT if role == cards.RESOLVER
-                    else ANSWER_PROMPT if in_place else CONSULT_PROMPT)
+        template = RESOLVER_PROMPT if role == cards.RESOLVER else ANSWER_PROMPT
         prompt = template.format(role=role, node=ticket_id, change=ch.id, sender=sender,
                                  text=text, prompt=rendered.prompt,
                                  task=task_id or "(none: answer in your final message)")
@@ -500,6 +478,7 @@ class AgentRuns:
         self.placement.place(run, ticket, plan, judged=owner)
         self.c.runs[run.id] = run
         ticket.runs.append(run.id)
+        self.c.emit(AgentStarted(self.c.cid, ticket.id, role, run.sandbox))
         if plan.keeps and ticket.sandbox is None:
             ticket.sandbox = run.sandbox
         self._payload(run, rendered, plan)

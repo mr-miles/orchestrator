@@ -210,16 +210,14 @@ class RunLifecycle:
         return text
 
     # ------------------------------------------------------------------ A2A (sandboxes/answer.py)
-    def agent_state(self, node_id: str, role: str) -> str | None:
-        """A step agent as an A2A recipient: "live" (a run is in its turn: deliver to its
-        inbox), "idle" (its sandbox exists, stopped or not: a resumed turn answers), "absent"
-        (its step is in progress but its agent has not started: a consult starts it) or None
-        (no card: the step is not in progress)."""
+    def agent_state(self, ticket_id: str, role: str) -> str | None:
+        """A ticket's agent as an A2A recipient: "live" (a run is in its turn: deliver to its
+        inbox), "idle" (its sandbox exists, stopped or not: a resumed turn answers), or None (it
+        has not started, or its sandboxes are gone: nothing answers)."""
         answerer = self.sandboxes.answerer
-        has_card = any(c.ticket == node_id and c.role == role for c in self.c.a2a_cards())
-        if answerer.session_run(node_id, role) is None:
-            return "absent" if has_card else None
-        return "live" if answerer.live(node_id, role) else "idle"
+        if answerer.session_run(ticket_id, role) is None:
+            return None
+        return "live" if answerer.live(ticket_id, role) else "idle"
 
     def stored_log(self, run_id: str) -> str:
         """A run's whole archived log ('' if none)."""

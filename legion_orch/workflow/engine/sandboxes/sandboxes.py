@@ -11,6 +11,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from ....bus import SandboxDeleted
 from ....sandbox import (
     AGENT_PREFIX,
     VERIFIER_PREFIX,
@@ -400,5 +401,6 @@ class Sandboxes:
                 if t.sandbox == name:
                     t.sandbox = None
             self.c.event("sandbox", f"sandbox {name} deleted")
+            self.c.emit(SandboxDeleted(self.c.cid, name))
             self.c.save()
         return True

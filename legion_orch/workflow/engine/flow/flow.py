@@ -201,7 +201,7 @@ class TicketFlow:
 
     def _saved(self, tickets: Iterable[Ticket]) -> None:
         """The runner's save (the lock is held): kept sandboxes of closed tickets go, then the
-        change saves (and announces what its tickets did: ``TicketMoved``)."""
+        change saves."""
         self.lifecycle.release_sandboxes()
         self.c.save()
 

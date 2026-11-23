@@ -6,13 +6,13 @@ agent is doing is its ticket's state and its tasks'. So cards are **published**:
 * the change's own – the **orchestrator** (the controller itself, not a model: it lists the
   cards and asks a human) and the **resolver** (the change's agent for escalations and stuck
   agents) – when the change starts, until it ends;
-* one per **agent ticket** (``implementer@T1``, ``reviewer@review:T1``) while the ticket is open
-  – a criterion's from its owner's start – until it is closed. A message to an agent not started
-  starts it; to a stopped one, resumes its session.
+* one per **agent that has started** on a ticket (``implementer@T1``, ``reviewer@review:T1``),
+  while it has a sandbox – running (a message waits in its inbox) or stopped (it is resumed, in
+  place, to answer) – until its sandboxes are gone. An agent that has not started has no card:
+  a message to it is refused.
 
-Which cards exist is decided by whoever keeps them (the agent runner) from what the workflow
-announces on the bus (``TicketMoved``) – never by reading the workflow: :func:`carded` is the
-rule, over the subscriber's own record (:class:`Heard`).
+The agent runner keeps them from its own records (its runs and their sandboxes), never from
+the workflow.
 
 They are pushed to the A2A catalog (``server/a2a.py``) as a side effect of the workflow
 (``EngineHost.publish_cards`` / ``remove_cards``) – a view of it, not part of the change's
@@ -22,7 +22,6 @@ agent and have no card; nor do the controller's own tickets.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from urllib.parse import quote
 
 from .model import Card
@@ -38,6 +37,16 @@ def card_id(role: str, ticket: str) -> str:
     if role == ticket and role in (ORCHESTRATOR, RESOLVER):
         return role
     return f"{role}@{ticket}"
+
+
+def parse(card: str) -> tuple[str, str] | None:
+    """(role, ticket) of a card id – None for the orchestrator (no agent)."""
+    if card == ORCHESTRATOR:
+        return None
+    if card == RESOLVER:
+        return RESOLVER, RESOLVER
+    role, at, ticket = card.partition("@")
+    return (role, ticket) if at else None
 
 
 def card_url(a2a_url: str, card: str) -> str:
@@ -57,34 +66,9 @@ def identifier(card: str) -> str:
     return f"urn:air:legion:agent:{card}"
 
 
-OPEN = {"working", "subtasks", "checking", "merging", "waiting", "paused", "rejected"}
-
-
-@dataclass(frozen=True)
-class Heard:
-    """What a subscriber heard of a ticket (``TicketMoved``): no more than a card needs."""
-    ticket: str
-    type: str
-    role: str
-    parent: str | None
-    status: str
-
-
-def carded(heard: dict[str, Heard], t: Heard) -> bool:
-    """Whether an agent ticket has a card: while it is open – and, a criterion, from its owner's
-    start (an agent not started yet may be asked, and starts to answer)."""
-    if not t.type.startswith("agent:"):
-        return False
-    if t.status in OPEN:
-        return True
-    owner = heard.get(t.parent) if t.parent else None
-    return t.status == "pending" and t.role == "criterion" and owner is not None \
-        and owner.status in OPEN
-
-
-def ticket_card(t: Heard) -> Card:
-    role = t.type.partition(":")[2]
-    return Card(id=card_id(role, t.ticket), ticket=t.ticket, role=role, title=f"{role} of {t.ticket}")
+def agent_card(role: str, ticket: str) -> Card:
+    """A ticket's agent's card."""
+    return Card(id=card_id(role, ticket), ticket=ticket, role=role, title=f"{role} of {ticket}")
 
 
 def change_cards(change_id: str) -> list[Card]:
@@ -92,14 +76,6 @@ def change_cards(change_id: str) -> list[Card]:
     return [Card(id=ORCHESTRATOR, title=f"Orchestrator of change {change_id}"),
             Card(id=RESOLVER, ticket=RESOLVER, role=RESOLVER,
                  title=f"Resolver of change {change_id}: escalations and stuck agents")]
-
-
-def ordered(published: list[Card], order: list[str]) -> list[Card]:
-    """``published`` cards in order: the change's own first, then the tickets' in ``order``."""
-    pos = {tid: i for i, tid in enumerate(order)}
-    own = {ORCHESTRATOR: -2, RESOLVER: -1}
-    return sorted(published,
-                  key=lambda c: (own.get(c.id, pos.get(c.ticket or "", len(pos))), c.id))
 
 
 def agent_state(e: ChangeView, card: Card) -> str:

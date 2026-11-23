@@ -70,7 +70,6 @@ class ChangeEngine(ChangeCore):
         self.projections.replay()   # the fields copied from documents (base/projections.py)
         self.st.runs_loaded()       # and the runs, from their documents
         self._flow.load()           # the tickets, checked
-        self.announce_tickets()     # where they stand, for those that keep their own record
 
         self.seed_attention()
 
@@ -152,7 +151,7 @@ class ChangeEngine(ChangeCore):
 
     def republish_cards(self) -> None:
         """A card catalog subscribed (a restart): the cards the workflow has open, again."""
-        self._agent_runner.republish()
+        self._agent_runner.replay()
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:

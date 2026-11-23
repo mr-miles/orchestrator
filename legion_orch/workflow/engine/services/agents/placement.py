@@ -5,8 +5,6 @@ work judges another ticket's – never by a role's name:
 
 * a plan that **keeps** (a ticket's own work) reuses the ticket's kept sandbox and resumes its
   session (a rework, a restart: the same attempt again);
-* an agent **started early** (a consult, to answer a message) is adopted: its run continues
-  that sandbox and session;
 * otherwise a **fresh** sandbox (a judge: one per round), and the role's earlier sandboxes on the
   ticket – kept stopped for questions – are retired;
 * **G-D4**: a judge never shares the judged work's sandbox (an assertion, not a convention).
@@ -28,11 +26,8 @@ class Placement:
 
     def place(self, run: Run, ticket: Ticket, plan: SandboxPlan, *, judged: Ticket | None) -> None:
         """Choose ``run``'s sandbox (under the lock). ``judged``: the ticket whose work it judges."""
-        early = self.consulted(ticket, run.role)
         if plan.keeps and ticket.sandbox:
             run.sandbox = ticket.sandbox
-        elif early is not None:        # started early to answer a message (A2A): its agent
-            run.sandbox = early.sandbox
         else:
             run.sandbox = self.c.host.new_sandbox_name(AGENT_PREFIX)
             self.retire_earlier(ticket, run.role, run.sandbox)
@@ -41,17 +36,6 @@ class Placement:
         if judged is not None and (judged.sandbox == run.sandbox or any(
                 self.c.runs[r].sandbox == run.sandbox for r in judged.runs if r in self.c.runs)):
             raise RuntimeError("G-D4 violated: a judge would share a sandbox with the judged work")
-
-    def consulted(self, ticket: Ticket, role: str) -> Run | None:
-        """The role's agent started early on this ticket (a consult) whose sandbox its run
-        continues: the latest consult of the role, unless a run of the role came since – or
-        it answered in place, in the sandbox of a run before."""
-        runs = [r for r in self.c.runs.values() if r.ticket == ticket.id and r.role == role
-                and r.sandbox and not r.sandbox_deleted]
-        if not runs or not runs[-1].consult:
-            return None
-        early = runs[-1]
-        return None if any(r.sandbox == early.sandbox and not r.consult for r in runs) else early
 
     def retire_earlier(self, ticket: Ticket, role: str, keep: str) -> None:
         """A new sandbox for the role (a judge's next round): the role's earlier ones on the
@@ -64,17 +48,12 @@ class Placement:
                 self.sandboxes.delete_later(sb)
 
     def resumable_session(self, run: Run, plan: SandboxPlan) -> tuple[str, str] | None:
-        """The session ``run`` continues: an agent started early in its sandbox, or – a plan
-        keeping its session, or a consult answering in place – the ticket's previous run of the
-        role there."""
-        mine = [r for r in self.c.runs.values() if r.ticket == run.ticket and r.role == run.role
-                and r.sandbox == run.sandbox and r.id != run.id]
-        consults = [r for r in mine if r.consult]
-        prev = [r for r in mine if not r.consult]
-        if consults and (not prev or consults[-1].created_at >= prev[-1].created_at):
-            prev = consults                  # it continues the agent started early (A2A)
-        elif not (plan.keeps_session or run.consult):
+        """The session ``run`` continues – a plan keeping its session, or a consult answering in
+        place: the ticket's previous run of the role in its sandbox."""
+        if not (plan.keeps_session or run.consult):
             return None
+        prev = [r for r in self.c.runs.values() if r.ticket == run.ticket and r.role == run.role
+                and r.sandbox == run.sandbox and r.id != run.id and not r.consult]
         if not prev:
             return None
         sid = prev[-1].session_id or agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000))

@@ -62,16 +62,19 @@ class Event:
 
 
 @dataclass(frozen=True)
-class TicketMoved(Event):
-    """A ticket of the change moved to ``status`` (raised as the change saves) – or, ``replay``,
-    is where it stands (every ticket, once, as the change is loaded): what a subscriber keeps
-    its own record of the workflow from, never reading it."""
+class AgentStarted(Event):
+    """A run of ``role`` on ``ticket`` was dispatched in ``sandbox`` (the agent runs service) –
+    or, ``replay``, an agent with a sandbox still (a catalog subscribed: a restart)."""
     ticket: str
-    type: str
-    role: str                        # root | subtask | criterion
-    parent: str | None
-    status: str
+    role: str
+    sandbox: str
     replay: bool = False
+
+
+@dataclass(frozen=True)
+class SandboxDeleted(Event):
+    """A sandbox of the change was deleted (the sandbox layer)."""
+    sandbox: str
 
 
 @dataclass(frozen=True)

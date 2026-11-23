@@ -30,6 +30,11 @@ def token(f: Flow, run: Run, *, role: str | None = None, change: str | None = No
     return {"Authorization": "Bearer " + f.ctl.auth.identity.tokens.issue(b, "spiffe://t/" + b.sandbox)}
 
 
+def catalog(f: Flow) -> list:
+    """The change's cards, as the A2A catalog keeps them."""
+    return A2AHub.of(f.ctl).cards(f.ce)
+
+
 def client(f: Flow) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=build_a2a_app(f.ctl)),
                              base_url="http://a2a")
@@ -87,14 +92,11 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         assert intake.sandbox in f.runner.deleted                 # H-1 accepted: intake gone
         ids = [x["id"] for x in (await c.get("/a2a/cards", headers=token(f, critic))).json()["cards"]]
         assert ids == ["orchestrator", "resolver", "planner@design"]    # not its own card
-        cards = {x.id: x for x in f.ce.a2a_cards()}
+        cards = {x.id: x for x in catalog(f)}
         assert set(cards) == {"orchestrator", "resolver", "planner@design", "critic@critique"}
         assert agent_state(f.ce, cards["planner@design"]) == "stopped"     # still published
         assert agent_state(f.ce, cards["critic@critique"]) == "running"
         assert "stopped" not in cards["planner@design"].model_dump()        # no state in a card
-        events = [e for e in f.ce.timeline().splitlines() if '"a2a"' in e]
-        assert any("card registered: intake@intake" in e for e in events)
-        assert any("cards removed: intake" in e for e in events)
 
         # the card, at its own URL (as the a2a CLI fetches a URL with a path) and well-known
         card = (await c.get("/a2a/planner@design", headers=token(f, critic))).json()
@@ -188,7 +190,8 @@ async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
         assert item.view()["from"] == "planner@design" and "REQ-1" in item.text
         assert (await A2AHub.of(f.ctl).agent_reply(f.ce, critic, tid, "Yes, final.", "completed"))["ok"]
         t = await task_when(c, "critic@critique", tid, token(f, planner))
-        assert answer_text(t) == "Yes, final." and not A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")
+        assert answer_text(t) == "Yes, final."
+        assert not A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")
         # the sender's tasks are its own
         r = await c.post("/a2a/critic@critique", headers=token(f, critic) | V,
                          json={"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": tid}})
@@ -259,48 +262,33 @@ async def consult_answers(f: Flow, role: str, node: str, answer: str, session: s
 
 
 @scenario()
-async def test_a_tickets_judges_have_cards_from_its_start(f: Flow):
+async def test_an_agents_card_appears_as_it_starts_and_goes_with_its_sandboxes(f: Flow):
     await f.to_build()
-    cards = {c.id: c for c in f.ce.a2a_cards()}
-    assert {"implementer@T1", "reviewer@review:T1"} <= set(cards)   # the judge's, not started
-    assert agent_state(f.ce, cards["reviewer@review:T1"]) == "not started"
+    cards = {c.id: c for c in catalog(f)}
+    assert "implementer@T1" in cards and "reviewer@review:T1" not in cards   # not started
     assert agent_state(f.ce, cards["implementer@T1"]) == "running"
-    assert not [c for c in cards if c.endswith("@design")]    # a closed ticket has none
+    assert "planner@design" not in cards                     # a closed ticket's agent is gone
     await f.implement()
     judge = f.run("review:T1", "reviewer")
-    assert "implementer@T1" in {c.id for c in f.ce.a2a_cards()}       # still in progress
+    cards = {c.id: c for c in catalog(f)}
+    assert {"implementer@T1", "reviewer@review:T1"} <= set(cards)   # both: stopped and running
+    assert agent_state(f.ce, cards["implementer@T1"]) == "stopped"
     await f.review()
     assert f.status("T1") == "passed"
-    assert not [c for c in f.ce.a2a_cards() if c.ticket in ("T1", "review:T1")]   # closed
     await f.settle()
-    assert judge.sandbox in f.runner.deleted                           # and its judge went
+    assert not [c for c in catalog(f) if c.ticket in ("T1", "review:T1")]   # closed
+    assert judge.sandbox in f.runner.deleted
 
 
 @scenario()
-async def test_an_agent_not_started_is_started_to_answer_and_its_run_continues_it(f: Flow):
+async def test_a_message_to_an_agent_that_has_not_started_is_refused(f: Flow):
     await f.to_build()
     impl = f.run("T1", "implementer")
     async with client(f) as c:
-        res = await rpc(c, "reviewer@review:T1", send("What will you check first?"),
-                        token(f, impl))
-        early = await consult_answers(f, "reviewer", "review:T1", "Error handling first.",
-                                      "sess-early")
-        t = await task_when(c, "reviewer@review:T1", res["task"]["id"], token(f, impl))
-    assert t["status"]["state"] == "TASK_STATE_COMPLETED" and answer_text(t) == "Error handling first."
-    assert early.id not in f.ticket("review:T1").runs          # not one of the ticket's runs
-    payload = f.runner.payloads[early.sandbox]
-    assert "What will you check first?" in payload["prompt.md"] and "change nothing" in payload["prompt.md"]
-    await f.settle()
-    assert early.sandbox in f.runner.stopped and early.sandbox not in f.runner.deleted
-    assert agent_state(f.ce, {c.id: c for c in f.ce.a2a_cards()}["reviewer@review:T1"]) == "stopped"
-    # a consult cannot report
-    out = await f.ce.handle_report(early.id, "DONE", "x", [], {}, None, None)
-    assert not out.accepted
-    # the ticket gets to its review: the judge's run continues the agent started early
-    await f.implement()
-    run = f.run("review:T1", "reviewer")
-    assert run.sandbox == early.sandbox and run.resumed_session == "sess-early"
-    assert early.sandbox in f.runner.restarted
+        r = await c.post("/a2a/reviewer@review:T1", json=send("What will you check first?"),
+                         headers=token(f, impl) | V)
+        assert r.status_code == 404                       # it has no card yet
+    assert not [x for x in f.ce.runs.values() if x.consult]    # nothing was started to answer
 
 
 @scenario()
@@ -400,8 +388,12 @@ def drift_check(f: Flow):
     hub = A2AHub.of(f.ctl)
 
     def check(where: str) -> None:
+        """The catalog holds exactly the change's own cards and one per agent with a sandbox."""
         pushed = sorted(c.id for c in hub.catalog.cards(f.ce.cid))
-        implied = sorted(c.id for c in f.ce.a2a_cards())
+        agents = {f"{r.role}@{r.ticket}" for r in f.ce.runs.values()
+                  if r.sandbox and not r.sandbox_deleted and not r.consult}
+        implied = sorted(agents | ({"orchestrator", "resolver"}
+                                   if f.ce.change.status == "ACTIVE" else set()))
         assert pushed == implied, (where, pushed, implied)
     return hub, check
 
@@ -410,7 +402,7 @@ def drift_check(f: Flow):
 async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Flow):
     """The cards the workflow pushed (publish as a step starts, withdraw as it ends) are, after
     every step, exactly the cards its state implies; a catalog subscribing later gets the same."""
-    from legion_orch.bus import CardsPublished
+    from legion_orch.bus import AgentStarted, CardsPublished
     from legion_orch.server.a2a import Catalog
     hub, check = drift_check(f)
     check("start")
@@ -427,8 +419,10 @@ async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Fl
     check("critique pass")
     late = Catalog()                                  # a catalog subscribing later (a restart)
     f.ctl.bus.subscribe(CardsPublished, lambda e: late.publish(e.cid, list(e.cards)))
+    f.ctl.bus.subscribe(AgentStarted, lambda e: late.agent_started(e.cid, e.ticket, e.role,
+                                                                    e.sandbox))
     f.ctl.replay_cards()
-    assert sorted(c.id for c in late.cards(f.ce.cid)) == sorted(c.id for c in f.ce.a2a_cards())
+    assert sorted(c.id for c in late.cards(f.ce.cid)) == sorted(c.id for c in catalog(f))
 
 
 @scenario()

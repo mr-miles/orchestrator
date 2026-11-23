@@ -67,10 +67,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from ..bus import CardsPublished, CardsWithdrawn, ItemAdded, TurnEnded
+from ..bus import AgentStarted, CardsPublished, CardsWithdrawn, ItemAdded, SandboxDeleted, TurnEnded
 from ..identity import WorkloadBinding
 from ..util import bearer
-from ..workflow.cards import card_id, card_url, identifier, ordered
+from ..workflow.cards import agent_card, card_id, card_url, identifier
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Card
 from .inbox import Inbox
@@ -145,12 +145,14 @@ def as_text(text: str, data: list[dict]) -> str:
 
 
 class Catalog:
-    """The A2A catalog: every change's published cards, in memory – a view of the workflow,
-    pushed to as it goes (``EngineHost.publish_cards`` / ``remove_cards``; given every change's
-    cards again when it subscribes). Nothing else holds them."""
+    """The A2A catalog: every change's cards, in memory – kept from what the engine announces on
+    the bus: the change's own cards (``CardsPublished`` / ``CardsWithdrawn``), and an agent's
+    card from its first run (``AgentStarted``) until its last sandbox is deleted
+    (``SandboxDeleted``). Replayed when it subscribes (a restart). Nothing else holds them."""
 
     def __init__(self):
         self._cards: dict[str, dict[str, Card]] = {}          # change -> card id -> card
+        self._sandboxes: dict[str, dict[str, set[str]]] = {}  # change -> card id -> sandboxes
 
     def publish(self, change: str, cards: list[Card]) -> None:
         mine = self._cards.setdefault(change, {})
@@ -160,10 +162,27 @@ class Catalog:
     def remove(self, change: str, ticket: str | None) -> None:
         if ticket is None:
             self._cards.pop(change, None)
+            self._sandboxes.pop(change, None)
             return
         mine = self._cards.get(change, {})
         for cid in [c.id for c in mine.values() if c.ticket == ticket]:
             del mine[cid]
+
+    def agent_started(self, change: str, ticket: str, role: str, sandbox: str) -> None:
+        """An agent's run in ``sandbox``: its card, if it has none yet."""
+        card = agent_card(role, ticket)
+        if change not in self._cards:
+            return                                   # the change is not open (ended)
+        self.publish(change, [card])
+        self._sandboxes.setdefault(change, {}).setdefault(card.id, set()).add(sandbox)
+
+    def sandbox_deleted(self, change: str, sandbox: str) -> None:
+        """A sandbox went: an agent with none left loses its card."""
+        for cid, boxes in list(self._sandboxes.get(change, {}).items()):
+            boxes.discard(sandbox)
+            if not boxes:
+                del self._sandboxes[change][cid]
+                self._cards.get(change, {}).pop(cid, None)
 
     def cards(self, change: str) -> list[Card]:
         return list(self._cards.get(change, {}).values())
@@ -195,6 +214,9 @@ class A2AHub:
         ctl.a2a = self                                        # the engine's A2A counterpart
         ctl.bus.subscribe(CardsPublished, lambda e: self.catalog.publish(e.cid, list(e.cards)))
         ctl.bus.subscribe(CardsWithdrawn, lambda e: self.catalog.remove(e.cid, e.ticket))
+        ctl.bus.subscribe(AgentStarted, lambda e: self.catalog.agent_started(
+            e.cid, e.ticket, e.role, e.sandbox))
+        ctl.bus.subscribe(SandboxDeleted, lambda e: self.catalog.sandbox_deleted(e.cid, e.sandbox))
         ctl.bus.subscribe(TurnEnded, lambda e: self.inbox.turn_ended(e.cid, card_id(e.role, e.ticket)))
         ctl.replay_cards()                                    # the cards open already
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
@@ -205,7 +227,7 @@ class A2AHub:
 
     def cards(self, ce: ChangeEngine) -> list[Card]:
         """The change's cards in the catalog, its own first."""
-        return ordered(self.catalog.cards(ce.cid), [c.ticket for c in ce.a2a_cards() if c.ticket])
+        return self.catalog.cards(ce.cid)        # as published: its own first, then as agents started
 
     def find(self, ce: ChangeEngine, card_id: str) -> Card | None:
         return self.catalog.get(ce.cid, card_id)

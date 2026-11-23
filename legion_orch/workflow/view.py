@@ -34,9 +34,6 @@ class ChangeView(Protocol):
     @property
     def runs(self) -> dict[str, Run]: ...
 
-    def a2a_cards(self) -> list[Any]:
-        """The change's A2A cards (workflow.model.Card), as the engine keeps them."""
-
     def p(self, rel: str) -> str:
         """Qualify a path into the change namespace (changes/<id>/...)."""
 

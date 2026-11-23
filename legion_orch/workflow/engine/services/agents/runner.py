@@ -1,7 +1,8 @@
 """The agent runner: what the workflow talks to about agents (~/plans/inbox-runner.md).
 
-* The workflow tells it when the change opens and closes; it hears what the change's tickets do
-  on the bus (``TicketMoved``) and keeps the cards from that – never reading the workflow.
+* The workflow tells it when the change opens and closes: it publishes the change's own cards
+  (``CardsPublished`` / ``CardsWithdrawn``). Its agents' cards are the A2A catalog's to keep, from
+  what the engine announces (``AgentStarted``, ``SandboxDeleted``): it keeps no card state.
 * Cards travel on the bus (``CardsPublished`` / ``CardsWithdrawn``); the A2A catalog
   subscribes.
 * The A2A inbox's ``ItemAdded`` (a bus event) tells it when something waits on an agent – also
@@ -21,7 +22,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from .....bus import CardsPublished, CardsWithdrawn, ItemAdded, TicketMoved
+from .....bus import AgentStarted, CardsPublished, CardsWithdrawn, ItemAdded
 from .....util import now_iso
 from .... import cards
 from ....model import Run, Turn
@@ -56,66 +57,29 @@ class AgentRunner:
         self.c, self.lifecycle, self.agents = core, lifecycle, agents
         self.sandboxes, self.dispatcher = sandboxes, dispatcher
         self._busy: set[str] = set()          # cards whose messages are being answered
-        self._heard: dict[str, cards.Heard] = {}   # the change's tickets, as announced
-        self._carded: set[str] = set()             # the tickets whose card is published
-        self._open = False                         # the change's own cards are published
         core.svc.bus.subscribe(ItemAdded, lambda e: self.item_added(e.card), cid=core.cid)
-        core.svc.bus.subscribe(TicketMoved, self.ticket_moved, cid=core.cid)
 
     # ------------------------------------------------------------------ the workflow tells it
     def open_change(self) -> None:
         """The change started: its own agents' cards (orchestrator, resolver)."""
-        self._open = True
-        self._publish(cards.change_cards(self.c.cid))
+        self.c.emit(CardsPublished(self.c.cid, tuple(cards.change_cards(self.c.cid))))
+        self.c.event("a2a", "cards registered: orchestrator, resolver")
 
     def close_change(self) -> None:
-        """The change ended: every card goes."""
-        self._open, self._carded = False, set()
-        self._remove(None)
+        """The change ended: every card of it goes."""
+        self.c.emit(CardsWithdrawn(self.c.cid, None))
+        self.c.event("a2a", "cards removed: all of the change")
 
-    def ticket_moved(self, e: TicketMoved) -> None:
-        """The bus: a ticket moved – the cards follow what was announced (a criterion's from
-        its owner's start, an open ticket's until it is closed). A replay (the change loaded)
-        only rebuilds the record: the cards are published again when a catalog subscribes."""
-        self._heard[e.ticket] = cards.Heard(e.ticket, e.type, e.role, e.parent, e.status)
-        want = {t for t, h in self._heard.items() if cards.carded(self._heard, h)}
-        if e.replay:
-            self._carded, self._open = want, True
+    def replay(self) -> None:
+        """A catalog subscribed (a restart): what it would have heard, again – the change's own
+        cards and each agent that has a sandbox still (at once: no change is being saved)."""
+        if self.c.change is None or self.c.change.status != "ACTIVE":
             return
-        if not self._open:
-            return
-        for tid in sorted(want - self._carded):
-            self._publish([cards.ticket_card(self._heard[tid])], now=True)
-        for tid in sorted(self._carded - want):
-            self._remove(tid, now=True)
-        self._carded = want
-
-    def cards(self) -> list:
-        """The change's cards now: its own, then its tickets' in the order they were heard of."""
-        if not self._open:
-            return []
-        own = cards.change_cards(self.c.cid)
-        return cards.ordered(own + [cards.ticket_card(self._heard[t]) for t in self._carded],
-                             list(self._heard))
-
-    def republish(self) -> None:
-        """A catalog subscribed (a restart): every card open, again – at once (no change is
-        being saved)."""
-        if cs := self.cards():
-            self.c.svc.bus.publish(CardsPublished(self.c.cid, tuple(cs), replay=True))
-
-    def _publish(self, new: list, *, now: bool = False) -> None:
-        if not new:
-            return
-        event = CardsPublished(self.c.cid, tuple(new))
-        self.c.svc.bus.publish(event) if now else self.c.emit(event)
-        for card in new:
-            self.c.event("a2a", f"card registered: {card.id}", card.ticket)
-
-    def _remove(self, ticket_id: str | None, *, now: bool = False) -> None:
-        event = CardsWithdrawn(self.c.cid, ticket_id)
-        self.c.svc.bus.publish(event) if now else self.c.emit(event)
-        self.c.event("a2a", f"cards removed: {ticket_id or 'all of the change'}", ticket_id)
+        bus = self.c.svc.bus
+        bus.publish(CardsPublished(self.c.cid, tuple(cards.change_cards(self.c.cid)), replay=True))
+        for r in self.c.runs.values():
+            if r.sandbox and not r.sandbox_deleted and not r.consult and r.ticket != cards.RESOLVER:
+                bus.publish(AgentStarted(self.c.cid, r.ticket, r.role, r.sandbox, replay=True))
 
     # ------------------------------------------------------------------ the workflow's work
     async def publish_work(self, ticket: Ticket, role: str, tw: TicketWork, plan: SandboxPlan,
@@ -139,13 +103,14 @@ class AgentRunner:
     # ------------------------------------------------------------------ inbox events
     def item_added(self, card_id: str) -> None:
         """Something waits in ``card_id``'s inbox: answer it if its agent is not running."""
-        card = next((c for c in self.c.a2a_cards() if c.id == card_id), None)
-        if card is None or card.ticket is None or card_id in self._busy:
+        agent = cards.parse(card_id)
+        if agent is None or card_id in self._busy:
             return
-        if self.lifecycle.agent_state(card.ticket, card.role) == "live":
+        role, ticket = agent
+        if self.lifecycle.agent_state(ticket, role) == "live":
             return                             # it reads its inbox itself; turn_ended follows
         self._busy.add(card_id)
-        self.c.host.spawn(self._answer_all(card))
+        self.c.host.spawn(self._answer_all(cards.agent_card(role, ticket)))
 
     async def _answer_all(self, card) -> None:
         try:

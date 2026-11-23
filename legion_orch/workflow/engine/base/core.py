@@ -7,20 +7,19 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from ....bus import Escalated, Event, TicketMoved
+from ....bus import Escalated, Event
 from ....store import DocVersion
 from ....util import now_iso
 from ... import attention, attest
 from ...attention import AttentionItem
 from ...attest import FILE_RE
-from ...model import Card, Change, Oracle, Run
+from ...model import Change, Oracle, Run
 from ...tickets import Status, Ticket, Tickets
 from ...tickets.executors import Work as TicketWork
 from .common import log
@@ -58,7 +57,6 @@ class ChangeCore:
         self._timeline: list[str] = []                 # events not yet written to the store
         self.verifying: dict[str, str] = {}            # ticket -> its live verification's log
         self._tickets: Tickets | None = None
-        self.cards_source: Callable[[], list[Card]] | None = None   # the agent runner's (compose)
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # ticket statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
@@ -156,13 +154,6 @@ class ChangeCore:
         """The change's attention items as of the last save."""
         return list(self._attention.values())
 
-    def announce_tickets(self) -> None:
-        """After loading: every ticket where it stands, on the bus (``TicketMoved``, replay) –
-        for subscribers that keep their own record of them."""
-        for tid, t in self.st.tickets.items():
-            self.svc.bus.publish(TicketMoved(self.cid, tid, t.type, t.role, t.parent,
-                                             str(t.status), replay=True))
-
     def seed_attention(self) -> None:
         """After loading from the store: take the current statuses and items as known, so a
         restart neither re-stamps nor re-raises (nobody is notified again for old items)."""
@@ -175,7 +166,6 @@ class ChangeCore:
         for tid, t in self.st.tickets.items():
             if self._statuses.get(tid) != t.status:
                 t.since = now
-                self.emit(TicketMoved(self.cid, tid, t.type, t.role, t.parent, str(t.status)))
                 if t.status == Status.WAITING:
                     self.emit(Escalated(self.cid, tid))
         self._statuses = {tid: t.status for tid, t in self.st.tickets.items()}
@@ -200,10 +190,7 @@ class ChangeCore:
         self._attention = cur
 
     # ------------------------------------------------------------------ A2A cards
-    def a2a_cards(self) -> list[Card]:
-        """The change's A2A cards now, its own first – as the agent runner keeps them (from
-        the bus: ``TicketMoved``); the A2A catalog holds the same, as they were pushed."""
-        return self.cards_source() if self.cards_source is not None else []
+
 
     def oracle_commands(self) -> list[str]:
         """The commands that verify the change as a whole: the approved oracle's."""

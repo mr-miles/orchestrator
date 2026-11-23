@@ -83,15 +83,14 @@ class Resolver:
         """Ask the resolver about the escalation of ``ticket_id``; record its proposal."""
         async with self.c.lock:
             brief = self.brief(ticket_id)
-        card = next((x for x in self.c.a2a_cards() if x.id == cards.RESOLVER), None)
-        if brief is None or card is None:
+        if brief is None or self.c.change.status != "ACTIVE":
             return
         key = brief["key"]
         text = (f"Ticket `{ticket_id}` is waiting on a human. Diagnose it and propose one of its "
                 f"`actions`:\n\n```json\n{json.dumps(brief, indent=1)}\n```")
         for attempt in range(1, TRIES + 1):
             try:
-                _, answer = await self.c.host.deliver(self.c.cid, card.id, cards.ORCHESTRATOR,
+                _, answer = await self.c.host.deliver(self.c.cid, cards.RESOLVER, cards.ORCHESTRATOR,
                                                       cards.ORCHESTRATOR, text,
                                                       f"esc-{ticket_id}-{key}-{attempt}")
             except (NoAgent, WorkflowError) as e:
