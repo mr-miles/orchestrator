@@ -44,29 +44,6 @@ def report_shape(status: str, blocked_reason: str | None, missing_decision: str 
     return v
 
 
-def required_docs(run_id: str, required: list[str], atts: list[Attestation], docs: DocStore,
-                  confirmed: list[str] = ()) -> tuple[dict[str, Attestation], list[str]]:
-    """G-R4: each required document attested at its latest version, which this run wrote – or
-    confirmed, by writing it again unchanged (``confirmed``: those attestations)."""
-    found: dict[str, Attestation] = {}
-    v = []
-    for path in required:
-        cands = [a for a in atts if a.kind == "file" and a.path == path]
-        if not cands:
-            v.append(f"G-R4: required document {path} not attested")
-            continue
-        att = max(cands, key=lambda a: a.version)
-        latest = docs.latest_version(path)
-        if att.version != latest:
-            v.append(f"G-R4: {att} is not the latest version (latest {latest})")
-            continue
-        if docs.read(path, att.version).author != run_id and str(att) not in confirmed:
-            v.append(f"G-R4: {att} was not written by this run")
-            continue
-        found[path] = att
-    return found, v
-
-
 def required_outputs(run_id: str, required: list[str], outputs: dict, scope: list[str],
                      docs: DocStore, cid: str, confirmed: list[str] = ()
                      ) -> tuple[dict[str, str | list[str]], list[str]]:

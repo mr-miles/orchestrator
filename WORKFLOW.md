@@ -19,13 +19,15 @@ of the work it signs. Every change starts from the same skeleton:
 ```
 change
 ├─ requirements    intake ✓H-1
-├─ plan            design (planner) ✓critique ✓H-E1 → provision → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
+├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold ✓verify ✓review ✓can-merge
+│                  → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
 ├─ delivery        (the planner's builds, each ✓verify ✓review… ✓can-merge) → integration
 ├─ evaluate        describe                                        ✓H-3
 └─ release         publish
 ```
 
-`✓` marks a criterion, `→` the order of subtask groups, `[…]` R2+ (the baseline R3). The
+`✓` marks a criterion, `→` the order of subtask groups, `[…]` R2+ (the baseline R3). The planner
+gives `scaffold` its work or cancels it (§5.3d). The
 contract is the one of [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended): **the
 controller refuses to call a change done until the evidence its risk tier demands exists** – here,
 until every ticket its tier's policy requires has passed every criterion, the human sign-offs
@@ -119,7 +121,7 @@ included. A criterion with nothing behind it does not pass.
     allow an MCP endpoint to share a host and port with another protocol.)
   * `legion-a2a` – `protocol: rest` for `/a2a/**` on the controller's dedicated A2A port, for the
     `a2a` CLI (`sandbox.a2a_binaries`): agent-to-agent messaging (§5.15).
-  * `legion-git-push` (roles that commit: implementer, oracle) or `legion-git` (every other role)
+  * `legion-git-push` (roles that commit: implementer, scaffolder, oracle) or `legion-git` (every other role)
     – `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port, for git. Both
     allow fetch and `git-receive-pack`; `legion-git` also denies `git-receive-pack`, and a deny
     rule applies across the whole effective policy, so a sandbox attaches exactly one of them.
@@ -280,10 +282,10 @@ tier may `extend` another:
 | Rule | Says | R0 | R1 | R2 | R3 |
 | --- | --- | --- | --- | --- | --- |
 | `exists` | the tree contains a ticket of each type | intake, planner, provision, integration, publish | as R0 | + oracle | + baseline |
-| `order` | each ticket of a type finishes before (`after`) / starts after (`before`) one of another | planner after intake, provision after planner, builds after provision and before integration, integration before the final sign-off, publish after integration | as R0 | + builds after the oracle | + builds after the baseline |
-| `every` | the criteria every ticket of a type has | build: verify, can-merge | build: verify, reviewer, can-merge | + oracle: preflight, sign-off | + baseline: sign-off |
+| `order` | each ticket of a type finishes before (`after`) / starts after (`before`) one of another | planner after intake, provision after planner, a scaffold after provision, builds after provision and before integration, integration before the final sign-off, publish after integration | as R0 | + builds after the oracle, a scaffold before it | + builds after the baseline |
+| `every` | the criteria every ticket of a type has | build, scaffold: verify, can-merge | build, scaffold: verify, reviewer, can-merge | + oracle: preflight, sign-off | + baseline: sign-off |
 | `labels` | the criteria a ticket labelled so (labels are inherited) has | – | `security`: security reviewer | as R1 | as R1 |
-| `limits` | attempts per type (default 3) | implementer 3, planner 3 | as R0 | as R0 | as R0 |
+| `limits` | attempts per type (default 3) | implementer, scaffolder, planner 3 | as R0 | as R0 | as R0 |
 
 "Finished before it starts" is read off the tree (`rules.precedes`): at the two tickets' nearest
 common ancestor, an earlier subtask group, a subtask before a criterion, or an earlier criterion;
@@ -523,13 +525,13 @@ the hub or the source and **retries** (change action `retry`), or abandons the c
 
 ### 5.2 `planner` – the design (`plan` ▸ `design`)
 
-* **Soul:** `architect-planner`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `taskgraph-schema`, `sandbox-environment`, `blocked-protocol`, `language-preferences`
-* **Inputs:** `requirements`, `risk`  **Outputs:** `spec` (`spec.md`), `specs` (a delta spec `specs/REQ-<n>.md` per requirement), `oracle` (`oracle.json`), `environment` (`environment.json`, §5.3a), `tickets` (`tickets.json`, the first replan: the builds under `delivery`, each with its criteria, then the integration; additions to `evaluate` and `release`)
+* **Soul:** `architect-planner`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `plan-format`, `sandbox-environment`, `blocked-protocol`, `language-preferences`
+* **Inputs:** `requirements`, `risk`  **Outputs:** `spec` (`spec.md`), `specs` (a delta spec `specs/REQ-<n>.md` per requirement), `oracle` (`oracle.json`), `environment` (`environment.json`, §5.3a), `tickets` (`tickets.json`, the first replan: the builds under `delivery`, each with its criteria, then the integration; its decision about the skeleton's `scaffold` – its work, or cancelled –; additions to `evaluate` and `release`)
 
 Each build is an `agent:implementer` ticket whose `work` is its contract
 ([`work-implementer`](assets/schemas/work-implementer.json): instructions, `files_modified`,
 `files_forbidden`, `verification` commands, acceptance criteria, the requirements it serves, its
-soul, `scaffold`). Builds in one subtask group run in parallel; a later group's start from the
+soul). Builds in one subtask group run in parallel; a later group's start from the
 head the earlier groups merged into. The tickets' criteria follow the tier's `every` and `labels`
 rules (§3) – the policy guard refuses a plan without them.
 
@@ -544,7 +546,7 @@ rules (§3) – the policy guard refuses a plan without them.
 | G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`, a pinned `mise.toml`). |
 | G-P8 | R2+: `oracle` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
 | G-P10 | R2+: `oracle` declares ≥1 verification surface, with unique ids and commands that are not blank (each surface's id, commands and pinned paths are the schema's, G-P1). |
-| G-P11 | Blank repository (§5.3d): exactly one build is marked `scaffold`, in a group before every other build. Otherwise no build is marked `scaffold`. |
+| G-P11 | The plan decides about the skeleton's `scaffold` (§5.3d): it gives it its work (`update`) or cancels it – not both, not neither; in a blank repository it gives it its work. The scaffold's work meets G-P1, G-P4, G-P5 and G-P7 like a build's. |
 | G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. |
 | G-P13 | R2+: a command in `acceptance_commands` or `integration_commands` that only installs dependencies (`bun install …`, `npm ci`, `uv sync`, `pip install …`, …) belongs in `mise.toml`'s `setup` task (§5.3c): the verifier runs the setup, then acceptance, then integration – so an install placed later runs after the commands that need it. |
 | H-E1 | After the critique passes, a decision owner signs the design – `spec`, `specs`, `oracle`, `environment`, `tickets` – and its pass applies `tickets` (§4.2): the builds are linked under `delivery`. A rejection reworks the planner with the reason. |
@@ -646,22 +648,30 @@ images are assumed to have `mise`, and the base branch's setup task (if any) run
 **In a blank repository** (§5.3d) the base's setup task is never pinned: what it needs – a
 manifest, a lockfile – is what the scaffold creates.
 
-### 5.3d Scaffold (blank repository)
+### 5.3d `scaffolder` – the project's layout and tooling (`plan` ▸ `scaffold`)
+
+The skeleton's `scaffold` ticket (`agent:scaffolder`) runs after provisioning and before the
+oracle and every build: the project's layout, manifest, build, lint and test tooling and their
+configuration – or a change to what is there (a new test runner, a restructured layout) – that
+the acceptance tests and the builds rely on. The planner decides about it in `tickets` (G-P11):
+it gives it its `work` (a build's contract, [`work-implementer`](assets/schemas/work-implementer.json),
+`soul` included) with `update`, or cancels it when what is there will do. Its criteria are a
+build's (verify, review, can-merge); it merges into the change's branch before the oracle starts,
+so the oracle writes its tests for the project as the scaffold left it.
+
+* **Soul:** the work's `soul`  **Skills:** as the implementer's  **Outputs:** `evidence`, git
+  `commit` on its branch; its guards are the implementer's (G-B2, G-B3, G-B4).
 
 When a change starts, the controller lists the base commit's tree. It is **blank** if every file
 is documentation (`*.md`, `*.rst`, `*.adoc`), a top-level licence or notice file (`LICENSE*`,
 `LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`,
 a top-level mise file (`mise.toml`, `.mise.toml`, `.tool-versions`: tool versions are not code)
 or under `.github/` – including a repository with no files at all (a workspace without a
-`source`). The change record keeps it (`blank_repo`).
-
-In a blank repository the planner's assignment (`{{scaffold}}`) asks for one **scaffold build**
-(`"scaffold": true`, G-P11): the project's layout, manifest, build, lint and test tooling, their
-configuration and a placeholder entry point – none of the requirements' behaviour – whose
-instructions fix every choice the acceptance tests depend on, and whose verification commands
-pass without them. It is the first group of `delivery`, built, verified, reviewed and merged like
-any build before the others start. (The oracle at R2+ runs before `delivery`, so in a blank
-repository today it writes its tests before the project exists; see §5.17.)
+`source`). The change record keeps it (`blank_repo`). In a blank repository the scaffold is
+required: none of the requirements' behaviour, a placeholder entry point, instructions that fix
+every choice the acceptance tests depend on, and verification commands that pass without them.
+Until it has passed no agent's sandbox runs the repository's setup (what it needs does not exist
+yet); its own verification does, at its commit.
 
 ### 5.4 `oracle` (R2+) – protected acceptance tests (`plan` ▸ `acceptance` ▸ `oracle`)
 
@@ -1051,8 +1061,6 @@ rules and has not yet brought back others.
   (`approve_protected_paths`).
 * G-H1 – the integration branch moved outside the workflow (commits not made by a merge) is not
   detected before a merge or a run at the head.
-* The scaffold before the oracle in a blank repository (§5.3d): the R2 order rule puts every
-  build, the scaffold included, after the oracle.
 * Staleness from pointers – a ticket done against `environment@3` while the pointer is `@5` – and
   the mechanical follow-ups (a new sign-off, new instances of its consumers): step 5 of the plan.
 * The ship gates and H-3's preconditions, with the human attestations behind them: G-AT1
@@ -1091,24 +1099,22 @@ assets/
   and every rendered skill. A reflection has only the Skill tool and brings no skills: its sandbox
   keeps those of the run it reflects on. The local runner gives each sandbox its own `CLAUDE_CONFIG_DIR` (with a link to the
   operator's Claude credentials), so runs never write to the operator's `~/.claude`.
-* Templates use `{{var}}` placeholders. Available variables: `change_id, goal, tier, repo_name,
-  base_sha, head_sha, change_base_sha, oracle_sha` (the oracle's commit; empty before it), `branch,
-  task_id` (the ticket's id), `task_title` (its goal), `task_json` (its work), `cycle` (its
-  attempt), `role, context_refs` (its inputs and context at their versions), `feedback` (the
-  findings it is to address), `candidate_sha` (the commit a judge judges), `write_scope` (its
-  ticket's directory), `step` (the same), `plan` (the directory of the design the pointers
-  name), `required_docs` (the outputs it must report), `workdir, task_soul, sandbox_tools,
-  environment` (the planner's environment instructions with the library catalogue; only the
-  planner is given it), `scaffold` (in a blank repository, what the scaffold build asks of the
-  planner and the critic; empty otherwise) and `fix_round` (always empty: replans replaced fix
-  rounds; it goes with the prompts' rewrite). An unknown or unbound variable fails G-D2.
-  Load-time validation rejects unknown variables, missing files, souls and prompts not
-  referenced by any role, and skills without a valid `description`.
-* `roles.yaml`'s `write` and `required_docs` predate tickets and are not used to check reports
-  any more: a run writes in its ticket's directory and reports its `outputs` (G-R4). They go
-  with the prompts' rewrite.
-* The implementer's soul is chosen per build (its work's `soul`, `task_soul`) from
-  `souls_allowed` in `roles.yaml`.
+* Templates use `{{var}}` placeholders. Available variables – the change: `change_id, goal, tier,
+  repo_name, change_base_sha, oracle_sha` (the oracle's commit, once it passed; empty before);
+  the ticket and its round: `ticket_id, ticket_goal, work_json` (its work – a judge's, the work
+  it judges), `attempt, role, context_refs` (its inputs and context at their versions),
+  `findings` (what it is to address), `outputs` (the outputs it must report), `write_scope` (its
+  ticket's directory), `task_soul` (its work's soul); where it works: `workdir, branch, base_sha,
+  head_sha` (its base), `judged_sha` (the commit a judge judges), `sandbox_tools`; and two its
+  handler binds: `environment` (the planner's environment instructions with the library
+  catalogue) and `scaffold` (what the scaffold asks of the planner and the critic). An unknown or
+  unbound variable fails G-D2. Load-time validation rejects unknown variables, missing files,
+  souls and prompts not referenced by any role, and skills without a valid `description`.
+* A prompt names where its role writes (`tickets/{{ticket_id}}/…`, file names the
+  [`bindings.yaml`](assets/schemas/bindings.yaml) schemas expect) and the outputs it reports; on
+  a later attempt the documents exist, and are revised with `base_version`.
+* The implementer's and the scaffolder's soul is chosen per ticket (its work's `soul`,
+  `task_soul`) from `souls_allowed` in `roles.yaml`.
 * Each role has a handler in `legion_orch/workflow/roles/`: the context it sees beyond its
   inputs, its prompt variables, its role-specific guards, and what its accepted report says for
   its ticket – its commit and outputs, a judge's verdict and findings. Handlers work against the
@@ -1136,6 +1142,7 @@ generated `legion-workflow` skill.
 | `critic` | [`prompts/critic.md`](assets/prompts/critic.md) |
 | `oracle` | [`prompts/oracle.md`](assets/prompts/oracle.md) |
 | `baseline` | [`prompts/baseline.md`](assets/prompts/baseline.md) |
+| `scaffolder` | [`prompts/scaffolder.md`](assets/prompts/scaffolder.md) |
 | `implementer` | [`prompts/implementer.md`](assets/prompts/implementer.md) |
 | `reviewer` | [`prompts/reviewer.md`](assets/prompts/reviewer.md) |
 | `security` | [`prompts/security.md`](assets/prompts/security.md) |
@@ -1205,8 +1212,8 @@ guards, because a per-file schema cannot express them.
 * [`git-protocol`](assets/skills/git-protocol.md)
 * [`blocked-protocol`](assets/skills/blocked-protocol.md)
 * [`risk-signals`](assets/skills/risk-signals.md)
-* [`taskgraph-schema`](assets/skills/taskgraph-schema.md) – the planner's builds (still written
-  for the task graph: rewritten for `tickets.json` with the prompts)
+* [`plan-format`](assets/skills/plan-format.md) – the planner's `tickets.json` (builds, groups,
+  criteria, the scaffold) and `oracle.json`
 * [`sandbox-environment`](assets/skills/sandbox-environment.md)
 * [`language-preferences`](assets/skills/language-preferences.md) – the index of the house
   conventions per stack, shared by every role that plans, writes, tests or judges code; edit the

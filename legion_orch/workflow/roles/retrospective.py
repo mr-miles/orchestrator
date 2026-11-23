@@ -134,7 +134,8 @@ class Retrospective(RoleHandler):
         """Earlier changes' retrospectives: whether a lesson is new or keeps coming back."""
         own = e.p("")
         return [m.attestation for m in e.docs.list("changes/")
-                if m.path.endswith("/retro/report.md") and not m.path.startswith(own)][-10:]
+                if m.path.endswith("/tickets/retrospective/report.md")
+                and not m.path.startswith(own)][-10:]
 
     def payload_files(self, e: RoleContext, ticket: Ticket, run: Run) -> dict[str, str]:
         return bundle(e)

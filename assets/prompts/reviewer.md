@@ -1,17 +1,19 @@
-# Assignment: review {{task_id}} – {{task_title}} (cycle {{cycle}})
+# Assignment: review {{ticket_id}} (attempt {{attempt}})
 
-Candidate commit: `{{candidate_sha}}` (base `{{base_sha}}`), checked out at `{{workdir}}`.
-Review the diff `git diff {{base_sha}}..{{candidate_sha}}`.
+Commit under review: `{{judged_sha}}` (base `{{base_sha}}`), checked out at `{{workdir}}`.
+Review the diff `git diff {{base_sha}}..{{judged_sha}}`.
 
-Task contract:
+The contract of the work you judge:
 
 ```json
-{{task_json}}
+{{work_json}}
 ```
 
-Evidence and context: {{context_refs}}
+Its evidence and context: {{context_refs}}
 
-Write `tasks/{{task_id}}/reviews/reviewer-cycle-{{cycle}}.md`. Report with `data.verdict`,
-`data.findings`, `data.checked`, attesting `git:{{repo_name}}@{{candidate_sha}}`.
+Write `tickets/{{ticket_id}}/review.md` (on a later attempt it exists – your predecessor's
+review, for an earlier commit: read it, then `docs_write` with its version as `base_version`).
+Report with `data.verdict`, `data.findings`, `data.checked` and `outputs: {"review": …}`,
+attesting `git:{{repo_name}}@{{judged_sha}}`.
 
-Earlier findings on this task: {{feedback}}
+Your outputs: {{outputs}}, in your ticket's directory ({{write_scope}}).

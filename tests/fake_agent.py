@@ -98,7 +98,8 @@ def main():
     work = call("inbox")["tasks"][0]                    # the orchestrator's task: the assignment
     assert work["from"] == "orchestrator" and work["kind"] == "work", work
     a = work["assignment"]
-    role, attempt, me = a["role"], a["cycle"], a["step"]   # its ticket's directory: tickets/<id>
+    role, attempt = a["role"], a["attempt"]
+    me = f"tickets/{a['ticket_id']}"                    # its ticket's directory: its write scope
     call("progress", message=f"{role} starting attempt {attempt}", percent=5)
     if role == "intake":
         req = write(f"{me}/requirements.md",
@@ -165,7 +166,8 @@ def main():
                   ["test -f docs/README.md"], 1),
             {"into": "delivery", "group": 2, "ticket": {
                 "id": "integration", "type": "agent:integration", "goal": "the change, integrated",
-                "inputs": ["oracle"]}}]}
+                "inputs": ["oracle"]}}],
+            "cancel": ["scaffold"]}                      # the repository has its tooling
         # the store refuses out-of-scope writes, and the agent sees why
         assert call("docs_schema", path=f"{me}/oracle.json")["schema"] == "oracle"
         try:
@@ -199,7 +201,7 @@ def main():
         print(call("report", status="DONE", summary="oracle",
                    attestations=[f"git:{REPO}@{sha}", doc], outputs={"tests": doc}))
     elif role == "implementer":
-        tid = a["task_id"]
+        tid = a["ticket_id"]
         if tid == "T1":
             wfile("src/greet.txt", "hello\n" if attempt == 1 else "hello\n\n")
         elif tid == "T2":
@@ -209,7 +211,7 @@ def main():
             if a["attempts_left"] == 3 and attempt == 1:
                 wfile("src/greet.txt", "hello world\n")   # out of scope -> G-B3
         sha = commit_push(f"{tid}: implement", a["git"]["branch"])
-        cmds = a["task"]["verification"]
+        cmds = a["work"]["verification"]
         ev = write(f"{me}/evidence.md", "\n".join(f"- `{c}` -> exit 0" for c in cmds))
         res = call("report", status="DONE", summary=f"{tid} done",
                    attestations=[f"git:{REPO}@{sha}", ev], outputs={"evidence": ev})
@@ -225,8 +227,8 @@ def main():
             print(call("report", status="DONE", summary=f"{tid} fixed scope",
                        attestations=[f"git:{REPO}@{sha}", ev], outputs={"evidence": ev}))
     elif role in ("reviewer", "security", "architecture"):
-        tid = a["task_id"].split(":", 1)[1]                # the build it judges
-        cand = a["candidate_sha"]
+        tid = a["ticket_id"].split(":", 1)[1]                # the build it judges
+        cand = a["judged_sha"]
         catt = f"git:{REPO}@{cand}"
         if tid == "T1" and role == "reviewer" and owner_attempt(a) == 1:
             data = {"verdict": "FAIL", "checked": ["diff"], "findings": [{

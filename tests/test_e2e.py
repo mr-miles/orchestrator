@@ -163,7 +163,8 @@ async def _drive(ce):
     assert t["T2"].attempt == 2                 # verification FAIL -> rework
     t3_runs = [ce.runs[r] for r in t["T3"].runs]
     assert any(any(v.startswith("G-B3") for v in vs) for r in t3_runs for vs in r.violations)
-    assert all(x.status == "passed" for x in t.values())
+    assert all(x.status == "passed" for x in t.values() if x.id != "scaffold"
+               and x.parent != "scaffold") and t["scaffold"].status == "cancelled"
 
     # every run's sandbox is gone; documents are namespaced, versioned & immutable
     await _wait(ce, lambda: all(r.sandbox_deleted for r in ce.runs.values()

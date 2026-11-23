@@ -144,7 +144,8 @@ class TicketFlow:
                 "workspace": ch.workspace, "source": c.git.source,
                 "base_branch": c.git.base_branch, "base": base, "blank_repo": blank})
             c.event("workspace", f"{ch.workspace} synced: the change is based on {base[:12]}"
-                    + (" (a blank repository: the plan starts with a scaffold)" if blank else ""))
+                    + (" (a blank repository: the plan's scaffold sets the project up)"
+                       if blank else ""))
             c.save()
         runner = self._runner()
         runner.base = base
@@ -159,6 +160,8 @@ class TicketFlow:
         """After a restart: every ticket under way goes on at the same attempt (R14)."""
         if self.c.st.tickets and self.c.change.base_sha:
             await self._runner().recover()
+        elif not self.c.change.unsynced and self.c.change.status == ChangeStatus.ACTIVE:
+            self.c.spawn(self._begin())                # stopped before its first sync was done
         for t in list(self.c.st.hooks.values()):       # an on-complete process under way
             if t.status == Status.WORKING:
                 self.c.spawn(self._hook_round(t))

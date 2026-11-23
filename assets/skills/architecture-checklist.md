@@ -4,7 +4,7 @@ description: "Checklist for reviewing a diff's architecture against the approved
 
 ## Skill: Architecture checklist
 
-For `git diff {{base_sha}}..{{candidate_sha}}`, against the approved delta spec(s):
+For `git diff {{base_sha}}..{{judged_sha}}`, against the signed-off delta spec(s):
 
 1. **Contracts:** every public function, endpoint, schema or CLI surface matches the spec exactly
    (names, types, status codes, error shapes). Breaking changes are BLOCKERs unless the spec says so.

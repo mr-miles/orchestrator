@@ -1,30 +1,40 @@
 ---
-description: "How the resolver diagnoses an escalation and writes a proposal a human can apply. Load before you answer an escalation."
+description: "How the resolver diagnoses a waiting ticket and proposes a remedy a human can apply. Load before you answer an escalation."
 ---
 
 ## Skill: Resolution protocol
 
-1. **Read the escalation** in the message: `kind`, `reason`, `log_tail`, the step and run, and the
-   `actions` a human may take with each action's payload fields.
-2. **Look at the ticket**: `ticket_status(ticket)` (attempt, what it waits for, its criteria and
-   their verdicts, the findings) and the escalation's brief – for a build, its work (contract) and
-   the tickets around it. Read the documents and evidence the escalation cites (`docs_read`).
+1. **Read the message**: the ticket, why it waits (`waiting`), its attempt and limit, its findings,
+   its criteria and their verdicts, its last run (and its failure), and the `actions` a human may
+   choose – its remedies:
+   * `retry` – the same ticket again, same attempt count; `payload: {"answer": "…"}` is what its
+     next round is told (for `blocked`: the answer to its question). Offered when it waits on
+     something outside the agent (`system`, `budget`, `blocked`);
+   * `waive:<criterion>` – a rejected, waivable criterion counts as passed; `payload:
+     {"reason": "…"}` (required). Verification, preflight, can-merge and sign-offs cannot be
+     waived;
+   * `replan` – the constraints must change: the ticket fails (it stays as history) and the
+     workflow pauses for a replan; `payload: {"plan": <a replan document>}` – the tickets that
+     replace what it was for (plan format skill: `add` after the completed groups, `cancel` or
+     `update` tickets not started, `fail` work that cannot be finished) – for the human to apply.
+2. **Look at the ticket**: `ticket_status(ticket)` and `workflow_context()` – for a build, its work
+   (contract) and the tickets around it. Read the documents and evidence it cites (`docs_read`).
 3. **Ask** the agents involved over A2A when their intent matters: the stuck agent
    (`<role>@<ticket>`), the judges whose findings blocked it, the oracle (`oracle@oracle`) about a
-   protected test, the planner about the plan. Keep questions short and self-contained.
+   protected test, the planner (`planner@design`) about the plan. Keep questions short and
+   self-contained.
 4. **Classify** what went wrong:
-   * the agent misread its task or a finding → `retry` (or `answer`) with guidance;
-   * the task contract is too narrow (files, scope) → an answer that widens it, or a plan
-     revision;
-   * a protected test or the oracle is wrong → `approve_protected_paths` for exactly the paths,
-     with the evidence that the test (not the code) is wrong; or send the oracle back;
+   * the agent misread its contract or a finding, or needs a decision → `retry` with the answer;
+   * a judge's finding is wrong or not worth another attempt → `waive:<criterion>` with why;
+   * the contract is too narrow (files, scope), a protected test or the oracle is wrong, an
+     integration failed → `replan`: new tickets that fix it (with the evidence that the test,
+     not the code, is wrong, when it is the oracle);
    * the environment or the verifier image lacks something → `retry` after the fix, saying what
-     the operator must change;
-   * a real decision only a human can take → `answer` with the options and your recommendation.
-5. **Propose** exactly one of the listed `actions`, its `payload` as the action expects, a short
-   `rationale`, and `attestations` for the evidence you relied on – the fenced JSON block of your
-   prompt, at the end of your answer. A proposal that names an action not offered, or a payload
-   the action rejects, is returned to you with the reason.
+     the operator must change.
+5. **Propose** exactly one of the listed `actions`, its `payload`, a short `rationale`, and
+   `attestations` for the evidence you relied on – the fenced JSON block of your prompt, at the
+   end of your answer. A proposal that names an action not offered is returned to you with the
+   reason.
 
 You never apply anything: a human reads your proposal on the escalation and applies, edits or
 ignores it.

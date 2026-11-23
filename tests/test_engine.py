@@ -706,17 +706,30 @@ def test_signals_helper_derives_r1():
 @scenario(blank_repo=True)
 async def test_a_change_on_a_blank_repository(f: Flow):
     """No repo.path: the hub starts with one empty commit and a change runs to READY on it,
-    starting with a scaffold task (§5.3d)."""
+    the plan's scaffold setting the project up before anything else is built (§5.3d)."""
     assert f.cfg.workspaces[0].source is None
     base = f.ce.change.base_sha
     assert await f.git.tree_paths(base) == [] and f.ce.change.blank_repo
-    scaffold = dict(TASKS[0], id="T0", title="scaffold", files_modified=["Makefile"],
-                    verification=["make -n"], scaffold=True)
-    await f.to_end(tasks=[scaffold, dict(TASKS[0], depends_on=["T0"])])
-    assert f.ce.change.status == ChangeStatus.READY
-    assert await f.git.blob(base, "src/greet.txt") is None                 # nothing at base
+    await f.intake()
+    await f.signoff("H-1")
+    res = await f.plan()                                    # cancelling it: refused
+    assert not res.accepted and any("G-P11" in v for v in res.violations), res
+    work = {k: v for k, v in TASKS[0].items() if k not in ("id", "title", "depends_on")} | {
+        "files_modified": ["Makefile"], "verification": ["make -n"]}
+    assert (await f.plan(scaffold=work)).accepted
+    await f.critique("PASS")
+    await f.signoff("H-E1")
+    await f.implement("scaffold")
+    await f.review("scaffold")
+    scaffold = f.ticket("scaffold")
+    assert scaffold.status == "passed" and scaffold.sha, f.status()
     head = (await f.git.git("rev-parse", f"refs/heads/legion/{f.ce.cid}/integration")).strip()
-    assert await f.git.blob(head, "src/greet.txt")                          # merged
+    assert await f.git.blob(head, "Makefile")                       # merged before any build
+    assert await f.git.blob(head, "src/greet.txt") is None
+    await f.to_end_from_build()
+    assert f.ce.change.status == ChangeStatus.READY
+    head = (await f.git.git("rev-parse", f"refs/heads/legion/{f.ce.cid}/integration")).strip()
+    assert await f.git.blob(head, "src/greet.txt")
 
 
 @scenario()

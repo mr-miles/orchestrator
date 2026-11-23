@@ -9,7 +9,9 @@ from engine_harness import Flow, scenario, signals
 async def test_a_change_runs_from_intake_to_publication(f: Flow):
     await f.to_end()
     assert f.ce.change.status == "READY", f.status()
-    assert all(t.status == "passed" for t in f.ce.st.tickets.values()), f.status()
+    assert all(t.status == "passed" for t in f.ce.st.tickets.values()
+               if t.id != "scaffold" and t.parent != "scaffold"), f.status()
+    assert f.status("scaffold") == "cancelled"          # the repository has its tooling
     assert f.ce.change.tier == "R1"
     ptr = f.ce.tickets.root.pointers
     assert {"requirements", "risk", "spec", "oracle", "environment", "tickets", "pr",

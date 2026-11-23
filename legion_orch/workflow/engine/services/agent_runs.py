@@ -37,7 +37,7 @@ from ...model import (
 )
 from ...roles import handler_for
 from ...roles.base import outputs_of_owner
-from ...tickets import Ticket
+from ...tickets import Status, Ticket
 from ...tickets.executors import AgentEnd
 from ...tickets.executors import Work as TicketWork
 from ...view import RoleContext
@@ -77,7 +77,7 @@ class Assignment:
         """The assignment returned by get_assignment() (the rendered list of context refs is
         replaced by the list itself)."""
         return {k: v for k, v in self.variables.items() if k != "context_refs"} | {
-            "task": self.task, "context": self.context, "outputs": self.outputs,
+            "work": self.task, "context": self.context, "outputs": self.outputs,
             "findings": self.findings}
 
 
@@ -450,6 +450,11 @@ class AgentRuns:
                 refs.append(a)
         return list(dict.fromkeys(refs))
 
+    def _oracle_sha(self) -> str:
+        """The protected acceptance tests' commit: the oracle's, once it has passed (H-2)."""
+        return next((t.sha for t in self.c.tickets.t.values()
+                     if t.type == "agent:oracle" and t.status == Status.PASSED and t.sha), "")
+
     @staticmethod
     def _findings_text(tw: TicketWork) -> str:
         """What its last round was told to fix (a failed criterion's findings)."""
@@ -515,6 +520,8 @@ class AgentRuns:
         """The template variables, write scope, required outputs and context of a run (guard
         G-D2 binds them). A ticket writes only in its own directory."""
         ch, work = self.c.change, ticket.work
+        if not work and ticket.role == "criterion" and ticket.parent:   # a judge: the work's
+            work = self.c.tickets.t[ticket.parent].work                 # contract it judges
         own = ticket_dir(ticket.id)
         outputs = list(self.c.assets.roles[role].outputs)     # ``name*``: a list
         variables = {
@@ -522,25 +529,23 @@ class AgentRuns:
             "repo_name": self.c.workspace,
             "base_sha": tw.base or ch.base_sha or "", "head_sha": tw.base or "",
             "change_base_sha": ch.base_sha or "",             # the change's whole diff from here
-            "oracle_sha": "",
+            "oracle_sha": self._oracle_sha(),
             "branch": tw.branch if tw.branch and self.c.assets.roles[role].git == GitMode.COMMIT
             else "(none: a detached checkout of the commit you work at)",
-            "task_id": ticket.id, "task_title": ticket.goal or ticket.id,
-            "task_json": json.dumps(work, indent=2),
-            "cycle": tw.attempt, "role": role, "candidate_sha": judged_sha or "",
-            "plan": self.c.producer_dir("spec") or own,    # the approved plan's (or its own)
-            "step": own,                                 # its own directory: where it writes
+            "ticket_id": ticket.id, "ticket_goal": ticket.goal or ticket.id,
+            "work_json": json.dumps(work, indent=2),
+            "attempt": tw.attempt, "role": role, "judged_sha": judged_sha or "",
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": work.get("soul", ""),
-            "fix_round": "", "scaffold": "", "sandbox_tools": self._sandbox_tools(role),
+            "scaffold": "", "sandbox_tools": self._sandbox_tools(role),
         } | handler_for(role).extra_variables(self.roles, ticket)
         write = [] if role == cards.RESOLVER else [self.c.p(f"{own}/")]
         context = self._context_refs(ticket, role, tw)
         variables.update({
             "write_scope": ", ".join(f"`{w}`" for w in write) or "(none)",
-            "required_docs": ", ".join(f"`{o.rstrip('*')}`" + (" (a list)" if o.endswith("*")
-                                       else "") for o in outputs) or "(none)",
+            "outputs": ", ".join(f"`{o.rstrip('*')}`" + (" (a list)" if o.endswith("*")
+                                 else "") for o in outputs) or "(none)",
             "context_refs": "\n".join(f"- {c}" for c in context) or "(none)",
-            "feedback": self._findings_text(tw),
+            "findings": self._findings_text(tw),
         })
         return Assignment(variables, write, outputs, context, dict(work), list(tw.findings))
 

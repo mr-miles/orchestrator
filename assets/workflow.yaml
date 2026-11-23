@@ -50,6 +50,14 @@ skeleton:
           type: "controller:provision"
           goal: "the signed-off environment, built"
           inputs: [environment]
+        - id: scaffold              # the project's layout and tooling, before any test or build:
+          type: "agent:scaffolder"  # the planner gives it its work (`update`) – required in a
+          goal: "the project's layout and tooling, as the plan specifies"   # blank repository –
+          inputs: [spec]            # or cancels it when what is there will do
+          criteria:
+            - {id: "verify:scaffold", type: "controller:verify"}
+            - {id: "review:scaffold", type: "agent:reviewer"}
+            - {id: "can-merge:scaffold", type: "controller:can-merge"}
         - id: acceptance
           tiers: [R2, R3]
           subtasks:
@@ -95,17 +103,21 @@ tiers:                              # rules by ticket type – never by id (ids 
     order:                          # each ticket of a type finished before (after) one of another
       - {each: "agent:planner", after: "agent:intake"}
       - {each: "controller:provision", after: "agent:planner"}
+      - {each: "agent:scaffolder", after: "controller:provision"}
       - {each: "agent:implementer", after: "controller:provision"}
       - {each: "agent:implementer", before: "agent:integration"}
       - {each: "agent:integration", before: "human:signoff"}      # H-3 signs the integrated change
       - {each: "controller:publish", after: "agent:integration"}
     every:
       - {type: "agent:implementer", criteria: ["controller:verify", "controller:can-merge"]}
-    limits: {"agent:implementer": 3, "agent:planner": 3}
+      - {type: "agent:scaffolder", criteria: ["controller:verify", "controller:can-merge"]}
+    limits: {"agent:implementer": 3, "agent:planner": 3, "agent:scaffolder": 3}
   R1:
     extends: R0
     every:
       - type: "agent:implementer"
+        criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
+      - type: "agent:scaffolder"
         criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
     labels:
       security: ["agent:security"]
@@ -114,6 +126,7 @@ tiers:                              # rules by ticket type – never by id (ids 
     exists: ["agent:oracle"]
     order:
       - {each: "agent:implementer", after: "agent:oracle"}        # the tests exist first
+      - {each: "agent:scaffolder", before: "agent:oracle"}        # for the project there is
     every:
       - {type: "agent:oracle", criteria: ["controller:preflight", "human:signoff"]}
   R3:

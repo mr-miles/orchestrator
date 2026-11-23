@@ -1,5 +1,5 @@
-"""implementer: a build ticket's work – within its files (G-B3), its evidence naming its
-verification (G-B4)."""
+"""implementer, scaffolder: a build's (or the plan's scaffold's) work – within its files (G-B3),
+its evidence naming its verification (G-B4)."""
 from __future__ import annotations
 
 from .. import guards
@@ -9,7 +9,7 @@ from .base import Report, RoleHandler, output, protected, register
 
 @register
 class Implementer(RoleHandler):
-    roles = ("implementer",)
+    roles = ("implementer", "scaffolder")
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         run, work = r.run, r.ticket.work

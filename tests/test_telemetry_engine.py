@@ -77,6 +77,8 @@ async def test_a_whole_change_is_one_trace_of_ticket_spans(tmp_path, exp, flows)
     root = one(spans, f"change {f.ce.cid}")
     assert (attr(root, "legion.outcome"), root.parent) == ("completed", None)
     for tid, t in f.ce.st.tickets.items():         # every ticket a span, under its parent's
+        if t.status == "cancelled":                # never started (the scaffold): no span
+            continue
         s = one(spans, f"{t.type} {tid}")
         assert (attr(s, "legion.ticket.id"), attr(s, "legion.outcome")) == (tid, "passed")
         want = one(spans, f"{f.ce.st.tickets[t.parent].type} {t.parent}") if t.parent else root

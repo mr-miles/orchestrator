@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "An implementer ticket's work: what it builds and how it is checked (tickets.json; was a taskgraph task \u2013 its id is the ticket's, its title the ticket's goal, its order the tree's).",
+  "description": "A build's (or the scaffold's) work: what it builds and how it is checked (the planner's tickets.json: an added build's `work`, the `scaffold` ticket's `update`). Its id is the ticket's, its title the ticket's goal, its order the tree's.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -80,10 +80,6 @@
         "maxLength": 2000
       },
       "maxItems": 20
-    },
-    "scaffold": {
-      "type": "boolean",
-      "description": "The blank repository's scaffold task (G-P11): build tooling only, built before the oracle"
     }
   }
 }

@@ -15,15 +15,15 @@ the guard id. Callers use the names re-exported here.
 from .common import load_json
 from .environment import environment
 from .intake import intake, requirements_ids
-from .plan import plan, waves
+from .plan import plan, scaffold, waves
 from .pr import PR_DOC, pr_body, pr_description, pr_review, pr_title
-from .report import report_limits, report_shape, required_docs, required_git, required_outputs
+from .report import report_limits, report_shape, required_git, required_outputs
 from .review import critique, findings, verdict
 from .work import evidence_mentions, recovery_strategy, release_docs, results_cover, scoped_diff
 
 __all__ = [
     "PR_DOC", "critique", "environment", "evidence_mentions", "findings",
     "intake", "load_json", "plan", "pr_body", "pr_description", "pr_review", "pr_title",
-    "release_docs", "report_limits", "report_shape", "required_docs", "required_git", "required_outputs",
+    "release_docs", "report_limits", "report_shape", "required_git", "required_outputs", "scaffold",
     "recovery_strategy", "requirements_ids", "results_cover", "scoped_diff", "verdict", "waves",
 ]

@@ -1,17 +1,19 @@
-# Assignment: architecture review {{task_id}} – {{task_title}} (cycle {{cycle}})
+# Assignment: architecture review {{ticket_id}} (attempt {{attempt}})
 
-Candidate commit: `{{candidate_sha}}` (base `{{base_sha}}`), checked out at `{{workdir}}`.
+Commit under review: `{{judged_sha}}` (base `{{base_sha}}`), checked out at `{{workdir}}`.
 
-Task contract:
+The contract of the work you judge:
 
 ```json
-{{task_json}}
+{{work_json}}
 ```
 
-Approved specs and context: {{context_refs}}
+Its evidence, the signed specs and context: {{context_refs}}
 
-Apply the architecture checklist to `git diff {{base_sha}}..{{candidate_sha}}`. Write
-`tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md`. Report with `data.verdict`,
-`data.findings`, `data.checked`, attesting `git:{{repo_name}}@{{candidate_sha}}`.
+Apply the architecture checklist to `git diff {{base_sha}}..{{judged_sha}}`. Write
+`tickets/{{ticket_id}}/review.md` (on a later attempt it exists – your predecessor's review: read
+it, then `docs_write` with its version as `base_version`). Report with `data.verdict`,
+`data.findings`, `data.checked` and `outputs: {"review": …}`, attesting
+`git:{{repo_name}}@{{judged_sha}}`.
 
-Earlier findings: {{feedback}}
+Your outputs: {{outputs}}, in your ticket's directory ({{write_scope}}).

@@ -489,7 +489,8 @@ class Flow:
         return await self.report(r, [req, rsk], outputs={"requirements": req, "risk": rsk})
 
     async def plan(self, tasks=None, oracle=None, environment: dict | None = None,
-                   criteria: tuple[str, ...] | None = None, doc: dict | None = None):
+                   criteria: tuple[str, ...] | None = None, doc: dict | None = None,
+                   scaffold: dict | None = None):
         """The planner's outputs: the spec and its delta specs, the oracle, the environment,
         and the tickets (``doc``; else built from task-like dicts, ``tasks``, with the tier's
         criteria – ``criteria`` to say otherwise)."""
@@ -504,7 +505,7 @@ class Flow:
             ENVIRONMENT if self.cfg.environment is not None else NO_ENVIRONMENT))
         plan = await self.write(r, "tickets.json", doc or plan_doc(tasks or TASKS, criteria or (
             ("verify", "can-merge") if self.ce.change.tier == "R0"
-            else ("verify", "review", "can-merge"))))
+            else ("verify", "review", "can-merge")), scaffold))
         return await self.report(r, [spec, *specs, orc, env, plan], outputs={
             "spec": spec, "specs": specs, "oracle": orc, "environment": env, "tickets": plan})
 
@@ -528,7 +529,7 @@ class Flow:
 
     async def implement(self, task: str = "T1", files: dict | None = None,
                         evidence: str | None = None, **kw):
-        r = self.run(task, "implementer")
+        r = self.run(task, self.ticket(task).type.partition(":")[2])   # implementer, scaffolder
         work = self.ticket(task).work
         sha = self.commit(r, files or {p: f"hello from {task} attempt {r.attempt}\n"
                                        for p in work["files_modified"]})
@@ -581,6 +582,9 @@ class Flow:
         await self.critique("PASS")
         await self.signoff("H-E1")
         assert self.status("provision") == "passed", self.status()
+        if self.status("scaffold") != "cancelled":
+            await self.implement("scaffold")
+            await self.review("scaffold")
         if "oracle" in self.ce.st.tickets:
             await self.oracle()
             await self.signoff("H-2")
@@ -615,10 +619,11 @@ NO_ENVIRONMENT = {"summary": "the default image", "profiles": {"default": {"tool
                   "roles": {}, "rationale": "no environment stage"}
 
 
-def plan_doc(tasks: list[dict], criteria: tuple[str, ...]) -> dict:
+def plan_doc(tasks: list[dict], criteria: tuple[str, ...], scaffold: dict | None = None) -> dict:
     """The planner's tickets for task-like dicts: each a build under ``delivery`` with
     ``criteria`` (``verify``, ``review``, ``security``, ``can-merge``), grouped by its
-    ``depends_on`` (a task's group comes after its dependencies'), then the integration."""
+    ``depends_on`` (a task's group comes after its dependencies'), then the integration; the
+    skeleton's ``scaffold`` given its work (``scaffold``), else cancelled."""
     types = {"verify": "controller:verify", "review": "agent:reviewer",
              "security": "agent:security", "can-merge": "controller:can-merge"}
     level: dict[str, int] = {}
@@ -636,7 +641,9 @@ def plan_doc(tasks: list[dict], criteria: tuple[str, ...]) -> dict:
     adds.append({"into": "delivery", "group": max(level.values(), default=-1) + 1, "ticket": {
         "id": "integration", "type": "agent:integration", "goal": "the change, integrated",
         "inputs": ["oracle"]}})
-    return {"add": adds}
+    if scaffold is not None:
+        return {"add": adds, "update": {"scaffold": {"work": scaffold}}}
+    return {"add": adds, "cancel": ["scaffold"]}
 
 
 def scenario(**limits):

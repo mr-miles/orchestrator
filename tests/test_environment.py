@@ -692,7 +692,7 @@ def test_config_without_environment_section(tmp_path):
 def test_language_preferences_reach_the_roles_that_plan_build_and_judge_code():
     a = Assets(ROOT / "assets")
     have = {r for r, role in a.roles.items() if "language-preferences" in role.skills}
-    assert have == {"planner", "critic", "oracle", "implementer", "reviewer"}
+    assert have == {"planner", "critic", "oracle", "implementer", "scaffolder", "reviewer"}
     assert "uv" in a.skill("language-preferences") and "ruff" in a.skill("language-preferences")
 
 

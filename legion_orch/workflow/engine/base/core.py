@@ -88,12 +88,12 @@ class ChangeCore:
         return self.st.tickets.get(tid) or self.st.hooks.get(tid)
 
     def setup_waits_for_scaffold(self) -> bool:
-        """A blank repository (§5.3d, §5.3c): until the scaffold build has passed, what the
-        setup task needs does not exist – no sandbox runs it; the scaffold's own verification
-        runs it, at its commit."""
+        """A blank repository (§5.3d, §5.3c): until the plan's scaffold has passed, what the
+        setup task needs does not exist – no agent's sandbox runs it; the scaffold's own
+        verification runs it, at its commit."""
         if not self.change.blank_repo:
             return False
-        return not any(t.work.get("scaffold") and t.status == Status.PASSED
+        return not any(t.type == "agent:scaffolder" and t.status == Status.PASSED
                        for t in self.st.tickets.values())
 
     def pointer_json(self, name: str) -> Any:
@@ -106,14 +106,6 @@ class ChangeCore:
             return json.loads(self.docs.read(m["path"], int(m["version"])).content)
         except ValueError:
             return None
-
-    def producer_dir(self, name: str) -> str | None:
-        """The directory (in the change) of the ticket whose output the pointer ``name`` is."""
-        ref = self.tickets.root.pointers.get(name) if self.st.tickets else None
-        m = FILE_RE.match(ref) if isinstance(ref, str) else None
-        if m is None or not m["path"].startswith(self.p("tickets/")):
-            return None
-        return "/".join(m["path"][len(self.p("")):].split("/")[:2])
 
     def round_of(self, ticket: Ticket) -> TicketWork:
         """A ticket's round as it would start now – for an agent asked to answer a message

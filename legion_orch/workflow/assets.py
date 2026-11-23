@@ -37,13 +37,17 @@ VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 TEMPLATE_VARS = {
-    "change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha", "branch",
-    "task_id",
-    "task_title", "task_json", "cycle", "role", "plan", "step", "context_refs", "feedback", "candidate_sha",
-    "write_scope", "required_docs", "workdir", "task_soul", "environment", "fix_round", "scaffold",
-    "sandbox_tools", "change_base_sha",
+    # the change
+    "change_id", "goal", "tier", "repo_name", "change_base_sha", "oracle_sha",
+    # the ticket and its round
+    "ticket_id", "ticket_goal", "work_json", "attempt", "role", "context_refs", "findings",
+    "outputs", "write_scope", "task_soul",
+    # where it works
+    "workdir", "branch", "base_sha", "head_sha", "judged_sha", "sandbox_tools",
+    # role-specific (their handlers bind them)
+    "environment", "scaffold",
 }
-ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema",
+ROLE_KEYS = {"soul", "skills", "git", "repo", "souls_allowed", "report_schema",
              "outputs", "work_schema"}
 OUTPUT_RE = re.compile(r"^[a-z][a-z0-9-]*\*?$")
 
@@ -65,8 +69,6 @@ class Role:
     name: str
     soul: str
     skills: list[str]
-    write: list[str]
-    required_docs: list[str]
     git: GitMode
     repo: bool = True
     souls_allowed: list[str] = field(default_factory=list)
@@ -316,11 +318,10 @@ class Assets:
                 for var in VAR_RE.findall(body):
                     if var not in TEMPLATE_VARS:
                         raise AssetError(f"{sub}/{name}.md: unknown template variable {{{{{var}}}}}")
-        for name, r in yaml.safe_load((self.root / "roles.yaml").read_text()).items():
-            for w in r.get("write", []) + r.get("required_docs", []):
-                for var in VAR_RE.findall(w):
-                    if var not in TEMPLATE_VARS:
-                        raise AssetError(f"roles.yaml {name}: unknown variable {{{{{var}}}}}")
+        for name, role in self.roles.items():
+            for var in VAR_RE.findall(role.soul):
+                if var not in TEMPLATE_VARS:
+                    raise AssetError(f"roles.yaml {name}: unknown variable {{{{{var}}}}}")
 
     # ------------------------------------------------------------------ render
     def render_role(self, role_name: str, variables: dict[str, Any]) -> RenderedPrompt:
@@ -350,8 +351,3 @@ class Assets:
         head = yaml.safe_dump({"name": skill_name(name), "description": self.skill_descriptions[name]},
                               sort_keys=False, allow_unicode=True, width=10_000)
         return f"---\n{head}---\n\n{render(self.skill(name), variables)}"
-
-    def role_paths(self, role_name: str, variables: dict[str, Any]) -> tuple[list[str], list[str]]:
-        role = self.roles[role_name]
-        return ([render(w, variables) for w in role.write],
-                [render(d, variables) for d in role.required_docs])

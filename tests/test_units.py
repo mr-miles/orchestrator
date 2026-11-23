@@ -89,10 +89,11 @@ def test_assets_render_and_pin(tmp_path):
 
     import yaml
     a = Assets(ROOT / "assets")
-    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
-                              "branch", "task_id", "task_title", "task_json", "cycle", "role",
-                              "context_refs", "feedback", "candidate_sha", "write_scope",
-                              "required_docs", "workdir", "sandbox_tools", "plan", "step")}
+    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
+                              "oracle_sha", "change_base_sha", "branch", "ticket_id",
+                              "ticket_goal", "work_json", "attempt", "role", "context_refs",
+                              "findings", "judged_sha", "write_scope", "outputs", "workdir",
+                              "sandbox_tools", "task_soul", "environment", "scaffold")}
     vars_["task_soul"] = "backend-engineer"
     r = a.render_role("implementer", vars_)
     assert "Backend Engineer" in r.soul and r.pin.startswith("sha256:")
@@ -654,16 +655,6 @@ sandbox: {{runner: local}}
         load_config(tmp_path / "c.yaml")
 
 
-def test_panel_members_cannot_write_each_others_reviews():
-    a = Assets(ROOT / "assets")
-    v = {"task_id": "T1", "cycle": 1}
-    scopes = {r: a.role_paths(r, v)[0] for r in ("reviewer", "security", "architecture")}
-    for role, scope in scopes.items():
-        for other in scopes:
-            path = f"tasks/T1/reviews/{other}-cycle-1.md"
-            assert any(path.startswith(w) for w in scope) == (role == other), (role, path)
-
-
 def test_plan_limits_and_scale():
     import time
 
@@ -774,13 +765,20 @@ def test_report_and_work_guard_branches(tmp_path):
     from legion_orch.workflow import attest
     from legion_orch.workflow.assets import GitMode
     docs = _store()
-    v1 = docs.write("changes/c1/plan/a.md", "one", author="r0001", role="planner")
-    docs.write("changes/c1/plan/a.md", "two", author="r0001", role="planner", base_version=1)
-    docs.write("changes/c1/plan/b.md", "x", author="r0002", role="planner")
+    v1 = docs.write("changes/c1/tickets/design/a.md", "one", author="r0001", role="planner")
+    docs.write("changes/c1/tickets/design/a.md", "two", author="r0001", role="planner",
+               base_version=1)
+    docs.write("changes/c1/tickets/design/b.md", "x", author="r0002", role="planner")
+    docs.write("changes/c1/tickets/other/c.md", "x", author="r0001", role="planner")
     parse = lambda *refs: [attest.parse(r, ["app"]) for r in refs]
-    _, v = guards.required_docs("r0001", ["changes/c1/plan/a.md", "changes/c1/plan/b.md"],
-                                parse(v1.attestation, "file:changes/c1/plan/b.md@1"), docs)
-    assert "is not the latest version (latest 2)" in v[0] and "was not written by this run" in v[1]
+    pinned, v = guards.required_outputs(
+        "r0001", ["spec", "specs*", "oracle"],
+        {"spec": v1.attestation, "specs": ["file:changes/c1/tickets/design/b.md@1"],
+         "oracle": "file:changes/c1/tickets/other/c.md@1", "extra": "x"},
+        ["changes/c1/tickets/design/"], docs, "c1")
+    assert pinned == {} and len(v) == 4, v
+    assert "are not this role's" in v[0] and "is not the latest version (latest 2)" in v[1]
+    assert "was not written by this run" in v[2] and "outside your write scope" in v[3]
     sha, v = guards.required_git(GitMode.COMMIT, parse(f"git:app@{SHA}", f"git:app@{'b' * 40}"), "app", None)
     assert sha is None and v[0].startswith("G-R5: attest exactly one commit")
     sha, v = guards.required_git(GitMode.CANDIDATE, parse(f"git:app@{'b' * 40}"), "app", SHA)
