@@ -1,4 +1,5 @@
-"""Acceptance (black-box, out of process): the controller's OpenTelemetry spans (AC-1 .. AC-9).
+"""Acceptance (black-box, out of process): the controller's OpenTelemetry spans (AC-1 .. AC-9),
+on tickets (docs/telemetry.md): a span per ticket under its parent's, agent runs under theirs.
 
 The tests never import legion_orch. ``support/otel_driver.py`` is run as a subprocess; it starts
 ``legion-orch serve`` (local runner, scripted fake agent), drives it through the operator HTTP API
@@ -28,11 +29,10 @@ NEEDLES = [GOAL, TOKEN, "SECRET-GOAL-TEXT", "Write greet/bye files and docs", "s
            "pretend secrets", "requirements captured", "not good enough"]
 
 ATTR_KEYS = {
-    "legion.change.id", "legion.workspace", "legion.stage.id", "legion.stage.title", "legion.group.id",
-    "legion.node.id", "legion.node.kind", "legion.cycle", "legion.phase", "legion.result",
-    "legion.outcome", "legion.run.id", "legion.run.role", "legion.escalation.kind", "legion.expected",
-    "legion.resumed"}
-GATES = ["H-1", "H-E1", "H-2", "H-3"]
+    "legion.change.id", "legion.workspace", "legion.ticket.id", "legion.ticket.type",
+    "legion.attempt", "legion.status", "legion.waiting", "legion.outcome", "legion.run.id",
+    "legion.run.role", "legion.resumed"}
+SIGNOFFS = ["H-1", "H-E1", "H-2", "H-3"]
 TELEMETRY_ON = {"enabled": True, "endpoint": COLLECTOR}
 
 
@@ -53,8 +53,8 @@ def run_driver(scenario: dict) -> dict:
 SCENARIOS = {
     "full": {"scenario": "full", "telemetry": TELEMETRY_ON, "goal": GOAL, "operator_token": TOKEN,
              "needles": NEEDLES},
-    "sendback": {"scenario": "sendback", "telemetry": TELEMETRY_ON},
-    "reject": {"scenario": "reject", "telemetry": TELEMETRY_ON},
+    "rejection": {"scenario": "rejection", "telemetry": TELEMETRY_ON},
+    "abandon": {"scenario": "abandon", "telemetry": TELEMETRY_ON},
     "restart": {"scenario": "restart", "telemetry": TELEMETRY_ON},
     # AC-1 / AC-2: the wire, on and off
     "off_disabled": {"scenario": "wire", "stop_at": "h1", "telemetry": {"enabled": False},
@@ -87,22 +87,22 @@ def result(runs, name) -> dict:
 
 
 # ---------------------------------------------------------------------------- span helpers
-def named(r, prefix):
-    return [s for s in r["spans"] if s["name"] == prefix or s["name"].startswith(prefix + " ")]
+def named(r, name):
+    return sorted((s for s in r["spans"] if s["name"] == name), key=lambda s: s["start"])
 
 
 def attr(s, key, default=None):
     return s["attributes"].get(key, default)
 
 
-def steps(r, node):
-    return sorted((s for s in r["spans"] if s["name"] == f"step {node}"), key=lambda s: s["start"])
+def ticket_spans(r):
+    return [s for s in r["spans"] if attr(s, "legion.ticket.type")]
 
 
-def last_step(r, node):
-    got = steps(r, node)
-    assert got, f"no span 'step {node}'"
-    return got[-1]
+def of_ticket(r, tid):
+    got = [s for s in ticket_spans(r) if attr(s, "legion.ticket.id") == tid]
+    assert got, f"no span of ticket {tid}"
+    return sorted(got, key=lambda s: s["start"])
 
 
 def index(r):
@@ -111,10 +111,6 @@ def index(r):
 
 def parent_of(r, s):
     return index(r).get(s["parent_span_id"])
-
-
-def is_container(s):
-    return s["name"].startswith(("stage ", "group ", "change "))
 
 
 def trace_id_for(cid: str) -> str:
@@ -144,7 +140,7 @@ def test_AC_1_off_without_any_configuration(runs):
 def test_AC_1_on_with_auto_endpoint_env_or_enabled_true(runs, name):
     r = result(runs, name)
     assert r["requests"], "the collector received nothing"
-    assert named(r, "step workspace"), [s["name"] for s in r["spans"]]
+    assert named(r, "agent intake"), [s["name"] for s in r["spans"]]
     roots = the_root(r)
     assert len(roots) == 1 and attr(roots[0], "legion.outcome") == "interrupted"
 
@@ -162,11 +158,11 @@ def test_AC_2_otlp_http_protobuf_with_resource_attributes(runs, name, service):
     for res in r["resources"]:
         assert res.get("service.name") == service
         assert res.get("legion.project") == PROJECT
-    step = named(r, "step workspace")
-    assert step and attr(step[0], "legion.outcome") == "accepted"
+    run = named(r, "agent intake")
+    assert run and attr(run[0], "legion.outcome") in ("reported", "accepted")
     root = the_root(r)[0]
     assert attr(root, "legion.outcome") == "interrupted"
-    assert step[0]["end"] <= root["end"]
+    assert run[0]["end"] <= root["end"]
     assert len({s["trace_id"] for s in r["spans"]}) == 1
 
 
@@ -189,18 +185,22 @@ def test_AC_3_one_deterministic_trace_with_one_root_ending_completed(runs):
     assert all(s["parent_span_id"] in ids for s in r["spans"] if s["parent_span_id"])
 
 
-def test_AC_3_stage_spans_nest_with_titles_and_outcomes(runs):
+def test_AC_3_ticket_spans_nest_as_the_tree(runs):
     r = result(runs, "full")
     root = the_root(r)[0]
-    stages = [s for s in r["spans"] if s["name"].startswith("stage ")]
-    assert stages
-    for s in stages:
+    [tree_root] = of_ticket(r, "change")
+    assert parent_of(r, tree_root) is root
+    for s in ticket_spans(r):
+        if s is tree_root:
+            continue
         parent = parent_of(r, s)
-        assert parent is not None and (parent is root or parent["name"].startswith(("stage ", "group "))), s
-        assert attr(s, "legion.outcome") in ("accepted", "rework"), s["attributes"]
-        assert attr(s, "legion.stage.id") and attr(s, "legion.stage.title")
-        assert s["name"].startswith("stage " + attr(s, "legion.stage.title"))
-    assert "Design" in {attr(s, "legion.stage.title") for s in stages}
+        assert parent is not None and attr(parent, "legion.ticket.type"), s["name"]
+        assert s["name"] == f"{attr(s, 'legion.ticket.type')} {attr(s, 'legion.ticket.id')}"
+    # a build under the delivery, its criteria under it
+    [t1] = of_ticket(r, "T1")
+    assert attr(parent_of(r, t1), "legion.ticket.id") == "delivery"
+    [review] = of_ticket(r, "review:T1")
+    assert parent_of(r, review) is t1
 
 
 def test_AC_3_child_intervals_lie_inside_their_parents(runs):
@@ -219,126 +219,79 @@ def test_AC_3_child_intervals_lie_inside_their_parents(runs):
 
 
 # ================================================================================== AC-4
-RAN = ["intake", "plan", "H-1", "H-E1", "H-2", "H-3", "build:T1", "build:T2", "build:T3"]
-
-
-def test_AC_4_every_node_that_ran_has_a_step_span_under_a_stage(runs):
+def test_AC_4_every_ticket_that_ran_has_a_span_that_ends_passed(runs):
     r = result(runs, "full")
-    nodes = r["final"]["nodes"]
-    assert set(RAN) <= {n for n, st in nodes.items() if st == "ACCEPTED"}, nodes
-    root = the_root(r)[0]
-    for node, status in nodes.items():
-        if status != "ACCEPTED":
+    tickets = r["final"]["tickets"]
+    assert set(SIGNOFFS) | {"intake", "design", "T1", "T2", "T3", "integration"} <= {
+        t for t, st in tickets.items() if st == "passed"}, tickets
+    for tid, status in tickets.items():
+        if status != "passed":
             continue
-        got = steps(r, node)
-        assert got, f"no span for step {node}"
-        for s in got:
-            assert attr(s, "legion.node.id") == node and attr(s, "legion.node.kind")
-            parent = parent_of(r, s)
-            assert parent is not None and (parent is root or parent["name"].startswith(("stage ", "group ")))
-        assert attr(got[-1], "legion.outcome") == "accepted", (node, got[-1]["attributes"])
-    for gate in GATES:
-        assert attr(last_step(r, gate), "legion.node.kind") == "human"
-    for task in ("build:T1", "build:T2", "build:T3"):
-        assert attr(last_step(r, task), "legion.node.kind") == "build"
+        spans = of_ticket(r, tid)       # a criterion that passed, then ran again: two
+        assert all(attr(s, "legion.outcome") == "passed" for s in spans), (tid, spans)
+    for tid in SIGNOFFS:
+        assert attr(of_ticket(r, tid)[0], "legion.ticket.type") == "human:signoff"
+    for tid in ("T1", "T2", "T3"):
+        assert attr(of_ticket(r, tid)[0], "legion.ticket.type") == "agent:implementer"
 
 
-def test_AC_4_rejecting_at_h3_fails_that_step_and_keeps_earlier_ones_accepted(runs):
-    r = result(runs, "reject")
+def test_AC_4_abandoning_ends_what_is_open_and_the_root_with_an_error(runs):
+    r = result(runs, "abandon")
     assert r["final"]["status"] == "ABANDONED"
-    h3 = last_step(r, "H-3")
-    assert attr(h3, "legion.outcome") == "failed" and h3["status_code"] == "ERROR"
-    for node in ("intake", "plan", "H-1", "H-E1", "H-2", "build:T1", "build:T2", "build:T3"):
-        assert attr(last_step(r, node), "legion.outcome") == "accepted", node
+    assert all(s["end"] > 0 and s["end"] >= s["start"] for s in r["spans"]), "an unended span"
+    root = the_root(r)[0]
+    assert attr(root, "legion.outcome") == "abandoned" and root["status_code"] == "ERROR"
+    for tid in ("intake", "design", "T1", "T2", "T3"):
+        assert attr(of_ticket(r, tid)[-1], "legion.outcome") == "passed", tid
+    [h3] = of_ticket(r, "H-3")
+    assert attr(h3, "legion.outcome") in ("abandoned", "cancelled")
 
 
 # ================================================================================== AC-5
-def phases_of(r, step_span):
-    return sorted((s for s in r["spans"]
-                   if s["name"].startswith("phase ") and s["parent_span_id"] == step_span["span_id"]),
-                  key=lambda s: s["start"])
-
-
-@pytest.mark.parametrize("node", ["plan", "build:T1", "build:T2"])
-def test_AC_5_phase_spans_under_the_step_with_repeats_as_distinct_spans(runs, node):
+@pytest.mark.parametrize("tid", ["design", "T1", "T2"])
+def test_AC_5_a_rework_is_an_event_of_the_ticket_with_its_attempt(runs, tid):
     r = result(runs, "full")
-    phases = [p for st in steps(r, node) for p in phases_of(r, st)]
-    phases.sort(key=lambda s: s["start"])
-    assert phases, f"no phase spans under step {node}"
-    for p in phases:
-        assert attr(p, "legion.phase") and attr(p, "legion.result"), p["attributes"]
-        assert p["name"] == "phase " + attr(p, "legion.phase")
-        assert attr(p, "legion.node.id") == node
-    names = [attr(p, "legion.phase") for p in phases]
-    assert len(set(names)) < len(names), f"no repeated phase for {node}: {names}"
-    repeated = [n for n in set(names) if names.count(n) > 1]
-    for n in repeated:
-        assert len({p["span_id"] for p in phases if attr(p, "legion.phase") == n}) == names.count(n)
-    assert "rework" in {attr(p, "legion.result") for p in phases}, [attr(p, "legion.result") for p in phases]
+    [s] = of_ticket(r, tid)
+    attempts = [e["attributes"].get("legion.attempt") for e in s["events"]]
+    assert 2 in attempts, (tid, [(e["name"], e["attributes"]) for e in s["events"]])
+    assert attr(s, "legion.attempt") == r["final"]["attempts"][tid] == 2
+    names = [e["name"] for e in s["events"]]
+    assert names[0] == "working" and "checking" in names
 
 
-def test_AC_5_build_t1_runs_from_produce_to_merge(runs):
-    r = result(runs, "full")
-    phases = sorted((p for st in steps(r, "build:T1") for p in phases_of(r, st)), key=lambda s: s["start"])
-    assert attr(phases[0], "legion.phase") == "Produce"
-    assert attr(phases[-1], "legion.phase") == "Merge" and attr(phases[-1], "legion.result") == "ok"
-
-
-def test_AC_5_agent_spans_carry_run_id_and_role_under_a_step(runs):
+def test_AC_5_agent_spans_carry_run_id_and_role_under_their_ticket(runs):
     r = result(runs, "full")
     agents = [s for s in r["spans"] if s["name"].startswith("agent ")]
     assert agents
     roles = {attr(s, "legion.run.role") for s in agents}
-    assert {"intake", "planner", "implementer"} <= roles and roles & {"critic", "reviewer"}, roles
+    assert {"intake", "planner", "implementer", "critic", "reviewer"} <= roles, roles
     for s in agents:
         assert attr(s, "legion.run.id") and s["name"] == "agent " + attr(s, "legion.run.role")
         parent = parent_of(r, s)
-        assert parent is not None and parent["name"].startswith("step "), s["name"]
-        assert attr(s, "legion.node.id") == parent["name"][len("step "):]
+        assert parent is not None and attr(parent, "legion.ticket.id") == attr(s, "legion.ticket.id")
+    assert len([s for s in agents if attr(s, "legion.ticket.id") == "T1"]) == 2   # its rework
 
 
 # ================================================================================== AC-6
-@pytest.mark.parametrize("gate", GATES)
-def test_AC_6_gate_steps_show_awaiting_human_then_resumed(runs, gate):
+@pytest.mark.parametrize("tid", SIGNOFFS)
+def test_AC_6_a_sign_off_is_a_span_from_its_wait_to_its_decision(runs, tid):
     r = result(runs, "full")
-    s = last_step(r, gate)
-    names = [e["name"] for e in s["events"]]
-    assert "awaiting_human" in names and "resumed" in names, names
-    first = names.index("awaiting_human")
-    assert "resumed" in names[first:]
-    ev = s["events"][first]
-    assert attr(ev, "legion.expected") is True
-    assert ev["attributes"].get("legion.escalation.kind")
-    assert attr(s, "legion.outcome") == "accepted"
+    [s] = of_ticket(r, tid)
+    assert [e["name"] for e in s["events"]][:1] == ["working"]
+    assert attr(s, "legion.outcome") == "passed"
+    assert attr(parent_of(r, s), "legion.ticket.type")          # under what it signs
 
 
-def test_AC_6_a_send_back_keeps_the_finished_step_accepted_and_starts_a_new_one(runs):
-    r = result(runs, "sendback")
+def test_AC_6_a_rejected_sign_off_reworks_its_owner_in_the_same_span(runs):
+    r = result(runs, "rejection")
     assert r["final"]["status"] == "READY"
-    plans = steps(r, "plan")
-    assert len(plans) >= 2, [(s["start"], attr(s, "legion.outcome")) for s in plans]
-    assert attr(plans[0], "legion.outcome") == "accepted" and plans[0]["end"] > 0
-    assert plans[1]["span_id"] != plans[0]["span_id"] and plans[1]["start"] >= plans[0]["end"]
-    assert attr(plans[-1], "legion.outcome") == "accepted"
-
-
-def test_AC_6_rejecting_at_h3_leaves_no_open_span_and_no_failed_phase(runs):
-    r = result(runs, "reject")
-    assert r["spans"]
-    assert all(s["end"] > 0 and s["end"] >= s["start"] for s in r["spans"]), "an unended span arrived"
-    h3 = last_step(r, "H-3")
-    assert attr(h3, "legion.outcome") == "failed" and h3["status_code"] == "ERROR"
-    assert "awaiting_human" in [e["name"] for e in h3["events"]]
-    approval = [s for s in r["spans"]
-                if s["name"] == "phase Approval" and s["parent_span_id"] == h3["span_id"]]
-    assert approval, "no `phase Approval` under step H-3"
-    assert attr(approval[-1], "legion.result") == "escalate" and approval[-1]["status_code"] == "UNSET"
-    root = the_root(r)[0]
-    assert attr(root, "legion.outcome") == "rejected" and root["status_code"] == "ERROR"
-    assert not [s for s in r["spans"] if attr(s, "legion.result") == "failed"]
-    late = [s["name"] for s in r["spans"] if s["name"].startswith("step ")
-            and attr(s, "legion.outcome") == "accepted" and s["end"] > h3["end"]]
-    assert late == []
+    [design] = of_ticket(r, "design")
+    assert attr(design, "legion.outcome") == "passed"
+    assert max(e["attributes"].get("legion.attempt", 0) for e in design["events"]) >= 2
+    [h_e1] = of_ticket(r, "H-E1")
+    assert attr(h_e1, "legion.outcome") == "passed"
+    assert "rejected" in [e["name"] for e in h_e1["events"]] or \
+        len([s for s in r["spans"] if s["name"] == "agent planner"]) >= 2
 
 
 # ================================================================================== AC-7
@@ -351,16 +304,16 @@ def test_AC_7_restart_continues_the_trace_and_leaves_no_open_span(runs):
     second = [s for s in r["spans"] if s["process"] == 2]
     assert first and second
     assert all(s["end"] > 0 for s in r["spans"]), "an open span arrived"
-    interrupted = [s for s in first if "interrupted" in (attr(s, "legion.outcome"), attr(s, "legion.result"))]
-    assert any(s["name"] == f"change {cid}" for s in interrupted), [s["name"] for s in first]
-    assert any(s["name"] == "step H-1" for s in interrupted)
+    interrupted = [s for s in first if attr(s, "legion.outcome") == "interrupted"]
+    names = {s["name"] for s in interrupted}
+    assert f"change {cid}" in names and "human:signoff H-1" in names, sorted(names)
     root2 = [s for s in second if s["name"] == f"change {cid}"]
     assert root2 and attr(root2[0], "legion.resumed") is True
     assert attr(root2[0], "legion.outcome") == "completed"
-    h1 = sorted((s for s in second if s["name"] == "step H-1"), key=lambda s: s["start"])
-    assert h1 and attr(h1[0], "legion.resumed") is True and attr(h1[-1], "legion.outcome") == "accepted"
+    h1 = [s for s in second if s["name"] == "human:signoff H-1"]
+    assert h1 and attr(h1[0], "legion.resumed") is True and attr(h1[-1], "legion.outcome") == "passed"
     later = {s["name"] for s in second}
-    assert "step plan" in later and "step H-3" in later
+    assert "agent:planner design" in later and "human:signoff H-3" in later
 
 
 # ================================================================================== AC-8
@@ -372,8 +325,8 @@ def test_AC_8_a_bad_collector_changes_nothing_in_the_workflow(runs, name):
     if name != "refuse":
         assert r["requests"], "the exporter never tried the collector"
     assert r["final"]["status"] == "READY"
-    assert r["final"]["nodes"] == healthy["final"]["nodes"]
-    assert r["final"]["cycles"] == healthy["final"]["cycles"]
+    assert r["final"]["tickets"] == healthy["final"]["tickets"]
+    assert r["final"]["attempts"] == healthy["final"]["attempts"]
     assert r["stop_s"] is not None and r["stop_s"] <= 60, r["stop_s"]
 
 
@@ -397,7 +350,7 @@ def test_AC_9_attribute_keys_are_the_allowlist_and_values_are_short(runs):
                 assert key in ATTR_KEYS, (s["name"], key)
                 if isinstance(value, str):
                     assert len(value) <= 128, (s["name"], key)
-    assert {"legion.change.id", "legion.node.id", "legion.outcome", "legion.phase"} <= seen
+    assert {"legion.change.id", "legion.ticket.id", "legion.outcome", "legion.attempt"} <= seen
     assert r["resources"]
     for res in r["resources"]:
         for key, value in res.items():

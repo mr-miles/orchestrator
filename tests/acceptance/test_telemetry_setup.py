@@ -13,10 +13,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = ROOT / "tests" / "acceptance" / "support" / "otel_driver.py"
 KEYS = [
-    "legion.change.id", "legion.workspace", "legion.stage.id", "legion.stage.title", "legion.group.id",
-    "legion.node.id", "legion.node.kind", "legion.cycle", "legion.phase", "legion.result",
-    "legion.outcome", "legion.run.id", "legion.run.role", "legion.escalation.kind", "legion.expected",
-    "legion.resumed"]
+    "legion.change.id", "legion.workspace", "legion.ticket.id", "legion.ticket.type",
+    "legion.attempt", "legion.status", "legion.waiting", "legion.outcome", "legion.run.id",
+    "legion.run.role", "legion.resumed"]
 PACKAGES = ("opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-http")
 
 
@@ -44,8 +43,8 @@ def test_AC_10_ruff_passes():
     assert p.returncode == 0, p.stdout[-2500:] + p.stderr[-1500:]
 
 
-def test_AC_10_the_flow_core_has_no_telemetry_text():
-    files = sorted((ROOT / "legion_orch" / "workflow" / "flow").glob("*.py"))
+def test_AC_10_the_ticket_rules_have_no_telemetry_text():
+    files = sorted((ROOT / "legion_orch" / "workflow" / "tickets").rglob("*.py"))
     assert files
     for f in files:
         text = f.read_text().lower()
@@ -91,8 +90,7 @@ def test_AC_11_the_docs_name_every_span_attribute_and_the_setup():
     doc = ROOT / "docs" / "telemetry.md"
     assert doc.is_file(), "docs/telemetry.md is missing"
     text = doc.read_text()
-    for needle in KEYS + ["change <id>", "stage <title>", "group <id>", "step <node id>",
-                          "phase <PhaseClass>", "agent <role>", "localhost:4318"]:
+    for needle in KEYS + ["change <id>", "<type> <ticket id>", "agent <role>", "localhost:4318"]:
         assert needle in text, needle
     assert "restart" in text.lower()
 
@@ -119,8 +117,7 @@ def test_AC_11_auto_mode_without_the_sdk_keeps_serving_and_sends_nothing():
 
 # ================================================================================== AC-12
 # (the wiring tests were folded into test_telemetry_engine)
-@pytest.mark.parametrize("name", ["test_telemetry_config", "test_telemetry", "test_telemetry_steps",
-                                  "test_telemetry_engine"])
+@pytest.mark.parametrize("name", ["test_telemetry_config", "test_telemetry", "test_telemetry_engine"])
 def test_AC_12_the_implementer_test_files_exist_with_tests(name):
     f = ROOT / "tests" / f"{name}.py"
     assert f.is_file(), f"{f.name} is missing"

@@ -53,7 +53,7 @@ change <id>
 One span per ticket, under its parent ticket's span (the root ticket's under the change span);
 an agent run's span is under its ticket's. A ticket's span opens when it leaves `pending` and
 ends when it is closed: `passed`, `failed` (a replan replaced it) or `cancelled`. A ticket that is
-dropped before it ever started has no span. One trace per change; the trace id is derived from
+dropped before it ever started has no span; a passed criterion that runs again (its owner was reworked) gets a new span. One trace per change; the trace id is derived from
 the change id, so a restart continues the same trace.
 
 ## 4. Attributes

@@ -65,6 +65,8 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
             "assets_sha": ctl.assets.sha, "limits": cfg.limits.__dict__,
             "change": ch.model_dump(mode="json") if ch else None,
             "tickets": tickets, "runs": runs,
+            # side processes' tickets, outside the tree (the retrospective)
+            "hooks": [t.model_dump(mode="json") for t in ce.hooks.values()],
             "pointers": root.pointers if root else {},
             "paused": list(root.paused) if root else [],
             "signoffs": ce.signoffs_waiting(),

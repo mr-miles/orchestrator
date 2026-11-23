@@ -6,17 +6,17 @@ it starts the controller (``python -m legion_orch -c <cfg> serve``, local runner
 observes what it sends to a collector this driver runs (OTLP/HTTP protobuf on ``/v1/traces``).
 
 Scenario fields (all optional except ``scenario``):
-  scenario     full | sendback | reject | restart | wire | blocked
+  scenario     full | rejection | abandon | restart | wire | blocked
   telemetry    object written as the config's ``telemetry:`` section (``${COLLECTOR}`` is replaced
                by the collector's base URL); null = no section
   env          extra environment of the controller (``${COLLECTOR}`` replaced)
   collector    ok | refuse | hang | error          (default ok)
   goal, operator_token, project, needles, deadline_s (default 420)
-  stop_at      wire only: "span" (wait for the finished `step workspace` span) | "h1" (change at H-1)
+  stop_at      wire only: "span" (wait for the finished `agent intake` span) | "h1" (change at H-1)
   block_sdk    blocked only: the controller's Python cannot import opentelemetry.sdk
   expect_exit  blocked only: wait for the controller to exit by itself (else it must serve)
 
-Result: {"final": {"status", "nodes", "cycles"}, "requests": [{"path", "content_type", "bytes"}],
+Result: {"final": {"status", "tickets", "attempts"}, "requests": [{"path", "content_type", "bytes"}],
 "resources": [...], "spans": [...], "raw_hits": {needle: bool}, "stderr_tail", "exit_code",
 "exit_codes", "stop_s", "meta_ok", "decode_error", "cid", "error"?}.
 """
@@ -254,7 +254,7 @@ class Driver:
             server: {{host: 127.0.0.1, port: {self.port}, agent_host: 127.0.0.1, public_host: 127.0.0.1,
                       mcp_port: {mcp}, git_port: {git},
                       token_port: {token}, a2a_port: {a2a}{server_extra}}}
-            limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
+            limits: {{max_parallel: 4, run_timeout_s: 120}}
             retrospective: {{auto: false}}
             sandbox:
               runner: local
@@ -335,14 +335,16 @@ class Driver:
     def state(self) -> dict:
         return self.api(f"/api/changes/{self.cid}/state")
 
-    def node_status(self, node) -> str | None:
-        for n in self.state()["nodes"]:
-            if n["id"] == node:
-                return n["status"]
-        return None
+    def signing(self, ticket) -> bool:
+        """Whether the sign-off ``ticket`` waits for a decision owner."""
+        return ticket in self.state()["signoffs"]
 
-    def action(self, node, action, approver, payload=None):
-        return self.api(f"/api/changes/{self.cid}/nodes/{node}/action",
+    def action(self, ticket, action, approver, payload=None):
+        return self.api(f"/api/changes/{self.cid}/tickets/{ticket}/action",
+                        {"action": action, "approver": approver, "payload": payload or {}})
+
+    def change_action(self, action, approver, payload=None):
+        return self.api(f"/api/changes/{self.cid}/action",
                         {"action": action, "approver": approver, "payload": payload or {}})
 
     def await_serving(self, proc):
@@ -372,8 +374,8 @@ class Driver:
     def snapshot_final(self):
         st = self.state()
         self.final = {"status": (st.get("change") or {}).get("status"),
-                      "nodes": {n["id"]: n["status"] for n in st["nodes"]},
-                      "cycles": {n["id"]: n.get("cycle") for n in st["nodes"]}}
+                      "tickets": {t["id"]: t["status"] for t in st["tickets"]},
+                      "attempts": {t["id"]: t.get("attempt") for t in st["tickets"]}}
 
     def stop(self, proc):
         """SIGTERM (a graceful stop), then the exit code; the collector goes quiet after."""
@@ -390,31 +392,34 @@ class Driver:
         if self.sc.get("collector", "ok") == "ok":
             self.collector.quiet()
 
-    # -- the workflow, as tests/test_e2e.py::_drive does it
-    def drive(self, proc, *, to="ready", send_back=False, reject=False, start_at="H-1"):
-        wait = lambda node, status, **kw: self.wait(lambda: self.node_status(node) == status,
-                                                    f"{node} {status}", proc, **kw)
-        if start_at == "H-1":
-            wait("H-1", "AWAITING_HUMAN")
-            if to == "h1":
-                return
-            self.action("H-1", "accept", "miles")
-        wait("H-E1", "AWAITING_HUMAN")
-        if send_back:
-            self.action("H-E1", "send_back", "miles",
-                        {"stage": "plan", "feedback": "please expand the plan once more"})
-            wait("H-E1", "AWAITING_HUMAN")
-        self.action("H-E1", "approve", "miles", {"subjects": ["plan", "REQ-1"]})
-        self.action("H-E1", "approve", "ana", {"subjects": ["REQ-2"]})
-        wait("H-2", "AWAITING_HUMAN")
-        self.action("H-2", "approve", "ana", {"subjects": ["oracle"]})
-        wait("H-3", "AWAITING_HUMAN")
-        if reject:
-            self.action("H-3", "reject", "miles", {"reason": "not good enough", "retrospective": False})
-            self.wait(lambda: self.state()["change"]["status"] == "ABANDONED", "the change abandoned", proc)
-        else:
-            self.action("H-3", "accept", "miles")
-            self.wait(lambda: self.state()["change"]["status"] == "READY", "the change READY", proc)
+    # -- the workflow, as tests/test_e2e.py::_drive does it: every sign-off approved as it
+    # comes (the scripted agents rework by themselves), but for what the scenario says
+    def drive(self, proc, *, to="ready", reject=False, abandon=False, start_at="H-1"):
+        if to == "h1":
+            self.wait(lambda: self.signing("H-1"), "H-1 signing", proc)
+            return
+        rejected = False
+        while True:
+            st = self.state()
+            status = (st.get("change") or {}).get("status")
+            if status != "ACTIVE":
+                break
+            for tid in st["signoffs"]:
+                if tid == "H-3" and abandon:
+                    self.change_action("abandon", "miles",
+                                       {"reason": "not good enough", "retrospective": False})
+                elif tid == "H-E1" and reject and not rejected:
+                    self.action(tid, "reject", "miles",
+                                {"reason": "please expand the plan once more"})
+                    rejected = True
+                else:
+                    self.action(tid, "approve", "miles")
+            if proc.poll() is not None:
+                raise Failure(f"controller exited ({proc.returncode}) while driving the change")
+            self.check_time()
+            time.sleep(0.2)
+        want = "ABANDONED" if abandon else "READY"
+        self.wait(lambda: self.state()["change"]["status"] == want, f"the change {want}", proc)
         self.snapshot_final()
         # the root span is exported when the change ends: give it a moment before the stop
         if self.sc.get("collector", "ok") == "ok" and self.sc.get("telemetry") is not None:
@@ -433,11 +438,11 @@ class Driver:
             if self.sc.get("stop_at", "span") == "h1":
                 self.drive(proc, to="h1")
             else:
-                self.wait(lambda: self.collector.has("step workspace"), "the finished step workspace span",
+                self.wait(lambda: self.collector.has("agent intake"), "the finished agent intake span",
                           proc, timeout=SPAN_WAIT_S)
             self.stop(proc)
-        elif sc in ("full", "sendback", "reject"):
-            self.drive(proc, send_back=sc == "sendback", reject=sc == "reject")
+        elif sc in ("full", "rejection", "abandon"):
+            self.drive(proc, reject=sc == "rejection", abandon=sc == "abandon")
             self.stop(proc)
         elif sc == "restart":
             self.drive(proc, to="h1")
@@ -445,7 +450,7 @@ class Driver:
             self.collector.process = 2
             proc2 = self.start_process(cfg)
             self.await_serving(proc2)
-            self.drive(proc2, start_at="H-1")
+            self.drive(proc2)
             self.stop(proc2)
         else:
             raise Failure(f"unknown scenario {sc}")
