@@ -1,6 +1,6 @@
-"""The sandbox layer on its own (engine/sandboxes.py): which sandboxes nodes hold, how an agent's
-sandbox is created, prepared and paused, the verifier sandbox's clean-up, and retirement. Driven
-directly against the fake runner, without the scheduler."""
+"""The sandbox layer on its own (engine/sandboxes.py): which sandboxes tickets hold, how an
+agent's sandbox is created, prepared and paused, the verifier sandbox's clean-up, and retirement.
+Driven directly against the fake runner, without the ticket runner."""
 from __future__ import annotations
 
 import asyncio
@@ -11,18 +11,10 @@ import pytest
 from engine_harness import Flow, scenario
 
 from legion_orch.sandbox import SandboxError
+from legion_orch.workflow.engine.sandboxes.plan import plan_for
 from legion_orch.workflow.engine.sandboxes.sandboxes import Sandboxes
-from legion_orch.workflow.model import (
-    ACCEPTED,
-    BUILD,
-    H_REQUIREMENTS,
-    INTAKE,
-    R_REPORTED,
-    ChangeStatus,
-    Node,
-    Run,
-    SetupPin,
-)
+from legion_orch.workflow.model import R_ACTIVE, R_REPORTED, ChangeStatus, Run, SetupPin
+from legion_orch.workflow.tickets import Status, Ticket
 
 SHA = "a" * 40
 JUDGED = "b" * 40
@@ -32,17 +24,18 @@ def sb(f: Flow) -> Sandboxes:
     return f.ce._sandboxes
 
 
-def make_run(f: Flow, role: str, *, node: str = "T9", sandbox: str = "sb-t9", **kw) -> Run:
-    run = Run(id=f"r{9000 + len(f.ce.runs)}", node_id=node, role=role, soul="s", cycle=1,
+def make_run(f: Flow, role: str, *, ticket: str = "T9", sandbox: str = "sb-t9", **kw) -> Run:
+    run = Run(id=f"r{9000 + len(f.ce.runs)}", ticket=ticket, role=role, soul="s", attempt=1,
               base_sha=SHA, sandbox=sandbox, **kw)
     f.ce.runs[run.id] = run
     return run
 
 
-def build_node(f: Flow, *, sandbox: str = "sb-t9", **kw) -> Node:
-    node = Node(id="T9", kind=BUILD, title="a task", sandbox=sandbox, **kw)
-    f.ce.nodes[node.id] = node
-    return node
+def build_ticket(f: Flow, *, sandbox: str | None = "sb-t9", **kw) -> Ticket:
+    t = Ticket(id="T9", type="agent:implementer", parent="delivery", goal="a task",
+               status=Status.WORKING, sandbox=sandbox, **kw)
+    f.ce.st.tickets[t.id] = t
+    return t
 
 
 def events(f: Flow) -> list[str]:
@@ -55,29 +48,33 @@ def scripts(cmds) -> list[list[str]]:
 
 # ---------------------------------------------------------------------------- holds
 @scenario()
-async def test_a_kept_session_is_held_until_its_gate_passes(f: Flow):
-    intake = next(n for n in f.ce.nodes.values() if n.kind == INTAKE)
-    assert intake.sandbox and sb(f).holds(intake)
-    assert intake.sandbox in sb(f).held()
-    f.ce.nodes[H_REQUIREMENTS].status = ACCEPTED
-    assert not sb(f).holds(intake)
+async def test_a_tickets_own_work_holds_its_sandbox_until_its_sign_off_closes_it(f: Flow):
+    await f.intake()
+    intake = f.ticket("intake")
+    assert intake.status == "checking"                 # H-1 may send it back: still held
+    assert intake.sandbox and sb(f).holds(intake) and intake.sandbox in sb(f).held()
+    await f.signoff("H-1")
+    assert intake.status == "passed" and not sb(f).holds(intake)
 
 
 @scenario()
-async def test_the_implementer_holds_its_sandbox_until_its_node_is_accepted(f: Flow):
-    node = build_node(f)
-    assert sb(f).holds(node)
-    node.status = ACCEPTED
-    assert not sb(f).holds(node)
+async def test_the_implementer_holds_its_sandbox_until_its_ticket_is_closed(f: Flow):
+    t = build_ticket(f)
+    assert sb(f).holds(t)
+    for status in (Status.CHECKING, Status.PENDING, Status.MERGING, Status.WAITING):
+        t.status = status                               # a rework may follow: still held
+        assert sb(f).holds(t)
+    t.status = Status.PASSED
+    assert not sb(f).holds(t)
 
 
 @scenario()
 async def test_nothing_is_held_without_a_sandbox_or_once_the_change_ended(f: Flow):
-    node = build_node(f, sandbox=None)
-    assert not sb(f).holds(node)
-    node.sandbox = "sb-t9"
+    t = build_ticket(f, sandbox=None)
+    assert not sb(f).holds(t)
+    t.sandbox = "sb-t9"
     f.ce.change.status = ChangeStatus.ABANDONED
-    assert not sb(f).holds(node)
+    assert not sb(f).holds(t)
     assert sb(f).held() == set()
 
 
@@ -100,7 +97,7 @@ async def test_a_pushing_role_works_on_its_branch_from_its_base_or_hub_tip(f: Fl
     run = make_run(f, "implementer", branch="legion/t9")
     assert scripts(await sb(f).checkout(run, fresh=False)) == \
         [["branch.sh", "legion/t9", SHA]]
-    tip = f.ce.change.integration_head
+    tip = (await f.ce.git.git("rev-parse", f"refs/heads/legion/{f.ce.cid}/integration")).strip()
     await f.ce.git.git("update-ref", "refs/heads/legion/t9", tip)
     assert scripts(await sb(f).checkout(run, fresh=False)) == \
         [["branch.sh", "legion/t9", tip]]
@@ -137,8 +134,9 @@ async def prepare(f: Flow, run: Run, fresh: bool = True):
     payload = f.ce.run_dir(run.id) / "payload"
     payload.mkdir(parents=True, exist_ok=True)
     (f.ce.run_dir(run.id) / "policy.yaml").write_text("{}\n")
-    from legion_orch.workflow.engine.steps import sandbox_plan
-    work = Work(AgentSession(sb(f), run, sandbox_plan(run.role), fresh, stage),
+    t = f.ce.ticket(run.ticket) or build_ticket(f)
+    plan = plan_for(t, f.ce.assets.roles[run.role].git)
+    work = Work(AgentSession(sb(f), run, plan, fresh, stage),
                 await sb(f).checkout(run, fresh),
                 log=lambda cmd, r: f.ce._agents._log(run, cmd, r))
     return await work.execute()
@@ -159,7 +157,7 @@ async def test_a_failed_setup_is_logged_and_the_preparation_goes_on(f: Flow):
     f.ce.change.setup_pin = SetupPin(blob="c" * 40, source="base")
     f.runner.commands["c" * 40] = (1, "mise: no such task\n")
     run = make_run(f, "implementer", branch="legion/t9")
-    build_node(f)
+    build_ticket(f)
     outcome = await prepare(f, run)
     assert outcome.stopped is None and outcome.error is None
     text = (f.ce.run_dir(run.id) / "agent.log").read_text()
@@ -169,21 +167,21 @@ async def test_a_failed_setup_is_logged_and_the_preparation_goes_on(f: Flow):
 
 # ---------------------------------------------------------------------------- creation
 @scenario()
-async def test_a_name_clash_takes_a_new_name_and_moves_the_node_with_it(f: Flow):
-    node, run = build_node(f), make_run(f, "implementer")
+async def test_a_name_clash_takes_a_new_name_and_moves_the_ticket_with_it(f: Flow):
+    t, run = build_ticket(f), make_run(f, "implementer")
     f.runner.clash = 1
     payload, policy = f.tmp / "payload", f.tmp / "policy.yaml"
     payload.mkdir()
     policy.write_text("{}\n")
     name = await sb(f).create(run, payload, policy, push=True)
     assert name == run.sandbox != "sb-t9"
-    assert node.sandbox == run.sandbox
+    assert t.sandbox == run.sandbox
     assert f.runner.specs[name].push and f.runner.specs[name].role == "implementer"
 
 
 @scenario()
 async def test_creation_gives_up_after_its_attempts_and_other_errors_raise_at_once(f: Flow):
-    build_node(f)
+    build_ticket(f)
     payload, policy = f.tmp / "payload", f.tmp / "policy.yaml"
     payload.mkdir()
     policy.write_text("{}\n")
@@ -199,28 +197,30 @@ async def test_creation_gives_up_after_its_attempts_and_other_errors_raise_at_on
 # ---------------------------------------------------------------------------- pausing
 @scenario()
 async def test_a_held_idle_sandbox_is_stopped_once(f: Flow):
-    node, run = build_node(f), make_run(f, "implementer", status=R_REPORTED)
+    build_ticket(f)
+    run = make_run(f, "implementer", status=R_REPORTED)
     await sb(f).pause(run)
     await sb(f).pause(run)
-    assert f.runner.stopped == ["sb-t9"] and node.sandbox_stopped
+    assert f.runner.stopped == ["sb-t9"] and sb(f).stopped("sb-t9")
 
 
 @scenario()
 async def test_a_sandbox_is_not_stopped_while_in_use_or_not_held(f: Flow):
-    node = build_node(f)
+    t = build_ticket(f)
     live = make_run(f, "implementer")                      # still starting
     await sb(f).pause(live)
-    live.status, node.status = R_REPORTED, ACCEPTED       # done, but no longer held
+    live.status, t.status = R_REPORTED, Status.PASSED     # done, but no longer held
     await sb(f).pause(live)
-    assert f.runner.stopped == [] and not node.sandbox_stopped
+    assert f.runner.stopped == [] and not sb(f).stopped("sb-t9")
 
 
 @scenario()
 async def test_a_sandbox_that_cannot_stop_stays_running(f: Flow):
-    node, run = build_node(f), make_run(f, "implementer", status=R_REPORTED)
+    build_ticket(f)
+    run = make_run(f, "implementer", status=R_REPORTED)
     f.runner.fail_stop = True
     await sb(f).pause(run)
-    assert not node.sandbox_stopped
+    assert not sb(f).stopped("sb-t9")
     assert any("could not stop sb-t9" in e for e in events(f))
 
 
@@ -305,17 +305,16 @@ async def test_a_refused_delete_is_reported_and_not_recorded(f: Flow):
 
 # ---------------------------------------------------------------------------- suspending
 @scenario()
-async def test_an_escalated_steps_sandbox_is_stopped_once_nothing_live_uses_it(f: Flow):
-    from legion_orch.workflow.model import R_ACTIVE, RUNNING, Resume
-    node = build_node(f, sandbox=None, status=RUNNING)
-    run = make_run(f, "integration", sandbox="sb-x", status=R_ACTIVE)
-    node.runs.append(run.id)
-    f.ce._runner.of(node).escalate("x", "why", Resume.READY)     # its reservation goes back
-    f.ce.save()
+async def test_a_sandbox_to_suspend_is_stopped_once_nothing_live_uses_it(f: Flow):
+    run = make_run(f, "reviewer", ticket="review:T9", sandbox="sb-x", status=R_ACTIVE)
+    async with f.ce.lock:
+        sb(f).suspend_when_idle({"sb-x"})                   # a judge's, kept for questions
+        f.ce.save()
     await f.settle()
     assert f.runner.stopped == []                            # its run is still live
     run.status = R_REPORTED
-    f.ce.save()
+    async with f.ce.lock:
+        f.ce.save()
     await f.settle()
     assert f.runner.stopped == ["sb-x"] and run.sandbox_stopped
     assert sb(f).stopped("sb-x")
