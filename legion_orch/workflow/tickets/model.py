@@ -19,6 +19,7 @@ class Status(StrEnum):
     WORKING = "working"        # its own work is under way (an agent's run, a controller action)
     SUBTASKS = "subtasks"      # its subtask groups are running
     CHECKING = "checking"      # its criteria are running, in order
+    MERGING = "merging"        # passed its criteria; its commit is being merged into the parent's
     WAITING = "waiting"        # on a human: an escalation (``waiting`` says why)
     PASSED = "passed"          # done: closed – nothing is ever added under it
     REJECTED = "rejected"      # a criterion whose verdict was fail
@@ -26,7 +27,7 @@ class Status(StrEnum):
     CANCELLED = "cancelled"    # an accepted replan no longer needs it
 
 
-ACTIVE = {Status.WORKING}                       # what a replan waits for
+ACTIVE = {Status.WORKING, Status.MERGING}       # what a replan waits for
 SETTLED = {Status.PASSED, Status.CANCELLED}     # a subtask group is complete when all are
 
 
@@ -82,10 +83,12 @@ class Ticket(BaseModel):
     # state
     status: Status = Status.PENDING
     attempt: int = 0                       # rounds of its own work so far (0: not started)
-    sha: str | None = None                 # the commit its accepted report attests (merged on pass)
+    sha: str | None = None                 # its commit: the accepted report's; a grouping ticket's
+                                           # branch head once a child merged (merged on pass)
     findings: list[str] = []               # (a ticket) the failed criterion's findings, for its rework
     waiting: Waiting | None = None
     waived: bool = False                   # (criteria) passed by a human's waiver
+    merging: bool = False                  # its merge is owed (merging, or waiting after a merge error)
 
     @property
     def has_work(self) -> bool:

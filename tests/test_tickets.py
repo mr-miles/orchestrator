@@ -57,12 +57,30 @@ def test_groups_run_in_order_and_a_groups_tickets_in_parallel():
     t = build()
     assert started(t.start()) == ["T1", "T2"]
     assert t.work_done("T2", "b" * 40) == [Merge("T2", "b" * 40, "delivery")]
+    assert t.t["T2"].status == Status.MERGING and t.merged("T2", "c" * 40) == []
     assert started(t.work_done("T1", "a" * 40)) == ["rev:T1"]     # T1's criterion; T3 waits
-    eff = t.verdict("rev:T1", True)
-    assert Merge("T1", "a" * 40, "delivery") in eff and started(eff) == ["T3"]
-    eff = t.work_done("T3")
-    assert started(eff) == ["H-3"] and t.t["delivery"].status == Status.PASSED
+    assert t.verdict("rev:T1", True) == [Merge("T1", "a" * 40, "delivery")]
+    assert started(t.merged("T1", "d" * 40)) == ["T3"]
+    assert t.t["delivery"].sha == "d" * 40                          # its branch head
+    eff = t.work_done("T3")                                         # no commit: nothing to merge
+    assert eff == [Merge("delivery", "d" * 40, "change")]           # delivery's branch, into the root's
+    assert started(t.merged("delivery", "e" * 40)) == ["H-3"]
+    assert t.t["delivery"].status == Status.PASSED and t.t["change"].sha == "e" * 40
     assert t.verdict("H-3", True) == [Ended(Status.PASSED)]
+
+
+def test_a_merge_conflict_is_a_rework_and_a_merge_error_is_retried_without_an_attempt():
+    t = build()
+    t.start()
+    t.work_done("T2", "b" * 40)
+    t.system_error("T2")                                            # the merge's backoff ran out
+    assert t.t["T2"].waiting == Waiting.SYSTEM and t.t["T2"].attempt == 1
+    assert t.decide("T2", Remedy.RETRY) == [Merge("T2", "b" * 40, "delivery")]
+    eff = t.merge_conflict("T2", ["G-A2: rebase onto c"])
+    assert eff == [StartWork("T2", 2, ("G-A2: rebase onto c",))]
+    assert not t.t["T2"].merging
+    with pytest.raises(TicketError):
+        t.merged("T2", "c" * 40)                                    # working again, not merging
 
 
 def test_criteria_run_in_order_and_stop_at_the_first_failure():
@@ -154,6 +172,7 @@ def test_a_failed_integration_is_replaced_by_fixes_and_a_new_integration():
                  crit("ok", "integration", Severity.ESCALATE, type="controller:verify")])
     t.start()
     t.work_done("T1", "a" * 40)
+    t.merged("T1", "b" * 40)
     t.work_done("integration")
     assert t.verdict("ok", False, ["152 failed"]) == [Escalate("integration", Waiting.ESCALATED)]
     t.decide("integration", Remedy.REPLAN)
@@ -165,7 +184,8 @@ def test_a_failed_integration_is_replaced_by_fixes_and_a_new_integration():
         Add(T("T4", type="agent:implementer"), "delivery", 1),
         Add(T("integration.2", type="agent:integration"), "delivery", 2)]))
     assert started(eff) == ["T4"]
-    assert started(t.work_done("T4", "c" * 40)) == ["integration.2"]
+    t.work_done("T4", "c" * 40)
+    assert started(t.merged("T4", "d" * 40)) == ["integration.2"]
     assert t.t["integration"].status == Status.FAILED
 
 
@@ -245,8 +265,11 @@ def check(t: Tickets) -> None:
             assert not seen_open or s == Status.PENDING, (x.id, cid)
             if s != Status.PASSED:
                 seen_open = True
-        if x.status == Status.PASSED:
+        if x.status in (Status.PASSED, Status.MERGING):
             assert all(t.t[c].status == Status.PASSED for c in x.criteria)
+        assert not x.merging or x.status in (Status.MERGING, Status.WAITING), x
+        if x.status == Status.MERGING:
+            assert x.sha and x.role == "subtask", x
         for cid in [m for g in x.subtasks for m in g] + x.criteria:
             assert t.t[cid].status != Status.FAILED            # failed: out of the lists
 
@@ -258,13 +281,21 @@ def test_any_tree_through_any_events_keeps_the_invariants(tree, data):
     t.start()
     check(t)
     for _ in range(60):
-        working = [x for x in t.t.values() if x.status == Status.WORKING]
+        working = [x for x in t.t.values() if x.status in (Status.WORKING, Status.MERGING)]
         waiting = [x for x in t.t.values() if x.status == Status.WAITING]
         if not working and not waiting:
             break
         if working:
             x = data.draw(st.sampled_from(working))
-            if x.role == "criterion":
+            if x.status == Status.MERGING:
+                kind = data.draw(st.sampled_from(["merged", "merged", "conflict", "system"]))
+                if kind == "merged":
+                    t.merged(x.id, "m" * 40)
+                elif kind == "conflict":
+                    t.merge_conflict(x.id, ["c"])
+                else:
+                    t.system_error(x.id)
+            elif x.role == "criterion":
                 t.verdict(x.id, data.draw(st.booleans()), [data.draw(st.sampled_from("ab"))])
             else:
                 kind = data.draw(st.sampled_from(["done", "done", "failed", "system"]))

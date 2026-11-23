@@ -16,7 +16,9 @@ The rules (the numbered ones are ~/plans/tickets.md's corner-case rules):
 * reaching the attempt limit makes a ticket wait – it becomes failed (immutable, removed from its
   parent's lists) only when a human chooses a replan;
 * system errors and an exceeded budget make a ticket wait; neither is an attempt (R14);
-* a passed ticket is closed; one with a commit is merged into its parent (R5, R8);
+* a ticket with a commit that passes its criteria is merged into its parent's branch first
+  (``merging``): merged, it passes and the parent's commit is the new head; a conflict is a failed
+  "can merge" – rework (R8); a passed ticket is closed (R5);
 * a replan applies only while no ticket is working; it adds tickets only after a ticket's
   completed groups (and never under a closed ticket), cancels tickets not yet started, updates
   tickets not yet started, and fails work that extra tickets cannot resolve.
@@ -158,9 +160,32 @@ class Tickets:
         self._again(x, list(findings))
         return self._take()
 
+    def merged(self, tid: str, head: str) -> list[Effect]:
+        """The ticket's commit is merged into its parent's branch, whose head is now ``head``."""
+        x = self._merging(tid)
+        x.merging = False
+        self.t[x.parent].sha = head
+        self._passed(x)
+        return self._take()
+
+    def merge_conflict(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
+        """The commit no longer merges cleanly (a sibling merged first): a failed "can merge" –
+        rework onto the new head (R8); a grouping ticket, with no work of its own, escalates."""
+        x = self._merging(tid)
+        x.merging = False
+        if x.has_work:
+            self._again(x, list(findings))
+        else:
+            x.findings = list(findings)
+            self._wait(x, Waiting.ESCALATED)
+        return self._take()
+
     def system_error(self, tid: str) -> list[Effect]:
-        """A system error outlasted its backoff: wait for a human (never an attempt)."""
-        self._wait(self._working(tid), Waiting.SYSTEM)
+        """A system error (the work's or the merge's) outlasted its backoff: wait for a human
+        (never an attempt)."""
+        x = self.t.get(tid)
+        self._wait(x if x is not None and x.status == Status.MERGING else self._working(tid),
+                   Waiting.SYSTEM)
         return self._take()
 
     def budget_exceeded(self, tid: str) -> list[Effect]:
@@ -182,7 +207,10 @@ class Tickets:
             return self._take()
         if x.status != Status.WAITING or remedy not in REMEDIES[x.waiting]:
             raise TicketError(f"{remedy} is not a remedy for {tid} ({x.status}, {x.waiting})")
-        if remedy == Remedy.RETRY:                  # the same ticket, another round
+        if remedy == Remedy.RETRY and x.merging:    # the merge again
+            x.waiting, x.status = None, Status.MERGING
+            self._effects.append(Merge(x.id, x.sha, x.parent))
+        elif remedy == Remedy.RETRY:                # the same ticket, another round
             x.waiting = None
             x.status = Status.WORKING
             self._effects.append(StartWork(x.id, x.attempt, tuple(x.findings)))
@@ -235,6 +263,7 @@ class Tickets:
         for x in self.t.values():
             if x.status == Status.WORKING:
                 self._effects.append(StopWork(x.id))
+            x.merging = False
             if x.status not in (Status.PASSED, Status.FAILED, Status.CANCELLED):
                 x.status, x.waiting = Status.CANCELLED, None
         self._effects.append(Ended(Status.CANCELLED))
@@ -244,6 +273,12 @@ class Tickets:
     def _take(self) -> list[Effect]:
         out, self._effects = self._effects, []
         return out
+
+    def _merging(self, tid: str) -> Ticket:
+        x = self.t.get(tid)
+        if x is None or x.status != Status.MERGING:
+            raise TicketError(f"{tid} is not merging")
+        return x
 
     def _working(self, tid: str, criterion: bool | None = None) -> Ticket:
         x = self.t.get(tid)
@@ -320,13 +355,19 @@ class Tickets:
         self._effects.append(Escalate(x.id, why))
 
     def _pass(self, x: Ticket) -> None:
+        """Its criteria passed: a subtask with a commit merges first; anything else passes."""
+        if x.sha and x.role == "subtask":
+            x.status, x.merging = Status.MERGING, True
+            self._effects.append(Merge(x.id, x.sha, x.parent))
+        else:
+            self._passed(x)
+
+    def _passed(self, x: Ticket) -> None:
         x.status = Status.PASSED
         if x.parent is None:
             self._effects.append(Ended(Status.PASSED))
             return
         parent = self.t[x.parent]
-        if x.sha and x.role == "subtask":
-            self._effects.append(Merge(x.id, x.sha, parent.id))
         if parent.status == Status.SUBTASKS:
             self._subtasks(parent)
 

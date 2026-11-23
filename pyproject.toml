@@ -127,3 +127,9 @@ name = "The workflow core is pure: no engine"
 type = "forbidden"
 source_modules = ["legion_orch.workflow.flow"]
 forbidden_modules = ["legion_orch.workflow.engine"]
+
+[[tool.importlinter.contracts]]
+name = "The tickets know no engine: its services fill the executors' ports"
+type = "forbidden"
+source_modules = ["legion_orch.workflow.tickets"]
+forbidden_modules = ["legion_orch.workflow.engine"]
