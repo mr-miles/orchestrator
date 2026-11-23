@@ -78,6 +78,10 @@ class Agents:
                                 detail=outcome.error or "the run never started")
             end = await self.agents.conclude(run)
             run.concluded = True
+            # its kept sandbox is stopped until the ticket's next round (or released, once the
+            # ticket is closed); a judge's is stopped for questions until its next round
+            c.spawn(self.agents.sandboxes.pause(run) if plan.keeps
+                    else self._suspend(run.sandbox))
             if end is None:
                 end = AgentEnd(False, failure=FailureSource.SYSTEM,
                                detail="the agent's turns ended without an outcome")
@@ -85,6 +89,11 @@ class Agents:
                 self.lifecycle.accept_runs(ticket)
             c.save()
             return end
+
+    async def _suspend(self, sandbox: str | None) -> None:
+        if sandbox:
+            async with self.c.lock:
+                self.agents.sandboxes.suspend_when_idle({sandbox})
 
     async def stop(self, ticket: str) -> None:
         async with self.c.lock:

@@ -216,6 +216,13 @@ class TicketFlow:
         self.lifecycle.release_sandboxes()
         self.c.save()
 
+    def housekeeping(self) -> None:
+        """On every save of the change (the lock is held): kept sandboxes of closed tickets go,
+        sandboxes waiting to be stopped are stopped once nothing live uses them."""
+        if self.c.st.tickets:
+            self.lifecycle.release_sandboxes()
+        self.lifecycle.sandboxes.suspend_due()
+
     async def _pr_text(self, work) -> str:
         """The merge message of a publication without a remote: the approved description."""
         ref = self.c.tickets.root.pointers.get("pr")

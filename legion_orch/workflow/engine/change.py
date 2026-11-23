@@ -294,6 +294,9 @@ class ChangeEngine(ChangeCore):
         return self._lifecycle.stored_log(run_id)
 
     # ------------------------------------------------------------------ the workflow
+    def before_save(self) -> None:
+        self._flow.housekeeping()
+
     @property
     def workflow(self) -> TicketFlow:
         """The change's workflow: its tickets and their runner (read by the API)."""
