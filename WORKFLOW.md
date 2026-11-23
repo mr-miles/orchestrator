@@ -465,7 +465,7 @@ once.
 | ID | Rule |
 | --- | --- |
 | G-I1 | `intake/requirements.md` contains at least one requirement id `REQ-<n>`; ids are unique. |
-| G-I2 | `intake/risk.json` has all 12 signals, integer score 0–3, non-empty rationale each. |
+| G-I2 | `intake/risk.json` has all 12 signals, each once, integer score 0–3, a rationale that is not blank (the shape is the [`risk`](assets/schemas/risk.json) schema's, enforced on write). |
 | G-I3 | If `intake/questions.md` is attested, every question is either answered in it or reported as `BLOCKED` (questions go to the human; nothing is guessed). |
 | H-1 | Human accepts requirements (approver ∈ `decision_owners`). The approval pins `requirements.md` and `risk.json` versions and the computed tier. Revise → intake re-runs with the feedback attested. |
 
@@ -481,11 +481,11 @@ once.
 | G-P3 | Traceability: every accepted `REQ-*` is covered by ≥1 task; every task cites ≥1 existing `REQ-*`. |
 | G-P4 | Every task has ≥1 `verification` command and ≥1 `acceptance` criterion. |
 | G-P5 | Every task's `soul` is an implementer soul. |
-| G-P6 | `files_modified` non-empty, relative, no `..`; tasks with no dependency path between them have disjoint `files_modified` (parallel safety). |
+| G-P6 | Tasks with no dependency path between them have disjoint `files_modified` (parallel safety); that the paths are non-empty, relative and without `..` is the schema's (G-P1). |
 | G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`). |
 | G-P8 | R2+: `oracle.json` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
 | G-P9 | A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run. |
-| G-P10 | R2+: `oracle.json` declares ≥1 verification surface: unique id, ≥1 command, ≥1 pinned repository path. |
+| G-P10 | R2+: `oracle.json` declares ≥1 verification surface, with unique ids and commands that are not blank (each surface's id, commands and pinned paths are the schema's, G-P1). |
 | G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
 | G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. Unlinked criteria are allowed; the gate screens warn about them (§2.3). |
 | G-P13 | R2+: a command in `acceptance_commands` or `integration_commands` that only installs dependencies (`bun install …`, `npm ci`, `uv sync`, `pip install …`, …) belongs in `mise.toml`'s `setup` task (§5.3c): the verifier runs the setup, then acceptance, then integration – so an install placed later runs after the commands that need it. |

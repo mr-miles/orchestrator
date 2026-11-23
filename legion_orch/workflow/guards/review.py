@@ -10,13 +10,12 @@ from ..report_data import CritiqueData, ReviewData
 
 
 def findings(found: list[Finding], atts_ok: set[str], gid: str = "G-RV2") -> list[str]:
-    """Every finding has a title, a fix and evidence that is also attested by the report."""
+    """Every finding has a title, a fix and evidence (at least one: the report schema's) that is
+    also attested by the report."""
     v = []
     for i, f in enumerate(found):
         if not f.title.strip() or not f.fix.strip():
             v.append(f"{gid}: finding {i} needs title and fix")
-        if not f.attestations:
-            v.append(f"{gid}: finding {i} needs at least one attestation")
         for r in f.attestations:
             if r not in atts_ok:
                 v.append(f"{gid}: finding {i} attestation {r} must also be listed (and resolve) "

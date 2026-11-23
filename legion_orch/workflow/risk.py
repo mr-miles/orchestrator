@@ -36,24 +36,14 @@ def rank(tier: str) -> int:
 
 
 def validate_signals(data: dict) -> list[str]:
-    """Guard G-I2."""
-    errs: list[str] = []
-    sigs = data.get("signals") if isinstance(data, dict) else None
-    if not isinstance(sigs, list):
-        return ["G-I2: risk.json must contain a 'signals' list"]
-    seen = {}
-    for s in sigs:
-        if not isinstance(s, dict) or s.get("name") not in SIGNALS:
-            errs.append(f"G-I2: unknown or malformed signal {s!r:.80}")
-            continue
-        score = s.get("score")
-        if not isinstance(score, int) or isinstance(score, bool) or not 0 <= score <= 3:
-            errs.append(f"G-I2: signal {s['name']} score must be an integer 0..3")
-        if not str(s.get("rationale") or "").strip():
-            errs.append(f"G-I2: signal {s['name']} needs a rationale")
-        seen[s["name"]] = s
-    missing = [n for n in SIGNALS if n not in seen]
-    if missing:
+    """Guard G-I2, beyond the risk schema's (twelve known signals scored 0–3, each with a
+    rationale): every signal once, each rationale more than blank."""
+    names = [s["name"] for s in data["signals"]]
+    errs = [f"G-I2: signal {n} appears more than once"
+            for n in sorted({n for n in names if names.count(n) > 1})]
+    errs += [f"G-I2: signal {s['name']} needs a rationale"
+             for s in data["signals"] if not s["rationale"].strip()]
+    if missing := [n for n in SIGNALS if n not in names]:
         errs.append(f"G-I2: missing signals {missing}")
     return errs
 

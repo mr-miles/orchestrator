@@ -1,4 +1,3 @@
-import importlib
 import re
 import sqlite3
 import threading
@@ -847,11 +846,8 @@ def test_plan_guard_branches():
     assert "cites unknown requirement REQ-9" in msgs(check([t("T1", ["a"], reqs=("REQ-1", "REQ-9"))]))
     blank = t("T1", ["a"]) | {"verification": ["  "]}       # schema-valid, but no real command
     assert {"G-P4"} == ids(check([blank]))
-    # path shape is the schema's (G-P1); paths_valid re-checks it in case the schema loosens
-    plan_guards = importlib.import_module("legion_orch.workflow.guards.plan")  # (shadowed by plan())
-    assert plan_guards.paths_valid([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]) == [
-        "G-P6: task T1 has empty files_modified", "G-P6: task T1 has invalid path '/etc/passwd'",
-        "G-P6: task T1 has invalid path 'a/../b'"]
+    # path shape is the schema's (G-P1), checked before any other guard
+    assert {"G-P1"} == ids(check([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]))
     crit = dict(ORACLE, criteria=[{"id": "AC-1", "requirement": "REQ-7", "text": "t"}])
     assert "must reference an accepted requirement" in msgs(check([t("T1", ["a"])], oracle=crit))
     # parallel overlap: exact/exact, pattern/exact, exact/pattern, glob/glob
