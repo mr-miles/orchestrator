@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from ... import governance, guards, risk, setup
+from ... import governance, risk, setup
 from ...environment import EnvironmentSpec
 from ...model import H_CHANGE, H_ENV, H_REQUIREMENTS, ApprovalState, TierOverride
 from ...model import Approval as ApprovalRecord
@@ -69,7 +69,6 @@ class RequirementsAccepted(Approves):
             ch.tier_override = TierOverride(from_tier=derived, to_tier=tier,
                                             reason=payload.get("reason"), approver=approver)
         ch.tier = tier
-        ch.requirements = guards.requirements_ids(c.doc("intake/requirements.md").content)
         ch.panel = risk.review_panel(tier, ch.risk.scores)
         rec = ApprovalRecord(gate=H_REQUIREMENTS, approver=approver, pins=pins, tier=tier)
         rec.attestation = c.write_record("control/approvals/requirements.json", rec).attestation   # projected

@@ -1207,11 +1207,13 @@ can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON document
 Cross-document rules (coverage, cycles, parallel overlap, resolvable attestations) stay in the
 guards, because a per-file schema cannot express them.
 
+* [`accepted`](assets/schemas/accepted.json)
 * [`approval`](assets/schemas/approval.json)
 * [`attestation`](assets/schemas/attestation.json)
 * [`change`](assets/schemas/change.json)
 * [`delta-spec`](assets/schemas/delta-spec.json)
 * [`environment`](assets/schemas/environment.json)
+* [`environment-build`](assets/schemas/environment-build.json)
 * [`evidence`](assets/schemas/evidence.json)
 * [`graph`](assets/schemas/graph.json)
 * [`json`](assets/schemas/json.json)
@@ -1219,6 +1221,7 @@ guards, because a per-file schema cannot express them.
 * [`node`](assets/schemas/node.json)
 * [`oracle`](assets/schemas/oracle.json)
 * [`override`](assets/schemas/override.json)
+* [`panel-decision`](assets/schemas/panel-decision.json)
 * [`protected-approval`](assets/schemas/protected-approval.json)
 * [`questions`](assets/schemas/questions.json)
 * [`readiness`](assets/schemas/readiness.json)

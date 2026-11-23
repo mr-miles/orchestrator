@@ -65,7 +65,8 @@ class StateStore:
     # ------------------------------------------------------------- persistence
     def _current(self) -> dict[str, dict[str, Any]]:
         out = {CHANGE: self.change.model_dump(mode="json", exclude=PROJECTED["change"])}
-        out |= {f"node:{k}": n.model_dump(mode="json") for k, n in self.nodes.items()}
+        out |= {f"node:{k}": n.model_dump(mode="json", exclude=PROJECTED["node"])
+                for k, n in self.nodes.items()}
         out |= {f"run:{k}": r.model_dump(mode="json") for k, r in self.runs.items()}
         if self.workflow is not None:
             out[WORKFLOW] = self.workflow

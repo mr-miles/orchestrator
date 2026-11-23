@@ -63,3 +63,37 @@ async def test_a_written_document_is_announced_with_its_schema(f: Flow):
     assert seen == [
         DocWritten(f.ce.cid, "control/approvals/environment.json", 1, "approval"),
         DocWritten(f.ce.cid, "control/approvals/protected-paths/1.json", 1, "protected-approval")]
+
+
+@scenario()
+async def test_every_projected_field_comes_back_from_the_documents_alone(f: Flow):
+    from legion_orch.workflow.engine.base.projections import PROJECTED
+    await f.to_build()
+    ch = f.ce.change
+    assert ch.risk and ch.requirements and ch.approvals     # set by now (R1: no oracle step)
+    for field in PROJECTED["change"]:
+        assert not _journalled(f, field), field
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    assert ctl2.changes[f.ce.cid].change.model_dump() == ch.model_dump()
+
+
+@scenario()
+async def test_a_steps_verification_and_panel_come_back_from_their_records(f: Flow):
+    await f.to_build()
+    await f.implement()
+    for role in f.ce.change.panel:
+        await f.review(role=role)
+    await f.settle()
+    node = f.ce.nodes["build:T1"]
+    assert node.verification and node.panel
+    path = f.ctl.svc.journal.path(f.ce.cid)
+    entries = [d for line in path.read_text().splitlines()
+               for r, d in json.loads(line)["entries"] if r == "node:build:T1"]
+    assert not any("verification" in d or "panel" in d for d in entries)
+    assert all(not v.results or all(r.output == "" for r in v.results)
+               for v in node.verification.values())            # the node's copy is compact
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    again = ctl2.changes[f.ce.cid].nodes["build:T1"]
+    assert again.verification == node.verification and again.panel == node.panel

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .. import guards
-from ..model import Oracle, Resume
+from ..model import Accepted, Oracle, Resume
 from ..results import Escalate, Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, register, scaffold_note
@@ -40,7 +40,8 @@ class OracleAuthor(RoleHandler):
         if not ok:
             return Escalate("merge", f"oracle merge failed: {head[:400]}", Resume.READY)
         ch.oracle_sha, ch.integration_head = r.sha, head
-        ch.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+        acc = Accepted(subject="oracle", doc="plan/oracle.json", version=e.latest("plan/oracle.json"))
+        e.write_record(acc.path, acc)            # projected: change.oracle
         node.accepted_sha = r.sha
         # merged: the branch's commit is in the integration history, the evidence ref pins it
         if r.run.branch and await e.git.delete_ref(f"refs/heads/{r.run.branch}"):

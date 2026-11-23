@@ -25,7 +25,11 @@
 - {pattern: "control/surfaces/*.json", schema: surface-pin}
 - {pattern: "control/verification/*.json", schema: verification}
 - {pattern: "tasks/*/verification.json", schema: verification}
+- {pattern: "tasks/*/panel.json", schema: panel-decision}
+- {pattern: "control/panel/*.json", schema: panel-decision}
 - {pattern: "control/ship/readiness.json", schema: readiness}
+- {pattern: "control/environment/build.json", schema: environment-build}
+- {pattern: "control/accepted/*.json", schema: accepted}
 - {pattern: "control/logs/*.log", schema: text}
 # ---- everything else
 - {pattern: "*.json", schema: json}

@@ -41,6 +41,7 @@ from ...model import (
     RETRO,
     REWORK,
     WORKSPACE,
+    Accepted,
     Node,
     NodeKind,
     NodeStatus,
@@ -180,12 +181,18 @@ class RestartPlan(Reset):
         from ..services import cleanup
         ch = c.change
         await c.git.init_integration(ch.id, ch.base_sha)
-        ch.integration_head, ch.oracle_sha, ch.oracle = ch.base_sha, None, None
+        ch.integration_head, ch.oracle_sha = ch.base_sha, None
+        if ch.oracle is not None:                  # withdrawn (projected: change.oracle)
+            c.write_record(Accepted(subject="oracle").path,
+                           Accepted(subject="oracle", revoked=True))
         ch.round, ch.rounds = 1, []
         ch.setup_pin = None if ch.blank_repo else await setup.pin_at_base(c.git, ch.base_sha)
         # a restarted task of the same name must not continue the old plan's commits
         await cleanup.delete_run_branches(c, "plan restarted")
-        ch.surface_pins = {}
+        for sid in list(ch.surface_pins):           # unpinned (projected: change.surface_pins)
+            c.write_record(f"control/surfaces/{sid}.json",
+                           {"surface": sid, "pins": {}, "head": ch.base_sha, "approver": "controller",
+                            "at": now_iso(), "revoked": True})
 
 
 class DropEnvironment(Reset):
@@ -196,7 +203,8 @@ class DropEnvironment(Reset):
             c.write_record("control/approvals/environment.json",
                            {"gate": H_ENV, "approver": "controller", "at": now_iso(),
                             "revoked": True})
-        c.change.environment = None
+        if c.change.environment is not None:
+            c.write_record("control/environment/build.json", {"revoked": True})
 
 
 # ---------------------------------------------------------------------------- step types

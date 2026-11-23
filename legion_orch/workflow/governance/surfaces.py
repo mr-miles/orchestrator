@@ -24,8 +24,7 @@ async def pin_surfaces(e: ChangeView, approver: str, surface_id: str | None, rea
     for s in chosen:
         pins = {p: await e.git.blob(head, p) for p in s.pins}
         rec = SurfacePin(surface=s.id, pins=pins, head=head, approver=approver, reason=reason)
-        rec.attestation = e.write_record(f"control/surfaces/{s.id}.json", rec).attestation
-        e.change.surface_pins[s.id] = rec
+        e.write_record(f"control/surfaces/{s.id}.json", rec)     # projected: surface_pins
     return [s.id for s in chosen]
 
 

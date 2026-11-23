@@ -289,6 +289,8 @@ class Verification(Record):
     attestation: str | None = None   # the stored verification record
     run: str | None = None           # the verification service's run (VerificationRun.id)
     cached: bool = False             # the result of an earlier run of the same key
+    node: str | None = None          # a step's record: its node, and its key there (the cycle,
+    key: str | None = None           # or – not a task – the node's kind); projected onto it
 
 
 class VerificationState(StrEnum):
@@ -333,6 +335,7 @@ class PanelDecision(Record):
     each citing its review document. What the merge checks (G-A1), with the verification."""
     sha: str
     cycle: int
+    node: str | None = None              # whose panel it is (projected onto it)
     judges: list[str] = []               # the roles that sat (none: an empty panel)
     reviews: list[str] = []              # attestations of their review documents
     at: str = Field(default_factory=now_iso)
@@ -574,6 +577,21 @@ class GateOverride(Record):
     at: str = Field(default_factory=now_iso)
     evidence: str | None = None       # waive_gate: replacement evidence
     attestation: str | None = None
+
+
+class Accepted(Record):
+    """``control/accepted/<subject>.json``: the version of an agent's document the controller
+    accepted as the change's ``subject`` – the oracle (when it merged, as H-2 approved it), the
+    risk assessment (when the intake report was accepted) – or, ``revoked``, none any more."""
+    subject: str                          # "oracle" | "risk"
+    doc: str | None = None                # the document, relative to the change
+    version: int | None = None
+    revoked: bool | None = None
+    at: str = Field(default_factory=now_iso)
+
+    @property
+    def path(self) -> str:
+        return f"control/accepted/{self.subject}.json"
 
 
 class ProtectedPathApproval(Record):

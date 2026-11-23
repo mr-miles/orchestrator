@@ -64,9 +64,8 @@ async def record_attestation(e: ChangeView, attested_by: str, payload: dict) -> 
     rec = AttestationRecord(kind=kind, verdict=verdict, attested_by=attested_by, sources=sources,
                             covers=covers, waiver_reason=reason,
                             supersedes=prev.attestation if prev else None, warnings=warnings)
-    rec.attestation = e.write_record(f"control/attestations/{kind}.json", rec).attestation
-    e.change.attestations[kind] = rec
-    return rec
+    e.write_record(f"control/attestations/{kind}.json", rec)    # projected: change.attestations
+    return e.change.attestations[kind]
 
 
 # Ship gates only a human attestation satisfies, asked for on the H-3 card (the baseline's is

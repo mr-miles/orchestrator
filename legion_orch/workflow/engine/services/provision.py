@@ -126,8 +126,7 @@ class Provisioner:
             build = EnvironmentBuild(spec=plan.spec, roles=roles,
                                      log=c.write_record("control/logs/provision.log",
                                                         "\n\n".join(log)).attestation)
-            build.attestation = c.write_record("control/environment/build.json", build).attestation
-            c.change.environment = build
+            c.write_record("control/environment/build.json", build)   # projected: change.environment
             # A kept sandbox of a role this build maps was created from an earlier build or the
             # default image: release it (after its agent reflects), so the node's next run
             # starts in this one. Other roles' sandboxes (the planner's) are untouched by builds.
