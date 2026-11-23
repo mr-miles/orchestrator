@@ -46,6 +46,8 @@ class Hooks(Protocol):
 
     async def replan(self, signoff: Ticket, ref: Any) -> Replan: ...  # the signed replan, read
 
+    def problems(self, ticket: Ticket) -> list[str]: ...        # its work for its role
+
     async def escalated(self, ticket: Ticket, reason: Waiting) -> None: ...
 
     async def ended(self, status: Status) -> None: ...
@@ -208,10 +210,15 @@ class Runner:
         if x.applies not in signed:
             raise ValueError(f"it applies {x.applies!r}, which it did not sign")
         plan = await self.hooks.replan(x, signed[x.applies])
+        problems = []
         for a in plan.add:                            # what the workflow says of their types
             for y in [a.ticket, *a.tree]:
                 self.spec.prepare(y, tier)
-        return plan, (self._policy(plan, tier, signoff=x.id) if tier else [])
+                problems += self.hooks.problems(y)
+        for tid, fields in plan.update.items():
+            if "work" in fields and tid in self.t.t:
+                problems += self.hooks.problems(self.t.t[tid].model_copy(update=fields))
+        return plan, problems or (self._policy(plan, tier, signoff=x.id) if tier else [])
 
     def _policy(self, plan: Replan, tier: str, signoff: str | None = None) -> list[str]:
         """The tier policy's violations in the tree the replan would make (a trial on a copy)."""

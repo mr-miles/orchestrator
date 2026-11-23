@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 
 from ..store import SchemaRegistry
+from .tickets.model import Ticket
 from .tickets.spec import SKILL_DESCRIPTION as WORKFLOW_SKILL_DESCRIPTION
 from .tickets.spec import SpecError, WorkflowSpec
 from .tickets.spec import render as render_workflow
@@ -43,7 +44,7 @@ TEMPLATE_VARS = {
     "sandbox_tools", "change_base_sha",
 }
 ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema",
-             "outputs"}
+             "outputs", "work_schema"}
 OUTPUT_RE = re.compile(r"^[a-z][a-z0-9-]*\*?$")
 
 
@@ -71,6 +72,7 @@ class Role:
     souls_allowed: list[str] = field(default_factory=list)
     report_schema: str = "report-none"
     outputs: list[str] = field(default_factory=list)   # names it must produce (``x*``: a list)
+    work_schema: str | None = None      # the schema of its tickets' ``work`` (None: no work data)
 
 
 SKILL_PREFIX = "legion-"
@@ -188,6 +190,16 @@ class Assets:
         self.skill_descriptions[WORKFLOW_SKILL] = WORKFLOW_SKILL_DESCRIPTION
         return spec
 
+    def work_problems(self, ticket: Ticket) -> list[str]:
+        """What is wrong with a ticket's ``work`` for its role (the role's work schema; a role
+        without one takes none)."""
+        role = self.roles.get(ticket.type.partition(":")[2]) if ticket.type.startswith("agent:") \
+            else None
+        if role is None or role.work_schema is None:
+            return [f"{ticket.id}: a {ticket.type} ticket takes no work data"] if ticket.work else []
+        return [f"{ticket.id}: {e}" for e in self.schemas.validate_data(role.work_schema,
+                                                                          ticket.work)]
+
     def role_outputs(self) -> dict[str, list[str]]:
         """Each role's output names (a list output without its ``*``)."""
         return {r.name: [o.rstrip("*") for o in r.outputs] for r in self.roles.values()}
@@ -283,7 +295,12 @@ class Assets:
                 raise AssetError(f"{WORKFLOW}: roles not in roles.yaml: {unknown}")
             if errs := self.workflow.subjects_problems(self.role_outputs()):
                 raise AssetError(f"{WORKFLOW}: " + "; ".join(errs))
-        used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
+        used_schemas = {n for _, n in self.schemas.bindings} \
+            | {r.report_schema for r in self.roles.values()} \
+            | {r.work_schema for r in self.roles.values() if r.work_schema}
+        for r in self.roles.values():
+            if r.work_schema and r.work_schema not in self.schemas.schemas:
+                raise AssetError(f"role {r.name}: unknown work_schema {r.work_schema!r}")
         for r in self.roles.values():
             if r.report_schema not in self.schemas.schemas:
                 raise AssetError(f"role {r.name}: unknown report_schema {r.report_schema!r}")

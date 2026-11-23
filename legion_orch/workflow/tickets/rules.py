@@ -109,7 +109,7 @@ class Replan:
     update: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-UPDATABLE = {"goal", "inputs", "labels", "limit", "severity", "waivable", "signs", "type"}
+UPDATABLE = {"goal", "inputs", "labels", "limit", "severity", "waivable", "signs", "type", "work"}
 
 
 REPLANNING = "replan"                         # the pause a chosen replan makes

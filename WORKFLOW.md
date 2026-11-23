@@ -1253,6 +1253,7 @@ guards, because a per-file schema cannot express them.
 * [`taskgraph`](assets/schemas/taskgraph.json)
 * [`text`](assets/schemas/text.json)
 * [`verification`](assets/schemas/verification.json)
+* [`work-implementer`](assets/schemas/work-implementer.json) – an implementer ticket's `work` (tickets)
 
 **Skills**
 

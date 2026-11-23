@@ -50,6 +50,7 @@ implementer:
   write: ["tasks/{{task_id}}/evidence/"]
   required_docs: ["tasks/{{task_id}}/evidence/cycle-{{cycle}}.md"]
   outputs: [evidence]
+  work_schema: work-implementer       # its ticket's `work` (tickets.json)
   git: commit
   report_schema: report-none
   repo: true

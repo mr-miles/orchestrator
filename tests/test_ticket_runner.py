@@ -39,10 +39,14 @@ ASSETS = Assets(Path(__file__).resolve().parent.parent / "assets")
 NOW = Backoff(tries=2, first=0, cap=0)
 
 
+WORK = {"soul": "backend-engineer", "requirements": ["REQ-1"], "files_modified": ["src/x.py"],
+        "instructions": "do it", "acceptance": ["it works"], "verification": ["pytest -q"]}
+
+
 def build(tid: str, *criteria: str, **kw) -> tuple[Ticket, list[Ticket]]:
     """A build ticket and its criteria (as the planner's tickets.json gives them)."""
     x = Ticket(id=tid, type=kw.pop("type", "agent:implementer"), goal=f"build {tid}",
-               criteria=[f"{c}:{tid}" for c in criteria], **kw)
+               criteria=[f"{c}:{tid}" for c in criteria], work=kw.pop("work", WORK), **kw)
     types = {"verify": "controller:verify", "review": "agent:reviewer",
              "can-merge": "controller:can-merge"}
     return x, [Ticket(id=f"{c}:{tid}", parent=tid, role="criterion", type=types[c])
@@ -77,6 +81,9 @@ class Hooks:
                                             a.new_group, a.criterion,
                                             [d.model_copy(deep=True) for d in a.tree])
                                         for a in self.plan.add])
+
+    def problems(self, ticket):
+        return ASSETS.work_problems(ticket)
 
     async def escalated(self, ticket, reason):
         self.escalations.append((ticket.id, reason))
@@ -315,7 +322,7 @@ async def test_a_signoff_that_applies_a_plan_waits_for_the_others_to_drain(tmp_p
                    signs=["tickets"], applies="tickets"),
             Ticket(id="side", parent="c", type="agent:researcher"),
             Ticket(id="delivery", parent="c")]
-    ch = Change(tmp_path, Replan(add=[Add(Ticket(id="T1", type="agent:implementer"),
+    ch = Change(tmp_path, Replan(add=[Add(Ticket(id="T1", type="agent:implementer", work=WORK),
                                           "delivery", 0)]), tier=None)
     r = await ch.runner(tree)
     side = ch.script.gates["side"] = asyncio.Event()
@@ -409,3 +416,21 @@ def test_check_refuses_signoffs_nobody_can_satisfy(tmp_path):
         (d / "workflow.yaml").write_text(yaml.safe_dump(data))
         with pytest.raises(AssetError, match=says):
             Assets(d)
+
+
+async def test_a_plan_whose_work_does_not_fit_its_role_fails_its_signoff(tmp_path):
+    bad = dict(WORK, files_modified=[])                    # the schema wants at least one
+    ch = Change(tmp_path, planned(build("T1", "verify", "review", "can-merge", work=bad)))
+    r = await ch.runner()
+    seen = []
+
+    def planner(work):
+        seen.append(work.findings)
+        if len(seen) == 2:
+            ch.hooks.plan = planned(build("T1", "verify", "review", "can-merge"))
+        return Done(outputs=ch.script.outputs(work))
+    ch.script.outcomes["design"] = planner
+    await r.start()
+    await r.settle()
+    assert any("T1:" in f and "files_modified" in f for f in seen[1])
+    assert ch.hooks.endings == [Status.PASSED] and r.t.t["T1"].work == WORK

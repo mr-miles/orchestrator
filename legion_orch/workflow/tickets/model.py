@@ -7,7 +7,7 @@ is :mod:`.rules`'s business."""
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -74,7 +74,9 @@ class Ticket(BaseModel):
     goal: str = ""
     role: Literal["root", "subtask", "criterion"] = "subtask"
     labels: list[str] = []                 # risk labels; effective = own ∪ the parent's (add-only)
-    inputs: list[str] = []                 # what it is given (attestations)
+    inputs: list[str] = []                 # the pointers it consumes (approved outputs, by name)
+    work: dict[str, Any] = {}              # its role's contract (the role's work schema): an
+                                           # implementer's instructions, files, verification …
     subtasks: list[list[str]] = []         # groups of child ids: in order, a group's in parallel
     criteria: list[str] = []               # child ids, run in order after the work and subtasks
     severity: Severity = Severity.REWORK   # (criteria) what a failure does to the parent
