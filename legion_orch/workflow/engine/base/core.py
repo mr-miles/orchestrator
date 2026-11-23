@@ -21,6 +21,7 @@ from ...attention import AttentionItem
 from ...model import (
     ACCEPTED,
     BUILD,
+    ESCALATED,
     Change,
     Node,
     Oracle,
@@ -64,6 +65,7 @@ class ChangeCore:
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
         self._cards: set[str] = set()                  # A2A card ids as of the last save
+        self._escalated: list[str] = []                # nodes escalated since the last save
         self._saved = asyncio.Event()                  # set (and replaced) on every save
 
     # ------------------------------------------------------------------ state
@@ -115,6 +117,10 @@ class ChangeCore:
         self._update_attention()
         self._update_cards()
         self.st.save()
+        escalated, self._escalated = self._escalated, []
+        tell = getattr(self.host, "escalated", None)       # (unit tests: a bare host)
+        for nid in escalated if tell else ():
+            tell(self.cid, nid)                    # the resolver is asked (server/a2a.py)
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.notify()
         self.host.changed()
@@ -149,6 +155,8 @@ class ChangeCore:
         for nid, n in self.nodes.items():
             if self._statuses.get(nid) != n.status:
                 n.status_since = now
+                if n.status == ESCALATED and n.escalation is not None:
+                    self._escalated.append(nid)
         self._statuses = {nid: n.status for nid, n in self.nodes.items()}
 
     def _update_attention(self) -> None:
@@ -157,6 +165,11 @@ class ChangeCore:
             item = cur[key]
             self.event("attention", f"raised: {item.title}", item.node)
             self.host.attention(item, raised=True)
+        for key in cur.keys() & self._attention.keys():   # the same item, enriched
+            item = cur[key]
+            if item.proposal and item.proposal != self._attention[key].proposal:
+                self.event("attention", f"proposal for {item.title}: {item.proposal}", item.node)
+                self.host.attention(item, raised=True)     # notified again, with it
         for key in self._attention.keys() - cur.keys():
             item = self._attention[key]
             waited = _waited(item.since)

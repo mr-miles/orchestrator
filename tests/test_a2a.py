@@ -79,13 +79,14 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
     intake = f.run("intake")
     async with client(f) as c:
         reg = (await c.get("/a2a/cards", headers=token(f, intake))).json()
-        assert reg["you"] == "intake@intake" and [x["id"] for x in reg["cards"]] == ["orchestrator"]
+        assert reg["you"] == "intake@intake"
+        assert [x["id"] for x in reg["cards"]] == ["orchestrator", "resolver"]
         planner, critic = await to_critique(f)
         assert intake.sandbox in f.runner.deleted                 # H-1 accepted: intake gone
         ids = [x["id"] for x in (await c.get("/a2a/cards", headers=token(f, critic))).json()["cards"]]
-        assert ids == ["orchestrator", "planner@plan"]            # not its own card
+        assert ids == ["orchestrator", "resolver", "planner@plan"]    # not its own card
         cards = {x.id: x for x in f.ce.a2a_cards()}
-        assert set(cards) == {"orchestrator", "planner@plan", "critic@plan"}
+        assert set(cards) == {"orchestrator", "resolver", "planner@plan", "critic@plan"}
         assert cards["planner@plan"].stopped and not cards["critic@plan"].stopped   # still shown
         events = [e for e in f.ce.timeline().splitlines() if '"a2a"' in e]
         assert any("card registered: intake@intake" in e for e in events)
@@ -110,7 +111,8 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         await f.settle()
         theirs = next(r for r in other.runs.values() if r.role == "intake")
         mine = (await c.get("/a2a/cards", headers=token(f, theirs, change=other.cid))).json()
-        assert mine["change"] == other.cid and [x["id"] for x in mine["cards"]] == ["orchestrator"]
+        assert mine["change"] == other.cid
+        assert [x["id"] for x in mine["cards"]] == ["orchestrator", "resolver"]
         assert (await c.get("/a2a/planner@plan",
                             headers=token(f, theirs, change=other.cid))).status_code == 404
         own = await c.get("/a2a/orchestrator", headers=token(f, theirs, change=other.cid))
@@ -121,9 +123,10 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         assert cat["specVersion"] == "1.0"
         assert [(e["identifier"], e["type"]) for e in cat["entries"]] == [
             ("urn:air:legion:agent:orchestrator", "application/a2a-agent-card+json"),
+            ("urn:air:legion:agent:resolver", "application/a2a-agent-card+json"),
             ("urn:air:legion:agent:planner@plan", "application/a2a-agent-card+json")]
-        assert cat["entries"][1]["url"].endswith("/a2a/planner@plan")
-        assert "stopped" in cat["entries"][1]["tags"]
+        assert cat["entries"][2]["url"].endswith("/a2a/planner@plan")
+        assert "stopped" in cat["entries"][2]["tags"]
         env = next(e for e in f.runner.run_envs if "LEGION_ROLE=critic" in e)
         assert "LEGION_A2A_CATALOG=http://host.openshell.internal:8769/a2a/ai-catalog.json" \
             in env.replace("'", "")
@@ -133,6 +136,7 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         res = await rpc(c, "orchestrator", send("/list_cards", wait=True), token(f, critic))
         listed = res["task"]["artifacts"][0]["parts"][0]["data"]["cards"]
         assert [(x["id"], x["state"]) for x in listed] == [("orchestrator", "orchestrator"),
+                                                           ("resolver", "absent"),
                                                            ("planner@plan", "idle")]
 
 

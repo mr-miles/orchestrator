@@ -47,6 +47,7 @@ class AttentionItem(BaseModel):
     reason: str = ""          # escalation reason (truncated)
     since: str = ""           # when it started (ISO); "" when an older store did not record it
     blocking: bool
+    proposal: str = ""        # an escalation: the resolver's proposal, in one line
 
     @property
     def key(self) -> str:
@@ -81,9 +82,12 @@ def items(e: ChangeView) -> list[AttentionItem]:
                                      blocking=True))
         elif n.status == ESCALATED and n.escalation:
             esc = n.escalation
+            prop = esc.proposal
             out.append(AttentionItem(change=ch.id, goal=goal, node=n.id, kind=ESCALATION,
                                      detail=esc.kind, title=f"{n.title}: {esc.kind}",
-                                     reason=_clip(esc.reason), since=esc.at, blocking=True))
+                                     reason=_clip(esc.reason), since=esc.at, blocking=True,
+                                     proposal=_clip(f"{prop.action}: {prop.rationale}", 200)
+                                     if prop else ""))
     for q in ch.questions.values():
         if q.open:
             out.append(AttentionItem(change=ch.id, goal=goal, node=q.node, kind=QUESTION,

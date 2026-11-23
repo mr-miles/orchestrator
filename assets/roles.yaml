@@ -111,3 +111,11 @@ retrospective:
   git: none
   report_schema: report-none
   repo: true
+resolver:
+  soul: resolver
+  skills: [resolution-protocol, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, blocked-protocol]
+  write: []                      # it proposes; the controller records its proposals
+  required_docs: []
+  git: none
+  report_schema: report-none
+  repo: true

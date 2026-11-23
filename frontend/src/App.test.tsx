@@ -196,6 +196,54 @@ describe('the operator UI', () => {
     )
   })
 
+  test("the resolver's proposal on an escalation is applied as the approver", async () => {
+    localStorage.setItem('approver', 'miles')
+    calls = fakeFetch({
+      '/api/changes/c1/nodes/intake/action': { status: 'RUNNING' },
+      '/api/changes': CHANGES,
+    })
+    location.hash = '#c1/overview/intake'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    const s = stateAtH1()
+    const intake = node({
+      id: 'intake',
+      kind: 'intake',
+      title: 'Intake',
+      status: 'ESCALATED',
+      escalation: {
+        kind: 'blocked',
+        reason: 'the goal is ambiguous',
+        resume: 'READY',
+        proposal: {
+          action: 'answer',
+          payload: { answer: 'Greet in English.' },
+          rationale: "English is the repository's language",
+          attestations: [],
+          at: '2026-11-22T10:00:00.000000Z',
+        },
+      },
+    })
+    await act(async () => {
+      es.open()
+      es.emit('state', {
+        ...s,
+        nodes: [...s.nodes.filter((n) => n.id !== 'intake'), intake],
+        workflow: { ...s.workflow, actions: { intake: ['answer', 'retry', 'abandon'] } },
+      })
+    })
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByText("English is the repository's language")).toBeTruthy()
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Apply proposal' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/nodes/intake/action')?.body).toEqual({
+        action: 'answer',
+        approver: 'miles',
+        payload: { answer: 'Greet in English.' },
+      }),
+    )
+  })
+
   test('the bell shows what needs you across changes and opens it', async () => {
     renderApp()
     const es = await push()

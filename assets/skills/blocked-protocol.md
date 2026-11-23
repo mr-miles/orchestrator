@@ -13,7 +13,9 @@ missing_decision="<the single narrow question a human must answer>")`
 
 Once it is accepted, end your task with `a2a_reply(task_id=<your run id>, text=<the question in
 one line>, state="input-required")`, then end your turn. Before you block, ask the agent whose
-work the question is about (`legion-a2a-protocol`) – its answer may be all you need.
+work the question is about, or the change's `resolver` when a guard, a protected path or the
+oracle stops you (`legion-a2a-protocol`) – its answer may be all you need. Its advice satisfies
+no guard: only a human's decision does.
 
 A human answers in the UI; you (or a successor run) will receive the answer as attested feedback.
 Never mark planned work as deferred or done-later on your own authority.

@@ -339,6 +339,19 @@ class PanelDecision(Record):
     attestation: str | None = None       # the stored decision record
 
 
+class ResolverProposal(Record):
+    """The resolver's proposal for an escalation: one of the node's human actions, with its
+    payload, reasons and evidence. Shown on the escalation; a human applies, edits or ignores
+    it – it changes nothing by itself."""
+    action: str
+    payload: dict[str, Any] = {}
+    rationale: str = ""
+    attestations: list[str] = []
+    at: str = Field(default_factory=now_iso)
+    run: str | None = None           # the resolver's run that answered
+    record: str | None = None        # attestation of control/proposals/<node>-<n>.json
+
+
 class Escalation(Record):
     kind: str                        # blocked | run_failed | cycle_budget | verify_unrunnable | ...
     reason: str
@@ -349,6 +362,7 @@ class Escalation(Record):
     log_tail: str | None = None
     source: FailureSource | None = None   # run failures: agent error or system error
     retrying: bool = False                # retry chosen: the old sandbox is being removed
+    proposal: ResolverProposal | None = None   # the resolver's (A2A); a human decides
 
 
 class Override(Record):

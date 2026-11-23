@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 import weakref
 from dataclasses import dataclass, field
@@ -65,7 +66,7 @@ from starlette.routing import Route
 
 from ..identity import WorkloadBinding
 from ..util import bearer, now_iso
-from ..workflow.cards import StepCard, card_id, card_url, identifier
+from ..workflow.cards import ORCHESTRATOR, RESOLVER, StepCard, card_id, card_url, identifier
 from ..workflow.engine import AgentBusy, ChangeEngine, Controller, NoAgent, WorkflowError
 
 log = logging.getLogger("legion.a2a")
@@ -155,6 +156,24 @@ class QuestionBack:
                        "with " + self.card}
 
 
+def parse_proposal(answer: str) -> tuple[dict | None, str]:
+    """The resolver's proposal from its answer: the last fenced JSON block with a "proposal"
+    (None, and why: it proposed none, or none could be read)."""
+    blocks = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", answer, re.S)
+    for raw in reversed(blocks):
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(doc, dict) and "proposal" in doc:
+            p = doc["proposal"]
+            if p is None:
+                return None, str(doc.get("why") or "the resolver proposes nothing")
+            if isinstance(p, dict) and isinstance(p.get("action"), str):
+                return p, ""
+    return None, "no proposal block in its answer: " + answer.strip()[:300]
+
+
 class Undeliverable(Exception):
     """The recipient cannot answer any more (its sandbox is gone)."""
 
@@ -189,6 +208,7 @@ class A2AHub:
 
     def __init__(self, ctl: Controller):
         self.ctl = ctl
+        ctl.escalation_listeners.append(self.escalated)       # every escalation: the resolver
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
         self.inbox: dict[tuple[str, str], dict[str, InboxItem]] = {}
         self.questions: dict[tuple[str, str], dict[str, QuestionBack]] = {}   # sender -> asked
@@ -273,6 +293,43 @@ class A2AHub:
                 del self._dispatchers[(cid, card)]
 
     # ------------------------------------------------------------------ delivery
+    # ------------------------------------------------------------------ the resolver
+    RESOLVE_TRIES = 3            # an invalid proposal is returned with the reason this often
+
+    def escalated(self, cid: str, node_id: str) -> None:
+        """A step escalated: the orchestrator asks the change's resolver (in the background;
+        a human may decide first – the proposal is then stale)."""
+        ce = self.ctl.changes.get(cid)
+        if ce is not None and self.find(ce, RESOLVER) is not None:
+            self.ctl.spawn(self.resolve(ce, node_id))
+
+    async def resolve(self, ce: ChangeEngine, node_id: str) -> None:
+        brief = ce.escalation_brief(node_id)
+        card = self.find(ce, RESOLVER)
+        if brief is None or card is None:
+            return
+        at = brief["escalation"]["at"]
+        me = WorkloadBinding(sandbox="controller", change=ce.cid, task=ORCHESTRATOR,
+                             role=ORCHESTRATOR)
+        text = (f"Step `{node_id}` escalated. Diagnose it and propose one of its `actions`:\n\n"
+                f"```json\n{json.dumps(brief, indent=1)}\n```")
+        for attempt in range(1, self.RESOLVE_TRIES + 1):
+            tid = f"esc-{node_id}-{at}-{attempt}"
+            try:
+                _, answer = await self.deliver(ce, card, me, text, tid)
+            except (Undeliverable, WorkflowError) as e:
+                ce.event("resolver", f"could not ask the resolver about {node_id}: {e}", node_id)
+                return
+            proposal, why = parse_proposal(answer)
+            if proposal is None:
+                ce.event("resolver", f"no proposal for {node_id}: {why}", node_id)
+                return
+            err = await ce.propose(node_id, at, proposal)
+            if err is None or err == "stale":
+                return
+            text = (f"Your proposal for `{node_id}` was not taken: {err}. Send it again as the "
+                    "fenced JSON block your instructions describe.")
+
     # ------------------------------------------------------------------ questions back
     def asked_back(self, cid: str, sender: str, task_id: str, card: str, question: str) -> None:
         """``card`` answered the task ``sender`` sent it with a question (input-required): it
