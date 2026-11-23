@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ....sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
-from ... import guards
+from ... import governance, guards
 from ...assets import GitMode
 from ...environment import VERIFIER, EnvironmentSpec, Library, LibraryError
 from ...model import (
@@ -29,7 +29,6 @@ from ...model import (
 )
 from ...model import PROVISION as PROVISION_KIND
 from ...results import Escalate, Ok, PhaseResult
-from ..base.common import ENV_SPEC
 from ..base.core import ChangeCore
 from ..base.dispatch import Dispatcher
 from ..base.work import PREPARE, SETUP
@@ -62,10 +61,10 @@ class Provisioner:
         """Under the lock: the approved spec resolved into what to build, or why it cannot be."""
         c = self.c
         appr = c.change.approvals.get(H_ENV)
-        version = appr.pins.get(c.p(ENV_SPEC)) if appr else None
+        path, version = governance.pinned(appr, governance.ENV_FILE)
         if version is None:
             return self._fail(node, "no approved environment spec")
-        spec = EnvironmentSpec.model_validate(c.json_doc(ENV_SPEC, version))
+        spec = EnvironmentSpec.model_validate(c.json_doc(path, version))
         try:
             lib = Library.for_config(c.cfg, c.assets.schemas)
         except LibraryError as e:
@@ -76,7 +75,7 @@ class Provisioner:
             return self._fail(node, "the approved spec no longer resolves against the library: "
                               + "; ".join(v))
         env, sc = c.cfg.environment, c.cfg.sandbox
-        plan = ProvisionPlan(spec=f"file:{c.p(ENV_SPEC)}@{version}")
+        plan = ProvisionPlan(spec=f"file:{path}@{version}")
         for role, pname in spec.roles.items():
             prof = profiles[pname]
             base = (sc.verifier_image or sc.image) if role == VERIFIER else sc.image

@@ -13,7 +13,7 @@ Right after your tests are merged, the controller runs the repository's setup (`
 when `mise.toml` defines it; it also ran in your working copy) and then the acceptance commands in
 a **fresh clone** (preflight): anything else you installed or built by hand is not there. Check
 your tests the same way. If they cannot run that way and the fix is outside your files (the setup
-is part of the plan's environment; the commands are in `plan/oracle.json`), report `BLOCKED` with
+is part of the plan's environment; the commands are in `{{plan}}/oracle.json`), report `BLOCKED` with
 it as `missing_decision`.
 
 Before you commit, run the acceptance commands under the repository's real test configuration

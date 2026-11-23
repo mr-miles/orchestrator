@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Typed task contracts (plan/taskgraph.json).",
+  "description": "Typed task contracts (<plan>/taskgraph.json).",
   "type": "object",
   "required": [
     "tasks"

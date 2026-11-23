@@ -1,10 +1,10 @@
 ---
-description: "How to write plan/environment.json: profiles, tools, network policies, resources, role mapping, library proposals. Load when you write or critique a sandbox environment."
+description: "How to write the plan's environment.json: profiles, tools, network policies, resources, role mapping, library proposals. Load when you write or critique a sandbox environment."
 ---
 
 ## Skill: Sandbox environment spec
 
-When your assignment asks for it, `plan/environment.json` declares the sandboxes that run or work
+When your assignment asks for it, `{{plan}}/environment.json` declares the sandboxes that run or work
 with the code; it is part of the plan, so the commands you plan decide what it needs. It is
 critiqued with the plan, approved by a human (gate H-E1), then built by the controller: one
 container image per profile (the base agent or verifier image plus your tools, installed with

@@ -291,7 +291,7 @@ class FlowRuntime:
         group (a blank repository's scaffold first, in its own group; a fix round: its new tasks
         only)."""
         c, n = self.c, plan.round
-        taskgraph = c.json_doc("plan/taskgraph.json")
+        taskgraph = c.json_doc(f"{plan.id}/taskgraph.json")      # the plan just accepted
         built = {b.task.id for b in c.build_nodes() if b.round < n} if n > 1 else set()
         scaffold, tasks = task_steps(taskgraph, built=built)
         if n > 1 or SCAFFOLD not in self.flow.nodes:

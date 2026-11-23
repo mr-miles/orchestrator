@@ -25,7 +25,7 @@ from ...model import (
     Override,
 )
 from ...results import ActionResult
-from ..base.common import ENV_SPEC, WorkflowError, _slug
+from ..base.common import WorkflowError, _slug
 from ..base.core import ChangeCore
 from ..base.ids import base_id
 from ..services import cleanup
@@ -269,15 +269,15 @@ class HumanGates:
     def _promote(self, approver: str, payload: dict) -> str:
         """Copy a proposal of the H-E1-approved spec version into the library."""
         appr = self.c.change.approvals.get(H_ENV)
-        version = appr.pins.get(self.c.p(ENV_SPEC)) if appr else None
+        path, version = governance.pinned(appr, governance.ENV_FILE)
         if version is None:
             raise WorkflowError("the environment spec is not approved (H-E1)")
         try:
             kind = Kind(payload.get("kind"))
         except ValueError:
             raise WorkflowError(f"kind must be one of {[k.value for k in Kind]}") from None
-        spec = EnvironmentSpec.model_validate(self.c.json_doc(ENV_SPEC, version))
-        source = f"file:{self.c.p(ENV_SPEC)}@{version} (approved by {appr.approver}, " \
+        spec = EnvironmentSpec.model_validate(self.c.json_doc(path, version))
+        source = f"file:{path}@{version} (approved by {appr.approver}, " \
                  f"promoted by {approver})"
         try:
             dest = promote(Library.for_config(self.c.cfg, self.c.assets.schemas), spec, kind,

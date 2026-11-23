@@ -16,6 +16,7 @@ import posixpath
 from typing import Any
 
 from . import cards as card_views
+from . import governance
 from .model import BUILD, V_FINAL, Node, Oracle
 from .view import ChangeView, RoleContext
 
@@ -107,9 +108,10 @@ def workflow_context(e: RoleContext, node_id: str, stages: list[dict]) -> dict[s
         }
     reqs = task.requirements if task else list(ch.requirements)
     oracle, approved = ch.oracle, ch.oracle is not None
-    if oracle is None and e.latest("plan/oracle.json"):      # planned, not (yet) approved
+    planned = f"{governance.draft(e)}/oracle.json"
+    if oracle is None and e.latest(planned):                 # planned, not (yet) approved
         try:
-            oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+            oracle = Oracle.model_validate(e.json_doc(planned))
         except ValueError:
             oracle = None
     out["oracle_approved"] = approved

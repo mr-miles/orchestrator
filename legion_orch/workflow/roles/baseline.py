@@ -16,7 +16,7 @@ class Baseline(RoleHandler):
     sees_draft_plan = True
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
-        orc = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+        orc = Oracle.model_validate(e.json_doc(e.change.plan_doc("oracle.json")))
         return guards.results_cover(r.data, orc.acceptance_commands
                                     + orc.integration_commands, "G-BL1")
 

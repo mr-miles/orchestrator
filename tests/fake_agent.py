@@ -163,7 +163,7 @@ def main():
                 "fix": "expand spec", "attestations": [plan[0]]}]}
         else:
             data = {"verdict": "PASS", "findings": [], "checked": ["traceability"]}
-        doc = write(f"critique/cycle-{cycle}.md", f"critique {data['verdict']}")
+        doc = write(f"plan/critique/cycle-{cycle}.md", f"critique {data['verdict']}")
         print(call("report", status="DONE", summary="critique", attestations=plan + [doc], data=data))
     elif role == "oracle":
         wfile("tests/acceptance/test_greet.sh",

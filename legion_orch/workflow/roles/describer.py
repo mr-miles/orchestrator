@@ -13,8 +13,8 @@ from .base import Report, RoleHandler, brief_findings, evidence_of, record_revie
 def _change_context(e: RoleContext) -> list[str]:
     """What a description must be faithful to: the goal, the plan, each task's evidence, the
     integration report and every fix round's record."""
-    docs = [e.latest_att(p) for p in ("control/goal.md", "plan/spec.md", "plan/taskgraph.json",
-                                      "integration/report.md")]
+    docs = [e.latest_att(p) for p in ("control/goal.md", e.change.plan_doc("spec.md"),
+                                      e.change.plan_doc("taskgraph.json"), "integration/report.md")]
     evidence = [evidence_of(e, b) for b in e.build_nodes()]
     rounds = [a for rnd in e.change.rounds for a in (rnd.attestation, *rnd.failure)]
     return [a for a in (*docs, *evidence, *rounds) if a]

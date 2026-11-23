@@ -332,3 +332,38 @@ async def test_revise_plan_needs_work_built_on_the_design(f: Flow):
     with pytest.raises(WorkflowError, match="was not built on a design stage"):
         await f.human("build:T1", "revise_plan", feedback="replan please")
     assert "send_back:stage:plan" in f.ce.workflow.actions("build:T1")
+
+
+@scenario()
+async def test_each_rounds_plan_has_its_own_documents_and_the_pointer_follows_the_approved_one(f: Flow):
+    """A fix round's plan is a new step: its documents (and critiques) under its own node,
+    seeded from the plan worked to; control/plan.json names the approved plan and versions."""
+    await f.to_build(tier="R2")
+    ptr = f.ce.change.plan                          # H-E1 approved round 1's plan
+    assert ptr.node == "plan"
+    assert ptr.approved["plan/spec.md"] == f.ce.latest("plan/spec.md")
+    assert ptr.approved["plan/taskgraph.json"] == f.ce.latest("plan/taskgraph.json")
+    assert f.ce.latest("plan/critique/cycle-1.md")
+    await f.implement()
+    await f.review()
+    await _fail_integration(f)
+    await f.human("integration", "plan_fix", comment="greet.txt needs a trailing newline")
+    # the round's plan starts as a copy of the plan worked to, without its critiques
+    assert f.ce.doc("plan.2/taskgraph.json").content == f.ce.doc("plan/taskgraph.json").content
+    assert f.ce.doc("plan.2/taskgraph.json").author == "controller"
+    assert not f.ce.latest("plan.2/critique/cycle-1.md")
+    planner = f.run("plan")
+    assert planner.node_id == "plan.2" and planner.template_vars["plan"] == "plan.2"
+    assert all(w.startswith(f.ce.p("plan.2/")) for w in planner.write_scope)
+    await f.plan(tasks=TASKS + [T2])
+    await f.critique("PASS")
+    assert f.ce.latest("plan.2/critique/cycle-1.md") and f.ce.latest("plan/critique/cycle-1.md") == 1
+    assert f.ce.change.plan.node == "plan"          # round 2's plan is not approved yet
+    await f.human("H-E1", "approve")
+    ptr = f.ce.change.plan
+    assert ptr.node == "plan.2" and ptr.approved["plan.2/taskgraph.json"] == \
+        f.ce.latest("plan.2/taskgraph.json")
+    assert "plan/taskgraph.json" not in ptr.approved
+    ctl2 = Controller(f.cfg, runner=f.runner)       # the pointer is projected from its record
+    ctl2.load()
+    assert ctl2.changes[f.ce.cid].change.plan == ptr

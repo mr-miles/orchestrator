@@ -78,6 +78,9 @@ class ActiveStep:
         step that has nothing to redo stands (not one run again in place, ``rerun``: its work
         is wanted again); anything else enters its first phase."""
         node, step = self.node, self.type
+        if not node.runs and node.status == PENDING:  # its first start
+            for hook in step.on_start:
+                hook(self.c, node)
         node.approved = False                    # a gate is asked again
         node.agent_roles = step.agent_roles(self.c)   # their A2A cards, for the whole step
         self.ctx.agent_runner.open_step(node)          # its agents' cards (again for a new cycle)
