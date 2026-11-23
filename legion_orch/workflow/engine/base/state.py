@@ -1,4 +1,5 @@
-"""StateStore: one change's state – its change, node and run records – journalled."""
+"""StateStore: one change's state – its change, node and run records – live in the state
+tables, its history in the journal."""
 from __future__ import annotations
 
 import contextlib
@@ -7,37 +8,33 @@ from collections.abc import Iterator
 from typing import Any
 
 from ....store import DocStore, SchemaViolation
-from ....store.journal import REMOVED, SNAPSHOT, Journal, diff
+from ....store.journal import REMOVED, Journal, diff
+from ....store.state_tables import CHANGE, WORKFLOW, StateTables
 from ...model import Change, Node, Run
 from .projections import PROJECTED
 
 CONTROL = "control/"
-CHANGE = "change"
-WORKFLOW = "workflow"       # the workflow core's record (its tree and inputs, FlowRuntime)
 _KINDS = {"node": ("nodes", "node"), "run": ("runs", "run")}     # record prefix -> (attr, schema)
 
 
 class StateStore:
-    """A change's records, persisted as an append-only journal – a JSON Lines text file,
-    ``<state_dir>/journal/<change>.jsonl`` (:mod:`legion_orch.store.journal`) – no other durable
-    state.
+    """A change's records: ``change``, ``workflow`` (:class:`.FlowRuntime`'s tree and inputs,
+    which order the nodes once it is rebuilt), ``node:<id>`` and ``run:<id>`` – the fields the
+    engine does not project from documents (:mod:`.projections`).
 
-    The records are ``change``, ``node:<id>`` and ``run:<id>``. :meth:`save` appends, per record
-    that changed since it last did, one entry of the fields that changed (a list that only grew:
-    its new items); a node dropped from the change is a removal entry. Every
-    ``SNAPSHOT_EVERY`` entries, and on every load, a snapshot (every live record in full)
-    is appended, and a load folds from the latest one. Nothing is rewritten.
+    * **Live state** – the state tables in ``state.db`` (:mod:`legion_orch.store.state_tables`):
+      each record's current values, updated in place. A restart loads only these.
+    * **History** – the journal, ``<state_dir>/journal/<change>.jsonl``
+      (:mod:`legion_orch.store.journal`): per save, one line of what changed (a record's changed
+      fields; a list that only grew, its new items; a removal). Append-only, never read on start.
 
-    The change's structure – which nodes exist, their order and dependencies – is the workflow's
-    tree: the record ``workflow`` (:class:`.FlowRuntime`'s tree and inputs), which orders the
-    nodes once it is rebuilt.
-
+    :meth:`save` does both for the records that changed since the last save: the tables first
+    (one transaction), then the journal line.
     """
 
-    SNAPSHOT_EVERY = 1000
-
-    def __init__(self, docs: DocStore, journal: Journal, cid: str):
+    def __init__(self, docs: DocStore, tables: StateTables, journal: Journal, cid: str):
         self.docs = docs
+        self.tables = tables
         self.journal = journal
         self.cid = cid
         self.root = f"changes/{cid}/{CONTROL}"
@@ -45,17 +42,16 @@ class StateStore:
         self.nodes: dict[str, Node] = {}
         self.runs: dict[str, Run] = {}
         self.workflow: dict[str, Any] | None = None   # set by FlowRuntime before each save
-        self._last: dict[str, dict[str, Any]] = {}   # record -> its fields as last journalled
-        self._since = 0                              # entries since the latest snapshot
+        self._last: dict[str, dict[str, Any]] = {}   # record -> its fields as last saved
 
     # ------------------------------------------------------------- persistence
     def _current(self) -> dict[str, dict[str, Any]]:
         out = {CHANGE: self.change.model_dump(mode="json", exclude=PROJECTED["change"])}
+        if self.workflow is not None:
+            out[WORKFLOW] = self.workflow
         out |= {f"node:{k}": n.model_dump(mode="json", exclude=PROJECTED["node"])
                 for k, n in self.nodes.items()}
         out |= {f"run:{k}": r.model_dump(mode="json") for k, r in self.runs.items()}
-        if self.workflow is not None:
-            out[WORKFLOW] = self.workflow
         return out
 
     def _check(self, record: str, data: dict[str, Any]) -> None:
@@ -69,7 +65,7 @@ class StateStore:
                                   + "; ".join(errs))
 
     def save(self) -> None:
-        """Persist what changed since the last save: one append (a transaction)."""
+        """Persist what changed since the last save: its rows, then its journal line."""
         if self.change is None:
             return
         now = self._current()
@@ -80,23 +76,16 @@ class StateStore:
                 self._check(record, data)
             if entry := diff(old, data):
                 entries.append((record, entry))
-        entries += [(r, {REMOVED: True}) for r in self._last if r not in now]
-        if not entries:
+        gone = [r for r in self._last if r not in now]
+        if not entries and not gone:
             return
-        self.journal.append(self.cid, entries)
+        self.tables.write(self.cid, {r: now[r] for r, _ in entries}, gone)
+        self.journal.append(self.cid, entries + [(r, {REMOVED: True}) for r in gone])
         self._last = now
-        self._since += len(entries)
-        if self._since >= self.SNAPSHOT_EVERY:
-            self._snapshot(now)
-
-    def _snapshot(self, now: dict[str, dict[str, Any]]) -> None:
-        for record, data in now.items():
-            self._check(record, data)
-        self.journal.append(self.cid, [(SNAPSHOT, {}), *now.items()])   # one line
-        self._last, self._since = now, 0
 
     def load(self) -> None:
-        records = self.journal.fold(self.cid)
+        """The change as its tables hold it (on controller start)."""
+        records = self.tables.load(self.cid)
         self.change = Change.model_validate(records[CHANGE])
         self.workflow = records.get(WORKFLOW)
         for record, data in records.items():
@@ -104,7 +93,7 @@ class StateStore:
             if kind in _KINDS:
                 attr = getattr(self, _KINDS[kind][0])
                 attr[key] = (Node if kind == "node" else Run).model_validate(data)
-        self._snapshot(self._current())
+        self._last = self._current()
 
     # ------------------------------------------------------------- transactions
     @contextlib.contextmanager

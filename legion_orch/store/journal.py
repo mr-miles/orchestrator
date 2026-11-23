@@ -1,4 +1,5 @@
-"""An append-only journal of records, per change: the controller's own state, as text.
+"""An append-only journal of records, per change: the history of the controller's state, as
+text (the live state is the state tables', :mod:`.state_tables`; a restart never reads this).
 
 One JSON Lines file per change, ``<root>/<change>.jsonl``, only ever opened for appending. Each
 line is one save – all or nothing:
@@ -11,9 +12,9 @@ A record's state is the fold of its entries:
 * a key ``+<field>`` extends a list field with the items given (a list that only grew);
 * ``{"$removed": true}`` removes the record.
 
-A **snapshot** is a line whose first entry is ``["$snapshot", {}]``, followed by one full entry
-per live record: a load folds from the latest one. A line cut short by a crash is skipped (the
-next append starts a new line).
+A record's first entry carries all its fields, so folding a journal from its start gives every
+record as it stands (:meth:`Journal.fold` – for reading the history, not for a restart). A line
+cut short by a crash is skipped (the next append starts a new line).
 """
 from __future__ import annotations
 
@@ -29,7 +30,6 @@ from .docstore import now_iso
 
 log = logging.getLogger(__name__)
 
-SNAPSHOT = "$snapshot"
 REMOVED = "$removed"
 SUFFIX = ".jsonl"
 
@@ -96,12 +96,9 @@ class Journal:
                 yield line["seq"], [(r, d) for r, d in line["entries"]]
 
     def fold(self, change: str) -> dict[str, dict[str, Any]]:
-        """The records of ``change`` (record -> its fields), from its latest snapshot on."""
+        """The records of ``change`` as its history leaves them (record -> its fields)."""
         records: dict[str, dict[str, Any]] = {}
         for _, entries in self.lines(change):
-            if entries and entries[0][0] == SNAPSHOT:
-                records.clear()
-                entries = entries[1:]
             for record, data in entries:
                 apply(records, record, data)
         return records

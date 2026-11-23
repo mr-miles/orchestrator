@@ -58,7 +58,7 @@ class ChangeCore:
         self.cfg, self.docs = svc.cfg, svc.docs
         self.assets, self.runner, self.lock = svc.assets, svc.runner, svc.lock
         self.procs = svc.procs
-        self.st = StateStore(svc.docs, svc.journal, cid)
+        self.st = StateStore(svc.docs, svc.tables, svc.journal, cid)
         self.projections = Projections(self)           # its records copied from documents
         self.trace = svc.telemetry.change(cid)
         self._timeline: list[str] = []                 # events not yet written to the store

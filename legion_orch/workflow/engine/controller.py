@@ -22,6 +22,7 @@ from ...sandbox import (
 )
 from ...store import DocStore
 from ...store.journal import Journal
+from ...store.state_tables import StateTables
 from ...telemetry import Telemetry
 from ...util import stop_process
 from ..assets import Assets
@@ -45,8 +46,9 @@ class Controller:
     of the attention reminders. Implements :class:`EngineHost` for the engines. There is no
     clock: each change's work runs as tasks that await what they need.
 
-    Durable state lives only in the document store (``state.db``), the changes' journals
-    (``journal/``, their records: :class:`StateStore`) and the git remote; ``tmp/``
+    Durable state lives only in ``state.db`` (the documents, and the changes' live state:
+    :class:`StateStore`), the changes' journals (``journal/``, their history) and the git
+    remote; ``tmp/``
     holds transient sandbox payloads and live agent logs and is wiped on start.
     """
 
@@ -64,9 +66,10 @@ class Controller:
         self.bus = Bus(self.spawn)          # notifications between components (bus.py)
         self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of)
         runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
+        lock = threading.RLock()            # the database's (documents and state tables)
         self.svc = Services(
-            cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
-            journal=Journal(cfg.state_dir / "journal"),
+            cfg=cfg, docs=DocStore(conn, lock, assets.schemas),
+            tables=StateTables(conn, lock), journal=Journal(cfg.state_dir / "journal"),
             hubs={w.name: GitRemote(cfg.state_dir / "git", w.name, w.source, w.base_branch,
                                     max_push_bytes=cfg.limits.git_max_push_bytes)
                   for w in cfg.workspaces},
@@ -196,7 +199,7 @@ class Controller:
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:
         """Rebuild every change from the store."""
-        for cid in self.svc.journal.changes():
+        for cid in self.svc.tables.changes():
             ce = ChangeEngine(self.svc, self, cid)
             ce.load()
             if ce.change.workspace not in self.hubs:      # its workspace left the config
