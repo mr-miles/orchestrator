@@ -25,7 +25,7 @@ V = {"A2A-Version": "1.0"}
 
 
 def token(f: Flow, run: Run, *, role: str | None = None, change: str | None = None) -> dict:
-    b = WorkloadBinding(sandbox=run.sandbox_ref, change=change or f.ce.cid, task=run.node_id,
+    b = WorkloadBinding(sandbox=run.sandbox_ref, change=change or f.ce.cid, task=run.ticket,
                         role=role or run.role)
     return {"Authorization": "Bearer " + f.ctl.auth.identity.tokens.issue(b, "spiffe://t/" + b.sandbox)}
 
@@ -69,11 +69,11 @@ def answer_text(t: dict) -> str:
 async def to_critique(f: Flow) -> tuple[Run, Run]:
     """The planner reported (its sandbox kept, stopped, with its session); the critic is live."""
     await f.intake()
-    await f.human("H-1", "accept")
-    planner = f.run("plan")
+    await f.signoff("H-1")
+    planner = f.run("design")
     give_session(f, planner)
     await f.plan()
-    return planner, f.run("plan", "critic")
+    return planner, f.run("critique", "critic")
 
 
 @scenario()
@@ -86,20 +86,20 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         planner, critic = await to_critique(f)
         assert intake.sandbox in f.runner.deleted                 # H-1 accepted: intake gone
         ids = [x["id"] for x in (await c.get("/a2a/cards", headers=token(f, critic))).json()["cards"]]
-        assert ids == ["orchestrator", "resolver", "planner@plan"]    # not its own card
+        assert ids == ["orchestrator", "resolver", "planner@design"]    # not its own card
         cards = {x.id: x for x in f.ce.a2a_cards()}
-        assert set(cards) == {"orchestrator", "resolver", "planner@plan", "critic@plan"}
-        assert agent_state(f.ce, cards["planner@plan"]) == "stopped"     # still published
-        assert agent_state(f.ce, cards["critic@plan"]) == "running"
-        assert "stopped" not in cards["planner@plan"].model_dump()        # no state in a card
+        assert set(cards) == {"orchestrator", "resolver", "planner@design", "critic@critique"}
+        assert agent_state(f.ce, cards["planner@design"]) == "stopped"     # still published
+        assert agent_state(f.ce, cards["critic@critique"]) == "running"
+        assert "stopped" not in cards["planner@design"].model_dump()        # no state in a card
         events = [e for e in f.ce.timeline().splitlines() if '"a2a"' in e]
         assert any("card registered: intake@intake" in e for e in events)
         assert any("cards removed: intake" in e for e in events)
 
         # the card, at its own URL (as the a2a CLI fetches a URL with a path) and well-known
-        card = (await c.get("/a2a/planner@plan", headers=token(f, critic))).json()
-        assert card["name"] == f"{f.ce.cid}/planner@plan"
-        assert card["supportedInterfaces"][0]["url"].endswith("/a2a/planner@plan")
+        card = (await c.get("/a2a/planner@design", headers=token(f, critic))).json()
+        assert card["name"] == f"{f.ce.cid}/planner@design"
+        assert card["supportedInterfaces"][0]["url"].endswith("/a2a/planner@design")
         assert (await c.get("/a2a/orchestrator/.well-known/agent-card.json",
                             headers=token(f, critic))).json()["skills"][0]["id"] == "list_cards"
 
@@ -117,7 +117,7 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         mine = (await c.get("/a2a/cards", headers=token(f, theirs, change=other.cid))).json()
         assert mine["change"] == other.cid
         assert [x["id"] for x in mine["cards"]] == ["orchestrator", "resolver"]
-        assert (await c.get("/a2a/planner@plan",
+        assert (await c.get("/a2a/planner@design",
                             headers=token(f, theirs, change=other.cid))).status_code == 404
         own = await c.get("/a2a/orchestrator", headers=token(f, theirs, change=other.cid))
         assert own.json()["name"] == f"{other.cid}/orchestrator"      # same URL, its change
@@ -128,18 +128,18 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         assert [(e["identifier"], e["type"]) for e in cat["entries"]] == [
             ("urn:air:legion:agent:orchestrator", "application/a2a-agent-card+json"),
             ("urn:air:legion:agent:resolver", "application/a2a-agent-card+json"),
-            ("urn:air:legion:agent:planner@plan", "application/a2a-agent-card+json")]
-        assert cat["entries"][2]["url"].endswith("/a2a/planner@plan")
-        assert cat["entries"][2]["tags"] == ["planner", "plan"]           # who, not how it is
+            ("urn:air:legion:agent:planner@design", "application/a2a-agent-card+json")]
+        assert cat["entries"][2]["url"].endswith("/a2a/planner@design")
+        assert cat["entries"][2]["tags"] == ["planner", "design"]           # who, not how it is
         env = next(e for e in f.runner.run_envs if "LEGION_ROLE=critic" in e)
         assert "LEGION_A2A_CATALOG=http://host.openshell.internal:8769/a2a/ai-catalog.json" \
             in env.replace("'", "")
-        assert "A2ACLI_AGENT_CARD=" in env and "LEGION_A2A_CARD=critic@plan" in env.replace("'", "")
+        assert "A2ACLI_AGENT_CARD=" in env and "LEGION_A2A_CARD=critic@critique" in env.replace("'", "")
 
         # the orchestrator's registry, through A2A
         res = await rpc(c, "orchestrator", send("/list_cards", wait=True), token(f, critic))
         listed = res["task"]["artifacts"][0]["parts"][0]["data"]["cards"]
-        assert [x["id"] for x in listed] == ["orchestrator", "resolver", "planner@plan"]
+        assert [x["id"] for x in listed] == ["orchestrator", "resolver", "planner@design"]
         assert all("state" not in x for x in listed)
 
 
@@ -147,29 +147,29 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
 async def test_a_message_to_a_stopped_agent_starts_it_resumes_its_session_and_stops_it_again(f: Flow):
     planner, critic = await to_critique(f)
     sb = planner.sandbox
-    assert f.ce.nodes["plan"].sandbox_stopped and sb in f.runner.stopped
+    assert f.ce.runs[planner.id].sandbox_stopped and sb in f.runner.stopped
     stops = f.runner.stopped.count(sb)
     async with client(f) as c:
-        res = await rpc(c, "planner@plan", send("What does the oracle check?"),
+        res = await rpc(c, "planner@design", send("What does the oracle check?"),
                         token(f, critic))
-        turn = await consult_answers(f, "planner", "plan", "The oracle checks greet.txt only.",
+        turn = await consult_answers(f, "planner", "design", "The oracle checks greet.txt only.",
                                      f"session-{planner.id}")
-        t = await task_when(c, "planner@plan", res["task"]["id"], token(f, critic))
+        t = await task_when(c, "planner@design", res["task"]["id"], token(f, critic))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
     assert answer_text(t) == "The oracle checks greet.txt only."
-    assert turn.sandbox == sb and turn.id not in f.ce.nodes["plan"].runs   # in place, a consult
+    assert turn.sandbox == sb and turn.id not in f.ticket("design").runs   # in place, a consult
     assert sb in f.runner.restarted                                  # started for the turn
     prompt = f.runner.uploaded[sb]["prompt.md"]
-    assert "`critic@plan`" in prompt and "What does the oracle check?" in prompt
+    assert "`critic@critique`" in prompt and "What does the oracle check?" in prompt
     assert res["task"]["id"] in prompt                                # a2a_reply(task_id=...)
     env = next(e for e in reversed(f.runner.run_envs) if f"LEGION_RUN_ID={turn.id}" in e)
     assert f"session-{planner.id}" in env and "--tools Skill" in env  # its session; no edits
     await f.settle()
     assert f.runner.stopped.count(sb) == stops + 1                   # and stopped again
-    assert f.ce.nodes["plan"].sandbox_stopped
+    assert f.ce.runs[planner.id].sandbox_stopped
     # the rework still finds it stopped, starts it, and resumes the same session
     await f.critique("REWORK")
-    assert f.run("plan").sandbox == sb
+    assert f.run("design").sandbox == sb
 
 
 @scenario()
@@ -177,20 +177,20 @@ async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
     planner, critic = await to_critique(f)
     assert {"inbox", "a2a_reply"} <= set(MCP_TOOLS)
     async with client(f) as c:
-        res = await rpc(c, "critic@plan", send("Is the spec's REQ-1 section final?"),
+        res = await rpc(c, "critic@critique", send("Is the spec's REQ-1 section final?"),
                         token(f, planner))                          # the idle planner asks
         tid = res["task"]["id"]
         for _ in range(100):
-            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
+            if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique"):
                 break
             await asyncio.sleep(0.02)
-        [item] = A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan")
-        assert item.view()["from"] == "planner@plan" and "REQ-1" in item.text
+        [item] = A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")
+        assert item.view()["from"] == "planner@design" and "REQ-1" in item.text
         assert (await A2AHub.of(f.ctl).agent_reply(f.ce, critic, tid, "Yes, final.", "completed"))["ok"]
-        t = await task_when(c, "critic@plan", tid, token(f, planner))
-        assert answer_text(t) == "Yes, final." and not A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan")
+        t = await task_when(c, "critic@critique", tid, token(f, planner))
+        assert answer_text(t) == "Yes, final." and not A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")
         # the sender's tasks are its own
-        r = await c.post("/a2a/critic@plan", headers=token(f, critic) | V,
+        r = await c.post("/a2a/critic@critique", headers=token(f, critic) | V,
                          json={"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": tid}})
         assert "error" in r.json()
 
@@ -202,17 +202,17 @@ async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: 
     t2 = dict(TASKS[0], id="T2", title="part", files_modified=["src/part.txt"],
               verification=["test -f src/part.txt"])
     await f.to_build(tasks=[TASKS[0], t2])
-    t1, other = f.run("build:T1", "implementer"), f.run("build:T2", "implementer")
+    t1, other = f.run("T1", "implementer"), f.run("T2", "implementer")
     give_session(f, t1)
     async with client(f) as c:
-        res = await rpc(c, "implementer@build:T1", send("Where does the greeting live?"),
+        res = await rpc(c, "implementer@T1", send("Where does the greeting live?"),
                         token(f, other))
         await asyncio.sleep(0.2)
-        assert A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "implementer@build:T1")   # waits: T1 is live
+        assert A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "implementer@T1")   # waits: T1 is live
         await f.implement("T1")                                  # reports without answering
-        turn = await consult_answers(f, "implementer", "build:T1",
+        turn = await consult_answers(f, "implementer", "T1",
                                      "greet.txt holds the greeting.", f"session-{t1.id}")
-        t = await task_when(c, "implementer@build:T1", res["task"]["id"], token(f, other))
+        t = await task_when(c, "implementer@T1", res["task"]["id"], token(f, other))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
     assert answer_text(t) == "greet.txt holds the greeting."
     assert turn.sandbox == t1.sandbox
@@ -226,19 +226,19 @@ async def test_a_judge_that_reported_is_kept_stopped_and_answers_from_its_sessio
     planner, critic = await to_critique(f)
     give_session(f, critic)
     async with client(f) as c:
-        res = await rpc(c, "critic@plan", send("Any blockers?"), token(f, planner))
+        res = await rpc(c, "critic@critique", send("Any blockers?"), token(f, planner))
         await asyncio.sleep(0.2)
         await f.critique("REWORK")           # it reports without answering; the plan reworks
-        turn = await consult_answers(f, "critic", "plan", "No blockers: the spec covers REQ-1.",
+        turn = await consult_answers(f, "critic", "critique", "No blockers: the spec covers REQ-1.",
                                      f"session-{critic.id}")
         assert turn.sandbox == critic.sandbox                     # in place
-        t = await task_when(c, "critic@plan", res["task"]["id"], token(f, planner))
+        t = await task_when(c, "critic@critique", res["task"]["id"], token(f, planner))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]
     assert answer_text(t) == "No blockers: the spec covers REQ-1."
     await f.settle()
     assert critic.sandbox not in f.runner.deleted and critic.sandbox in f.runner.stopped
     await f.plan()                            # the next cycle's critic gets a fresh sandbox
-    second = f.run("plan", "critic")
+    second = f.run("critique", "critic")
     assert second.sandbox != critic.sandbox and critic.sandbox in f.runner.deleted
 
 
@@ -246,7 +246,7 @@ async def consult_answers(f: Flow, role: str, node: str, answer: str, session: s
     """Play the agent started early: wait for its consult run, answer, exit."""
     for _ in range(250):
         found = [r for r in f.ce.runs.values() if r.consult and r.role == role
-                 and r.node_id == node and r.id in f.ctl.svc.procs]
+                 and r.ticket == node and r.id in f.ctl.svc.procs]
         if found:
             break
         await asyncio.sleep(0.02)
@@ -259,53 +259,46 @@ async def consult_answers(f: Flow, role: str, node: str, answer: str, session: s
 
 
 @scenario()
-async def test_every_agent_of_a_step_has_a_card_from_the_steps_start(f: Flow):
+async def test_a_tickets_judges_have_cards_from_its_start(f: Flow):
     await f.to_build()
-    panel = f.ce.change.panel
-    assert panel                                            # the tier's judges
     cards = {c.id: c for c in f.ce.a2a_cards()}
-    assert {f"{r}@build:T1" for r in ["implementer", *panel]} <= set(cards)
-    assert agent_state(f.ce, cards[f"{panel[0]}@build:T1"]) == "not started"
-    assert agent_state(f.ce, cards["implementer@build:T1"]) == "running"
-    assert not [c for c in cards if c.endswith("@plan")]    # an ended step has none
+    assert {"implementer@T1", "reviewer@review:T1"} <= set(cards)   # the judge's, not started
+    assert agent_state(f.ce, cards["reviewer@review:T1"]) == "not started"
+    assert agent_state(f.ce, cards["implementer@T1"]) == "running"
+    assert not [c for c in cards if c.endswith("@design")]    # a closed ticket has none
     await f.implement()
-    judges = [f.run("build:T1", r) for r in panel]
-    for r in panel[:-1]:
-        await f.review(role=r)
-    first = judges[0]
-    if len(panel) > 1:                      # a judge that reported is kept, stopped
-        assert first.sandbox in f.runner.stopped and first.sandbox not in f.runner.deleted
-    assert "implementer@build:T1" in {c.id for c in f.ce.a2a_cards()}   # still in progress
-    await f.review(role=panel[-1])
-    assert f.status("build:T1") == "ACCEPTED"
-    assert not [c for c in f.ce.a2a_cards() if c.node == "build:T1"]    # the step ended
+    judge = f.run("review:T1", "reviewer")
+    assert "implementer@T1" in {c.id for c in f.ce.a2a_cards()}       # still in progress
+    await f.review()
+    assert f.status("T1") == "passed"
+    assert not [c for c in f.ce.a2a_cards() if c.ticket in ("T1", "review:T1")]   # closed
     await f.settle()
-    assert all(j.sandbox in f.runner.deleted for j in judges)          # and its judges went
+    assert judge.sandbox in f.runner.deleted                           # and its judge went
 
 
 @scenario()
 async def test_an_agent_not_started_is_started_to_answer_and_its_run_continues_it(f: Flow):
     await f.to_build()
-    judge = f.ce.change.panel[0]
-    impl = f.run("build:T1", "implementer")
+    impl = f.run("T1", "implementer")
     async with client(f) as c:
-        res = await rpc(c, f"{judge}@build:T1", send("What will you check first?"),
+        res = await rpc(c, "reviewer@review:T1", send("What will you check first?"),
                         token(f, impl))
-        early = await consult_answers(f, judge, "build:T1", "Error handling first.", "sess-early")
-        t = await task_when(c, f"{judge}@build:T1", res["task"]["id"], token(f, impl))
+        early = await consult_answers(f, "reviewer", "review:T1", "Error handling first.",
+                                      "sess-early")
+        t = await task_when(c, "reviewer@review:T1", res["task"]["id"], token(f, impl))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED" and answer_text(t) == "Error handling first."
-    assert early.id not in f.ce.nodes["build:T1"].runs        # not one of the step's runs
+    assert early.id not in f.ticket("review:T1").runs          # not one of the ticket's runs
     payload = f.runner.payloads[early.sandbox]
     assert "What will you check first?" in payload["prompt.md"] and "change nothing" in payload["prompt.md"]
     await f.settle()
     assert early.sandbox in f.runner.stopped and early.sandbox not in f.runner.deleted
-    assert agent_state(f.ce, {c.id: c for c in f.ce.a2a_cards()}[f"{judge}@build:T1"]) == "stopped"
+    assert agent_state(f.ce, {c.id: c for c in f.ce.a2a_cards()}["reviewer@review:T1"]) == "stopped"
     # a consult cannot report
     out = await f.ce.handle_report(early.id, "DONE", "x", [], {}, None, None)
     assert not out.accepted
-    # the step gets to the review: the judge's run continues the agent started early
+    # the ticket gets to its review: the judge's run continues the agent started early
     await f.implement()
-    run = f.run("build:T1", judge)
+    run = f.run("review:T1", "reviewer")
     assert run.sandbox == early.sandbox and run.resumed_session == "sess-early"
     assert early.sandbox in f.runner.restarted
 
@@ -314,7 +307,7 @@ async def test_an_agent_not_started_is_started_to_answer_and_its_run_continues_i
 async def test_unknown_skills_are_refused_and_relay_is_gone(f: Flow):
     planner, critic = await to_critique(f)
     async with client(f) as c:
-        for body in (send("/relay planner@plan hi", wait=True), send("hello", wait=True)):
+        for body in (send("/relay planner@design hi", wait=True), send("hello", wait=True)):
             res = await rpc(c, "orchestrator", body, token(f, critic))
             assert res["task"]["status"]["state"] == "TASK_STATE_REJECTED", res
 
@@ -331,7 +324,7 @@ async def test_ask_human_is_an_attention_item_until_a_decision_owner_answers(f: 
                 break
             await asyncio.sleep(0.02)
         q = f.ce.change.questions[tid]
-        assert (q.node, q.role, q.question) == ("plan", "critic", "May the greeting be in French?")
+        assert (q.ticket, q.role, q.question) == ("critique", "critic", "May the greeting be in French?")
         [item] = [i for i in attention.items(f.ce) if i.kind == attention.QUESTION]
         assert item.blocking and item.detail == tid and "French" in item.reason
         assert change_state(f.ctl, f.ce)["a2a"]["questions"][0]["id"] == tid
@@ -353,7 +346,7 @@ async def test_ask_human_is_an_attention_item_until_a_decision_owner_answers(f: 
 async def test_open_questions_are_withdrawn_when_the_controller_restarts(f: Flow):
     planner, critic = await to_critique(f)
     async with f.ce.lock:
-        f.ce.ask_human("t-1", "plan", "critic", critic.id, "Which locale?")
+        f.ce.ask_human("t-1", "critique", "critic", critic.id, "Which locale?")
     f.ce.recover()
     q = f.ce.change.questions["t-1"]
     assert not q.open and "restarted" in q.withdrawn
@@ -423,7 +416,7 @@ async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Fl
     check("start")
     await f.intake()
     check("intake reported")
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     check("H-1")
     await f.plan()
     check("plan")
@@ -447,11 +440,11 @@ async def test_the_catalog_never_drifts_from_the_workflow_through_build_and_the_
     check("implemented")
     await f.review(verdict="FAIL")
     check("review fail: rework")
-    run = f.run("build:T1", "implementer")                 # cycle 2: it blocks, it escalates
+    run = f.run("T1", "implementer")                 # cycle 2: it blocks, it escalates
     out = await f.report(run, [], status="BLOCKED", blocked_reason="the greeting is ambiguous",
                          missing_decision="which language?")
     assert out.accepted, out
     check("escalated")
-    await f.human("build:T1", "abandon", reason="the goal changed: no greeting needed at all")
+    await f.change_action("abandon", reason="the goal changed: no greeting needed at all")
     check("abandoned")
     assert hub.catalog.cards(f.ce.cid) == []

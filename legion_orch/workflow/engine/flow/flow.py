@@ -22,7 +22,7 @@ from typing import Any
 
 from ....git.branches import Branches
 from ....git.remote import is_blank_tree
-from ... import setup
+from ... import cards, setup
 from ...attest import FILE_RE
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ...model import ChangeEnd, ChangeStatus
@@ -142,9 +142,8 @@ class TicketFlow:
         """After the state was loaded: the runner over the loaded tickets."""
         if self.c.st.tickets:
             Tickets.over(self.c.st.tickets)             # checked
-            self._open = {t.id for t in self.c.st.tickets.values()
-                          if t.type.startswith("agent:") and t.status not in CLOSED
-                          and t.status != Status.PENDING}
+            t = self.c.st.tickets
+            self._open = {x.id for x in t.values() if cards.carded(t, x)}
 
     async def recover(self) -> None:
         """After a restart: every ticket under way goes on at the same attempt (R14)."""
@@ -204,16 +203,16 @@ class TicketFlow:
         c.spawn(cleanup.end_of_change(c))
 
     def _saved(self, tickets: Iterable[Ticket]) -> None:
-        """The runner's save (the lock is held): cards follow the agent tickets, kept sandboxes
-        of closed tickets go, then the change saves."""
-        for t in tickets:
-            if not t.type.startswith("agent:"):
-                continue
-            if t.status in CLOSED and t.id in self._open:
-                self._open.discard(t.id)
-                self.agent_runner.close_ticket(t.id)
-            elif t.status not in CLOSED and t.status != Status.PENDING:
-                self._open.add(t.id)
+        """The runner's save (the lock is held): cards follow the agent tickets (published as one
+        starts, withdrawn as it closes or goes back to pending), kept sandboxes of closed tickets
+        go, then the change saves."""
+        t = self.c.tickets.t
+        want = {x.id for x in t.values() if cards.carded(t, x)}
+        for tid in sorted(want - self._open):
+            self.agent_runner.open_ticket(t[tid])
+        for tid in sorted(self._open - want):
+            self.agent_runner.close_ticket(tid)
+        self._open = want
         self.lifecycle.release_sandboxes()
         self.c.save()
 

@@ -64,7 +64,6 @@ class Agents:
             if ticket is None:
                 return AgentEnd(False, failure=FailureSource.CONTROLLER, detail="not wanted")
             plan = plan_for(ticket, c.assets.roles[role].git)
-            self.runner.open_ticket(ticket)
         outcome, prepared = await self.runner.publish_work(
             ticket, role, work, plan, wanted=lambda: live(c, work) is not None,
             started=lambda run: None, dispatch=self.dispatch)

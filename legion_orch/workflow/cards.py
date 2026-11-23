@@ -7,8 +7,8 @@ agent is doing is its ticket's state and its tasks'. So cards are **published**:
   cards and asks a human) and the **resolver** (the change's agent for escalations and stuck
   agents) – when the change starts, until it ends;
 * one per **agent ticket** (``implementer@T1``, ``reviewer@review:T1``) while the ticket is open
-  (from its start until it is closed). A message to an agent not started starts it; to a stopped
-  one, resumes its session.
+  – a criterion's from its owner's start – until it is closed. A message to an agent not started
+  starts it; to a stopped one, resumes its session.
 
 They are pushed to the A2A catalog (``server/a2a.py``) as a side effect of the workflow
 (``EngineHost.publish_cards`` / ``remove_cards``) – a view of it, not part of the change's
@@ -56,6 +56,18 @@ def identifier(card: str) -> str:
 OPEN = {"working", "subtasks", "checking", "merging", "waiting", "paused", "rejected"}
 
 
+def carded(tickets: dict[str, Ticket], ticket: Ticket) -> bool:
+    """Whether an agent ticket has a card: while it is open – and, a criterion, from its owner's
+    start (an agent not started yet may be asked, and starts to answer)."""
+    if not ticket.type.startswith("agent:"):
+        return False
+    if ticket.status in OPEN:
+        return True
+    owner = tickets.get(ticket.parent) if ticket.parent else None
+    return ticket.status == "pending" and ticket.role == "criterion" and owner is not None \
+        and owner.status in OPEN
+
+
 def ticket_cards(ticket: Ticket) -> list[Card]:
     """An agent ticket's card: its role's agent, while the ticket is open."""
     if not ticket.type.startswith("agent:"):
@@ -80,8 +92,9 @@ def cards(e: ChangeView) -> list[Card]:
     if ch is None or ch.status != "ACTIVE":
         return []
     out = change_cards(ch.id)
-    for t in e.tickets.t.values():
-        if t.status in OPEN:
+    tickets = e.tickets.t
+    for t in tickets.values():
+        if carded(tickets, t):
             out += ticket_cards(t)
     return out
 
