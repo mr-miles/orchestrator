@@ -236,6 +236,16 @@ class Tickets:
         self._wait(self._working(tid), Waiting.BUDGET)
         return self._take()
 
+    @classmethod
+    def over(cls, t: dict[str, Ticket]) -> Tickets:
+        """The rules over a dict of tickets kept elsewhere (the engine's state store): the same
+        dict, never a copy. Checked when it holds a tree (an empty one is a change not started)."""
+        x = cls.__new__(cls)
+        x.t, x._effects = t, []
+        if t and (errs := validate(t)):
+            raise TicketError("; ".join(errs))
+        return x
+
     @property
     def paused(self) -> bool:
         return bool(self.root.paused)
@@ -309,7 +319,9 @@ class Tickets:
         try:
             yield
         except TicketError:
-            self.t, self._effects = saved, effects
+            self.t.clear()                         # in place: the dict may be shared (the store's)
+            self.t.update(saved)
+            self._effects = effects
             raise
 
     def _edit(self, plan: Replan) -> bool:

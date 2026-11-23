@@ -10,33 +10,34 @@ from typing import Any
 
 from ....store import DocStore, SchemaViolation
 from ....store.journal import REMOVED, Journal, diff
-from ....store.state_tables import CHANGE, WORKFLOW, StateTables
-from ...model import LIVE_RUN, Change, Node, Run
+from ....store.state_tables import CHANGE, StateTables
+from ...model import LIVE_RUN, Change, Run
+from ...tickets import Ticket
 from .projections import PROJECTED
 
 CONTROL = "control/"
-_KINDS = {"node": ("nodes", "node")}                  # record prefix -> (attr, schema)
+_KINDS = {"ticket": ("tickets", None)}               # record prefix -> (attr, schema)
 # the gateway's to say, on start (Sandboxes.adopt): whether a sandbox exists, whether it is stopped
-GATEWAY = {"node": {"sandbox_stopped"}, "run": {"sandbox_deleted", "sandbox_stopped"}}
+GATEWAY = {"run": {"sandbox_deleted", "sandbox_stopped"}}
 
 # A run's documents, under its step's records (``<records>/runs/<run>/``): its assignment, from
 # dispatch, and – once it is no longer live – its outcome. Everything else a run has (its stage,
 # latest progress, A2A bookkeeping, its counters while live) is the live run's, in memory; its
 # log is the document of everything it did.
-RUN_ASSIGNMENT = ("role", "soul", "cycle", "consult", "created_at", "sandbox", "sandbox_ref",
-                  "base_sha", "branch", "judged_sha", "resumed_from", "resumed_session",
-                  "prompt_pin", "assets_sha", "template_vars", "write_scope", "required_docs",
-                  "context_refs", "assignment", "instructions")
+RUN_ASSIGNMENT = ("ticket", "role", "soul", "attempt", "consult", "created_at", "sandbox",
+                  "sandbox_ref", "base_sha", "branch", "judged_sha", "resumed_from",
+                  "resumed_session", "prompt_pin", "assets_sha", "template_vars", "write_scope",
+                  "outputs", "context_refs", "assignment", "instructions")
 RUN_OUTCOME = ("status", "failure", "exit_code", "ended_at", "concluded", "session_id", "report",
                "reply", "attempts", "violations", "docs_written", "doc_bytes", "confirmed_docs",
                "verification_requests", "turns")
 
 
 class StateStore:
-    """A change's records: ``change``, ``workflow`` (:class:`.FlowRuntime`'s tree and inputs,
-    which order the nodes once it is rebuilt) and ``node:<id>`` – the fields the engine does not
-    project from documents (:mod:`.projections`) nor learn from the gateway on start
-    (:data:`GATEWAY`: which sandboxes exist and which are stopped). Runs are documents: their
+    """A change's records: ``change`` – the fields the engine does not project from documents
+    (:mod:`.projections`) nor learn from the gateway on start (:data:`GATEWAY`: which sandboxes
+    exist and which are stopped) – and ``ticket:<id>``, one per ticket: the tickets are the
+    workflow's state (the rules' records, nothing to replay). Runs are documents: their
     assignment and outcome (:data:`RUN_ASSIGNMENT`, :data:`RUN_OUTCOME`), written here as they
     change and projected back on load.
 
@@ -57,25 +58,21 @@ class StateStore:
         self.cid = cid
         self.root = f"changes/{cid}/{CONTROL}"
         self.change: Change | None = None
-        self.nodes: dict[str, Node] = {}
+        self.tickets: dict[str, Ticket] = {}            # the change's tickets (Tickets.t)
         self.runs: dict[str, Run] = {}
-        self.workflow: dict[str, Any] | None = None   # set by FlowRuntime before each save
         self._last: dict[str, dict[str, Any]] = {}   # record -> its fields as last saved
         self._run_docs: dict[str, dict[str, Any]] = {}   # run document -> as last written
 
     # ------------------------------------------------------------- persistence
     def _current(self) -> dict[str, dict[str, Any]]:
         out = {CHANGE: self.change.model_dump(mode="json", exclude=PROJECTED["change"])}
-        if self.workflow is not None:
-            out[WORKFLOW] = self.workflow
-        out |= {f"node:{k}": n.model_dump(mode="json", exclude=PROJECTED["node"] | GATEWAY["node"])
-                for k, n in self.nodes.items()}
+        out |= {f"ticket:{k}": t.model_dump(mode="json") for k, t in self.tickets.items()}
         return out
 
-    def run_dir(self, run: Run) -> str:
-        """Where a run's documents are: under its step's records (the resolver's: its own)."""
-        node = self.nodes.get(run.node_id)
-        return f"{node.records if node else f'control/steps/{run.node_id}'}/runs/{run.id}"
+    @staticmethod
+    def run_dir(run: Run) -> str:
+        """Where a run's documents are: audit, under its unique id (it names its ticket)."""
+        return f"control/runs/{run.id}"
 
     def _runs_now(self) -> dict[str, dict[str, Any]]:
         out = {}
@@ -104,9 +101,9 @@ class StateStore:
     def _check(self, record: str, data: dict[str, Any]) -> None:
         """A record's full form is valid against its schema (guard G-W3: a run record never
         carries a credential, say)."""
-        if record == WORKFLOW:
-            return                                   # the core's own record: no schema
         name = CHANGE if record == CHANGE else _KINDS[record.partition(":")[0]][1]
+        if name is None:
+            return                                   # a ticket: its model is its schema
         if errs := self.docs.schemas.validate_data(name, data):
             raise SchemaViolation(f"G-W3: {record} does not match schema {name!r}: "
                                   + "; ".join(errs))
@@ -135,30 +132,29 @@ class StateStore:
         """The change as its tables hold it (on controller start)."""
         records = self.tables.load(self.cid)
         self.change = Change.model_validate(records[CHANGE])
-        self.workflow = records.get(WORKFLOW)
         for record, data in records.items():
             kind, _, key = record.partition(":")
             if kind in _KINDS:
-                self.nodes[key] = Node.model_validate(data)
+                self.tickets[key] = Ticket.model_validate(data)
         self._last = self._current()
 
     # ------------------------------------------------------------- transactions
     @contextlib.contextmanager
     def transaction(self) -> Iterator[None]:
-        """Apply a transition all-or-nothing: if the block raises, the change, nodes and runs
+        """Apply a transition all-or-nothing: if the block raises, the change, tickets and runs
         are restored to their state at entry and the exception propagates. Restoring keeps
-        object identity, so coroutines holding a Node or Run keep seeing the live object.
+        object identity, so coroutines holding a Ticket or Run keep seeing the live object.
         (Nothing is saved here – appends happen in :meth:`save` – and external effects such as
         git merges are not undone.)"""
-        objs = [self.change, *self.nodes.values(), *self.runs.values()]
-        change, nodes, runs = self.change, dict(self.nodes), dict(self.runs)
+        objs = [self.change, *self.tickets.values(), *self.runs.values()]
+        change, tickets, runs = self.change, dict(self.tickets), dict(self.runs)
         states = {id(o): copy.deepcopy(o.__dict__) for o in objs if o is not None}
         try:
             yield
         except BaseException:
             self.change = change
-            self.nodes.clear()
-            self.nodes.update(nodes)
+            self.tickets.clear()
+            self.tickets.update(tickets)
             self.runs.clear()
             self.runs.update(runs)
             for o in objs:
