@@ -22,6 +22,7 @@ from ...model import (
     ACCEPTED,
     BUILD,
     ESCALATED,
+    Card,
     Change,
     Node,
     Oracle,
@@ -64,7 +65,6 @@ class ChangeCore:
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
-        self._cards: set[str] = set()                  # A2A card ids as of the last save
         self._escalated: list[str] = []                # nodes escalated since the last save
         self._saved = asyncio.Event()                  # set (and replaced) on every save
 
@@ -115,12 +115,10 @@ class ChangeCore:
         self.before_save()
         self._stamp_statuses()
         self._update_attention()
-        self._update_cards()
         self.st.save()
         escalated, self._escalated = self._escalated, []
-        tell = getattr(self.host, "escalated", None)       # (unit tests: a bare host)
-        for nid in escalated if tell else ():
-            tell(self.cid, nid)                    # the resolver is asked (server/a2a.py)
+        for nid in escalated:
+            self.escalated(nid)                    # the resolver is asked (services/resolver.py)
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.notify()
         self.host.changed()
@@ -133,6 +131,9 @@ class ChangeCore:
     async def next_save(self) -> None:
         """Return at the change's next save: what a phase waits for may hold now."""
         await self._saved.wait()
+
+    def escalated(self, node_id: str) -> None:
+        """Hook: a step escalated (the facade asks the resolver)."""
 
     def before_save(self) -> None:
         """Hook: the workflow's own record, saved with the change."""
@@ -148,7 +149,6 @@ class ChangeCore:
         restart neither re-stamps nor re-raises (nobody is notified again for old items)."""
         self._statuses = {nid: n.status for nid, n in self.nodes.items()}
         self._attention = {i.key: i for i in attention.items(self)}
-        self._cards = {c.id for c in cards.cards(self)}
 
     def _stamp_statuses(self) -> None:
         now = now_iso()
@@ -179,19 +179,30 @@ class ChangeCore:
         self._attention = cur
 
     # ------------------------------------------------------------------ A2A cards
-    def a2a_cards(self) -> list[cards.StepCard]:
-        return cards.cards(self)
+    def a2a_cards(self) -> list[Card]:
+        """The cards the workflow publishes now (workflow/cards.py), its own first – what the
+        engine goes by; the A2A catalog holds the same, as they were pushed."""
+        return cards.ordered(self, cards.cards(self))
 
-    def _update_cards(self) -> None:
-        """Record each A2A card's registration and removal (they follow the sandboxes)."""
-        cur = {c.id: c for c in cards.cards(self)}
-        for cid in sorted(cur.keys() - self._cards):
-            card = cur[cid]
-            self.event("a2a", f"card registered: {cid}"
-                       + (f" (sandbox {card.sandbox})" if card.sandbox else ""), card.node)
-        for cid in sorted(self._cards - cur.keys()):
-            self.event("a2a", f"card removed: {cid}", cid.partition("@")[2] or None)
-        self._cards = set(cur)
+    def publish_cards(self, new: list[Card], *, quiet: bool = False) -> None:
+        """Push cards to the A2A catalog (a side effect of the workflow): a step's as it starts,
+        the change's own as it starts (``quiet``: published again on a replay – no event)."""
+        if new:
+            self.host.publish_cards(self.cid, new)
+            if not quiet:
+                for card in new:
+                    self.event("a2a", f"card registered: {card.id}",
+                               card.node if card.node in self.nodes else None)
+
+    def remove_cards(self, node_id: str | None = None) -> None:
+        """Withdraw a step's cards as it ends (``node_id``), or every card as the change ends."""
+        self.host.remove_cards(self.cid, node_id)
+        self.event("a2a", f"cards removed: {node_id or 'all of the change'}",
+                   node_id if node_id in self.nodes else None)
+
+    def republish_cards(self) -> None:
+        """Push again every card the workflow publishes now (a catalog subscribed: a restart)."""
+        self.publish_cards(cards.cards(self), quiet=True)
 
     def head_moved(self, branch_head: str) -> str | None:
         """G-H1: the integration branch is written only by the controller. If it is not at the

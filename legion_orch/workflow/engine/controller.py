@@ -79,8 +79,8 @@ class Controller:
         self._loop_task: asyncio.Task | None = None
         self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
                                  self._notified)
-        # told of every escalation (the A2A hub routes it to the change's resolver)
-        self.escalation_listeners: list = []
+        self.card_sinks: list = []          # card catalogs (the A2A listener's): pushed to
+        self.a2a = None                     # the A2A transport (server/a2a.py), once it is up
 
     # The pieces the HTTP layer reads.
     @property
@@ -112,9 +112,25 @@ class Controller:
         else:
             self.notifier.resolved(item)
 
-    def escalated(self, cid: str, node_id: str) -> None:
-        for listener in list(self.escalation_listeners):
-            listener(cid, node_id)
+    def publish_cards(self, cid: str, cards: list) -> None:
+        for sink in list(self.card_sinks):
+            sink.publish(cid, cards)
+
+    def remove_cards(self, cid: str, node_id: str | None) -> None:
+        for sink in list(self.card_sinks):
+            sink.remove(cid, node_id)
+
+    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
+        if self.a2a is None:
+            raise WorkflowError("no A2A listener to carry the reply")
+        await self.a2a.follow_up(cid, sender, task_id, text)
+
+    def subscribe_cards(self, sink) -> None:
+        """A card catalog (the A2A listener's) subscribes: it is given every change's cards as
+        the workflow publishes them now, then each publish and removal as it happens."""
+        self.card_sinks.append(sink)
+        for ce in self.changes.values():
+            ce.republish_cards()
 
     def _notified(self, item: AttentionItem, event: str, sink: str, error: str | None) -> None:
         ce = self.changes.get(item.change)

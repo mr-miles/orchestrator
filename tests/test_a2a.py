@@ -14,9 +14,10 @@ from engine_harness import TASKS, Flow, scenario
 from test_sessions import give_session
 
 from legion_orch.identity import WorkloadBinding
-from legion_orch.server import MCP_TOOLS, A2AHub, build_a2a_app, build_app
+from legion_orch.server import MCP_TOOLS, build_a2a_app, build_app
 from legion_orch.server.views import change_state
 from legion_orch.workflow import attention
+from legion_orch.workflow.cards import agent_state
 from legion_orch.workflow.model import Run
 
 V = {"A2A-Version": "1.0"}
@@ -87,10 +88,12 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         assert ids == ["orchestrator", "resolver", "planner@plan"]    # not its own card
         cards = {x.id: x for x in f.ce.a2a_cards()}
         assert set(cards) == {"orchestrator", "resolver", "planner@plan", "critic@plan"}
-        assert cards["planner@plan"].stopped and not cards["critic@plan"].stopped   # still shown
+        assert agent_state(f.ce, cards["planner@plan"]) == "stopped"     # still published
+        assert agent_state(f.ce, cards["critic@plan"]) == "running"
+        assert "stopped" not in cards["planner@plan"].model_dump()        # no state in a card
         events = [e for e in f.ce.timeline().splitlines() if '"a2a"' in e]
         assert any("card registered: intake@intake" in e for e in events)
-        assert any("card removed: intake@intake" in e for e in events)
+        assert any("cards removed: intake" in e for e in events)
 
         # the card, at its own URL (as the a2a CLI fetches a URL with a path) and well-known
         card = (await c.get("/a2a/planner@plan", headers=token(f, critic))).json()
@@ -126,7 +129,7 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
             ("urn:air:legion:agent:resolver", "application/a2a-agent-card+json"),
             ("urn:air:legion:agent:planner@plan", "application/a2a-agent-card+json")]
         assert cat["entries"][2]["url"].endswith("/a2a/planner@plan")
-        assert "stopped" in cat["entries"][2]["tags"]
+        assert cat["entries"][2]["tags"] == ["planner", "plan"]           # who, not how it is
         env = next(e for e in f.runner.run_envs if "LEGION_ROLE=critic" in e)
         assert "LEGION_A2A_CATALOG=http://host.openshell.internal:8769/a2a/ai-catalog.json" \
             in env.replace("'", "")
@@ -135,9 +138,8 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         # the orchestrator's registry, through A2A
         res = await rpc(c, "orchestrator", send("/list_cards", wait=True), token(f, critic))
         listed = res["task"]["artifacts"][0]["parts"][0]["data"]["cards"]
-        assert [(x["id"], x["state"]) for x in listed] == [("orchestrator", "orchestrator"),
-                                                           ("resolver", "absent"),
-                                                           ("planner@plan", "idle")]
+        assert [x["id"] for x in listed] == ["orchestrator", "resolver", "planner@plan"]
+        assert all("state" not in x for x in listed)
 
 
 @scenario()
@@ -168,21 +170,20 @@ async def test_a_message_to_a_stopped_agent_starts_it_resumes_its_session_and_st
 @scenario()
 async def test_a_message_to_a_running_agent_waits_in_its_inbox(f: Flow):
     planner, critic = await to_critique(f)
-    hub = A2AHub.of(f.ctl)
     assert {"inbox", "a2a_reply"} <= set(MCP_TOOLS)
     async with client(f) as c:
         res = await rpc(c, "critic@plan", send("Is the spec's REQ-1 section final?"),
                         token(f, planner))                          # the idle planner asks
         tid = res["task"]["id"]
         for _ in range(100):
-            if hub.pending(f.ce.cid, "critic@plan"):
+            if f.ce.pending_messages("critic@plan"):
                 break
             await asyncio.sleep(0.02)
-        [item] = hub.pending(f.ce.cid, "critic@plan")
+        [item] = f.ce.pending_messages("critic@plan")
         assert item.view()["from"] == "planner@plan" and "REQ-1" in item.text
-        assert hub.reply(f.ce.cid, "critic@plan", tid, "Yes, final.")
+        assert (await f.ce.a2a_reply(critic, tid, "Yes, final.", "completed"))["ok"]
         t = await task_when(c, "critic@plan", tid, token(f, planner))
-        assert answer_text(t) == "Yes, final." and not hub.pending(f.ce.cid, "critic@plan")
+        assert answer_text(t) == "Yes, final." and not f.ce.pending_messages("critic@plan")
         # the sender's tasks are its own
         r = await c.post("/a2a/critic@plan", headers=token(f, critic) | V,
                          json={"jsonrpc": "2.0", "id": 3, "method": "GetTask", "params": {"id": tid}})
@@ -203,7 +204,7 @@ async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: 
         res = await rpc(c, "implementer@build:T1", send("Where does the greeting live?"),
                         token(f, other))
         await asyncio.sleep(0.2)
-        assert A2AHub.of(f.ctl).pending(f.ce.cid, "implementer@build:T1")   # waits: T1 is live
+        assert f.ce.pending_messages("implementer@build:T1")   # waits: T1 is live
         await f.implement("T1")                                  # reports without answering
         t = await task_when(c, "implementer@build:T1", res["task"]["id"], token(f, other))
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]["message"]["parts"]
@@ -254,8 +255,8 @@ async def test_every_agent_of_a_step_has_a_card_from_the_steps_start(f: Flow):
     assert panel                                            # the tier's judges
     cards = {c.id: c for c in f.ce.a2a_cards()}
     assert {f"{r}@build:T1" for r in ["implementer", *panel]} <= set(cards)
-    assert cards[f"{panel[0]}@build:T1"].state == "not started"
-    assert cards["implementer@build:T1"].state == "running"
+    assert agent_state(f.ce, cards[f"{panel[0]}@build:T1"]) == "not started"
+    assert agent_state(f.ce, cards["implementer@build:T1"]) == "running"
     assert not [c for c in cards if c.endswith("@plan")]    # an ended step has none
     await f.implement()
     judges = [f.run("build:T1", r) for r in panel]
@@ -288,7 +289,7 @@ async def test_an_agent_not_started_is_started_to_answer_and_its_run_continues_i
     assert "What will you check first?" in payload["prompt.md"] and "change nothing" in payload["prompt.md"]
     await f.settle()
     assert early.sandbox in f.runner.stopped and early.sandbox not in f.runner.deleted
-    assert {c.id: c for c in f.ce.a2a_cards()}[f"{judge}@build:T1"].state == "stopped"
+    assert agent_state(f.ce, {c.id: c for c in f.ce.a2a_cards()}[f"{judge}@build:T1"]) == "stopped"
     # a consult cannot report
     out = await f.ce.handle_report(early.id, "DONE", "x", [], {}, None, None)
     assert not out.accepted
@@ -389,3 +390,56 @@ touch {tmp_path}/added
         "catalog add legion http://h:8769/a2a/ai-catalog.json auth=",
         "catalog update legion auth=Bearer tok"]                 # reused: updated (dev auth)
     assert "no a2a CLI on PATH" in start("/usr/bin:/bin")
+
+
+def drift_check(f: Flow):
+    from legion_orch.server.a2a import A2AHub
+    hub = A2AHub.of(f.ctl)
+
+    def check(where: str) -> None:
+        pushed = sorted(c.id for c in hub.catalog.cards(f.ce.cid))
+        implied = sorted(c.id for c in f.ce.a2a_cards())
+        assert pushed == implied, (where, pushed, implied)
+    return hub, check
+
+
+@scenario()
+async def test_the_catalog_never_drifts_from_the_workflow_through_planning(f: Flow):
+    """The cards the workflow pushed (publish as a step starts, withdraw as it ends) are, after
+    every step, exactly the cards its state implies; a catalog subscribing later gets the same."""
+    from legion_orch.server.a2a import Catalog
+    hub, check = drift_check(f)
+    check("start")
+    await f.intake()
+    check("intake reported")
+    await f.human("H-1", "accept")
+    check("H-1")
+    await f.plan()
+    check("plan")
+    await f.critique("REWORK")
+    check("critique rework")
+    await f.plan()
+    await f.critique("PASS")
+    check("critique pass")
+    late = Catalog()
+    f.ctl.subscribe_cards(late)                       # a catalog subscribing later (a restart)
+    assert sorted(c.id for c in late.cards(f.ce.cid)) == sorted(c.id for c in f.ce.a2a_cards())
+
+
+@scenario()
+async def test_the_catalog_never_drifts_from_the_workflow_through_build_and_the_end(f: Flow):
+    hub, check = drift_check(f)
+    await f.to_build()
+    check("build")
+    await f.implement()
+    check("implemented")
+    await f.review(verdict="FAIL")
+    check("review fail: rework")
+    run = f.run("build:T1", "implementer")                 # cycle 2: it blocks, it escalates
+    out = await f.report(run, [], status="BLOCKED", blocked_reason="the greeting is ambiguous",
+                         missing_decision="which language?")
+    assert out.accepted, out
+    check("escalated")
+    await f.human("build:T1", "abandon", reason="the goal changed: no greeting needed at all")
+    check("abandoned")
+    assert hub.catalog.cards(f.ce.cid) == []

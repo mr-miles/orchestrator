@@ -13,10 +13,11 @@ from .runtime.flow_runtime import FlowRuntime
 from .runtime.human import HumanGates
 from .sandboxes.sandboxes import Sandboxes
 from .services.agent_runs import AgentRuns
+from .services.inbox import Inboxes, RunTasks
 from .services.provision import Provisioner
 from .services.publish import Publisher
 from .services.reports import Reports
-from .services.run_tasks import RunTasks
+from .services.resolver import Resolver
 from .services.runs import RunLifecycle
 from .services.verification import Verifications
 from .steps import StepHolds, StepRunner
@@ -49,7 +50,9 @@ def compose(ce: ChangeEngine) -> None:
     gates.flow = flow
     ce._flow, ce._gates, ce._reports, ce._lifecycle = flow, gates, reports, lifecycle
     ce._verifications = verifications             # fronted: pushes, agents' requests, the API
-    ce._tasks = tasks                             # fronted: the agent's inbox and replies
+    ce._tasks = tasks
+    ce._inboxes = inboxes = Inboxes(ce, lifecycle, tasks)   # fronted: every card's inbox
+    ce._resolver = Resolver(ce, inboxes, flow.actions)     # every escalation goes to it
     # not the facade's: for tests that drive a layer directly
     ce._sandboxes, ce._agents, ce._phases, ce._provisioner, ce._runner = (
         sandboxes, agents, phases, provisioner, runner)

@@ -83,8 +83,15 @@ class EngineHost(Protocol):
     def attention(self, item: AttentionItem, raised: bool) -> None:
         """An attention item (§2.2) was raised or resolved: notify the decision owners."""
 
-    def escalated(self, cid: str, node_id: str) -> None:
-        """A step escalated (a failure, not a gate's due decision): its resolver is asked."""
+    def publish_cards(self, cid: str, cards: list) -> None:
+        """Cards the workflow publishes (a step starts; the change starts): to the A2A catalog."""
+
+    def remove_cards(self, cid: str, node_id: str | None) -> None:
+        """A step's cards (or, ``None``, all of the change's) are withdrawn from the catalog."""
+
+    async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
+        """Send ``sender``'s reply to a question back as the next message on its A2A task (the
+        A2A layer carries it, as the sender would with ``a2a send --task-id``)."""
 
     def next_run_id(self) -> str: ...
 
