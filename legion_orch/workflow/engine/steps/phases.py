@@ -396,7 +396,7 @@ class OracleReworks(SetupFailurePolicy):
             text=f"BLOCKER (preflight): {what}. Output: {setup.output[-800:]}. The acceptance "
                  "commands must run in a fresh clone after only the repository's setup "
                  "(mise.toml's setup task). Fix your tests or support files; if the fix is in "
-                 "the setup (the plan's environment) or plan/oracle.json, report BLOCKED with "
+                 "the setup (the plan's environment) or the plan's oracle.json, report BLOCKED with "
                  "it as missing_decision."))
 
 

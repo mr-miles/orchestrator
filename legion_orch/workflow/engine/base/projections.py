@@ -28,6 +28,7 @@ from ...model import (
     Node,
     Oracle,
     PanelDecision,
+    PlanPointer,
     ProtectedPathApproval,
     Readiness,
     ReviewReport,
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
 # the fields of each record that are projections: not persisted by the state store
 PROJECTED: dict[str, set[str]] = {
     "change": {"approvals", "requirements", "surface_pins", "protected_approvals", "overrides",
-               "attestations", "ship", "environment", "oracle", "risk"},
+               "attestations", "ship", "environment", "oracle", "risk", "plan"},
     "node": {"verification", "panel", "reviews"},
 }
 
@@ -162,6 +163,11 @@ def _review(c: ChangeCore, doc: DocVersion) -> None:
     node.reviews[key] = rec.review
 
 
+def _plan(c: ChangeCore, doc: DocVersion) -> None:
+    """The plan worked to (``control/plan.json``)."""
+    c.change.plan = PlanPointer.model_validate(json.loads(doc.content))
+
+
 # schema -> what a new version of a document of it projects into
 PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "approval": _approval,
@@ -175,6 +181,7 @@ PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "verification": _verification,
     "panel-decision": _panel,
     "report": _review,
+    "plan-pointer": _plan,
 }
 
 

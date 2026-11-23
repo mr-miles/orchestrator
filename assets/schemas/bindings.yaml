@@ -1,15 +1,15 @@
 # Path (relative to changes/<id>/) -> schema. First match wins; the last entry is the catch-all.
 # The store validates every write against the bound schema and records its name and sha.
 
-# ---- agent documents
+# ---- agent documents (a plan's under its step: plan/, a fix round's plan.2/)
 - {pattern: "intake/requirements.md", schema: requirements}
 - {pattern: "intake/risk.json", schema: risk}
 - {pattern: "intake/questions.md", schema: questions}
-- {pattern: "plan/spec.md", schema: markdown}
-- {pattern: "plan/specs/REQ-*.md", schema: delta-spec}
-- {pattern: "plan/taskgraph.json", schema: taskgraph}
-- {pattern: "plan/oracle.json", schema: oracle}
-- {pattern: "plan/environment.json", schema: environment}
+- {pattern: "plan*/spec.md", schema: markdown}
+- {pattern: "plan*/specs/REQ-*.md", schema: delta-spec}
+- {pattern: "plan*/taskgraph.json", schema: taskgraph}
+- {pattern: "plan*/oracle.json", schema: oracle}
+- {pattern: "plan*/environment.json", schema: environment}
 - {pattern: "tasks/*/evidence/*.md", schema: evidence}
 - {pattern: "release/plan.md", schema: release-plan}
 # ---- controller documents
@@ -33,6 +33,7 @@
 - {pattern: "control/steps/*/reports/*.json", schema: report}
 - {pattern: "control/ship/readiness.json", schema: readiness}
 - {pattern: "control/environment/build.json", schema: environment-build}
+- {pattern: "control/plan.json", schema: plan-pointer}
 - {pattern: "control/accepted/*.json", schema: accepted}
 - {pattern: "control/logs/*.log", schema: text}
 # ---- everything else

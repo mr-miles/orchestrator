@@ -107,7 +107,8 @@ class GateEvaluator:
         if plan.status != ApprovalState.APPROVED:
             return _g(UNSAT, "approved task graph is stale")
         rec = self.ch.approvals["spec:plan"]
-        tg = self.e.json_doc("plan/taskgraph.json", rec.pins[self.e.p("plan/taskgraph.json")])
+        path, version = governance.pinned(rec, "taskgraph.json")
+        tg = self.e.json_doc(path, version)
         ids = {t["id"] for t in tg["tasks"]}     # every round's tasks (a round appends its own)
         if ids != self.task_ids:
             return _g(UNSAT, f"build tasks {sorted(self.task_ids)} != contract {sorted(ids)}")

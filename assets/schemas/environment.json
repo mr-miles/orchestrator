@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Sandbox environment (plan/environment.json): named sandbox profiles composed from the tool and network-policy library, which role runs in which profile, and proposed library additions.",
+  "description": "Sandbox environment (<plan>/environment.json): named sandbox profiles composed from the tool and network-policy library, which role runs in which profile, and proposed library additions.",
   "type": "object",
   "required": [
     "summary",

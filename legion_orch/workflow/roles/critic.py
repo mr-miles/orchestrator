@@ -2,8 +2,7 @@
 the plan node while it is REVIEWING; the node is accepted when it passes."""
 from __future__ import annotations
 
-from .. import guards
-from ..governance.approvals import ENV_SPEC, PLAN_DOCS
+from .. import governance, guards
 from ..model import (
     Node,
     ReviewResult,
@@ -30,7 +29,7 @@ class Critic(RoleHandler):
     sees_oracle_commit = False
 
     def extra_context(self, e: RoleContext, node: Node) -> list[str]:
-        att = e.latest_att(ENV_SPEC) if e.cfg.environment is not None else None
+        att = e.latest_att(governance.env_spec(e, node.id)) if e.cfg.environment is not None else None
         rnd = e.change.rounds[-1] if node.round > 1 and e.change.rounds else None
         return [a for a in [att, *([rnd.attestation, *rnd.failure] if rnd else [])] if a]
 
@@ -39,7 +38,9 @@ class Critic(RoleHandler):
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         plan_atts = {a.path: a.version for a in r.parsed if a.kind == "file"}
-        docs = PLAN_DOCS + ([ENV_SPEC] if e.cfg.environment is not None else [])
+        d = r.node.id                                   # the plan it judges
+        docs = governance.plan_docs(e, d) + (
+            [governance.env_spec(e, d)] if e.cfg.environment is not None else [])
         latest = {e.p(p): e.latest(p) for p in docs}
         return guards.critique(r.data, plan_atts, latest, r.repo_atts)
 

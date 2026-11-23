@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The plan the change is working to (control/plan.json): the plan step whose directory holds its documents (plan, a fix round's plan.2) and the approved version of each document (path relative to the change -> version). Written when H-E1 approves a plan, updated as its subjects are approved.",
+  "type": "object",
+  "required": [
+    "node",
+    "at"
+  ],
+  "properties": {
+    "node": {
+      "type": "string",
+      "pattern": "^plan(\\.[0-9]+)?$"
+    },
+    "approved": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "at": {
+      "type": "string"
+    }
+  }
+}

@@ -214,7 +214,7 @@ async def test_report_schema_mismatch_is_g_r7(f: Flow):
     await f.plan()
     r = f.run("plan", "critic")
     plan = [f.ce.latest_att(p) for p in ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
-    doc = await f.write(r, "critique/cycle-1.md", "x")
+    doc = await f.write(r, "plan/critique/cycle-1.md", "x")
     out = await f.report(r, plan + [doc], {"verdict": "MAYBE"})
     assert not out.accepted and any(v.startswith("G-R7") for v in out.violations)
 
@@ -366,7 +366,7 @@ async def test_critique_must_attest_the_latest_plan(f: Flow):
     await f.human("H-1", "accept")
     await f.plan()
     r = f.run("plan", "critic")
-    doc = await f.write(r, "critique/cycle-1.md", "x")
+    doc = await f.write(r, "plan/critique/cycle-1.md", "x")
     out = await f.report(r, [doc], {"verdict": "REWORK", "findings": []})
     assert {"G-C1: REWORK requires at least one finding"} <= set(out.violations)
     assert any("latest plan version" in v for v in out.violations)

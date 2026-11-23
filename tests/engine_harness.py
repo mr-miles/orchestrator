@@ -427,30 +427,33 @@ class Flow:
 
     async def plan(self, tasks=None, oracle=None, environment: dict | None = None,
                    keep_environment: bool = False):
-        """With the environment stage the plan includes ``plan/environment.json``
-        (``environment``, default ENVIRONMENT), or attests the existing one (``keep_environment``)."""
+        """With the environment stage the plan includes its ``environment.json``
+        (``environment``, default ENVIRONMENT), or attests the existing one (``keep_environment``).
+        The documents are in the plan step's directory (``plan``, a fix round's ``plan.2``)."""
         r = self.run("plan")
-        atts = [await self.write(r, "plan/spec.md", f"# Spec (cycle {r.cycle})\n"),
-                await self.write(r, "plan/oracle.json", oracle or ORACLE),
-                await self.write(r, "plan/taskgraph.json", {"tasks": tasks or TASKS})]
+        d = r.node_id
+        atts = [await self.write(r, f"{d}/spec.md", f"# Spec (cycle {r.cycle})\n"),
+                await self.write(r, f"{d}/oracle.json", oracle or ORACLE),
+                await self.write(r, f"{d}/taskgraph.json", {"tasks": tasks or TASKS})]
         for req in self.ce.change.requirements:
             spec = (f"# {req} delta (cycle {r.cycle})\n\n## Current behaviour\nmissing\n\n"
                     "## Change\nadd it\n\n## Acceptance criteria\n- works\n")
-            atts.append(await self.write(r, f"plan/specs/{req}.md", spec))
+            atts.append(await self.write(r, f"{d}/specs/{req}.md", spec))
         if self.cfg.environment is not None:
-            atts.append(self.ce.latest_att("plan/environment.json") if keep_environment else
-                        await self.write(r, "plan/environment.json", environment or ENVIRONMENT))
+            atts.append(self.ce.latest_att(f"{d}/environment.json") if keep_environment else
+                        await self.write(r, f"{d}/environment.json", environment or ENVIRONMENT))
         return await self.report(r, atts)
 
     async def critique(self, verdict: str = "PASS"):
         r = self.run("plan", "critic")
-        docs = ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json") + (
-            ("plan/environment.json",) if self.cfg.environment is not None else ())
+        d = r.node_id                                  # the plan it judges
+        docs = (f"{d}/spec.md", f"{d}/oracle.json", f"{d}/taskgraph.json") + (
+            (f"{d}/environment.json",) if self.cfg.environment is not None else ())
         plan = [self.ce.latest_att(p) for p in docs]
         findings = [] if verdict == "PASS" else [{
             "severity": "WARNING", "confidence": "HIGH", "title": "spec too thin",
             "fix": "expand the spec", "attestations": [plan[0]]}]
-        doc = await self.write(r, f"critique/cycle-{r.cycle}.md", f"critique {verdict}")
+        doc = await self.write(r, f"{d}/critique/cycle-{r.cycle}.md", f"critique {verdict}")
         return await self.report(r, plan + [doc], {"verdict": verdict, "findings": findings,
                                                    "checked": ["traceability"]})
 

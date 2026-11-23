@@ -87,7 +87,7 @@ async def test_ending_the_task_with_messages_waiting_reminds_of_each_message_onc
             if A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@plan"):
                 break
             await asyncio.sleep(0.02)
-    doc = await f.write(critic, f"critique/cycle-{critic.cycle}.md", "critique PASS")
+    doc = await f.write(critic, f"plan/critique/cycle-{critic.cycle}.md", "critique PASS")
     plan = [f"file:changes/{f.ce.cid}/plan/{p}@1" for p in ("spec.md", "oracle.json",
                                                             "taskgraph.json")]
     out = await f.ce.handle_report(critic.id, "DONE", "ok", plan + [doc],

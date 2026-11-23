@@ -16,7 +16,7 @@ from ...environment import EnvironmentSpec
 from ...model import H_CHANGE, H_ENV, H_REQUIREMENTS, ApprovalState, TierOverride
 from ...model import Approval as ApprovalRecord
 from ...results import ActionResult
-from ..base.common import ENV_SPEC, WorkflowError
+from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
@@ -140,14 +140,16 @@ class SubjectsApproved(Approves):
     async def _approve_environment(self, c: ChangeCore, approver: str, payload: dict) -> None:
         """The sandbox environment at its current version (with the plan, at H-E1);
         provisioning follows."""
-        version = c.latest(ENV_SPEC)
+        spec = governance.env_spec(c, governance.draft(c))
+        version = c.latest(spec)
         if version is None:
-            raise WorkflowError(f"no {ENV_SPEC} to approve")
+            raise WorkflowError(f"no {spec} to approve")
         note = (payload.get("feedback") or "").strip() or None
-        rec = ApprovalRecord(gate=H_ENV, approver=approver, pins={c.p(ENV_SPEC): version},
+        rec = ApprovalRecord(gate=H_ENV, approver=approver, pins={c.p(spec): version},
                              note=note)
         rec.attestation = c.write_record("control/approvals/environment.json", rec).attestation   # projected
-        await self._adopt_mise(c, EnvironmentSpec.model_validate(c.json_doc(ENV_SPEC, version)))
+        governance.work_to(c, {c.p(spec): version})
+        await self._adopt_mise(c, EnvironmentSpec.model_validate(c.json_doc(spec, version)))
 
     async def _adopt_mise(self, c: ChangeCore, spec: EnvironmentSpec) -> None:
         """§5.3c: the approved spec's mise.toml goes onto the integration branch (a controller

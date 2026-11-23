@@ -97,7 +97,7 @@ def test_assets_render_and_pin(tmp_path):
     vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
                               "context_refs", "feedback", "candidate_sha", "write_scope",
-                              "required_docs", "workdir", "sandbox_tools")}
+                              "required_docs", "workdir", "sandbox_tools", "plan")}
     vars_["task_soul"] = "backend-engineer"
     r = a.render_role("implementer", vars_)
     assert "Backend Engineer" in r.soul and r.pin.startswith("sha256:")
@@ -797,9 +797,9 @@ def test_protected_support_files_are_protected():
     from legion_orch.workflow import governance
     from legion_orch.workflow.model import Oracle
     e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support),
-                                                           setup_pin=None),
+                                                           setup_pin=None, plan_node="plan"),
                               cfg=types.SimpleNamespace(protected_paths=[".github/"]),
-                              latest=lambda _rel: None)
+                              latest=lambda _rel: None, current=lambda _base: None)
     assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
 
 

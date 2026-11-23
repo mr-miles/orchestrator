@@ -48,8 +48,6 @@ from ...roles import handler_for
 from ...view import RoleContext
 from ..base.auth import open_task
 from ..base.common import (
-    ENV_SPEC,
-    PLAN_DOCS,
     SKILLS_DIR,
     AgentBusy,
     NoAgent,
@@ -512,7 +510,10 @@ class AgentRuns:
         return governance.stale_approvals(self.c)
 
     def _plan_docs(self) -> list[str]:
-        return PLAN_DOCS + [f"plan/specs/{r}.md" for r in self.c.change.requirements]
+        """The documents of the plan being made (the current round's plan step)."""
+        d = governance.draft(self.c)
+        return governance.plan_docs(self.c, d) + [governance.spec_doc(self.c, r, d)
+                                                  for r in self.c.change.requirements]
 
     def _context_refs(self, node: Node, role: str) -> list[str]:
         """Common context plus the role handler's own (workflow/roles/). A build task's roles get
@@ -528,12 +529,12 @@ class AgentRuns:
             if (plan := self.c.current(PLAN)) and plan.status == ACCEPTED:
                 refs += [a for a in (self.c.latest_att(p) for p in self._plan_docs()) if a]
         else:
-            own = ({self.c.p(f"plan/specs/{r}.md") for r in node.task.requirements}
+            own = ({self.c.p(governance.spec_doc(self.c, r)) for r in node.task.requirements}
                    if h.task_scoped_specs and node.task else None)
             for key, appr in self.c.change.approvals.items():
                 if key == "oracle" or key.startswith("spec:"):
                     refs += [f"file:{p}@{v}" for p, v in appr.pins.items()
-                             if own is None or not p.startswith(self.c.p("plan/specs/")) or p in own]
+                             if own is None or "/specs/" not in p or p in own]
         given = {_file_path(a) for a in refs} - {None}
         refs += [a for a in (attest.normalize(x, cid) for x in h.extra_context(self.roles, node))
                  if _file_path(a) not in given]
@@ -601,7 +602,8 @@ class AgentRuns:
         tools: list[str] = []
         if env is not None and appr is not None:
             try:
-                spec = self.c.json_doc(ENV_SPEC, appr.pins.get(self.c.p(ENV_SPEC)))
+                path, version = governance.pinned(appr, governance.ENV_FILE)
+                spec = self.c.json_doc(path, version)
                 tools = list(spec["profiles"][env.profile]["tools"])
             except (KeyError, TypeError, ValueError, DocStoreError):
                 tools = []
@@ -629,6 +631,8 @@ class AgentRuns:
             "task_title": task.title if task else node.title,
             "task_json": json.dumps(task_json, indent=2),
             "cycle": node.cycle, "role": role, "candidate_sha": judged_sha or "",
+            # the plan's directory: its own for the plan step's agents, else the plan worked to
+            "plan": node.id if node.kind == PLAN else ch.plan_node,
             "workdir": f"{self.c.cfg.sandbox.root}/work", "task_soul": task.soul if task else "",
             "fix_round": "", "scaffold": "", "sandbox_tools": self._sandbox_tools(role),
         } | handler_for(role).extra_variables(self.roles, node)

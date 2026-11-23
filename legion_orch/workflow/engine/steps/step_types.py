@@ -15,11 +15,13 @@ node's kind; the table at the bottom is the only per-kind knowledge.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ....git import paths_overlap
 from ....util import now_iso
+from ... import attest, governance
 from ...model import (
     ACTIVE_NODE,
     BASELINE,
@@ -45,6 +47,7 @@ from ...model import (
     Node,
     NodeKind,
     NodeStatus,
+    PlanPointer,
     Resume,
 )
 from ..base.core import ChangeCore
@@ -133,14 +136,20 @@ class Stands:
         """What the step's node keeps of the work that stands."""
 
 
+def _same(c: ChangeCore, path: str | None, version: int | None, rel: str) -> bool:
+    """The document ``path`` at ``version`` says what ``rel`` (another plan's copy) says now."""
+    if path is None or version is None or not c.latest(rel):
+        return False
+    return c.docs.read(path, version).sha256 == c.doc(rel).sha256
+
+
 class OracleUnchanged(Stands):
-    """A round that left ``plan/oracle.json`` as approved keeps the oracle commit."""
-    kind, why = "oracle", "plan/oracle.json is unchanged: the oracle stands"
+    """A round whose plan left the oracle as approved keeps the oracle commit."""
+    kind, why = "oracle", "the plan's oracle.json is unchanged: the oracle stands"
 
     def holds(self, c: ChangeCore, node: Node) -> bool:
-        orc = c.change.approvals.get("oracle")
-        return node.round > 1 and orc is not None and \
-            orc.pins.get(c.p("plan/oracle.json")) == c.latest("plan/oracle.json")
+        path, version = governance.pinned(c.change.approvals.get("oracle"), "oracle.json")
+        return node.round > 1 and _same(c, path, version, c.change.plan_doc("oracle.json"))
 
     def keep(self, c: ChangeCore, node: Node) -> None:
         node.accepted_sha = c.change.oracle_sha
@@ -151,9 +160,12 @@ class EnvironmentUnchanged(Stands):
     kind, why = "provision", "the environment spec is unchanged: the build stands"
 
     def holds(self, c: ChangeCore, node: Node) -> bool:
-        env = c.change.approvals.get(H_ENV)
-        return node.round > 1 and c.change.environment is not None and env is not None and \
-            env.pins.get(c.p("plan/environment.json")) == c.latest("plan/environment.json")
+        build = c.change.environment
+        if node.round == 1 or build is None:
+            return False
+        m = attest.FILE_RE.match(build.spec)               # the spec the build was made from
+        return m is not None and _same(c, m["path"], int(m["version"]),
+                                       governance.env_spec(c))
 
 
 # ---------------------------------------------------------------------------- resets
@@ -193,6 +205,28 @@ class RestartPlan(Reset):
             c.write_record(f"control/surfaces/{sid}.json",
                            {"surface": sid, "pins": {}, "head": ch.base_sha, "approver": "controller",
                             "at": now_iso(), "revoked": True})
+        if ch.plan is not None:                     # nothing approved to work to any more
+            c.write_record(governance.PLAN_RECORD, PlanPointer())
+
+
+# ---------------------------------------------------------------------------- on start
+class SeedPlan:
+    """A fix round's plan starts from the plan worked to: its documents (not its critiques)
+    are copied into the round's plan step's directory, which its planner then revises – a
+    new step, with its own documents, not another cycle of the old one."""
+
+    def __call__(self, c: ChangeCore, node: Node) -> None:
+        src = c.change.plan_node
+        if node.round == 1 or src == node.id:
+            return
+        prefix = c.p(f"{src}/")
+        copied = 0
+        for m in c.docs.list(prefix):
+            rel = m.path[len(prefix):]
+            if not rel.startswith("critique/"):
+                c.write_record(f"{node.id}/{rel}", c.docs.read(m.path, m.version).content)
+                copied += 1
+        c.event("plan", f"{node.id} starts from {src}'s plan ({copied} documents)", node.id)
 
 
 class DropEnvironment(Reset):
@@ -217,6 +251,7 @@ class StepType:
     rework_resume: Resume = Resume.READY         # where a failed or blocked run resumes
     stands: Stands | None = None                 # a round's step with nothing to redo passes
     on_reset: tuple[Reset, ...] = ()             # what a send-back resetting it undoes
+    on_start: tuple[Callable[[ChangeCore, Node], None], ...] = ()   # when it first starts
 
     @property
     def role(self) -> str | None:
@@ -264,7 +299,7 @@ STEP_TYPES: dict[NodeKind, StepType] = {
     INTAKE: agent("intake", SandboxPlan(Checkout.BASE, UntilGate(H_REQUIREMENTS))),
     PLAN: agent("planner", SandboxPlan(Checkout.BASE, UntilGate(H_ENV)),
                 Critique("critic", "G-C2"), DefineTasks(),                         # the critic judges (G-C2)
-                on_reset=(RestartPlan(),)),
+                on_reset=(RestartPlan(),), on_start=(SeedPlan(),)),
     PROVISION: StepType((BuildImages(),), dispatch_when=(EnvironmentQuiescent(),),
                         stands=EnvironmentUnchanged(),
                         on_reset=(DropEnvironment(),)),

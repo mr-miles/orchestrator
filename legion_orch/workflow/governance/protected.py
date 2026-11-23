@@ -10,7 +10,7 @@ from ..model import (
 )
 from ..setup import MISE_TOML
 from ..view import ChangeView
-from .approvals import ENV_SPEC
+from .approvals import draft, env_spec
 from .common import GovernanceError
 
 
@@ -36,9 +36,10 @@ def setup_paths(e: ChangeView) -> list[str]:
     spec proposes one – a task must not change what runs before every check."""
     if e.change.setup_pin:
         return [MISE_TOML]
-    if e.latest(ENV_SPEC):
+    spec = env_spec(e, draft(e))
+    if e.latest(spec):
         try:
-            if e.json_doc(ENV_SPEC).get("mise"):
+            if e.json_doc(spec).get("mise"):
                 return [MISE_TOML]
         except (ValueError, AttributeError):
             pass
