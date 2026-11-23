@@ -85,7 +85,7 @@ class WorkloadAuth:
             return WorkloadBinding(sandbox=ref, change=v.change, task=v.task, role="verifier")
         for cid, r in self._runs():
             if r.sandbox_ref == ref and not r.sandbox_deleted:
-                return WorkloadBinding(sandbox=ref, change=cid, task=r.node_id, role=r.role)
+                return WorkloadBinding(sandbox=ref, change=cid, task=r.ticket, role=r.role)
         return None
 
     def live_run(self, token: str | None) -> tuple[str, Run] | None:
@@ -96,7 +96,7 @@ class WorkloadAuth:
             return None
         for cid, r in self._runs():
             if r.sandbox_ref == b.sandbox and (r.status in LIVE_RUN or open_task(r)):
-                if (cid, r.node_id, r.role) == (b.change, b.task, b.role):
+                if (cid, r.ticket, r.role) == (b.change, b.task, b.role):
                     return cid, r
                 log.warning("token for %s does not match live run %s", b, r.id)
                 return None
@@ -111,7 +111,7 @@ class WorkloadAuth:
             return None
         for cid, r in self._runs():
             if r.sandbox_ref == b.sandbox and not r.sandbox_deleted \
-                    and (cid, r.node_id, r.role) == (b.change, b.task, b.role):
+                    and (cid, r.ticket, r.role) == (b.change, b.task, b.role):
                 return b
         return None
 

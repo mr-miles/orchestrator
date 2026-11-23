@@ -763,6 +763,8 @@ class PlanPointer(Record):
 
 
 class Change(Record):
+    """A change: its goal and where it is made; how it stands. Its workflow is its tickets (the
+    root's pointers: the approved outputs); this is what the tickets do not say."""
     id: str
     goal: str
     workspace: str                  # the configured workspace (repository) it is made in
@@ -771,45 +773,14 @@ class Change(Record):
     base_sha: str | None = None
     # the base has no build tooling or code yet (§5.3b): the plan starts with a scaffold task
     blank_repo: bool = False
-    tier: str | None = None
+    tier: str | None = None                               # from the approved risk (H-1)
     risk: RiskAssessment | None = None
-    tier_override: TierOverride | None = None
-    approvals: dict[str, Approval] = {}   # "H-1", "H-E1", "H-3", "oracle", "spec:<subject>"
-    plan: PlanPointer | None = None       # the plan worked to (control/plan.json)
-    oracle: Oracle | None = None          # the plan's oracle.json as accepted
-    oracle_sha: str | None = None
-    integration_head: str | None = None
-    panel: list[str] = []
-    requirements: list[str] = []
-    first_build_at: str | None = None
     ended: ChangeEnd | None = None                        # abandoned or rejected: by, where, why
-    attestations: dict[str, AttestationRecord] = {}       # kind -> latest record
-    overrides: list[GateOverride] = []
-    protected_approvals: list[ProtectedPathApproval] = []
-    surface_pins: dict[str, SurfacePin] = {}              # surface id -> pin record
-    ship: Readiness | None = None
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
     setup_pin: SetupPin | None = None                     # None: no setup task, nothing runs
-    cleaned_at: str | None = None    # ended, retrospective done: run branches and images removed
+    completed: bool = False          # ended, and its on-complete process (retrospective) done
+    cleaned_at: str | None = None    # ended, retrospective done: branches and images removed
     pruned_at: str | None = None     # a human removed the integration branch and evidence refs
-    round: int = 1                                         # 1, or the current fix round
-    rounds: list[FixRound] = []                            # fix rounds since the last restart
     questions: dict[str, AgentQuestion] = {}               # A2A ask_human, by task id
     verifications: dict[str, VerificationRun] = {}         # the verification service's runs
-
-    @property
-    def plan_node(self) -> str:
-        """The plan worked to: its step's node, the directory of its documents (``plan``
-        until a plan is approved)."""
-        return self.plan.node if self.plan else "plan"
-
-    def plan_doc(self, name: str) -> str:
-        """A document of the plan worked to, relative to the change (``spec.md`` ->
-        ``plan.2/spec.md``)."""
-        return f"{self.plan_node}/{name}"
-
-    def round_first_build_at(self) -> str | None:
-        """When the current round's first build started (round 1: the change's first build);
-        None while the round has built nothing. Approvals and the independent baseline must
-        precede it."""
-        return self.rounds[-1].first_build_at if self.rounds else self.first_build_at
+    proposals: dict[str, ResolverProposal] = {}            # the resolver's, per waiting ticket
