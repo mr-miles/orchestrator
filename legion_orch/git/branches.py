@@ -10,14 +10,27 @@ was made on – so no worktree is involved and a branch that moved meanwhile is 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 from .remote import GitError, GitRemote, run
 
 IDENTITY = ("-c", "user.name=legion-controller", "-c", "user.email=legion-controller@localhost")
 _UNSAFE = re.compile(r"[\s~^:?*\[\\]|\.\.|@\{|\.lock$|^\.|/\.")
+
+
+async def run_input(*args: str, cwd: Path, env: dict, data: str | None) -> tuple[int, str]:
+    """A git command with ``data`` on its stdin (its stdout and stderr together)."""
+    proc = await asyncio.create_subprocess_exec(
+        *args, cwd=str(cwd), env=env, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    out, _ = await asyncio.wait_for(proc.communicate(data.encode() if data is not None else None),
+                                    300)
+    return proc.returncode, out.decode(errors="replace")
 
 
 def ticket_branch(change: str, ticket: str) -> str:
@@ -88,6 +101,32 @@ class Branches:
                                          "-p", sha, "-m", message)).strip()
             await self.hub.git("update-ref", f"refs/heads/{into}", commit, check.head)
             return MergeCheck(True, commit)
+
+    async def commit_file(self, branch: str, path: str, content: str, message: str) -> str:
+        """Commit ``path`` with ``content`` on ``branch`` as the controller (in the bare hub, on
+        the branch's head: never a stale worktree); its new head – unchanged when the file
+        already had this content."""
+        async with self.lock(branch):
+            head = await self.head(branch)
+            if head is None:
+                raise GitError(f"no branch {branch}")
+            with tempfile.TemporaryDirectory() as tmp:
+                env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+
+                async def git(*args: str, data: str | None = None) -> str:
+                    rc, out = await run_input("git", *args, cwd=self.hub.repo, env=env, data=data)
+                    if rc != 0:
+                        raise GitError(f"git {' '.join(args)} failed ({rc}): {out.strip()[:500]}")
+                    return out.strip()
+                await git("read-tree", head)
+                blob = await git("hash-object", "-w", "--stdin", data=content)
+                await git("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}")
+                tree = await git("write-tree")
+                if tree == await git("rev-parse", f"{head}^{{tree}}"):
+                    return head
+                commit = await git(*IDENTITY, "commit-tree", tree, "-p", head, "-m", message)
+            await self.hub.git("update-ref", f"refs/heads/{branch}", commit, head)
+            return commit
 
     async def _check(self, sha: str, into: str) -> MergeCheck:
         head = await self.head(into)

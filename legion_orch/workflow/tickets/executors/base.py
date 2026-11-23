@@ -113,12 +113,14 @@ def apply(tickets: Tickets, tid: str, outcome: Outcome) -> list[Effect]:
             return tickets.work_done(tid, sha, outputs)
         case GaveUp(findings):
             return tickets.work_failed(tid, findings)
-        case OverBudget():
-            return tickets.budget_exceeded(tid)
+        case OverBudget(detail):
+            return tickets.budget_exceeded(tid, [detail])
         case Blocked(detail, findings):
             return tickets.blocked(tid, [detail, *findings] if detail else findings)
-        case _:
-            return tickets.system_error(tid)
+        case Fault(detail):
+            return tickets.system_error(tid, [detail])
+        case _:                                  # a verdict from a ticket's work: a bug
+            return tickets.system_error(tid, [f"an unexpected outcome: {outcome!r}"])
 
 
 # ------------------------------------------------------------------------------- executors

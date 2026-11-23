@@ -15,8 +15,9 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ....git.branches import Branches, integration_branch
 from ....sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
-from ... import guards
+from ... import guards, setup
 from ...assets import GitMode
 from ...attest import FILE_RE
 from ...environment import VERIFIER, EnvironmentSpec, Library, LibraryError
@@ -37,6 +38,7 @@ PROVISION_LOG = "control/environment/provision.log"
 class ProvisionPlan:
     """What the approved spec needs: per role its recipe, network policies and resources."""
     spec: str                                                    # attestation
+    mise: str | None = None                       # the mise.toml it proposes (§5.3c), if any
     recipes: dict[str, ImageRecipe] = field(default_factory=dict)        # role -> image recipe
     roles: dict[str, RoleEnvironment] = field(default_factory=dict)      # role -> (image unset)
 
@@ -72,7 +74,8 @@ class Provisioner:
             return self._fail("the approved spec no longer resolves against the library: "
                               + "; ".join(v))
         env, sc = c.cfg.environment, c.cfg.sandbox
-        plan = ProvisionPlan(spec=f"file:{path}@{version}")
+        plan = ProvisionPlan(spec=f"file:{path}@{version}",
+                             mise=spec.mise.content if spec.mise else None)
         for role, pname in spec.roles.items():
             prof = profiles[pname]
             base = (sc.verifier_image or sc.image) if role == VERIFIER else sc.image
@@ -98,6 +101,13 @@ class Provisioner:
             if isinstance(plan, str):
                 return plan
             recipes = {r.tag: r for r in plan.recipes.values()}
+            if plan.mise is not None:          # the approved mise.toml: committed, pinned (§5.3c)
+                head = await Branches(c.git).commit_file(
+                    integration_branch(c.cid), setup.MISE_TOML, plan.mise,
+                    f"legion {c.cid}: the approved mise.toml")
+                c.change.setup_pin = setup.pin_for(plan.mise, "H-E1")
+                c.event("provision", f"committed the approved mise.toml at {head[:12]}",
+                        ticket.id)
             c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}", ticket.id)
         log: list[str] = []
         for role, env in sorted(plan.roles.items()):

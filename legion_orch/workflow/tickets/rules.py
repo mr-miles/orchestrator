@@ -216,12 +216,14 @@ class Tickets:
             self._wait(x, Waiting.ESCALATED)
         return self._take()
 
-    def system_error(self, tid: str) -> list[Effect]:
+    def system_error(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
         """A system error (the work's or the merge's) outlasted its backoff: wait for a human
-        (never an attempt)."""
+        (never an attempt); ``findings``: what failed, for them."""
         x = self.t.get(tid)
-        self._wait(x if x is not None and x.status == Status.MERGING else self._working(tid),
-                   Waiting.SYSTEM)
+        x = x if x is not None and x.status == Status.MERGING else self._working(tid)
+        if findings:
+            x.findings = list(findings)
+        self._wait(x, Waiting.SYSTEM)
         return self._take()
 
     def blocked(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
@@ -232,8 +234,11 @@ class Tickets:
         self._wait(x, Waiting.BLOCKED)
         return self._take()
 
-    def budget_exceeded(self, tid: str) -> list[Effect]:
-        self._wait(self._working(tid), Waiting.BUDGET)
+    def budget_exceeded(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
+        x = self._working(tid)
+        if findings:
+            x.findings = list(findings)
+        self._wait(x, Waiting.BUDGET)
         return self._take()
 
     @classmethod

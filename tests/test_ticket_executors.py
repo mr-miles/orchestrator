@@ -320,3 +320,15 @@ async def test_publishing_without_a_remote_merges_into_the_base_branch(hub):
                           backoff=NOW)
     assert await pub.run(work(x, base=result)) == Done() and Remote.pushed == [result]
     assert isinstance(await pub.run(work(x)), Fault)                    # nothing to publish
+
+
+async def test_a_file_is_committed_on_a_branch_head_in_the_bare_hub(hub):
+    br = Branches(hub)
+    base = await hub.resolve_base()
+    await br.create("legion/c1/integration", base)
+    moved = commit(hub, base, {"a.txt": "merged\n"}, "merged")          # merged meanwhile
+    await hub.git("update-ref", "refs/heads/legion/c1/integration", moved, base)
+    head = await br.commit_file("legion/c1/integration", "mise.toml", "[tools]\n", "pin")
+    assert subprocess.run(["git", "ls-tree", "-r", "--name-only", head], cwd=hub.repo,
+                          capture_output=True, text=True).stdout.split() == ["a.txt", "mise.toml"]
+    assert await br.commit_file("legion/c1/integration", "mise.toml", "[tools]\n", "again") == head

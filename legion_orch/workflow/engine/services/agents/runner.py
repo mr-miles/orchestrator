@@ -26,9 +26,10 @@ from .... import cards
 from ....model import Run, Turn
 from ....tickets import Ticket
 from ....tickets.executors import Work as TicketWork
-from ...base.common import NoAgent, WorkflowError
+from ...base.common import NoAgent, WorkflowError, log
 from ...base.core import ChangeCore
 from ...base.dispatch import Dispatcher
+from ...base.work import Outcome
 from ...sandboxes.plan import SandboxPlan
 from ...sandboxes.sandboxes import Sandboxes
 from ..runs import RunLifecycle
@@ -102,7 +103,11 @@ class AgentRunner:
         a dispatcher slot (``dispatch`` – work in flight goes first). Returns how it went –
         (outcome, prepared) – for the ticket's executor to read."""
         work, prepared = self.agents.work(ticket, role, tw, plan, wanted=wanted, started=started)
-        outcome = await dispatch.run(work)
+        try:
+            outcome = await dispatch.run(work)
+        except Exception as e:                  # noqa: BLE001 – the run fails, not the ticket
+            log.exception("the work of a %s run failed", role)
+            outcome = Outcome(error=f"{type(e).__name__}: {e}")
         async with self.c.lock:
             if prepared.run is not None:
                 self.agents.finish(prepared.run, outcome)     # however the work ended

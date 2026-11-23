@@ -132,7 +132,8 @@ def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:
     orc = oracle if oracle is not None else _json(pointer(e, "oracle"))
     env = _json(pointer(e, "environment"))
     return [*orc.get("acceptance_tests", []), *orc.get("protected_support", []),
-            *e.cfg.protected_paths, *([MISE_TOML] if env.get("mise") else [])]
+            *e.cfg.protected_paths,
+            *([MISE_TOML] if env.get("mise") or e.change.setup_pin else [])]
 
 
 async def protected_unchanged(e: RoleContext, head: str | None) -> list[str]:

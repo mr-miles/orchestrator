@@ -79,6 +79,15 @@ class ChangeCore:
             self._tickets = Tickets.over(self.st.tickets)
         return self._tickets
 
+    def setup_waits_for_scaffold(self) -> bool:
+        """A blank repository (§5.3b, §5.3c): until the scaffold build has passed, what the
+        setup task needs does not exist – no sandbox runs it; the scaffold's own verification
+        runs it, at its commit."""
+        if not self.change.blank_repo:
+            return False
+        return not any(t.work.get("scaffold") and t.status == Status.PASSED
+                       for t in self.st.tickets.values())
+
     def pointer_json(self, name: str) -> Any:
         """An approved JSON output (the change's pointer ``name``), or None."""
         ref = self.tickets.root.pointers.get(name) if self.st.tickets else None
