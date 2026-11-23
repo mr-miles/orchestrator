@@ -23,7 +23,7 @@ def verifiers(f: Flow) -> list[str]:
 
 async def push(f: Flow, files: dict[str, str] | None = None) -> tuple[object, str]:
     """T1's implementer commits and pushes; the git remote tells the controller."""
-    r = f.run("build:T1", "implementer")
+    r = f.run("T1", "implementer")
     sha = f.commit(r, files or {"src/greet.txt": "hello\n"})
     await f.ctl.git_pushed(GitGrant(r.id, f"refs/heads/{r.branch}", "app"))
     await asyncio.sleep(0.05)                 # the verification service takes the Pushed event
@@ -31,8 +31,8 @@ async def push(f: Flow, files: dict[str, str] | None = None) -> tuple[object, st
 
 
 async def report(f: Flow, r, sha: str):
-    ev = await f.write(r, "tasks/T1/evidence/cycle-1.md", f"- `{CMD}` -> exit 0")
-    return await f.report(r, [f"git:app@{sha}", ev])
+    ev = await f.write(r, "evidence.md", f"- `{CMD}` -> exit 0")
+    return await f.report(r, [f"git:app@{sha}", ev], outputs={"evidence": ev})
 
 
 @scenario()
@@ -45,11 +45,9 @@ async def test_a_pushed_tip_is_verified_once_and_the_report_uses_it(f: Flow):
     assert len(verifiers(f)) == 1
     await f.ctl.git_pushed(GitGrant(r.id, f"refs/heads/{r.branch}", "app"))   # the same tip
     await report(f, r, sha)
-    assert len(verifiers(f)) == 1                       # the Verify phase: the push's result
-    rec = f.ce.nodes["build:T1"].verification["1"]
-    assert rec.ok and rec.cached and rec.run == v.id
-    assert f.status("build:T1") == "REVIEWING"
-    assert "step:build:T1" in f.ce.change.verifications[v.id].requested_by
+    assert len(verifiers(f)) == 1             # the verify criterion: the push's result again
+    assert f.status("verify:T1") == "passed" and f.status("review:T1") == "working"
+    assert "ticket:verify:T1" in f.ce.change.verifications[v.id].requested_by
 
 
 @scenario()
@@ -136,23 +134,22 @@ async def test_the_cap_serves_by_priority_then_in_order():
 
 
 @scenario()
-async def test_judges_are_dispatched_only_on_a_verified_candidate(f: Flow):
+async def test_judges_come_after_the_verification_criterion(f: Flow):
+    """G-V0 as order: the build's criteria run in order, so a judge starts only once the
+    verification of the commit it judges has passed."""
     await f.to_build()
+    f.runner.commands[CMD] = (1, "no hello\n")
     r, sha = await push(f)
     await report(f, r, sha)
-    node = f.ce.nodes["build:T1"]
-    agents = f.ce._agents
-    assert agents.preconditions(node, "reviewer") is None          # verified: judged
-    f.ce.change.setup_pin = SetupPin(blob="d" * 40, source="base")   # the key moves on
-    esc = agents.preconditions(node, "reviewer")
-    assert esc is not None and esc.kind == "unverified" and "G-V0" in esc.question
+    assert not f.runs("review:T1")                       # never dispatched on a failure
+    assert f.ticket("T1").attempt == 2
 
 
 @scenario()
 async def test_an_agent_asks_for_its_commands_within_its_limit(f: Flow):
     f.cfg.limits.verification_requests_per_run = 1
     await f.to_build()
-    r = f.run("build:T1", "implementer")
+    r = f.run("T1", "implementer")
     sha = f.commit(r, {"src/greet.txt": "hello\n"})
     v = await f.ce.request_verification(r, sha)
     await f.settle()
@@ -166,7 +163,7 @@ async def test_an_agent_asks_for_its_commands_within_its_limit(f: Flow):
     record = f.ce.verification_record(v.id)
     assert record["results"][-1]["command"] == CMD and record["results"][-1]["exit_code"] == 0
     planner_like = next(x for x in f.ce.runs.values() if x.role == "planner")
-    with pytest.raises(WorkflowError, match="only build tasks"):
+    with pytest.raises(WorkflowError, match="only builds"):
         f.ce.verification_key_for(planner_like, sha)
 
 
