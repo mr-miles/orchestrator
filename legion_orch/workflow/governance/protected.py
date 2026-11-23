@@ -27,9 +27,8 @@ def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> Pr
         raise GovernanceError("a reason of ≥24 chars and more than one word is required")
     rec = ProtectedPathApproval(task=task, paths=paths, approver=approver, reason=reason)
     n = len(e.change.protected_approvals) + 1
-    rec.attestation = e.write_record(f"control/approvals/protected-paths/{n}.json", rec).attestation
-    e.change.protected_approvals.append(rec)
-    return rec
+    e.write_record(f"control/approvals/protected-paths/{n}.json", rec)   # projected
+    return e.change.protected_approvals[-1]
 
 
 def setup_paths(e: ChangeView) -> list[str]:

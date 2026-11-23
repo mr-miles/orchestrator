@@ -18,13 +18,30 @@ from typing import TYPE_CHECKING
 
 from ....bus import DocWritten
 from ....store import DocVersion
-from ...model import Approval
+from ... import guards, risk
+from ...model import (
+    H_REQUIREMENTS,
+    Approval,
+    AttestationRecord,
+    EnvironmentBuild,
+    GateOverride,
+    Oracle,
+    PanelDecision,
+    ProtectedPathApproval,
+    Readiness,
+    SurfacePin,
+    Verification,
+)
 
 if TYPE_CHECKING:
     from .core import ChangeCore
 
 # the fields of each record that are projections: not persisted by the state store
-PROJECTED: dict[str, set[str]] = {"change": {"approvals"}}
+PROJECTED: dict[str, set[str]] = {
+    "change": {"approvals", "requirements", "surface_pins", "protected_approvals", "overrides",
+               "attestations", "ship", "environment", "oracle", "risk"},
+    "node": {"verification", "panel"},
+}
 
 
 def approval_key(rec: Approval) -> str:
@@ -45,12 +62,97 @@ def _approval(c: ChangeCore, doc: DocVersion) -> None:
     rec = Approval.model_validate(data)
     rec.attestation = doc.attestation
     c.change.approvals[approval_key(rec)] = rec
+    if rec.gate == H_REQUIREMENTS:                 # H-1 fixes the requirements it approved
+        req = c.docs.read(c.p("intake/requirements.md"), rec.pins[c.p("intake/requirements.md")])
+        c.change.requirements = guards.requirements_ids(req.content)
+
+
+def _record(model, doc: DocVersion):
+    rec = model.model_validate(json.loads(doc.content))
+    rec.attestation = doc.attestation
+    return rec
+
+
+def _numbered(items: list, rec, doc: DocVersion) -> list:
+    """A list of numbered records (``…/<n>.json``): this document's record, in its place."""
+    mine = f"file:{doc.path}@"
+    return [x for x in items if not (x.attestation or "").startswith(mine)] + [rec]
+
+
+def _surface_pin(c: ChangeCore, doc: DocVersion) -> None:
+    data = json.loads(doc.content)
+    if data.get("revoked"):                       # the plan started again: no pins
+        c.change.surface_pins.pop(data["surface"], None)
+        return
+    rec = _record(SurfacePin, doc)
+    c.change.surface_pins[rec.surface] = rec
+
+
+def _protected(c: ChangeCore, doc: DocVersion) -> None:
+    c.change.protected_approvals = _numbered(c.change.protected_approvals,
+                                             _record(ProtectedPathApproval, doc), doc)
+
+
+def _override(c: ChangeCore, doc: DocVersion) -> None:
+    c.change.overrides = _numbered(c.change.overrides, _record(GateOverride, doc), doc)
+
+
+def _attestation(c: ChangeCore, doc: DocVersion) -> None:
+    rec = _record(AttestationRecord, doc)
+    c.change.attestations[rec.kind] = rec
+
+
+def _ship(c: ChangeCore, doc: DocVersion) -> None:
+    c.change.ship = _record(Readiness, doc)
+
+
+def _environment(c: ChangeCore, doc: DocVersion) -> None:
+    revoked = json.loads(doc.content).get("revoked")
+    c.change.environment = None if revoked else _record(EnvironmentBuild, doc)
+
+
+def _accepted(c: ChangeCore, doc: DocVersion) -> None:
+    """The version of an agent's document the controller accepted: the oracle when it merged
+    (and as H-2 approved it), the risk assessment when the intake report was accepted."""
+    data = json.loads(doc.content)
+    content = (None if data.get("revoked")
+               else json.loads(c.docs.read(c.p(data["doc"]), data["version"]).content))
+    if data["subject"] == "oracle":
+        c.change.oracle = None if content is None else Oracle.model_validate(content)
+    elif data["subject"] == "risk":
+        c.change.risk = None if content is None else risk.derive_tier(content)
+
+
+def _verification(c: ChangeCore, doc: DocVersion) -> None:
+    """A step's verification: the node keeps a compact copy (the record has the output)."""
+    rec = _record(Verification, doc)
+    node = c.nodes.get(rec.node or "")
+    if node is None or rec.key is None:      # an older store's record says neither: not projected
+        return
+    node.verification[rec.key] = rec.model_copy(update={
+        "results": [r.model_copy(update={"output": ""}) for r in rec.results]})
+
+
+def _panel(c: ChangeCore, doc: DocVersion) -> None:
+    rec = _record(PanelDecision, doc)
+    if (node := c.nodes.get(rec.node or "")) is not None:
+        node.panel[str(rec.cycle)] = rec
 
 
 # schema -> what a new version of a document of it projects into
 PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "approval": _approval,
+    "protected-approval": _protected,
+    "surface-pin": _surface_pin,
+    "override": _override,
+    "attestation": _attestation,
+    "readiness": _ship,
+    "environment-build": _environment,
+    "accepted": _accepted,
+    "verification": _verification,
+    "panel-decision": _panel,
 }
+
 
 
 class Projections:

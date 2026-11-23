@@ -658,12 +658,11 @@ class Panel(Phase):
         their reviews – stored, and kept on the node (what the merge checks, G-A1)."""
         node, c = active.node, active.c
         reviews = [r.doc for r in (node.review(node.cycle, role) for role in roles) if r and r.doc]
-        decision = PanelDecision(sha=node.candidate_sha, cycle=node.cycle, judges=list(roles),
-                                 reviews=reviews)
+        decision = PanelDecision(sha=node.candidate_sha, cycle=node.cycle, node=node.id,
+                                 judges=list(roles), reviews=reviews)
         path = (f"tasks/{node.task.id}/panel.json" if node.task
                 else f"control/panel/{_slug(node.id)}.json")
-        decision.attestation = c.write_record(path, decision).attestation
-        node.panel[str(node.cycle)] = decision
+        c.write_record(path, decision)                  # projected: node.panel
 
     def _roles(self, active: ActivePhase) -> tuple[str, ...]:
         """Its judges, for this change."""
@@ -917,11 +916,8 @@ class Verify(Phase):
         c, res = active.c, done
         assert isinstance(res, Verification)
         path, key = self._record(active)
-        att = c.write_record(path, res).attestation
-        # The node keeps a compact copy (the stored record has the command output).
-        node.verification[key] = res.model_copy(update={
-            "attestation": att,
-            "results": [r.model_copy(update={"output": ""}) for r in res.results]})
+        att = c.write_record(path, res.model_copy(update={"node": node.id, "key": key})
+                             ).attestation               # projected: node.verification
         result = self._interpret(res, node.cycle, att)
         if isinstance(result, Ok):
             for kind, text in self.notes(c, node, res) if self.notes else []:
@@ -1252,8 +1248,8 @@ class ShipGates(GateChecks):
     def unmet(self, c: ChangeCore, node: Node, evaluated: object) -> tuple[str, ...]:
         from ...model import H_CHANGE
         result: Readiness = evaluated                # type: ignore[assignment]
-        result.attestation = c.write_record("control/ship/readiness.json", result).attestation
-        c.change.ship = result
+        c.write_record("control/ship/readiness.json", result)       # projected: change.ship
+        result = c.change.ship
         approved = H_CHANGE in c.change.approvals
         unmet = tuple(g for g, r in result.gates.items() if r.status != "satisfied"
                       and (approved or g not in self.BY_APPROVAL))

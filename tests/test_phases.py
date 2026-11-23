@@ -334,7 +334,9 @@ async def test_the_ship_gates_are_recorded_and_only_their_approval_gates_wait_fo
                     integration_branch="legion/x", gates=gates)
     node = task(f, id="H-3", kind="human")
     assert ShipGates().unmet(f.ce, node, res) == ("protected_oracle",)   # not yet approved
-    assert f.ce.change.ship is res and res.attestation
+    ship = f.ce.change.ship                       # projected from the record it wrote
+    assert ship.attestation == f.ce.latest_att("control/ship/readiness.json")
+    assert ship.model_dump(exclude={"attestation"}) == res.model_dump(exclude={"attestation"})
     f.ce.change.approvals["H-3"] = f.ce.change.approvals.get("H-1")
     assert ShipGates().unmet(f.ce, node, res) == ("explicit_human_approval", "protected_oracle")
 

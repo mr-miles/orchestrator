@@ -11,6 +11,7 @@ from ..model import (
     ACCEPTED,
     BASELINE,
     H_ENV,
+    Accepted,
     Approval,
     ApprovalState,
     AttestationVerdict,
@@ -190,7 +191,9 @@ async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: s
             f"control/approvals/{approval_key(subj).replace(':', '/')}.json", rec).attestation
         # (the record is projected into change.approvals as it is written)
         if subj == "oracle":
-            e.change.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+            acc = Accepted(subject="oracle", doc="plan/oracle.json",
+                           version=e.latest("plan/oracle.json"))
+            e.write_record(acc.path, acc)        # projected: change.oracle
             await pin_surfaces(e, approver, None, reason="initial pin at oracle approval")
         done.append(subj)
     return done
