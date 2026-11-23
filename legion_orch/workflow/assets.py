@@ -193,8 +193,8 @@ class Assets:
         for name in spec.tiers:
             p = spec.policy(name)
             types += [r.type for r in p.every] + [c for r in p.every for c in r.criteria]
-            types += [c for v in [*p.criteria.values(), *p.labels.values()] for c in v]
-            types += [*p.last.values(), *p.limits]
+            types += [c for v in p.labels.values() for c in v] + [*p.exists, *p.limits]
+            types += [x for r in p.order for x in (r.each, r.after or r.before)]
         return [t.partition(":")[2] for t in types if t.startswith("agent:")] \
             + list(spec.hooks.values())
 

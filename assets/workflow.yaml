@@ -76,18 +76,20 @@ skeleton:
       subtasks:
         - {id: publish, type: "controller:publish", goal: "the change, published"}
 
-tiers:
+tiers:                              # rules by ticket type – never by id (ids are only names)
   R0:
-    requires:
-      requirements: [intake]
-      plan: [design, provision]
-      release: [publish]
+    exists:                         # the tree contains these
+      ["agent:intake", "agent:planner", "controller:provision", "agent:integration",
+       "controller:publish"]
+    order:                          # each ticket of a type finished before (after) one of another
+      - {each: "agent:planner", after: "agent:intake"}
+      - {each: "controller:provision", after: "agent:planner"}
+      - {each: "agent:implementer", after: "controller:provision"}
+      - {each: "agent:implementer", before: "agent:integration"}
+      - {each: "agent:integration", before: "human:signoff"}      # H-3 signs the integrated change
+      - {each: "controller:publish", after: "agent:integration"}
     every:
       - {type: "agent:implementer", criteria: ["controller:verify", "controller:can-merge"]}
-    criteria:
-      evaluate: ["human:signoff"]
-    last:
-      delivery: "agent:integration"
     limits: {"agent:implementer": 3, "agent:planner": 3}
   R1:
     extends: R0
@@ -98,10 +100,15 @@ tiers:
       security: ["agent:security"]
   R2:
     extends: R1
-    requires:
-      plan: [acceptance]
-      acceptance: [oracle]
+    exists: ["agent:oracle"]
+    order:
+      - {each: "agent:implementer", after: "agent:oracle"}        # the tests exist first
+    every:
+      - {type: "agent:oracle", criteria: ["controller:verify", "human:signoff"]}
   R3:
     extends: R2
-    requires:
-      acceptance: [baseline]
+    exists: ["agent:baseline"]
+    order:
+      - {each: "agent:implementer", after: "agent:baseline"}
+    every:
+      - {type: "agent:baseline", criteria: ["human:signoff"]}

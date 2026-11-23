@@ -244,7 +244,7 @@ def test_the_policy_and_the_skeleton_at_each_tier():
         assert ("baseline" in t.t) == (tier == "R3")
         assert ("H-2b" in t.t and t.t["H-2b"].parent == "baseline") == (tier == "R3")
         v = check_policy(SPEC, tier, t.t)
-        assert f"tier {tier}: delivery's last group must be its agent:integration" in v
+        assert f"tier {tier}: the plan has no agent:integration" in v      # still to be planned
     t = Tickets(SPEC.skeleton_at("R2"))
     t.pause()
     t.replan(planned(build("T1", "verify", "can-merge", labels=["security"])))
@@ -276,12 +276,13 @@ def test_a_workflow_file_that_cannot_work_is_refused(tmp_path):
         d["tiers"]["R0"]["extends"] = "R3"
     def unknown_role(d):
         d["skeleton"]["subtasks"][0]["subtasks"][0]["type"] = "agent:nobody"
-    def unknown_ticket(d):
-        d["tiers"]["R0"]["requires"]["nowhere"] = ["x"]
+    def both_ways(d):
+        d["tiers"]["R0"]["order"].append({"each": "agent:x", "after": "agent:y",
+                                          "before": "agent:z"})
     def rework_on_grouping(d):
         d["skeleton"]["subtasks"][3]["criteria"][0]["severity"] = "rework"   # evaluate's H-3
     for broken, says in ((loops, "extends"), (unknown_role, "nobody"),
-                         (unknown_ticket, "nowhere"), (rework_on_grouping, "R4")):
+                         (both_ways, "exactly one"), (rework_on_grouping, "R4")):
         with pytest.raises((AssetError, SpecError), match=says):
             Assets(with_(broken))
     a = Assets(Path(__file__).resolve().parent.parent / "assets")
@@ -316,3 +317,40 @@ async def test_a_signoff_that_applies_a_plan_waits_for_the_others_to_drain(tmp_p
     assert r.t.t["T1"].status == Status.PASSED and ch.hooks.endings == [Status.PASSED]
     assert r.t.t["design"].attempt == 1                    # held, not refused (no rework)
     assert ch.script.ran().index("side") < ch.script.ran().index("T1")
+
+
+def test_the_order_rules_judge_where_tickets_run_whatever_they_are_called():
+    from legion_orch.workflow.tickets.rules import precedes
+
+    def prepared(plan: Replan) -> Replan:                  # as the runner does with a plan
+        for add in plan.add:
+            for x in [add.ticket, *add.tree]:
+                SPEC.prepare(x, "R2")
+        return plan
+    t = Tickets(SPEC.skeleton_at("R2"))
+    t.pause()
+    t.replan(prepared(planned(build("T1", "verify", "review", "can-merge"))))
+    # the plan's tree: provision (plan, group 2) is finished before T1 (delivery) starts
+    assert precedes(t.t, "provision", "T1") and not precedes(t.t, "T1", "provision")
+    assert precedes(t.t, "T1", "integration") and precedes(t.t, "T1", "H-3")
+    assert precedes(t.t, "design", "H-E1") is False                # its own criterion: inside it
+    assert precedes(t.t, "verify:T1", "review:T1")                 # criteria in order
+    assert not precedes(t.t, "plan", "provision")                  # an ancestor
+    assert check_policy(SPEC, "R2", t.t) == []
+    # a replacement provision, named anything, still counts – a build planned too early does not
+    bad = Tickets(SPEC.skeleton_at("R2"))
+    bad.pause()
+    early, crit = build("T0", "verify", "review", "can-merge")
+    bad.replan(prepared(Replan(add=[Add(early, "plan", 1, tree=crit),   # before provision
+                                    *planned(build("T1", "verify", "review", "can-merge")).add])))
+    assert check_policy(SPEC, "R2", bad.t) == [
+        "tier R2: T0 (agent:implementer) must come after a controller:provision",
+        "tier R2: T0 (agent:implementer) must come after a agent:oracle"]
+    renamed = Tickets(SPEC.skeleton_at("R2"))
+    renamed.pause()
+    renamed.replan(prepared(Replan(
+        cancel=["provision"],
+        add=[Add(Ticket(id="rebuild-env", type="controller:provision"), "plan", 1),
+             *planned(build("T1", "verify", "review", "can-merge")).add])))
+    assert renamed.t["plan"].subtasks[1] == ["rebuild-env"]
+    assert check_policy(SPEC, "R2", renamed.t) == []

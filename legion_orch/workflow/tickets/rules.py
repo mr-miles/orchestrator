@@ -564,6 +564,34 @@ class Tickets:
 
 
 # ------------------------------------------------------------------------------------- shape
+def _path(t: dict[str, Ticket], tid: str) -> list[tuple[str, int]]:
+    """Where a ticket sits, from the root down: each ancestor and the position in it (its subtask
+    group's index; a criterion's, after every group)."""
+    out, x = [], t[tid]
+    while x.parent is not None:
+        p = t[x.parent]
+        if x.id in p.criteria:
+            pos = len(p.subtasks) + p.criteria.index(x.id)
+        else:
+            pos = next((i for i, g in enumerate(p.subtasks) if x.id in g), -1)
+        out.append((p.id, pos))
+        x = p
+    return out[::-1]
+
+
+def precedes(t: dict[str, Ticket], a: str, b: str) -> bool:
+    """``a`` is finished before ``b`` starts: at their nearest common ancestor, ``a`` sits in an
+    earlier subtask group (or ``a`` is a subtask, ``b`` a criterion; or both are criteria, ``a``
+    first). Tickets in one group run in parallel; an ancestor is never before its descendants."""
+    pa, pb = _path(t, a) + [(a, -2)], _path(t, b) + [(b, -2)]
+    for (ancestor_a, pos_a), (ancestor_b, pos_b) in zip(pa, pb, strict=False):
+        if ancestor_a != ancestor_b:
+            return False
+        if pos_a != pos_b:
+            return 0 <= pos_a < pos_b
+    return False                                       # the same ticket, or one inside the other
+
+
 def validate(t: dict[str, Ticket]) -> list[str]:
     """The tree's structural rules (the tier policy's are checked elsewhere)."""
     v: list[str] = []

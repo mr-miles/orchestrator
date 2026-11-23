@@ -3,9 +3,11 @@
 * ``skeleton`` – the root every change starts from: ``requirements``, ``plan``, ``delivery``,
   ``evaluate``, ``release``, with the bare minimum under them. A ticket with ``tiers`` is linked
   only at those tiers – by the sign-off that applies ``tier`` (H-1), once the tier is known;
-* ``tiers`` – per risk tier, the tickets and criteria a plan must contain (the policy guard,
-  :func:`check_policy`, refuses a tree without them) and the attempt limits per ticket type; a tier
-  may ``extend`` another;
+* ``tiers`` – per risk tier, the rules a tree must keep, all in terms of ticket types – never ids,
+  which are only names: the types it must contain (``exists``), the order they must run in
+  (``order``: each ticket of one type after – or before – one of another), the criteria each type
+  has (``every``, and per risk label ``labels``) – and the attempt limits per type; the policy
+  guard (:func:`check_policy`) refuses a tree that breaks one; a tier may ``extend`` another;
 * ``criteria`` – per criterion type, whether a failure may be waived;
 * ``hooks`` – the side processes: ``on_complete`` (after any ending), ``on_escalation``.
 
@@ -19,10 +21,10 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from .model import GROUPING, Severity, Status, Ticket
-from .rules import Add, Replan, validate
+from .rules import Add, Replan, precedes, validate
 
 TIER = "tier"                                   # what H-1's sign-off applies
 CLOSED = {Status.FAILED, Status.CANCELLED}
@@ -67,13 +69,30 @@ class EveryRule(_Strict):
     criteria: list[str]
 
 
+class OrderRule(_Strict):
+    """Every live ticket of type ``each`` comes ``after`` one of a type (one is finished before it
+    starts) – or ``before`` one."""
+    each: str
+    after: str | None = None
+    before: str | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> OrderRule:
+        if (self.after is None) == (self.before is None):
+            raise ValueError(f"order rule for {self.each}: give exactly one of after, before")
+        return self
+
+    def text(self) -> str:
+        return (f"every `{self.each}` comes after a `{self.after}`" if self.after else
+                f"every `{self.each}` comes before a `{self.before}`")
+
+
 class TierPolicy(_Strict):
     extends: str | None = None
-    requires: dict[str, list[str]] = {}         # ticket -> tickets that must be under it
+    exists: list[str] = []                      # ticket types the tree must contain
+    order: list[OrderRule] = []
     every: list[EveryRule] = []
     labels: dict[str, list[str]] = {}           # risk label -> criteria its code tickets have
-    criteria: dict[str, list[str]] = {}         # ticket -> criteria types it has
-    last: dict[str, str] = {}                   # ticket -> the type in its last group
     limits: dict[str, int] = {}                 # ticket type -> attempts
 
 
@@ -100,7 +119,7 @@ class WorkflowSpec(_Strict):
 
     def problems(self) -> list[str]:
         """What makes the file unusable: the skeleton is not a valid tree at some tier, a tier
-        extends an unknown one (or itself), a policy names a ticket the skeleton lacks."""
+        extends an unknown one (or itself), the skeleton itself breaks a tier's order."""
         out = []
         ids = [t.id for t in self.skeleton.walk()]
         if dup := sorted({i for i in ids if ids.count(i) > 1}):
@@ -113,9 +132,7 @@ class WorkflowSpec(_Strict):
                 continue
             built = {t.id: t for t in self.skeleton_at(name)}
             out += [f"skeleton at {name}: {e}" for e in validate(built)]
-            for where in [*policy.requires, *policy.criteria, *policy.last]:
-                if where not in ids:
-                    out.append(f"tiers.{name}: no skeleton ticket {where!r}")
+            out += [f"skeleton at {name}: {e}" for e in _order(policy, name, built, partial=True)]
         for t in self.skeleton.walk():
             for tier in t.tiers or []:
                 if tier not in self.tiers:
@@ -135,14 +152,11 @@ class WorkflowSpec(_Strict):
             name = self.tiers[name].extends
         out = TierPolicy()
         for p in reversed(chain):                 # the base first, then what extends it
-            for k, v in p.requires.items():
-                out.requires[k] = list(dict.fromkeys(out.requires.get(k, []) + v))
-            for k, v in p.criteria.items():
-                out.criteria[k] = list(dict.fromkeys(out.criteria.get(k, []) + v))
+            out.exists = list(dict.fromkeys(out.exists + p.exists))
+            out.order = out.order + [r for r in p.order if r not in out.order]
             for k, v in p.labels.items():
                 out.labels[k] = list(dict.fromkeys(out.labels.get(k, []) + v))
             out.every = [r for r in out.every if r.type not in {x.type for x in p.every}] + p.every
-            out.last |= p.last
             out.limits |= p.limits
         return out
 
@@ -214,21 +228,6 @@ def _live(t: dict[str, Ticket], ids: Iterable[str]) -> list[Ticket]:
     return [t[i] for i in ids if i in t and t[i].status not in CLOSED]
 
 
-def _instance(tid: str, name: str) -> bool:
-    """``tid`` is ``name`` or a later instance of it (``provision.2``)."""
-    return tid == name or tid.startswith(name + ".")
-
-
-def _under(t: dict[str, Ticket], tid: str) -> list[Ticket]:
-    out, todo = [], [tid]
-    while todo:
-        x = t[todo.pop()]
-        kids = _live(t, [m for g in x.subtasks for m in g] + x.criteria)
-        out += kids
-        todo += [k.id for k in kids]
-    return out
-
-
 def _labels(t: dict[str, Ticket], x: Ticket) -> set[str]:
     out, y = set(x.labels), x
     while y.parent and y.parent in t:
@@ -237,45 +236,50 @@ def _labels(t: dict[str, Ticket], x: Ticket) -> set[str]:
     return out
 
 
-def check_policy(spec: WorkflowSpec, tier: str, t: dict[str, Ticket]) -> list[str]:
-    """What the tree lacks that the tier's policy requires (the planner's tree, every replan)."""
-    p, v = spec.policy(tier), []
+def _order(p: TierPolicy, tier: str, t: dict[str, Ticket], partial: bool = False) -> list[str]:
+    """The order rules a tree breaks. ``partial``: a tree still to be planned (the skeleton) –
+    a rule whose other type is not there yet is not broken."""
+    live = [x for x in t.values() if x.status not in CLOSED]
+    v = []
+    for rule in p.order:
+        other = rule.after or rule.before
+        for x in [x for x in live if x.type == rule.each]:
+            ok = any(precedes(t, y.id, x.id) if rule.after else precedes(t, x.id, y.id)
+                     for y in live if y.type == other)
+            if not ok and any(y.type == other for y in live):
+                v.append(f"tier {tier}: {x.id} ({x.type}) must come "
+                         f"{'after' if rule.after else 'before'} a {other}")
+            elif not ok and not partial:
+                v.append(f"tier {tier}: {x.id} ({x.type}) must come "
+                         f"{'after' if rule.after else 'before'} a {other}, and there is none")
+    return v
 
-    def find(name: str) -> list[Ticket]:
-        return [x for x in t.values() if _instance(x.id, name) and x.status not in CLOSED]
+
+def check_policy(spec: WorkflowSpec, tier: str, t: dict[str, Ticket]) -> list[str]:
+    """The tier policy's rules the tree breaks (the planner's tree, every replan): by ticket type,
+    whatever the tickets are called."""
+    p = spec.policy(tier)
+    live = [x for x in t.values() if x.status not in CLOSED]
+    v = [f"tier {tier}: the plan has no {ty}" for ty in p.exists
+         if not any(x.type == ty for x in live)]
+    v += _order(p, tier, t)
 
     def criteria_types(x: Ticket) -> set[str]:
         return {c.type for c in _live(t, x.criteria)}
 
-    for where, names in p.requires.items():
-        for owner in find(where):
-            under = {x.id for x in _under(t, owner.id)}
-            for name in names:
-                if not any(_instance(i, name) for i in under):
-                    v.append(f"tier {tier}: {owner.id} must contain {name}")
-    for where, types in p.criteria.items():
-        for owner in find(where):
-            v += [f"tier {tier}: {owner.id} must have a {ty} criterion"
-                  for ty in types if ty not in criteria_types(owner)]
     for rule in p.every:
-        for x in t.values():
-            if x.type == rule.type and x.role != "criterion" and x.status not in CLOSED:
+        for x in live:
+            if x.type == rule.type and x.role != "criterion":
                 v += [f"tier {tier}: {x.id} ({x.type}) must have a {ty} criterion"
                       for ty in rule.criteria if ty not in criteria_types(x)]
     for label, types in p.labels.items():
-        for x in t.values():
-            if x.role != "criterion" and x.type.startswith("agent:") \
-                    and x.status not in CLOSED and label in _labels(t, x):
+        for x in live:
+            if x.role != "criterion" and x.type.startswith("agent:") and label in _labels(t, x):
                 v += [f"tier {tier}: {x.id} is labelled {label}: it must have a {ty} criterion"
                       for ty in types if ty not in criteria_types(x)]
-    for where, ty in p.last.items():
-        for owner in find(where):
-            groups = [g for g in owner.subtasks if _live(t, g)]
-            if not groups or not any(x.type == ty for x in _live(t, groups[-1])):
-                v.append(f"tier {tier}: {owner.id}'s last group must be its {ty}")
-    for x in t.values():
-        if x.role == "criterion" and x.type in spec.criteria and x.status not in CLOSED \
-                and x.waivable and not spec.criteria[x.type].waivable:
+    for x in live:
+        if x.role == "criterion" and x.type in spec.criteria and x.waivable \
+                and not spec.criteria[x.type].waivable:
             v.append(f"{x.id}: a {x.type} criterion cannot be waivable")
     return v
 
@@ -324,13 +328,13 @@ def render(spec: WorkflowSpec) -> str:
     for name in spec.tiers:
         p = spec.policy(name)
         lines += ["", f"### Tier {name}", ""]
-        lines += [f"- `{k}` contains {', '.join(f'`{x}`' for x in v)}" for k, v in p.requires.items()]
-        lines += [f"- `{k}` has criteria {', '.join(f'`{x}`' for x in v)}"
-                  for k, v in p.criteria.items()]
+        if p.exists:
+            lines.append("- the tree contains " + ", ".join(f"`{x}`" for x in p.exists))
+        lines += [f"- {r.text()} (finished before it starts)" if r.after else f"- {r.text()}"
+                  for r in p.order]
         lines += [f"- every `{r.type}` ticket has criteria "
                   + ", ".join(f"`{x}`" for x in r.criteria) for r in p.every]
         lines += [f"- tickets labelled `{k}` have criteria {', '.join(f'`{x}`' for x in v)}"
                   for k, v in p.labels.items()]
-        lines += [f"- `{k}`'s last group is its `{v}`" for k, v in p.last.items()]
         lines += [f"- `{k}` tickets have {v} attempts" for k, v in p.limits.items()]
     return "\n".join(lines) + "\n"
