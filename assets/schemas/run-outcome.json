@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "How an agent run ended (<step records>/runs/<run>/outcome.json): its status and failure, exit, the session it left, its report (a judge's is also in reports/), its reply, and what it used. A new version as its conclusion moves on (reported, then accepted). Never a credential.",
+  "type": "object",
+  "required": [
+    "status"
+  ],
+  "properties": {
+    "status": {
+      "enum": [
+        "REPORTED",
+        "ACCEPTED",
+        "SUPERSEDED",
+        "FAILED"
+      ]
+    },
+    "token": false
+  }
+}

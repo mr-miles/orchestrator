@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An agent run's assignment (<step records>/runs/<run>/assignment.json; the run and its step are in the path): who it is, its sandbox and git context, the session it continues, what it was given and may write, and what reproduces its prompt. Never a credential.",
+  "type": "object",
+  "required": [
+    "role",
+    "soul",
+    "cycle",
+    "created_at"
+  ],
+  "properties": {
+    "role": {
+      "type": "string"
+    },
+    "soul": {
+      "type": "string"
+    },
+    "cycle": {
+      "type": "integer"
+    },
+    "consult": {
+      "type": "boolean"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "prompt_pin": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "assets_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "token": false
+  }
+}

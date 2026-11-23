@@ -72,6 +72,7 @@ class ChangeEngine(ChangeCore):
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
         self.projections.replay()   # the fields copied from documents (base/projections.py)
+        self.st.runs_loaded()       # and the runs, from their documents
         self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
 
         self.seed_attention()

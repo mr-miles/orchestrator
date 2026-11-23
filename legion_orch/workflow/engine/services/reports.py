@@ -74,7 +74,7 @@ class Reports:
         rel = path[len(self.c.p("")):]
         controller_owned = rel.startswith("control/") or (      # (a step's records: Node.records)
             rel.startswith("tasks/") and rel.split("/")[2:3] in (
-                ["verification"], ["panel"], ["reports"], ["feedback"], ["decisions"]))
+                ["verification"], ["panel"], ["reports"], ["runs"], ["feedback"], ["decisions"]))
         if controller_owned or not any(path.startswith(w) for w in run.write_scope):
             raise WorkflowError(f"G-W1: {path} is outside your write scope {run.write_scope}")
         lim, size = self.c.cfg.limits, len(content.encode())
