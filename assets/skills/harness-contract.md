@@ -10,9 +10,9 @@ You follow `read-before-write -> evidence-before-action -> minimal diff -> verif
   id): its first message is your assignment (`assignment` holds it structured, as
   `get_assignment()` does). Messages from other agents of the change arrive in the same inbox.
   Read every attestation listed under `context` before acting. `workflow_context()` shows how
-  your work fits the change (what it builds on, what builds on it, nearby tasks, the criteria it
-  serves, who judges it, whom to ask); `step_status()` shows your step as it stands now (cycle,
-  budget left, verification, the panel's verdicts so far).
+  your ticket fits the change (its parent, what runs before and after it, its inputs, who judges
+  it); `ticket_status()` shows your ticket as it stands now (attempt of its limit, its criteria and
+  their verdicts, the findings it was told to fix).
   A `file:<path>@<version>` attestation is a **document in the document store**, not a file in
   your working copy: read it with `docs_read` (searching the checkout finds nothing). `git:`
   attestations are commits in the repository.

@@ -20,4 +20,4 @@ you when they are stuck. Each comes as a message. Answer each in your final mess
   needed (it then reports BLOCKED and you get the escalation).
 
 Read with the document tools and the repository checkout; ask other agents over A2A
-(`workflow_context()` and `step_status(node)` show where things stand). Change nothing yourself.
+(`ticket_status(ticket)` shows where a ticket stands). Change nothing yourself.
