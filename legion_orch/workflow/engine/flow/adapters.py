@@ -44,7 +44,7 @@ class Dispatch:
 
 def live(c: ChangeCore, work: Work) -> Ticket | None:
     """The ticket ``work`` is a round of, while that round is still on (its outcome is wanted)."""
-    t = c.tickets.t.get(work.ticket.id)
+    t = c.ticket(work.ticket.id)
     return t if t is not None and t.status == Status.WORKING and t.attempt == work.attempt \
         else None
 

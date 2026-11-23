@@ -79,6 +79,10 @@ class ChangeCore:
             self._tickets = Tickets.over(self.st.tickets)
         return self._tickets
 
+    def ticket(self, tid: str) -> Ticket | None:
+        """A ticket of the tree, or of a side process outside it (the retrospective)."""
+        return self.st.tickets.get(tid) or self.st.hooks.get(tid)
+
     def setup_waits_for_scaffold(self) -> bool:
         """A blank repository (§5.3b, §5.3c): until the scaffold build has passed, what the
         setup task needs does not exist – no sandbox runs it; the scaffold's own verification

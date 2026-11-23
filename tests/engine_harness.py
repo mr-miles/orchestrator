@@ -363,13 +363,15 @@ class Flow:
 
     def waiting(self) -> int:
         """Tasks that wait legitimately (across the controller's changes): each live agent's,
-        each sign-off's, each waiting for a slot, each A2A message awaiting its reply."""
+        each sign-off's, each waiting for a slot, each A2A message awaiting its reply, each
+        on-complete process waiting for reflections."""
         procs = sum(1 for p in self.ctl.svc.procs.values() if p.returncode is None)
         signoffs = sum(len(ce._signoffs.waiting) for ce in self.ctl.changes.values())
         inbox = self.ctl.a2a.inbox if self.ctl.a2a is not None else None
         messages = sum(1 for (cid, card) in (inbox._messages if inbox else {})
                        for i in inbox.pending(cid, card) if not i.reply.done())
-        return procs + signoffs + self.ctl.svc.dispatcher.waiting + messages
+        reflecting = sum(ce._flow.awaiting_reflections for ce in self.ctl.changes.values())
+        return procs + signoffs + self.ctl.svc.dispatcher.waiting + messages + reflecting
 
     def _fingerprint(self):
         ch = self.ce.change
@@ -382,11 +384,14 @@ class Flow:
         return self.ctl.hub(REPO)
 
     def ticket(self, tid: str) -> Ticket:
-        return self.ce.st.tickets[tid]
+        """A ticket of the tree, or of a side process (the retrospective)."""
+        t = self.ce.ticket(tid)
+        assert t is not None, f"no ticket {tid}; tickets={self.status()}"
+        return t
 
     def status(self, tid: str | None = None):
         if tid:
-            return self.ce.st.tickets[tid].status
+            return self.ce.ticket(tid).status
         return {k: t.status for k, t in self.ce.st.tickets.items()}
 
     def run(self, tid: str, role: str | None = None) -> Run:

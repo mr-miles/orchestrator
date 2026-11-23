@@ -174,7 +174,7 @@ class Reports:
             return ReportOutcome.reject(f"run is {run.status}")
         if not dry_run:
             run.attempts += 1
-        if (ticket := self.c.tickets.t.get(run.ticket)) is None:
+        if (ticket := self.c.ticket(run.ticket)) is None:
             return ReportOutcome.reject(f"no ticket {run.ticket}")
         sub = _Admitted(run=run, ticket=ticket, attempt=run.attempts, r=r)
         sub.violations = guards.report_limits(r.summary, r.attestations, r.data, r.blocked_reason,
@@ -251,7 +251,7 @@ class Reports:
         ended for its ticket – its commit, its outputs and (a judge's) the verdict its role
         handler reads from it; a BLOCKED report is blocked on a human. (Without a report, the
         run already failed.) Any exception fails the run (the controller's error)."""
-        ticket = self.c.tickets.t.get(run.ticket)
+        ticket = self.c.ticket(run.ticket)
         if run.status != R_REPORTED or run.concluded or ticket is None or run.report is None:
             return None
         if run.report.status == ReportStatus.BLOCKED:

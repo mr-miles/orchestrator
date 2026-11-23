@@ -155,7 +155,7 @@ class RunLifecycle:
         run.status = R_FAILED
         run.ended_at = now_iso()
         run.failure = RunFailure(source=source, stage=run.stage, reason=reason, exit_code=exit_code)
-        ticket = self.c.tickets.t.get(run.ticket)
+        ticket = self.c.ticket(run.ticket)
         where = f" while {run.stage.lower()}" if run.stage and run.stage != "EXITED" else ""
         self.c.event("run_failed", f"{source.lower()} error{where}: {reason}", run.ticket, run.id)
         proc = self.c.procs.get(run.id)

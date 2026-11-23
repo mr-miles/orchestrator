@@ -356,7 +356,7 @@ class AgentRuns:
     def _ticket_of(self, ticket_id: str) -> Ticket:
         """A ticket, or – the change's resolver, no ticket's – a stand-in to render its
         assignment against."""
-        if (ticket := self.c.tickets.t.get(ticket_id)) is not None:
+        if (ticket := self.c.ticket(ticket_id)) is not None:
             return ticket
         if ticket_id == cards.RESOLVER:
             return Ticket(id=cards.RESOLVER, type=f"agent:{cards.RESOLVER}", goal="Resolver")

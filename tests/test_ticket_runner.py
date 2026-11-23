@@ -113,6 +113,7 @@ class Change:
             return "Add the builds\n\nWhat the change does."
         executors = Executors({
             "agent": self.script, "human:signoff": self.script, "controller:verify": self.script,
+            "controller:preflight": self.script,
             "controller:provision": self.script,
             "controller:can-merge": CanMergeExecutor(branches, NOW),
             "controller:publish": PublishExecutor(remote=None, branches=branches,

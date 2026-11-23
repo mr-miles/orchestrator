@@ -16,7 +16,8 @@ from ...tickets import Ticket
 from .projections import PROJECTED
 
 CONTROL = "control/"
-_KINDS = {"ticket": ("tickets", None)}               # record prefix -> (attr, schema)
+_KINDS = {"ticket": ("tickets", None),              # record prefix -> (attr, schema)
+          "hook": ("hooks", None)}
 # the gateway's to say, on start (Sandboxes.adopt): whether a sandbox exists, whether it is stopped
 GATEWAY = {"run": {"sandbox_deleted", "sandbox_stopped"}}
 
@@ -59,6 +60,7 @@ class StateStore:
         self.root = f"changes/{cid}/{CONTROL}"
         self.change: Change | None = None
         self.tickets: dict[str, Ticket] = {}            # the change's tickets (Tickets.t)
+        self.hooks: dict[str, Ticket] = {}              # its side processes' (the retrospective)
         self.runs: dict[str, Run] = {}
         self._last: dict[str, dict[str, Any]] = {}   # record -> its fields as last saved
         self._run_docs: dict[str, dict[str, Any]] = {}   # run document -> as last written
@@ -67,6 +69,7 @@ class StateStore:
     def _current(self) -> dict[str, dict[str, Any]]:
         out = {CHANGE: self.change.model_dump(mode="json", exclude=PROJECTED["change"])}
         out |= {f"ticket:{k}": t.model_dump(mode="json") for k, t in self.tickets.items()}
+        out |= {f"hook:{k}": t.model_dump(mode="json") for k, t in self.hooks.items()}
         return out
 
     @staticmethod
@@ -135,7 +138,7 @@ class StateStore:
         for record, data in records.items():
             kind, _, key = record.partition(":")
             if kind in _KINDS:
-                self.tickets[key] = Ticket.model_validate(data)
+                getattr(self, _KINDS[kind][0])[key] = Ticket.model_validate(data)
         self._last = self._current()
 
     # ------------------------------------------------------------- transactions
@@ -146,7 +149,7 @@ class StateStore:
         object identity, so coroutines holding a Ticket or Run keep seeing the live object.
         (Nothing is saved here – appends happen in :meth:`save` – and external effects such as
         git merges are not undone.)"""
-        objs = [self.change, *self.tickets.values(), *self.runs.values()]
+        objs = [self.change, *self.tickets.values(), *self.hooks.values(), *self.runs.values()]
         change, tickets, runs = self.change, dict(self.tickets), dict(self.runs)
         states = {id(o): copy.deepcopy(o.__dict__) for o in objs if o is not None}
         try:

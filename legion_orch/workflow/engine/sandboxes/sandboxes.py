@@ -203,7 +203,7 @@ class Sandboxes:
                 if not is_name_clash(e) or attempt == attempts - 1:
                     raise
                 old, run.sandbox = run.sandbox, self.c.host.new_sandbox_name(AGENT_PREFIX)
-                ticket = self.c.tickets.t.get(run.ticket)
+                ticket = self.c.ticket(run.ticket)
                 if ticket and ticket.sandbox == old:
                     ticket.sandbox = run.sandbox
                 self.c.event("sandbox", f"name {old} is taken on the gateway; using {run.sandbox}",
@@ -336,7 +336,7 @@ class Sandboxes:
         return Work(VerifierSession(self, name, label), cmds, ready=ready)
 
     def _should_pause(self, run: Run) -> bool:
-        ticket = self.c.tickets.t.get(run.ticket)
+        ticket = self.c.ticket(run.ticket)
         return (ticket is not None and ticket.sandbox == run.sandbox
                 and not self.stopped(run.sandbox) and self.holds(ticket)
                 and not any(r.sandbox == run.sandbox and r.status in LIVE_RUN

@@ -3,10 +3,9 @@
 What a restart loads – current values only, each row updated in place as the change saves (its
 history is the journal's, :mod:`.journal`, never read on start):
 
-* ``changes`` – one row per change: its record (``record``) and the workflow's
-  (``workflow``: the stage tree's parameters and the core's inputs);
-* ``steps``   – one row per node of the change (``record``);
-* ``tickets`` – one row per ticket of the change (``record``: its fields, state included).
+* ``changes`` – one row per change: its record (``record``);
+* ``tickets`` – one row per ticket of the change (``record``: its fields, state included);
+* ``hooks``   – one row per side process's ticket, outside the tree (the retrospective).
 
 (Agent runs are documents – their assignment and outcome – not rows.)
 
@@ -23,14 +22,7 @@ from typing import Any
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS changes (
   change TEXT PRIMARY KEY,
-  record TEXT NOT NULL,
-  workflow TEXT
-);
-CREATE TABLE IF NOT EXISTS steps (
-  change TEXT NOT NULL,
-  node TEXT NOT NULL,
-  record TEXT NOT NULL,
-  PRIMARY KEY (change, node)
+  record TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tickets (
   change TEXT NOT NULL,
@@ -38,11 +30,17 @@ CREATE TABLE IF NOT EXISTS tickets (
   record TEXT NOT NULL,
   PRIMARY KEY (change, ticket)
 );
+CREATE TABLE IF NOT EXISTS hooks (
+  change TEXT NOT NULL,
+  ticket TEXT NOT NULL,
+  record TEXT NOT NULL,
+  PRIMARY KEY (change, ticket)
+);
 """
 
-CHANGE, WORKFLOW = "change", "workflow"
-_TABLES = {"node": ("steps", "node"),                         # record prefix -> (table, key)
-           "ticket": ("tickets", "ticket")}
+CHANGE = "change"
+_TABLES = {"ticket": ("tickets", "ticket"),                   # record prefix -> (table, key)
+           "hook": ("hooks", "ticket")}
 
 
 def _dumps(data: Any) -> str:
@@ -51,7 +49,7 @@ def _dumps(data: Any) -> str:
 
 class StateTables:
     """The live state tables, through the document store's connection and lock. Records are
-    keyed as the state store names them: ``change``, ``workflow``, ``node:<id>``."""
+    keyed as the state store names them: ``change``, ``ticket:<id>``, ``hook:<id>``."""
 
     def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
         self.conn, self.lock = conn, lock
@@ -74,9 +72,6 @@ class StateTables:
                         "INSERT INTO changes (change, record) VALUES (?, ?) "
                         "ON CONFLICT(change) DO UPDATE SET record=excluded.record",
                         (change, _dumps(data)))
-                elif record == WORKFLOW:
-                    self.conn.execute("UPDATE changes SET workflow=? WHERE change=?",
-                                      (_dumps(data), change))
                 else:
                     table, key = self._where(record)
                     self.conn.execute(
@@ -105,17 +100,15 @@ class StateTables:
                 (change,)).fetchall()}
 
     def load(self, change: str) -> dict[str, dict[str, Any]]:
-        """Every record of ``change`` (record -> its fields); nodes in the order they were first
-        written."""
+        """Every record of ``change`` (record -> its fields); tickets in the order they were
+        first written."""
         out: dict[str, dict[str, Any]] = {}
         with self.lock:
-            row = self.conn.execute("SELECT record, workflow FROM changes WHERE change=?",
+            row = self.conn.execute("SELECT record FROM changes WHERE change=?",
                                     (change,)).fetchone()
             if row is None:
                 return out
             out[CHANGE] = json.loads(row[0])
-            if row[1] is not None:
-                out[WORKFLOW] = json.loads(row[1])
             for prefix, (table, key) in _TABLES.items():
                 for k, data in self.conn.execute(
                         f"SELECT {key}, record FROM {table} WHERE change=? ORDER BY rowid",

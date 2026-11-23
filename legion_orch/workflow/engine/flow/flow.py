@@ -9,13 +9,20 @@
 * **Hooks**: the tier from the risk being signed (H-1), a replan from the document a sign-off
   applies (the planner's ``tickets``), a ticket's work checked against its role, an escalation
   (the change's save raises it on the bus: the resolver hears), the end (the change ends; its
-  on-complete process – the retrospective – later).
+  on-complete process follows).
+* **On complete** (``hooks.on_complete`` in ``workflow.yaml``): after any ending, once the
+  reflections of the sandboxes released at the end are done, the role's agent – the
+  retrospective – runs on the ended change, as a ticket outside the tree (``hook`` records); a
+  decision owner can ask for it again. The change is *completed* once it is over (then cleaned
+  up, §5.14).
 * **Human actions** (decision owners only): a sign-off's decision, a waiting ticket's remedy
-  (retry, waive, replan), a replan, pause and resume, abandon.
+  (retry, waive, replan), a replan, pause and resume, abandon (with or without the
+  retrospective), the retrospective again.
 * **Restart**: :meth:`recover` – every ticket under way goes on at the same attempt (R14).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -29,6 +36,7 @@ from ...model import ChangeEnd, ChangeStatus
 from ...risk import derive_tier
 from ...tickets import Remedy, Replan, Status, Ticket, TicketError, Tickets, Waiting
 from ...tickets.executors import (
+    AgentEnd,
     AgentExecutor,
     Backoff,
     CanMergeExecutor,
@@ -38,6 +46,7 @@ from ...tickets.executors import (
     PublishExecutor,
     SignoffExecutor,
     VerifyExecutor,
+    Work,
 )
 from ...tickets.plan_doc import parse_plan
 from ...tickets.runner import Runner
@@ -65,6 +74,9 @@ class TicketFlow:
         self._branches: Branches | None = None
         self.runner: Runner | None = None
         self._merged_branches: set[str] = set()     # branches of passed tickets, deleted
+        self._agents = agents
+        self.skip_on_complete = False               # abandoned without the retrospective
+        self.awaiting_reflections = False           # the on-complete process waits for them
 
     @property
     def branches(self) -> Branches:
@@ -147,6 +159,9 @@ class TicketFlow:
         """After a restart: every ticket under way goes on at the same attempt (R14)."""
         if self.c.st.tickets and self.c.change.base_sha:
             await self._runner().recover()
+        for t in list(self.c.st.hooks.values()):       # an on-complete process under way
+            if t.status == Status.WORKING:
+                self.c.spawn(self._hook_round(t))
 
     async def stop(self) -> None:
         if self.runner is not None:
@@ -195,11 +210,62 @@ class TicketFlow:
                 else ChangeStatus.ABANDONED
             self.agent_runner.close_change()
             c.event("change", f"the change ended: {status}")
-            c.change.completed = True        # its on-complete process: the retrospective, later
             self.lifecycle.release_sandboxes()
+            role = self.spec.hooks.get("on_complete")
+            auto = role and c.cfg.retrospective.auto and not self.skip_on_complete
+            c.change.completed = not auto
             c.save()
             c.trace.end("completed" if status == Status.PASSED else "abandoned")
-        c.spawn(cleanup.end_of_change(c))
+        c.spawn(self.on_complete() if auto else cleanup.end_of_change(c))
+
+    # ------------------------------------------------------------------ on complete
+    async def on_complete(self, focus: str = "") -> None:
+        """The ended change's on-complete process: its role's agent (the retrospective), once
+        the reflections of the sandboxes released at the end are done – a ticket outside the
+        tree, another attempt each time. The change is completed (and cleaned up) once it is
+        over, however it ended."""
+        c, role = self.c, self.spec.hooks.get("on_complete")
+        if not role:
+            return
+        async with c.lock:
+            t = c.st.hooks.get(role)
+            if t is not None and t.status == Status.WORKING:
+                return
+            if t is None:
+                t = c.st.hooks[role] = Ticket(id=role, type=f"agent:{role}",
+                                              goal="the ended change's retrospective")
+            t.status, t.attempt = Status.WORKING, t.attempt + 1
+            t.findings = [f"Focus on: {focus}"] if focus else []
+            if c.change.ended:
+                t.findings.append(f"The change was {c.change.ended.action}ed: why is "
+                                  "`change.json` `ended`.")
+            c.event(role, f"the change has ended: {role} (attempt {t.attempt}) queued", role)
+            c.save()
+        await self._hook_round(t)
+
+    async def _hook_round(self, t: Ticket) -> None:
+        """A round of a side process's ticket (after a restart: the same attempt again)."""
+        c = self.c
+        while self.lifecycle.sandboxes.reflector.pending:   # the reflections are its material
+            self.awaiting_reflections = True
+            try:
+                await c.next_save()
+            finally:
+                self.awaiting_reflections = False
+        role = t.type.removeprefix("agent:")
+        end = await self._agents.run(role, Work(t, t.attempt, tuple(t.findings), change=c.cid,
+                                                base=c.change.base_sha))
+        await self._concluded(t, end)
+
+    async def _concluded(self, t: Ticket, end: AgentEnd) -> None:
+        c = self.c
+        async with c.lock:
+            t.status = Status.PASSED if end.accepted else Status.FAILED
+            why = end.detail or "it did not report"
+            c.event(t.id, f"{t.id} {'done' if end.accepted else 'failed: ' + why}", t.id)
+            c.change.completed = True
+            c.save()
+        await cleanup.end_of_change(c)
 
     def _saved(self, tickets: Iterable[Ticket]) -> None:
         """The runner's save (the lock is held): kept sandboxes of closed tickets go, then the
@@ -302,12 +368,41 @@ class TicketFlow:
             c.save()
         return f"{ticket_id}: {action}"
 
+    def _ended_by(self, approver: str, reason: str | None) -> None:
+        """Who abandoned the change, where it was (the tickets waiting on a human, else the
+        root) and why: recorded (``control/ended.json``) – the retrospective reads it."""
+        c = self.c
+        at = ",".join(t.id for t in c.st.tickets.values() if t.status == Status.WAITING) or c.cid
+        end = ChangeEnd(by=approver, node=at, action="abandon", reason=reason)
+        end.attestation = c.write_record("control/ended.json",
+                                         end.model_dump(mode="json")).attestation
+        c.change.ended = end
+        c.event("change", f"{approver} abandoned the change at {at}: "
+                + (reason or "(no reason given)"))
+
+    async def _on_complete_again(self, approver: str, focus: str = "") -> str:
+        """A decision owner asks for the on-complete process (again) on an ended change –
+        ``focus``: what to look at, its first message says."""
+        c, role = self.c, self.spec.hooks.get("on_complete")
+        async with c.lock:
+            if not role:
+                raise WorkflowError("the workflow has no on-complete process")
+            if c.change.status == ChangeStatus.ACTIVE:
+                raise WorkflowError(f"a {role} needs an ended change (it is still active)")
+            if (t := c.st.hooks.get(role)) is not None and t.status == Status.WORKING:
+                raise WorkflowError(f"a {role} is already under way")
+            c.event("decision", f"{approver} asked for a {role}", role)
+        c.spawn(self.on_complete(focus))
+        await asyncio.sleep(0)
+        return f"{role} queued"
+
     async def change_action(self, action: str, approver: str,
                             payload: Mapping[str, Any] | None = None) -> str:
         """A decision owner's action on the change: ``pause``, ``resume``, ``abandon``,
         ``replan`` (a replan document in ``payload["plan"]``, applied while paused),
         ``promote_proposal`` (an approved environment proposal into the library), ``prune`` (an
-        ended change's integration branch and evidence refs, §5.14)."""
+        ended change's integration branch and evidence refs, §5.14), ``retrospective`` (the
+        on-complete process again; ``abandon`` with ``retrospective: false`` skips it)."""
         self._owner(approver)
         payload, runner = dict(payload or {}), self._runner()
         if action == "retry" and self.c.change.unsynced:     # the workspace, synced again
@@ -318,6 +413,8 @@ class TicketFlow:
                 note = await cleanup.prune(self.c, approver)
                 self.c.save()
             return note
+        if action == "retrospective":
+            return await self._on_complete_again(approver, str(payload.get("focus") or ""))
         if action == "promote_proposal":
             async with self.c.lock:
                 note = self._promote(approver, payload)
@@ -329,9 +426,9 @@ class TicketFlow:
             elif action == "resume":
                 await runner.resume()
             elif action == "abandon":
+                self.skip_on_complete = payload.get("retrospective", True) is False
                 async with self.c.lock:
-                    self.c.change.ended = ChangeEnd(by=approver, node=self.c.cid, action="abandon",
-                                                    reason=str(payload.get("reason") or ""))
+                    self._ended_by(approver, str(payload.get("reason") or "").strip() or None)
                 await runner.abandon()
             elif action == "replan":
                 plan, v = parse_plan(payload.get("plan"))
