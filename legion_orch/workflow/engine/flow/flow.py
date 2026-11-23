@@ -197,6 +197,7 @@ class TicketFlow:
             c.change.completed = True        # its on-complete process: the retrospective, later
             self.lifecycle.release_sandboxes()
             c.save()
+            c.trace.end("completed" if status == Status.PASSED else "abandoned")
         c.spawn(cleanup.end_of_change(c))
 
     def _saved(self, tickets: Iterable[Ticket]) -> None:

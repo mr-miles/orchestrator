@@ -21,6 +21,7 @@ from ..model import (
     V_LIVE,
     AgentQuestion,
     Change,
+    ChangeStatus,
     FailureSource,
     Run,
     VerificationRun,
@@ -70,6 +71,8 @@ class ChangeEngine(ChangeCore):
         self.projections.replay()   # the fields copied from documents (base/projections.py)
         self.st.runs_loaded()       # and the runs, from their documents
         self._flow.load()           # the tickets, checked
+        if self.change is not None:  # what was traced before the restart is not traced again
+            self.trace.resume(self.runs, ended=self.change.status != ChangeStatus.ACTIVE)
 
         self.seed_attention()
 
@@ -77,6 +80,7 @@ class ChangeEngine(ChangeCore):
         """Initialise a new change in ``workspace`` (the caller holds the lock): its skeleton;
         once the workspace is synced (its base), its root starts."""
         self.st.change = Change(id=self.cid, goal=goal, workspace=workspace)
+        self.trace.begin(workspace)
         self._agent_runner.open_change()                     # its orchestrator, its resolver
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n")
         self._flow.start()

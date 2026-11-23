@@ -10,7 +10,6 @@ import hashlib
 import logging
 import os
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
 from functools import wraps
 from typing import TYPE_CHECKING, Any
 
@@ -30,43 +29,20 @@ class TelemetryUnavailable(RuntimeError):
 
 
 ATTRS = frozenset({
-    "legion.change.id", "legion.workspace", "legion.stage.id", "legion.stage.title",
-    "legion.group.id", "legion.node.id", "legion.node.kind", "legion.cycle", "legion.phase",
-    "legion.result", "legion.outcome", "legion.run.id", "legion.run.role",
-    "legion.escalation.kind", "legion.expected", "legion.resumed",
+    "legion.change.id", "legion.workspace", "legion.ticket.id", "legion.ticket.type",
+    "legion.attempt", "legion.status", "legion.waiting", "legion.outcome", "legion.run.id",
+    "legion.run.role", "legion.resumed",
 })
 
 _MAX_STR = 128
 _LIVE_RUN = ("STARTING", "ACTIVE")
-_WAITING = ("ESCALATED", "AWAITING_HUMAN")
+_CLOSED = ("passed", "failed", "cancelled")   # closed: nothing more happens to it
+_WAITING = "waiting"
 
 
 def trace_id_for(cid: str) -> int:
     digest = hashlib.sha256(("legion-change:" + cid).encode()).digest()
     return int.from_bytes(digest[:16], "big") or 1
-
-
-@dataclass(frozen=True)
-class Subject:
-    """What a flow node is (built by the flow runtime)."""
-    level: str                 # "stage" | "group" | "step"
-    parent: str | None         # enclosing stage/group id, None at top level
-    kind: str | None           # steps: node kind value ("" if unknown); else None
-    title: str | None          # stages: the static title; else None
-
-
-@dataclass(frozen=True)
-class NodeMove:
-    """One change of a node's status (built by the step runner)."""
-    node_id: str
-    kind: str
-    cycle: int
-    before: str | None         # None = adopted after a restart
-    to: str
-    phase: str | None          # class name of the phase for `to`, None if in no phase
-    order: int | None          # index of that phase in the step type's phases
-    escalation_kind: str | None
-    expected: bool
 
 
 def _attrs(**kw: Any) -> dict[str, Any]:
@@ -92,11 +68,7 @@ class NullTrace:
     def resume(self, run_ids: Iterable[str], ended: bool = False) -> None:
         return None
 
-    def flow(self, entries: Iterable[tuple[str, str, str, str]],
-             describe: Callable[[str], Subject | None], ended: bool = False) -> None:
-        return None
-
-    def node(self, move: NodeMove) -> None:
+    def tickets(self, tickets: Iterable[Any]) -> None:
         return None
 
     def runs(self, runs: Iterable[Any]) -> None:
@@ -127,16 +99,19 @@ def _guarded(fn: Callable[..., Any]) -> Callable[..., None]:
 
 
 class _Sp:
-    __slots__ = ("span", "name", "order")
+    __slots__ = ("span", "name")
 
-    def __init__(self, span: Any, name: str = "", order: int | None = None) -> None:
+    def __init__(self, span: Any, name: str = "") -> None:
         self.span = span
         self.name = name
-        self.order = order
 
 
 class ChangeTrace(NullTrace):
-    """The spans of one change (see the module's spec: one trace, deterministic id)."""
+    """The spans of one change: one trace (its id derived from the change's), the change at its
+    root; a span per ticket – from leaving ``pending`` to a closed status (passed, failed,
+    cancelled) – under its parent ticket's span, its status changes on the way as events (with
+    the attempt: a rework, a criterion's next round); a span per agent run under its
+    ticket's. Fed from the change's saves (:meth:`tickets`, :meth:`runs`)."""
 
     def __init__(self, tracer: Any, ids: Any, cid: str) -> None:
         self._tracer = tracer
@@ -146,8 +121,7 @@ class ChangeTrace(NullTrace):
         self._root: Any = None
         self._root_open = False
         self._open: dict[str, _Sp] = {}
-        self._waiting: set[str] = set()
-        self._cycles: dict[str, int] = {}
+        self._seen: dict[str, tuple[str, int, str | None]] = {}   # status, attempt, waiting
         self._runs_skipped: set[str] = set()
         self._resumed = False
         self._ended = False
@@ -181,16 +155,9 @@ class ChangeTrace(NullTrace):
             self._make_root()
         return self._root
 
-    def _find(self, nid: str | None) -> Any:
-        if nid is None:
-            return None
-        sp = self._open.get("stage:" + nid) or self._open.get("group:" + nid)
-        return sp.span if sp else None
-
-    def _add(self, key: str, name: str, attrs: dict[str, Any], parent: Any,
-             order: int | None = None) -> None:
+    def _add(self, key: str, name: str, attrs: dict[str, Any], parent: Any) -> None:
         span = self._start(name, attrs, parent if parent is not None else self._anchor())
-        self._open[key] = _Sp(span, name, order)
+        self._open[key] = _Sp(span, name)
 
     def _close(self, key: str, attrs: dict[str, Any], error: str | None = None) -> bool:
         from opentelemetry.trace import Status, StatusCode
@@ -204,19 +171,9 @@ class ChangeTrace(NullTrace):
         sp.span.end()
         return True
 
-    def _close_phase(self, nid: str, result: str, error: str | None = None) -> None:
-        self._close("phase:" + nid, {"legion.result": result}, error)
-
-    def _close_step(self, nid: str, outcome: str, error: str | None = None) -> None:
-        self._close_phase(nid, "ok" if outcome == "accepted" else "sent_back")
-        self._waiting.discard(nid)
-        attrs: dict[str, Any] = {"legion.outcome": outcome, "legion.cycle": self._cycles.get(nid)}
-        self._close("step:" + nid, attrs, error)
-
-    def _event(self, nid: str, name: str, attrs: dict[str, Any] | None = None) -> None:
-        sp = self._open.get("step:" + nid) or self._open.get("phase:" + nid)
-        if sp is not None:
-            sp.span.add_event(name, _attrs(**(attrs or {})))
+    def _span(self, key: str | None) -> Any:
+        sp = self._open.get(key) if key else None
+        return sp.span if sp else None
 
     # ---- hooks ----------------------------------------------------------------------------
 
@@ -227,102 +184,43 @@ class ChangeTrace(NullTrace):
 
     @_guarded
     def resume(self, run_ids: Iterable[str], ended: bool = False) -> None:
+        """After a restart: the runs already traced (or over) are not traced again; tickets
+        under way get a new span (``legion.resumed``), closed ones none."""
         self._resumed = True
         self._ended = ended
         self._runs_skipped |= set(run_ids)
 
     @_guarded
-    def flow(self, entries: Iterable[tuple[str, str, str, str]],
-             describe: Callable[[str], Subject | None], ended: bool = False) -> None:
-        for nid, transition, _before, _to in entries:
-            self._flow_one(nid, transition, describe(nid), ended)
+    def tickets(self, tickets: Iterable[Any]) -> None:
+        by_id = {str(t.id): t for t in tickets}
+        for tid, t in by_id.items():
+            self._ticket(tid, t, by_id)
 
-    def _flow_one(self, nid: str, transition: str, subj: Subject | None, ended: bool) -> None:
-        if subj is None:
-            if transition in ("complete", "override"):
-                outcome = "accepted"
-            elif transition == "removed":
-                outcome = "abandoned"
-            elif transition == "reset" and not ended:
-                outcome = "rework"
-            else:
-                return
-            for level in ("stage", "group"):
-                self._close(f"{level}:{nid}", {"legion.outcome": outcome})
-            self._close_step(nid, outcome)
+    def _ticket(self, tid: str, t: Any, by_id: Mapping[str, Any]) -> None:
+        status, attempt = _text(t.status), int(getattr(t, "attempt", 0) or 0)
+        waiting = _text(t.waiting) if getattr(t, "waiting", None) else None
+        before = self._seen.get(tid)
+        self._seen[tid] = (status, attempt, waiting)
+        key = "ticket:" + tid
+        if before == (status, attempt, waiting):
             return
-        level = subj.level
-        key = f"{level}:{nid}"
-        resumed = True if transition == "adopt" else None
-        parent = self._find(subj.parent)
-        base: dict[str, Any] = {"legion.change.id": self._cid, "legion.resumed": resumed}
-        if level == "step":
-            if transition in ("start", "rerun", "adopt"):
-                if key in self._open:
-                    self._close_step(nid, "rework")
-                self._add(key, f"step {nid}", {
-                    **base, "legion.node.id": nid, "legion.node.kind": subj.kind}, parent)
-            elif transition in ("complete", "override"):
-                self._close_step(nid, "accepted")
-            elif transition == "reset":
-                if not ended:
-                    self._close_step(nid, "rework")
-            elif transition == "removed":
-                self._close_step(nid, "abandoned")
+        if key not in self._open:
+            if status == "pending" or (status in _CLOSED and (
+                    before is None or (status != "passed" and before[0] == "pending"))):
+                return      # not started; closed before we knew of it; or dropped unstarted
+            parent = by_id.get(str(t.parent)) if t.parent else None
+            if parent is not None and "ticket:" + str(parent.id) not in self._open:
+                self._ticket(str(parent.id), parent, by_id)
+            self._add(key, f"{_text(t.type)} {tid}", {
+                "legion.change.id": self._cid, "legion.ticket.id": tid,
+                "legion.ticket.type": _text(t.type), "legion.attempt": attempt,
+                "legion.resumed": True if before is None and self._resumed else None,
+            }, self._span("ticket:" + str(t.parent)) if t.parent else None)
+        if status in _CLOSED:
+            self._close(key, {"legion.outcome": status, "legion.attempt": attempt})
             return
-        if transition in ("start", "reopen", "adopt"):
-            if key not in self._open:
-                ids = ({"legion.stage.id": nid, "legion.stage.title": subj.title}
-                       if level == "stage" else {"legion.group.id": nid})
-                self._add(key, f"{level} {nid if level == 'group' else subj.title or nid}",
-                          {**base, **ids}, parent)
-        elif transition == "complete":
-            self._close(key, {"legion.outcome": "accepted"})
-        elif transition == "reset":
-            self._close(key, {"legion.outcome": "rework"})
-        elif transition == "removed":
-            self._close(key, {"legion.outcome": "abandoned"})
-
-    @_guarded
-    def node(self, move: NodeMove) -> None:
-        nid, to = move.node_id, move.to
-        self._cycles[nid] = move.cycle
-        if to == "PENDING":
-            self._close_phase(nid, "sent_back")
-            self._waiting.discard(nid)
-        elif to == "ACCEPTED":
-            self._close_phase(nid, "ok")
-        elif to == "FAILED":
-            self._close_phase(nid, "failed", "failed")
-        elif to in _WAITING:
-            if move.before is not None:
-                kind = move.escalation_kind or "escalated"
-                self._close_phase(nid, "escalate", None if move.expected else kind)
-            self._event(nid, "awaiting_human" if to == "AWAITING_HUMAN" else "escalated", {
-                "legion.escalation.kind": move.escalation_kind,
-                "legion.expected": move.expected})
-            self._waiting.add(nid)
-        elif move.phase is not None:
-            self._phase(move)
-
-    def _phase(self, move: NodeMove) -> None:
-        nid = move.node_id
-        if nid in self._waiting:
-            self._event(nid, "resumed")
-            self._waiting.discard(nid)
-        cur = self._open.get("phase:" + nid)
-        if cur is not None and cur.name == f"phase {move.phase}":
-            self._event(nid, f"status {move.to}")
-            return
-        if cur is not None:
-            ok = move.order is not None and cur.order is not None and move.order > cur.order
-            self._close_phase(nid, "ok" if ok else "rework")
-        step = self._open.get("step:" + nid)
-        self._add("phase:" + nid, f"phase {move.phase}", {
-            "legion.change.id": self._cid, "legion.node.id": nid, "legion.node.kind": move.kind,
-            "legion.cycle": move.cycle, "legion.phase": move.phase,
-            "legion.resumed": True if move.before is None else None,
-        }, step.span if step else None, move.order)
+        self._open[key].span.add_event(status, _attrs(**{
+            "legion.status": status, "legion.attempt": attempt, "legion.waiting": waiting}))
 
     @_guarded
     def runs(self, runs: Iterable[Any]) -> None:
@@ -337,34 +235,23 @@ class ChangeTrace(NullTrace):
                     self._runs_skipped.add(rid)
             elif rid not in self._runs_skipped:
                 if live:
-                    step = self._open.get("step:" + str(r.ticket))
                     self._add(key, f"agent {r.role}", {
                         "legion.change.id": self._cid, "legion.run.id": rid,
-                        "legion.run.role": r.role, "legion.node.id": r.ticket,
-                        "legion.cycle": r.attempt}, step.span if step else None)
+                        "legion.run.role": r.role, "legion.ticket.id": r.ticket,
+                        "legion.attempt": r.attempt}, self._span("ticket:" + str(r.ticket)))
                 else:
                     self._runs_skipped.add(rid)
 
     def _close_all(self, status: str | None) -> None:
-        """Close what is open, children first. status None: everything `interrupted`."""
-        def keys(prefix: str) -> list[str]:
-            return [k for k in reversed(list(self._open)) if k.startswith(prefix)]
-        for k in keys("run:"):
+        """Close what is open, children first. status None: everything ``interrupted``."""
+        for k in [k for k in reversed(list(self._open)) if k.startswith("run:")]:
             self._close(k, {"legion.outcome": "interrupted"})
-        for k in keys("phase:"):
-            self._close(k, {"legion.result": "interrupted"})
-        for k in keys("step:"):
-            nid = k[len("step:"):]
-            if status is not None and status != "completed" and nid in self._waiting:
-                self._close(k, {"legion.outcome": "failed",
-                                "legion.cycle": self._cycles.get(nid)}, status)
+        for k in [k for k in reversed(list(self._open)) if k.startswith("ticket:")]:
+            waited = self._seen.get(k[len("ticket:"):], ("", 0, None))[0] == _WAITING
+            if status is not None and status != "completed" and waited:
+                self._close(k, {"legion.outcome": "failed"}, status)
             else:
-                self._close(k, {"legion.outcome": "abandoned" if status else "interrupted",
-                                "legion.cycle": self._cycles.get(nid)})
-        for prefix in ("group:", "stage:"):
-            for k in keys(prefix):
                 self._close(k, {"legion.outcome": "abandoned" if status else "interrupted"})
-        self._waiting.clear()
 
     def _close_root(self, outcome: str, error: bool) -> None:
         from opentelemetry.trace import Status, StatusCode
@@ -378,6 +265,8 @@ class ChangeTrace(NullTrace):
 
     @_guarded
     def end(self, status: str) -> None:
+        """The change ended (``completed`` or ``abandoned``): what is still open closes. Runs
+        after it (the retrospective) are parentless spans in the same trace."""
         if self._root is None and not self._ended:
             self._make_root()
         self._ended = True

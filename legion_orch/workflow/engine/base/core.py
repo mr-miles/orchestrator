@@ -123,6 +123,8 @@ class ChangeCore:
         rules) sees what changed (:meth:`sync`)."""
         self.before_save()
         self._stamp_statuses()
+        self.trace.tickets(self.st.tickets.values())
+        self.trace.runs(self.st.runs.values())
         self._update_attention()
         self.st.save()
         outbox, self._outbox = self._outbox, []

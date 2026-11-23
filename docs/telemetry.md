@@ -44,14 +44,17 @@ or `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`. Spans go over OTLP/HTTP 
 
 ```
 change <id>
-└── stage <title>
-    └── group <id>
-        └── step <node id>
-            ├── phase <PhaseClass>
-            └── agent <role>
+└── grouping change              (the root ticket)
+    └── <type> <ticket id>       (e.g. grouping delivery)
+        ├── <type> <ticket id>   (e.g. agent:implementer T1, controller:verify verify:T1)
+        └── agent <role>         (an agent run of the ticket)
 ```
 
-Names: `change <id>`, `stage <title>` (e.g. `stage Design`, `stage Design (round 2)`), `group <id>`, `step <node id>` (e.g. `step build:T1`), `phase <PhaseClass>` (e.g. `phase Verify`), `agent <role>`. Groups are optional; a span's parent is its enclosing stage/group, else the change span. Phase and agent spans are children of their step. One trace per change; the trace id is derived from the change id, so a restart continues the same trace.
+One span per ticket, under its parent ticket's span (the root ticket's under the change span);
+an agent run's span is under its ticket's. A ticket's span opens when it leaves `pending` and
+ends when it is closed: `passed`, `failed` (a replan replaced it) or `cancelled`. A ticket that is
+dropped before it ever started has no span. One trace per change; the trace id is derived from
+the change id, so a restart continues the same trace.
 
 ## 4. Attributes
 
@@ -61,43 +64,44 @@ Only these keys are recorded (strings are truncated to 128 chars).
 |---|---|---|
 | `legion.change.id` | every span | change id |
 | `legion.workspace` | change | workspace name |
-| `legion.stage.id`, `legion.stage.title` | stage | flow id / title |
-| `legion.group.id` | group | flow id |
-| `legion.node.id`, `legion.node.kind` | step, phase, agent run | node id, node kind |
-| `legion.cycle` | step, phase, agent run | cycle number |
-| `legion.phase` | phase | phase class name |
-| `legion.result` | phase | `ok`, `rework`, `escalate`, `sent_back`, `failed`, `interrupted` |
-| `legion.outcome` | change, stage, group, step, agent run | change: `completed`, `rejected`, `abandoned`, `interrupted`; stage/group/step: `accepted`, `rework`, `failed`, `abandoned`, `interrupted`; agent run: `reported`, `accepted`, `superseded`, `failed`, `interrupted` |
+| `legion.ticket.id`, `legion.ticket.type` | ticket, agent run (id) | ticket id, ticket type |
+| `legion.attempt` | ticket, agent run, events | the ticket's attempt (its round) |
+| `legion.status`, `legion.waiting` | events | the ticket's new status; why it waits on a human |
+| `legion.outcome` | change, ticket, agent run | change: `completed`, `abandoned`, `interrupted`; ticket: `passed`, `failed`, `cancelled`, `abandoned`, `interrupted`; agent run: its run status, lower case, or `interrupted` |
 | `legion.run.id`, `legion.run.role` | agent run | run id, role |
-| `legion.escalation.kind`, `legion.expected` | events | escalation kind; true when a gate's decision is due |
 | `legion.resumed` | spans opened after a restart | `true` |
 
 Resource attributes: `service.name` and `legion.project` (the configured project name).
 
 ## 5. Events and status
 
-Step events: `awaiting_human` (a gate's decision is due) or `escalated`, both with `legion.escalation.kind` and `legion.expected`; `resumed` when the wait ends. A status change inside a phase adds an event `status <STATUS>` (e.g. `status RUNNING`) without attributes.
+Every status change of a ticket while its span is open is an event named after the new status
+(`working`, `subtasks`, `checking`, `merging`, `paused`, `waiting`, `rejected`, `pending`), with
+`legion.status`, `legion.attempt` and – `waiting` – `legion.waiting` (e.g. `blocked`,
+`system_error`). A rework is the attempt going up; a criterion's next round is in the same span.
 
-Status `ERROR` (description is an identifier only) is set on: a change with outcome `rejected` or `abandoned`; a step with outcome `failed`; a phase with result `failed`, or result `escalate` that is not expected; an agent run with outcome `failed`. Everything else stays unset.
+Status `ERROR` (the description is an identifier only) is set on: a change ended `abandoned`; a
+ticket still waiting on a human when the change is abandoned (`failed`); an agent run that failed.
+Everything else stays unset.
 
-## 6. Send-backs, rework, waits, and endings
+## 6. Endings
 
-A `reset` ends a step or stage span that is still open with outcome `rework` (and its open phase span with result `sent_back`). A step that already finished stays `accepted`, and a send-back at a gate starts a new `step <node id>` span (a different span id) for the redone step. A step that already finished stays accepted after a send-back; the redo is a second span. A wait on a human closes the phase with `escalate` (ERROR only for an escalated step, not for a gate) and adds the `awaiting_human`/`escalated` event on the step.
-
-A change ends by *reject at H-3* or *abandon at an escalated step*. The waiting step ends `failed` (ERROR), other open steps `abandoned`, and the root `rejected` or `abandoned` (ERROR). E.g. reject at H-3: `step H-3` failed, `phase Approval` result `escalate` (no ERROR), root `rejected`. A completed change closes the root `completed`.
+When the change ends, what is still open closes: tickets waiting on a human `failed` (if the
+change was abandoned), the others `abandoned`; the root `completed` or `abandoned`.
 
 ## 7. Restarts
 
 * The trace id is deterministic, so a restarted process continues the same trace.
-* Spans opened after a restart for running/waiting work carry `legion.resumed=true`, plus a new `change <id>` root.
-* On a graceful stop (SIGINT/SIGTERM) open spans are closed with outcome/result `interrupted`.
+* Spans opened after a restart for tickets under way carry `legion.resumed=true`, plus a new
+  `change <id>` root. Tickets closed before it get no span again.
+* On a graceful stop (SIGINT/SIGTERM) open spans are closed with outcome `interrupted`.
 * A killed process exports no open span (an unended span is never sent).
-* No link to the earlier process's spans is persisted.
 * Agent runs that existed before a restart are not traced.
-* The retrospective runs after the change ended: its spans are children of the ended root in the same process; after a restart they are parentless spans of the same trace with `legion.resumed=true`.
+* Runs after the change ended (the retrospective) are children of the ended root in the same
+  process; after a restart they are parentless spans of the same trace.
 
 ## 8. What is never recorded, and failure isolation
 
-Never recorded: the goal, prompts, documents, summaries, escalation reason/question text, task titles, feedback, tokens, sandbox names, session ids, commit shas.
+Never recorded: the goal, prompts, documents, summaries, escalation reason/question text, ticket goals, findings, tokens, sandbox names, session ids, commit shas.
 
 Export is batched and asynchronous. Errors (unreachable or slow collector) are only logged and spans are dropped; a full queue drops spans. The engine is never affected.
