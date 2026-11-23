@@ -288,8 +288,8 @@ class Runner:
         work = Work(ticket=x.model_copy(deep=True), attempt=e.attempt, findings=e.findings,
                     change=self.change, labels=frozenset(self.t.labels(x.id)))
         work = replace(work, inputs={i: self.t.root.pointers.get(i) for i in x.inputs})
-        if x.parent is None:
-            return work
+        if x.parent is None or not self.base:       # nothing has a branch before the change
+            return work                             # has a base (its sync is the first work)
         try:
             if x.role == "criterion":                 # it judges its owner's commit
                 owner = self.t.t[x.parent]

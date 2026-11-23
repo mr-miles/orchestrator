@@ -28,7 +28,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from ....git.branches import Branches
-from ....git.remote import is_blank_tree
+from ....git.remote import WorkspaceUnsynced, is_blank_tree
 from ... import setup
 from ...attest import FILE_RE
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
@@ -45,6 +45,7 @@ from ...tickets.executors import (
     ProvisionExecutor,
     PublishExecutor,
     SignoffExecutor,
+    SyncExecutor,
     VerifyExecutor,
     Work,
 )
@@ -97,6 +98,7 @@ class TicketFlow:
                 "agent": AgentExecutor(agents, backoff),
                 "human:signoff": SignoffExecutor(self.signoffs, backoff),
                 "controller:verify": VerifyExecutor(verify, backoff),
+                "controller:sync": SyncExecutor(self, backoff),
                 "controller:preflight": VerifyExecutor(verify, backoff, expect_failures=True),
                 "controller:baseline": VerifyExecutor(verify, backoff, records="baseline"),
                 "controller:can-merge": CanMergeExecutor(self.branches, backoff),
@@ -117,40 +119,38 @@ class TicketFlow:
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
-        """A new change (the caller holds the lock): its skeleton, then – once the workspace
-        is synced – its root starts."""
+        """A new change (the caller holds the lock): its skeleton, and its root starts – its
+        first ticket syncs the workspace (:meth:`sync`)."""
         self.c.st.tickets.update({x.id: x for x in self.spec.skeleton_at(None)})
-        self.c.spawn(self._begin())
+        self.c.spawn(self._runner().start())
 
-    async def _begin(self) -> None:
-        """The workspace synced: the change's base, whether the repository is blank, its setup
-        pin (not in a blank repository, where what a setup needs does not exist yet)."""
+    async def sync(self, work: Work) -> str | None:
+        """``controller:sync`` (its port): the workspace synced, the change's base – whether
+        the repository is blank, its setup pin (not in a blank repository, where what a setup
+        needs does not exist yet) – and the runner told it. A change that has its base keeps
+        it. None when done; why the hub cannot follow its source, else (an outage raises)."""
         c = self.c
+        if c.change.base_sha:
+            self._runner().base = c.change.base_sha
+            return None
         try:
             base = await c.git.sync()
-            blank = is_blank_tree(await c.git.tree_paths(base))
-            pin = None if blank else await setup.pin_at_base(c.git, base)
-        except Exception as e:                      # noqa: BLE001 – the change cannot start
-            async with c.lock:
-                c.change.unsynced = f"workspace {c.change.workspace}: {e}"
-                c.event("workspace", f"{c.change.workspace} could not be synced: {e}")
-                c.save()
-            return
+        except WorkspaceUnsynced as e:
+            return f"workspace {c.change.workspace}: {e}"
+        blank = is_blank_tree(await c.git.tree_paths(base))
+        pin = None if blank else await setup.pin_at_base(c.git, base)
         async with c.lock:
             ch = c.change
             ch.base_sha, ch.blank_repo, ch.setup_pin = base, blank, pin
-            ch.unsynced = None
             await c.git.init_integration(c.cid, base)
             c.write_record("control/workspace.json", {
                 "workspace": ch.workspace, "source": c.git.source,
                 "base_branch": c.git.base_branch, "base": base, "blank_repo": blank})
             c.event("workspace", f"{ch.workspace} synced: the change is based on {base[:12]}"
                     + (" (a blank repository: the plan's scaffold sets the project up)"
-                       if blank else ""))
-            c.save()
-        runner = self._runner()
-        runner.base = base
-        await runner.start()
+                       if blank else ""), work.ticket.id)
+            self._runner().base = base
+        return None
 
     def load(self) -> None:
         """After the state was loaded: the runner over the loaded tickets."""
@@ -159,10 +159,8 @@ class TicketFlow:
 
     async def recover(self) -> None:
         """After a restart: every ticket under way goes on at the same attempt (R14)."""
-        if self.c.st.tickets and self.c.change.base_sha:
+        if self.c.st.tickets:
             await self._runner().recover()
-        elif not self.c.change.unsynced and self.c.change.status == ChangeStatus.ACTIVE:
-            self.c.spawn(self._begin())                # stopped before its first sync was done
         for t in list(self.c.st.hooks.values()):       # an on-complete process under way
             if t.status == Status.WORKING:
                 self.c.spawn(self._hook_round(t))
@@ -415,9 +413,6 @@ class TicketFlow:
         on-complete process again; ``abandon`` with ``retrospective: false`` skips it)."""
         self._owner(approver)
         payload, runner = dict(payload or {}), self._runner()
-        if action == "retry" and self.c.change.unsynced:     # the workspace, synced again
-            await self._begin()
-            return "retried the workspace's sync"
         if action == "prune":
             async with self.c.lock:
                 note = await cleanup.prune(self.c, approver)

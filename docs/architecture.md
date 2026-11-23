@@ -257,6 +257,8 @@ package imports no engine; the engine's adapters fill the ports.
 | `human:signoff` | `SignoffExecutor` | `SignoffPort` → `Signoffs` (the subjects resolved and shown; a decision owner's `decide`; `signoff.json`) | `Judged(approved, reason)` |
 | `controller:verify`, `controller:preflight` | `VerifyExecutor` (`expect_failures` for preflight) | `VerifyPort` → `Verify` → the verification service | `Judged`; `Fault` (infrastructure; G-V2 not retried) |
 | `controller:can-merge` | `CanMergeExecutor` | `Branches` (git, no port) | `Judged(clean, finding)`; `Fault` (git) |
+| `controller:sync` | `SyncExecutor` | `SyncPort` → `TicketFlow.sync` (the hub synced, the change's base) | `Done`; `Fault` (an unsynced hub waits at once) |
+| `controller:baseline` | `VerifyExecutor` (`records="baseline"`) | as `controller:verify` | `Done(outputs={baseline: the record})`; `Fault` |
 | `controller:provision` | `ProvisionExecutor` | `ProvisionPort` → `Provision` → `Provisioner` | `Done`; `Fault` |
 | `controller:publish` | `PublishExecutor` | `RemotePort` → `Remote` → `Publisher` (GitHub); none: a merge into the base branch | `Done`; `Fault` |
 | (the merge) | `Merger` | `Branches` | merged (the new head) or a conflict – a failed "can merge" |

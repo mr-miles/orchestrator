@@ -60,6 +60,19 @@ def planned(*builds: tuple[Ticket, list[Ticket]]) -> Replan:
                        for i, (x, crit) in enumerate(builds)])
 
 
+
+def node(d: dict, tid: str) -> dict:
+    """A ticket of a workflow file's skeleton, by id (wherever it sits)."""
+    stack = [d["skeleton"]]
+    while stack:
+        x = stack.pop()
+        if x.get("id") == tid:
+            return x
+        for g in x.get("subtasks", []):
+            stack += g if isinstance(g, list) else [g]
+        stack += x.get("criteria", [])
+    raise KeyError(tid)
+
 class Hooks:
     def __init__(self, plan: Replan, tier: str | None = "R2"):
         self.plan, self._tier = plan, tier
@@ -113,7 +126,7 @@ class Change:
             return "Add the builds\n\nWhat the change does."
         executors = Executors({
             "agent": self.script, "human:signoff": self.script, "controller:verify": self.script,
-            "controller:preflight": self.script,
+            "controller:preflight": self.script, "controller:sync": self.script,
             "controller:provision": self.script,
             "controller:can-merge": CanMergeExecutor(branches, NOW),
             "controller:publish": PublishExecutor(remote=None, branches=branches,
@@ -300,12 +313,12 @@ def test_a_workflow_file_that_cannot_work_is_refused(tmp_path):
     def loops(d):
         d["tiers"]["R0"]["extends"] = "R3"
     def unknown_role(d):
-        d["skeleton"]["subtasks"][0]["subtasks"][0]["type"] = "agent:nobody"
+        node(d, "intake")["type"] = "agent:nobody"
     def both_ways(d):
         d["tiers"]["R0"]["order"].append({"each": "agent:x", "after": "agent:y",
                                           "before": "agent:z"})
     def rework_on_grouping(d):
-        d["skeleton"]["subtasks"][3]["criteria"][0]["severity"] = "rework"   # evaluate's H-3
+        node(d, "H-3")["severity"] = "rework"   # evaluate's H-3
     for broken, says in ((loops, "extends"), (unknown_role, "nobody"),
                          (both_ways, "exactly one"), (rework_on_grouping, "R4")):
         with pytest.raises((AssetError, SpecError), match=says):
@@ -405,11 +418,11 @@ def test_check_refuses_signoffs_nobody_can_satisfy(tmp_path):
     from legion_orch.workflow.assets import AssetError
     root = Path(__file__).resolve().parent.parent / "assets"
     for n, (change, says) in enumerate([
-            (lambda d: d["skeleton"]["subtasks"][3]["criteria"][0]["signs"].append("nothing"),
+            (lambda d: node(d, "H-3")["signs"].append("nothing"),
              "evaluate has no ticket that produces it"),
-            (lambda d: d["skeleton"]["subtasks"][3]["criteria"][0].update(applies="pr2"),
+            (lambda d: node(d, "H-3").update(applies="pr2"),
              "which it does not sign"),
-            (lambda d: d["skeleton"]["subtasks"][3]["subtasks"][0].update(inputs=["secret"]),
+            (lambda d: node(d, "describe").update(inputs=["secret"]),
              "input 'secret' is no sign-off's output")]):
         d = tmp_path / str(n)
         shutil.copytree(root, d)

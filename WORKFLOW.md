@@ -18,6 +18,7 @@ of the work it signs. Every change starts from the same skeleton:
 
 ```
 change
+├─ workspace       sync (the change's base)
 ├─ requirements    intake ✓H-1
 ├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold ✓verify ✓review ✓can-merge
 │                  → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
@@ -228,7 +229,6 @@ all use. Nothing here gates the workflow; it only says what is waiting.
 | `gate` | a sign-off is waiting for a decision owner (H-1, H-E1, H-2, H-2b, H-3, any the plan adds) | yes |
 | `escalation` | a ticket is `waiting` on a human: why (§4.4), its findings, the resolver's proposal | yes |
 | `paused` | the workflow is paused, and by whom (§4.6) | yes |
-| `unsynced` | the workspace's hub cannot follow its source (§5.0a) | yes |
 | `question` | an agent asked the humans (A2A `ask_human`, §5.15) | yes |
 | `change_ended` | the change is `READY` or `ABANDONED` | no (inbox) |
 | `retrospective` | a retrospective report is ready (each attempt is a new item) | no (inbox) |
@@ -245,7 +245,7 @@ notified again.
 **Notifications** (config `notify:`) go from the controller only; sandboxes never reach a sink.
 Each sink – `webhook` (JSON POST, optionally signed `X-Legion-Signature: sha256=<HMAC>`), `ntfy`
 (a topic URL) or `command` (JSON on stdin) – receives the item kinds in `notify.items` (default
-`gate`, `escalation`, `paused`, `unsynced`, `question`) or its own `items`. A blocking item still
+`gate`, `escalation`, `paused`, `question`) or its own `items`. A blocking item still
 waiting after `notify.remind_after_s` is sent again; `notify.resolved: true` also sends its
 resolution. A delivery is tried three times, then recorded on the timeline (`notified`) as sent
 or failed; it never blocks or fails the change. The payload carries the item, the decision
@@ -312,7 +312,7 @@ A ticket (`legion_orch/workflow/tickets/model.py`) is:
 | Field | Meaning |
 | --- | --- |
 | `id`, `parent`, `role` | its name (unique in the change, path-safe), its parent, and whether it is the `root`, a `subtask` or a `criterion` of its parent |
-| `type` | `grouping` (no work of its own: its subtasks), `agent:<role>`, `human:signoff`, `controller:<action>` (`verify`, `preflight`, `can-merge`, `provision`, `publish`) |
+| `type` | `grouping` (no work of its own: its subtasks), `agent:<role>`, `human:signoff`, `controller:<action>` (`sync`, `verify`, `preflight`, `baseline`, `can-merge`, `provision`, `publish`) |
 | `goal`, `work` | what done means, in words; its role's contract (`roles.yaml` `work_schema` – an implementer's instructions, files, verification commands, requirements) |
 | `inputs` | the pointers it consumes: approved outputs by name (`spec`, `oracle`, `environment`); its run is given them at their approved versions |
 | `labels` | risk labels; its effective labels are its own and its ancestors' (add-only) |
@@ -497,9 +497,10 @@ git requirement are in [`assets/roles.yaml`](assets/roles.yaml).
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
 | G-W4 | docs_write | Per-run quota: at most `limits.max_docs_per_run` document versions (default 200) and `limits.max_doc_bytes_per_run` bytes (default 50 MB). Refused writes say which limit was hit. |
 
-### 5.0a The workspace – the change's base (controller)
+### 5.0a `controller:sync` – the change's base (`workspace`)
 
-Before the root starts, the workspace's hub is brought up to date with its `source`: cloned if
+The root's first ticket: nothing has a branch before the change has a base. The workspace's hub
+is brought up to date with its `source`: cloned if
 there is no hub yet, otherwise fetched, and its base branch fast-forwarded to the source's.
 `legion/*` (every change's integration and ticket branches) is never touched. One sync of a hub
 runs at a time: changes started together wait for each other, and one that waited takes the
@@ -509,8 +510,10 @@ commit: its integration branch, whether the repository is blank (§5.3d) and the
 
 If the hub cannot follow its source – the clone's origin is not the configured `source`, the
 source's base branch was rewritten (the hub's commit is not an ancestor of it), or the fetch
-fails – the change is `unsynced` (an attention item, with what differs): the decision owner fixes
-the hub or the source and **retries** (change action `retry`), or abandons the change.
+fails – the ticket waits on a human like any other (`system`, with what differs; an outage is
+retried with backoff first): the decision owner fixes the hub or the source and **retries** the
+ticket, or abandons the change. Run again (a retry, a restart), a change that has its base keeps
+it.
 
 ### 5.1 `intake` – the requirements (`requirements` ▸ `intake`)
 
@@ -879,7 +882,6 @@ actions (`approve`, `reject`, `retry`, `waive`, `replan`) go to
 | `pause` / `resume` | §4.6 |
 | `replan` | applies a replan document (`plan`), while paused and nothing is active (§4.6) |
 | `abandon` | ends the change where it is: running work stops, everything not finished is cancelled; `reason`; `retrospective: false` skips the retrospective (§5.13) |
-| `retry` | syncs an unsynced workspace again (§5.0a) |
 | `promote_proposal` | an environment proposal into the library (§5.3a) |
 | `retrospective` | the retrospective again on an ended change, with an optional `focus` (§5.13) |
 | `prune` | only once the change has ended: removes its integration branch and evidence refs (§5.14) |

@@ -164,8 +164,9 @@ async def test_one_sync_of_a_hub_at_a_time_and_a_waiting_one_takes_its_result(tm
 
 @pytest.mark.anyio
 async def test_a_workspace_that_cannot_sync_waits_and_a_retry_takes_it_up(tmp_path):
-    """The source's base branch was rewritten: the change waits (an attention item), nothing
-    starts; the hub fixed by hand, a retry bases the change and intake starts."""
+    """The source's base branch was rewritten: the change's first ticket (controller:sync)
+    waits on a human – an escalation like any other –, nothing else starts; the hub fixed by
+    hand, a retry of that ticket bases the change and intake starts."""
     from engine_harness import make_source_repo
 
     make_source_repo(tmp_path / "src-repo")
@@ -176,13 +177,15 @@ async def test_a_workspace_that_cannot_sync_waits_and_a_retry_takes_it_up(tmp_pa
     _git(src, "commit", "-q", "--amend", "-m", "init, rewritten")   # main rewritten
     f.ce = await f.ctl.start_change("Say hello", REPO)
     await f.settle()
-    assert "was rewritten" in f.ce.change.unsynced and f.ce.change.base_sha is None
-    assert any(i.kind == "unsynced" for i in f.ce.attention_items)
+    ws = f.ticket("workspace")
+    assert (ws.status, ws.waiting) == ("waiting", "system") and f.ce.change.base_sha is None
+    assert any("was rewritten" in x for x in ws.findings), ws.findings
+    assert any(i.kind == "escalation" and i.ticket == "workspace" for i in f.ce.attention_items)
     assert not f.ce.runs                                      # nothing starts
     new = _git(src, "rev-parse", "HEAD")
     await f.git.git("update-ref", "refs/heads/main", new)    # the operator resets the hub
-    await f.change_action("retry")
-    assert f.ce.change.unsynced is None and f.ce.change.base_sha == new
+    await f.human("workspace", "retry")
+    assert f.status("workspace") == "passed" and f.ce.change.base_sha == new
     assert await f.git.integration_head(f.ce.cid) == new and f.status("intake") == "working"
     assert f.ce.json_doc("control/workspace.json")["base"] == new
     await f.ctl.stop()

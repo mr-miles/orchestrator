@@ -47,8 +47,8 @@ def _parser() -> argparse.ArgumentParser:
     act.add_argument("ticket")
     act.add_argument("action")
     gov = sub.add_parser("govern", help="a change-level action: pause | resume | abandon | "
-                                        "replan (payload: {\"plan\": …}) | retry (an unsynced "
-                                        "workspace) | retrospective | promote_proposal")
+                                        "replan (payload: {\"plan\": …}) | retrospective | "
+                                        "promote_proposal")
     gov.add_argument("change")
     gov.add_argument("action")
     pn = sub.add_parser("prune", help="an ended change, once its integration branch is taken: "

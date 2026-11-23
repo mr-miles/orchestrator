@@ -22,9 +22,9 @@ from .view import ChangeView
 
 REASON_MAX = 300           # escalation reasons can quote agent output: keep notifications short
 
-GATE, ESCALATION, PAUSED, UNSYNCED = "gate", "escalation", "paused", "unsynced"
+GATE, ESCALATION, PAUSED = "gate", "escalation", "paused"
 CHANGE_ENDED, QUESTION, RETROSPECTIVE = "change_ended", "question", "retrospective"
-KINDS = (GATE, ESCALATION, PAUSED, UNSYNCED, QUESTION, CHANGE_ENDED, RETROSPECTIVE)
+KINDS = (GATE, ESCALATION, PAUSED, QUESTION, CHANGE_ENDED, RETROSPECTIVE)
 
 
 class AttentionItem(BaseModel):
@@ -72,10 +72,6 @@ def items(e: ChangeView) -> list[AttentionItem]:
                                      reason=_clip(why), since=t.since, blocking=True,
                                      proposal=_clip(f"{prop.action}: {prop.rationale}", 200)
                                      if prop else ""))
-    if ch.unsynced:
-        out.append(AttentionItem(change=ch.id, goal=goal, ticket=None, kind=UNSYNCED,
-                                 detail="workspace", title="The workspace could not be synced",
-                                 reason=_clip(ch.unsynced), since=ch.created_at, blocking=True))
     held = [r for r in (e.tickets.root.paused if tickets else []) if not r.startswith("signing ")]
     if held and ch.status == ChangeStatus.ACTIVE:      # a sign-off's own pause is its item
         root = e.tickets.root

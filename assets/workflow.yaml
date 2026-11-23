@@ -24,6 +24,9 @@ criteria:                           # per criterion type: may a decision owner w
 skeleton:
   id: change
   subtasks:
+    - id: workspace                 # the change's base: its workspace's hub synced first
+      type: "controller:sync"
+      goal: "the change's base: the workspace synced with its source"
     - id: requirements
       subtasks:
         - id: intake
