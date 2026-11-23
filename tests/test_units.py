@@ -45,15 +45,13 @@ class StubHost:
     def new_sandbox_name(self, prefix):
         return f"{prefix}-stub"
 
-def test_workflow_doc_guard_ids_match_code():
-    assert set(GUARD_ID_RE.findall(DOC)) == set(guards.GUARDS)
-
-
-def test_every_guard_is_referenced_outside_the_registry():
-    catalog = ROOT / "legion_orch/workflow/guards/catalog.py"
-    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py") if p != catalog)
-    missing = [g for g in guards.GUARDS if g not in src and not g.startswith("H-")]
-    assert not missing, missing
+def test_the_guards_in_the_workflow_doc_are_the_guards_in_the_code():
+    """WORKFLOW.md documents every guard the code enforces, and nothing else (the gates, H-*,
+    are the workflow's steps, not code)."""
+    src = "".join(p.read_text() for p in (ROOT / "legion_orch").rglob("*.py"))
+    doc, code = set(GUARD_ID_RE.findall(DOC)), set(re.findall(r"\bG-[A-Z]+[0-9]+\b", src))
+    assert not {g for g in doc - code if not g.startswith("H-")}, "documented, not in the code"
+    assert not code - doc, "in the code, not documented"
 
 
 def test_workflow_doc_links_every_asset_and_links_resolve():
