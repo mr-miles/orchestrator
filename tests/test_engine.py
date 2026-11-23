@@ -214,7 +214,7 @@ async def test_report_schema_mismatch_is_g_r7(f: Flow):
     await f.plan()
     r = f.run("plan", "critic")
     plan = [f.ce.latest_att(p) for p in ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
-    doc = await f.write(r, "critique/cycle-1.md", "x")
+    doc = await f.write(r, "plan/critique/cycle-1.md", "x")
     out = await f.report(r, plan + [doc], {"verdict": "MAYBE"})
     assert not out.accepted and any(v.startswith("G-R7") for v in out.violations)
 
@@ -366,7 +366,7 @@ async def test_critique_must_attest_the_latest_plan(f: Flow):
     await f.human("H-1", "accept")
     await f.plan()
     r = f.run("plan", "critic")
-    doc = await f.write(r, "critique/cycle-1.md", "x")
+    doc = await f.write(r, "plan/critique/cycle-1.md", "x")
     out = await f.report(r, [doc], {"verdict": "REWORK", "findings": []})
     assert {"G-C1: REWORK requires at least one finding"} <= set(out.violations)
     assert any("latest plan version" in v for v in out.violations)
@@ -445,7 +445,7 @@ async def test_failed_verification_is_rework_in_the_same_sandbox(f: Flow):
     node = f.ce.nodes["build:T1"]
     assert node.cycle == 2 and node.candidate_sha is None and node.status == RUNNING
     assert node.feedback[-1].source == "verification" and "exited 1" in node.feedback[-1].text
-    assert f.ce.latest("tasks/T1/verification.json")
+    assert f.ce.latest("tasks/T1/verification/cycle-1.json")
     second = f.run("build:T1", "implementer")
     assert second.sandbox == first.sandbox and second.sandbox in f.runner.uploads   # reused (G-D4)
     del f.runner.commands["grep -q hello src/greet.txt"]
@@ -480,7 +480,7 @@ async def test_command_not_found_escalates_without_spending_a_cycle(f: Flow):
     assert "grep -q hello src/greet.txt" in node.escalation.reason
     assert "command not found" in node.escalation.log_tail
     assert node.cycle == 1 and not [x for x in node.feedback if x.source == "verification"]
-    assert len(f.runs("build:T1")) == 1 and f.ce.latest("tasks/T1/verification.json")
+    assert len(f.runs("build:T1")) == 1 and f.ce.latest("tasks/T1/verification/cycle-1.json")
     del f.runner.commands["grep -q hello src/greet.txt"]       # the image is fixed
     await f.human("build:T1", "retry")
     assert node.status == REVIEWING and node.cycle == 1

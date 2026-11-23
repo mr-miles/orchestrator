@@ -164,19 +164,22 @@ and its runs' git credentials reach its hub and no other. `legion/*` is the hub'
 
 | Where | What |
 | --- | --- |
-| `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
-| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
+| `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `release/`, …) |
+| `changes/<id>/<step>/` | a step agent's documents, under its step's node id (`{{step}}`): `oracle/tests.md`, `baseline/report.md`, `integration/report.md` – a fix round's are its own (`oracle.2/tests.md`, `baseline.2/report.md`) |
+| `changes/<id>/<plan step>/` | a plan's documents, under its step's node id: `plan/` (a fix round's `plan.2/`, seeded from the plan worked to when the round's plan step starts) – `spec.md`, `specs/REQ-<n>.md`, `oracle.json`, `taskgraph.json`, `environment.json`, and its critiques `critique/cycle-<n>.md` |
+| `changes/<id>/control/plan.json` | the plan worked to: its step (`plan`, `plan.2`) and the approved version of each of its documents. Written when H-E1 approves a plan, updated as its subjects are approved, reset when the plan restarts; every role after the plan reads the plan's documents through it (`{{plan}}`) |
+| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); its step records (controller): `verification/cycle-<n>.json`, `panel/cycle-<n>.json` (the panel's pass), `reports/<role>-cycle-<n>.json` (each judge's report as accepted: its review on the step, status, summary, attestations and structured data); `feedback/<n>.md`, `decisions/<n>.md` (the escalation's question, then the human's answer) |
+| `<step records>/runs/<run>/assignment.json`, `outcome.json` | each agent run, under its step's records (a build task's `tasks/<task_id>/`, any other step's `control/steps/<node>/`): its **assignment** from dispatch – role, soul, cycle, sandbox and its SPIFFE sandbox id, branch and the shas it works at, the session it continues, its write scope, required documents and context, **the asset-set sha, rendered-prompt sha and the template values bound into its prompt**, its rendered assignment – and, once it is no longer live, its **outcome**: status, failure, exit, the session it left, its report and reply, what it used (attempts, violations, document versions, verification requests). The outcome gets a new version as its conclusion moves on (reported, then accepted). No credential exists to store. What only a live run has – its stage, latest progress message, A2A bookkeeping – stays in memory; its log is the document of everything it did. A run with an assignment and no outcome was live when the controller stopped: recovery fails it |
+| `changes/<id>/control/steps/<node>/` | any other step's records, laid out as a build task's (`verification/`, `panel/`, `reports/`, per cycle). A fix round's steps are new nodes with their own names (`plan.2`, `integration.2`), so every record's path says whose it is |
 | `changes/<id>/control/pr.json` | the published pull request (§5.10c): url, number, branch, head, labels |
-| `changes/<id>/control/change.json` | change record: goal, workspace, base, tier, risk, approvals, oracle, integration head, ship result |
-| `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
-| `changes/<id>/control/nodes/<node>.json` | a node's detail (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox); one new version per transition, so the version history is the node's audit trail. Which nodes exist and their order come from the workflow's tree |
-| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
 | `changes/<id>/control/logs/<run>.log` (`<run>.2.log`, …) | the agent's whole output, archived when it exits, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB). Each stream-json event carries `legion_ts`, the time the controller received it. Not readable by agents |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
 | `changes/<id>/control/reflections/<run>.md` | the agent's own account of what cost it time and where its guidance failed (§5.13) |
 | `changes/<id>/control/timeline/<n>.jsonl` | the controller's events (dispatch, sandbox, verification, rework, human actions), written in chunks |
 | `changes/<id>/control/assets/<sha>.json` | the hash of each asset file of an asset set the change's runs used |
 | `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship,environment}/…` | human decisions and controller evidence (`environment/build.json`: the provisioned environment) |
+| `state.db` tables `changes`, `steps` | the change's live state – what a restart loads: one row per record, updated in place as the change saves. `changes`: the change record (goal, workspace, base, tier, integration head, rounds, …) and the workflow's (the stage rules, §4.1: the tree's parameters – tier rank, environment, blank repository – and the core's state as it stands – each stage's and step's status, attempts, pending feedback and escalation, the fix rounds inserted and the task groups' steps – from which it is restored, the tree rebuilt); `steps`: each node's state inside its step (status, cycle, commits, feedback, escalation, sandbox; which nodes exist and their order come from the workflow's tree). Fields copied from documents (approvals, the oracle, reviews, verifications, …) are not stored: they are projected from their documents, as they are written and on load. Nor is which sandboxes exist and which are stopped: on start the controller lists each change's sandboxes (`openshell sandbox list --selector legion.change=<id>`, every page) and takes them as they are – a run's sandbox not listed is gone (only a listing read in full says so), one labelled for the change that no run knows is deleted |
+| `journal/<id>.jsonl` (in `state_dir`, not the store) | the change's history, append-only and never read on restart: one JSON line per save, each entry a record's changed fields (a list that grew: its new items; a node dropped: a removal) – every transition an entry, so the journal is each node's and run's audit trail |
 | git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
 
 Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset set and of its
@@ -184,11 +187,11 @@ rendered soul + prompt, and keeps the template values it was rendered with. Re-r
 values reproduces the prompt exactly while the pin matches; otherwise the recorded asset hashes
 say which files have changed since (`Assets.check_prompt`).
 
-On disk, `state_dir` is set once per controller and holds only `state.db` (the store), `git/` (the
+On disk, `state_dir` is set once per controller and holds only `state.db` (the store and the changes' live state), `journal/` (each change's history), `git/` (the
 bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted after
 upload, and live agent logs). `tmp/` is wiped on start. The access-token signing key exists only
 in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
-restart the controller rebuilds every change from the store; runs that were live lost their agent
+restart the controller rebuilds every change from its state tables, its documents and the gateway's list of its sandboxes; runs that were live lost their agent
 process, so they are failed and escalated (no automatic retry), and interrupted verification,
 merges, provisioning and gate evaluations are resumed.
 
@@ -845,7 +848,7 @@ the change started from existing code. Accepted tasks are never reopened: a roun
 Round 1 is the original plan; each fix round `n ≥ 2` is a **Round stage** of Delivery, inserted
 before integration: its own Design (plan, critique ◆H-E1), its own Oracle stage (provision and the
 oracle only if the round changes them, preflight, baseline ◆H-2) and its new tasks; then
-integration runs again. Its nodes are suffixed `@n` (`plan@2`, `H-E1@2`, `oracle@2`, …); every
+integration runs again. Its nodes are new nodes, suffixed `.n` (`plan.2`, `H-E1.2`, `oracle.2`, …); every
 earlier node keeps its record. A round **revises the plan documents in place**: it appends tasks to
 `plan/taskgraph.json` (and revises the spec, a delta spec, the oracle or the environment only
 when the fix needs it); the store's versions and the approval pins record what each round added.
@@ -857,7 +860,7 @@ can then still be answered, overridden at the gates or abandoned. The round is r
 integration run's report documents and the failed verification record). The integration node's
 escalation is cleared and Delivery is sent back: its policy appends the Round stage, integration
 returns to `PENDING` (its finished runs superseded, their sandboxes deleted after they reflect)
-and runs again after the round, a new cycle. The round's `plan@n` starts it.
+and runs again after the round, a new cycle. The round's `plan.n` starts it.
 
 **Plan (planner, fix mode).** A fresh planner sandbox and session, at the integration head. Its
 assignment adds the round (`{{fix_round}}`: the failure, the comment, every task already built
@@ -887,10 +890,10 @@ as usual (the latest plan documents); G-C2 counts the round's own cycles.
 the `plan` subject stale, as does any revised spec or delta spec; unchanged subjects keep their
 approval. Then what the round changed runs again:
 
-* **Environment.** Unchanged ⇒ the build stands (`provision@n` passes at once). Changed (the
+* **Environment.** Unchanged ⇒ the build stands (`provision.n` passes at once). Changed (the
   latest `plan/environment.json` is not the one H-E1 pinned) ⇒ the round's H-E1 approves the new
-  version with the plan and `provision@n` builds it, as in round 1 (§5.3a).
-* **Oracle.** Unchanged ⇒ `oracle@n` passes at once: the oracle commit, protected paths and
+  version with the plan and `provision.n` builds it, as in round 1 (§5.3a).
+* **Oracle.** Unchanged ⇒ `oracle.n` passes at once: the oracle commit, protected paths and
   surface pins stand. Changed ⇒ the test engineer works at the integration head (its own branch
   for the round) and its commit must stay within the (new) protected paths (G-O1, G-O2); it is
   merged and becomes the oracle commit that G-INT2 and `protected_oracle` compare against, and its
@@ -1210,11 +1213,13 @@ can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON document
 Cross-document rules (coverage, cycles, parallel overlap, resolvable attestations) stay in the
 guards, because a per-file schema cannot express them.
 
+* [`accepted`](assets/schemas/accepted.json)
 * [`approval`](assets/schemas/approval.json)
 * [`attestation`](assets/schemas/attestation.json)
 * [`change`](assets/schemas/change.json)
 * [`delta-spec`](assets/schemas/delta-spec.json)
 * [`environment`](assets/schemas/environment.json)
+* [`environment-build`](assets/schemas/environment-build.json)
 * [`evidence`](assets/schemas/evidence.json)
 * [`graph`](assets/schemas/graph.json)
 * [`json`](assets/schemas/json.json)
@@ -1222,6 +1227,10 @@ guards, because a per-file schema cannot express them.
 * [`node`](assets/schemas/node.json)
 * [`oracle`](assets/schemas/oracle.json)
 * [`override`](assets/schemas/override.json)
+* [`panel-decision`](assets/schemas/panel-decision.json)
+* [`plan-pointer`](assets/schemas/plan-pointer.json)
+* [`protected-approval`](assets/schemas/protected-approval.json)
+* [`report`](assets/schemas/report.json)
 * [`questions`](assets/schemas/questions.json)
 * [`readiness`](assets/schemas/readiness.json)
 * [`release-plan`](assets/schemas/release-plan.json)
@@ -1232,7 +1241,8 @@ guards, because a per-file schema cannot express them.
 * [`report-review`](assets/schemas/report-review.json)
 * [`requirements`](assets/schemas/requirements.json)
 * [`risk`](assets/schemas/risk.json)
-* [`run`](assets/schemas/run.json)
+* [`run-assignment`](assets/schemas/run-assignment.json)
+* [`run-outcome`](assets/schemas/run-outcome.json)
 * [`surface-pin`](assets/schemas/surface-pin.json)
 * [`taskgraph`](assets/schemas/taskgraph.json)
 * [`text`](assets/schemas/text.json)

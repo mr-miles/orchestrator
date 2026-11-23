@@ -11,27 +11,72 @@ from ..model import (
     ACCEPTED,
     BASELINE,
     H_ENV,
+    Accepted,
     Approval,
     ApprovalState,
     AttestationVerdict,
     Oracle,
+    PlanPointer,
 )
 from ..view import ChangeView
 from .common import GovernanceError
 from .surfaces import pin_surfaces
 
-ENV_SPEC = "plan/environment.json"
-PLAN_DOCS = ["plan/spec.md", "plan/oracle.json", "plan/taskgraph.json"]   # the plan's documents
+PLAN_FILES = ("spec.md", "oracle.json", "taskgraph.json")      # a plan's documents
+ENV_FILE = "environment.json"
+
+
+def step_doc(e: ChangeView, base: str, name: str) -> str:
+    """A step agent's document in the current round's step ``base`` (``baseline``,
+    ``integration``): under its node id (``baseline/report.md``, ``baseline.2/report.md``)."""
+    node = e.current(base)
+    return f"{node.id if node else base}/{name}"
+
+
+def draft(e: ChangeView) -> str:
+    """The directory of the plan being made: the current round's plan step (``plan``,
+    ``plan.2``) – what H-E1 approves. Once approved it is the plan worked to (``change.plan``)."""
+    node = e.current("plan")
+    return node.id if node else e.change.plan_node
+
+
+def plan_docs(e: ChangeView, plan: str | None = None) -> list[str]:
+    """A plan's documents (default: the plan worked to), relative to the change."""
+    d = plan or e.change.plan_node
+    return [f"{d}/{n}" for n in PLAN_FILES]
+
+
+def env_spec(e: ChangeView, plan: str | None = None) -> str:
+    """A plan's environment spec (default: the plan worked to)."""
+    return f"{plan or e.change.plan_node}/{ENV_FILE}"
+
+
+def spec_doc(e: ChangeView, req: str, plan: str | None = None) -> str:
+    """A requirement's delta spec in a plan (default: the plan worked to)."""
+    return f"{plan or e.change.plan_node}/specs/{req}.md"
+
+
+def pinned(appr: Approval | None, name: str) -> tuple[str | None, int | None]:
+    """The document named ``name`` (``environment.json``) that an approval pinned – its
+    qualified path and version, wherever its plan is."""
+    for p, v in (appr.pins if appr else {}).items():
+        if p.endswith("/" + name):
+            return p, v
+    return None, None
 
 
 def h2_subjects(e: ChangeView) -> dict[str, dict[str, int | None]]:
-    """Subject -> {qualified path: current latest version}. One subject per delta spec."""
-    subjects = {"plan": {e.p("plan/spec.md"): e.latest("plan/spec.md"),
-                         e.p("plan/taskgraph.json"): e.latest("plan/taskgraph.json")}}
+    """Subject -> {qualified path: current latest version} of the plan being made. One subject
+    per delta spec."""
+    d = draft(e)
+
+    def at(rel: str) -> dict[str, int | None]:
+        return {e.p(rel): e.latest(rel)}
+    subjects = {"plan": at(f"{d}/spec.md") | at(f"{d}/taskgraph.json")}
     for req in e.change.requirements:
-        subjects[req] = {e.p(f"plan/specs/{req}.md"): e.latest(f"plan/specs/{req}.md")}
+        subjects[req] = at(spec_doc(e, req, d))
     if e.change.tier and risk.rank(e.change.tier) >= 2:       # an oracle stage
-        subjects["oracle"] = {e.p("plan/oracle.json"): e.latest("plan/oracle.json")}
+        subjects["oracle"] = at(f"{d}/oracle.json")
     return subjects
 
 
@@ -54,10 +99,11 @@ def subject_status(e: ChangeView) -> list[SubjectStatus]:
     out = h2_status(e)
     if e.cfg.environment is not None:
         appr = e.change.approvals.get(H_ENV)
-        pins = {e.p(ENV_SPEC): e.latest(ENV_SPEC)}
+        spec = env_spec(e, draft(e))
+        pins = {e.p(spec): e.latest(spec)}
         out.append(SubjectStatus(
             subject=ENVIRONMENT_SUBJECT, paths=list(pins),
-            status=ApprovalState.APPROVED if appr and appr.pins == pins
+            status=ApprovalState.APPROVED if appr and same_docs(e, appr.pins, pins)
             else ApprovalState.STALE if appr else ApprovalState.PENDING,
             approver=appr.approver if appr else None, at=appr.at if appr else None,
             approved=dict(appr.pins) if appr else {}, latest=pins))
@@ -79,11 +125,27 @@ class SubjectStatus(BaseModel):
     latest: dict[str, int | None] = {}    # path -> latest version
 
 
+def same_docs(e: ChangeView, approved: dict[str, int], current: dict[str, int | None]) -> bool:
+    """Approved documents still say what the current ones say: the same versions of the same
+    paths, or – a later round's plan, its own copies – the same content, file by file (a
+    round that left a document as it was keeps its approval)."""
+    if approved == current:
+        return True
+    prefix = e.p("")
+
+    def by_name(pins: dict[str, int | None]) -> dict[str, tuple[str, int | None]]:
+        return {p[len(prefix):].split("/", 1)[-1]: (p, v) for p, v in pins.items()}
+    a, c = by_name(approved), by_name(current)
+    if a.keys() != c.keys() or any(v is None for _, v in c.values()):
+        return False
+    return all(e.docs.read(*a[n]).sha256 == e.docs.read(*c[n]).sha256 for n in a)
+
+
 def h2_status(e: ChangeView) -> list[SubjectStatus]:
     out = []
     for subj, pins in h2_subjects(e).items():
         a = e.change.approvals.get(approval_key(subj))
-        fresh = a is not None and a.pins == pins and (
+        fresh = a is not None and same_docs(e, a.pins, pins) and (
             subj != "oracle" or a.oracle_sha == e.change.oracle_sha)
         out.append(SubjectStatus(subject=subj, paths=list(pins),
                                  status=ApprovalState.APPROVED if fresh
@@ -143,7 +205,7 @@ def baseline_subject(e: ChangeView) -> BaselineSubject | None:
         return None
     ver = node.verification.get("baseline") if node.status == ACCEPTED else None
     rec = e.change.attestations.get(BASELINE_SUBJECT)
-    sources = [s for s in (e.latest_att("baseline/report.md"), ver and ver.attestation) if s]
+    sources = [s for s in (e.latest_att(step_doc(e, BASELINE, "report.md")), ver and ver.attestation) if s]
     if rec and rec.verdict == AttestationVerdict.PASS and (not ver or rec.at > ver.at):
         status = ApprovalState.APPROVED
     else:
@@ -166,8 +228,9 @@ def stale_environment(e: ChangeView) -> str | None:
     appr = e.change.approvals.get(H_ENV)
     if e.change.environment is None:
         return None
-    if appr is None or appr.pins != {e.p(ENV_SPEC): e.latest(ENV_SPEC)}:
-        return f"G-E5: {ENV_SPEC} changed since it was approved and provisioned"
+    path, version = pinned(appr, ENV_FILE)
+    if path is None or e.docs.latest_version(path) != version:
+        return f"G-E5: {path or env_spec(e)} changed since it was approved and provisioned"
     return None
 
 
@@ -188,12 +251,27 @@ async def approve_subjects(e: ChangeView, subjects: list[str] | str, approver: s
                        oracle_sha=e.change.oracle_sha if subj == "oracle" else None)
         rec.attestation = e.write_record(
             f"control/approvals/{approval_key(subj).replace(':', '/')}.json", rec).attestation
-        e.change.approvals[approval_key(subj)] = rec
+        # (the record is projected into change.approvals as it is written)
         if subj == "oracle":
-            e.change.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+            orc = f"{draft(e)}/oracle.json"
+            acc = Accepted(subject="oracle", doc=orc, version=e.latest(orc))
+            e.write_record(acc.path, acc)        # projected: change.oracle
             await pin_surfaces(e, approver, None, reason="initial pin at oracle approval")
         done.append(subj)
+    work_to(e, {p: v for s in done for p, v in available[s].items()})
     return done
+
+
+def work_to(e: ChangeView, pins: dict[str, int | None]) -> None:
+    """Approved: the plan being made is the plan worked to (``control/plan.json``, projected
+    into ``change.plan``), with the approved version of each document added."""
+    d, prefix = draft(e), e.p("")
+    held = e.change.plan.approved if e.change.plan and e.change.plan.node == d else {}
+    e.write_record(PLAN_RECORD, PlanPointer(
+        node=d, approved=held | {p[len(prefix):]: v for p, v in pins.items() if v}))
+
+
+PLAN_RECORD = "control/plan.json"
 
 
 def last_h2_approval_at(e: ChangeView) -> str | None:

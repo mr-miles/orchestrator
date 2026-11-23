@@ -8,7 +8,7 @@ from ..store import DocStore
 from ..workflow import cards, governance, ship, traceability
 from ..workflow.engine import ChangeEngine, Controller
 from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
-from ..workflow.governance.approvals import ENV_SPEC
+from ..workflow.governance.approvals import draft, env_spec
 from ..workflow.model import ACCEPTED, H_ENV, H_SPEC, LIVE_RUN, RETRO
 
 
@@ -30,9 +30,10 @@ def change_list(ctl: Controller) -> list[dict]:
 def environment_spec(ce: ChangeEngine) -> dict | None:
     """The latest environment spec for the H-E1 card: the proposals its profiles use and each
     profile's effective network (what its tools bring plus extras), or the problems."""
-    if ce.cfg.environment is None or not ce.latest(ENV_SPEC):
+    spec_doc = env_spec(ce, draft(ce))
+    if ce.cfg.environment is None or not ce.latest(spec_doc):
         return None
-    raw = ce.json_doc(ENV_SPEC)
+    raw = ce.json_doc(spec_doc)
     spec = EnvironmentSpec.model_validate(raw)
     try:
         profiles, problems = resolve(spec, Library.for_config(ce.cfg, ce.assets.schemas))
@@ -41,7 +42,7 @@ def environment_spec(ce: ChangeEngine) -> dict | None:
                        for x in rp.policies] for p, rp in profiles.items()}
     except LibraryError as e:
         network, problems = {}, [str(e)]
-    return {"path": ce.p(ENV_SPEC), "version": ce.latest(ENV_SPEC), "spec": raw,
+    return {"path": ce.p(spec_doc), "version": ce.latest(spec_doc), "spec": raw,
             "proposals": {k.plural: v for k, v in spec.used_proposals().items()},
             "network": network, "problems": problems}
 

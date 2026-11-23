@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ...sandbox import GatewaySandbox
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
 from .. import context
@@ -70,6 +71,8 @@ class ChangeEngine(ChangeCore):
     def load(self) -> None:
         """Rebuild this change's state from the store (on controller start)."""
         self.st.load()
+        self.projections.replay()   # the fields copied from documents (base/projections.py)
+        self.st.runs_loaded()       # and the runs, from their documents
         self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
 
         self.seed_attention()
@@ -83,6 +86,11 @@ class ChangeEngine(ChangeCore):
         self._flow.start()
         self.event("change", f"change {self.cid} started in {workspace}")
         self.save()
+
+    def adopt_sandboxes(self, found: dict[str, GatewaySandbox], complete: bool) -> None:
+        """On start, before :meth:`recover`: the change's sandboxes as the gateway lists them
+        (the caller holds the lock)."""
+        self._lifecycle.adopt_sandboxes(found, complete)
 
     def recover(self) -> None:
         """After a restart the agent processes are gone, so live runs fail (and their steps

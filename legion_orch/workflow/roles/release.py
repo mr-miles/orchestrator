@@ -1,7 +1,8 @@
 """release (R3): observation and rollback plan (G-REL1)."""
 from __future__ import annotations
 
-from .. import guards
+from .. import governance, guards
+from ..model import INTEGRATION
 from ..view import RoleContext
 from .base import Report, RoleHandler, evidence_of, register
 
@@ -12,7 +13,7 @@ class Release(RoleHandler):
 
     def extra_context(self, e: RoleContext, node) -> list[str]:
         refs = [a for a in (evidence_of(e, b) for b in e.build_nodes()) if a]
-        report = e.latest_att("integration/report.md")
+        report = e.latest_att(governance.step_doc(e, INTEGRATION, "report.md"))
         return refs + ([report] if report else [])
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .. import guards
-from ..model import Oracle, Resume
+from ..model import Accepted, Oracle, Resume
 from ..results import Escalate, Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, register, scaffold_note
@@ -23,7 +23,7 @@ class OracleAuthor(RoleHandler):
         return {"scaffold": scaffold_note(e, "oracle")}
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
-        orc = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+        orc = Oracle.model_validate(e.json_doc(e.change.plan_doc("oracle.json")))
         changed = await e.git.changed_paths(r.run.base_sha, r.sha)
         allowed = orc.acceptance_tests + orc.protected_support
         v = guards.scoped_diff(changed, allowed, [], e.cfg.protected_paths, "G-O1")
@@ -40,7 +40,9 @@ class OracleAuthor(RoleHandler):
         if not ok:
             return Escalate("merge", f"oracle merge failed: {head[:400]}", Resume.READY)
         ch.oracle_sha, ch.integration_head = r.sha, head
-        ch.oracle = Oracle.model_validate(e.json_doc("plan/oracle.json"))
+        orc = e.change.plan_doc("oracle.json")
+        acc = Accepted(subject="oracle", doc=orc, version=e.latest(orc))
+        e.write_record(acc.path, acc)            # projected: change.oracle
         node.accepted_sha = r.sha
         # merged: the branch's commit is in the integration history, the evidence ref pins it
         if r.run.branch and await e.git.delete_ref(f"refs/heads/{r.run.branch}"):

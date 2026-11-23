@@ -59,7 +59,7 @@ from ...model import (
 )
 from ...results import Escalate, Ok, PhaseResult, Redo, Rework
 from ...ship import evaluate
-from ..base.common import WorkflowError, _slug
+from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 from ..base.ids import in_round
 from ..sandboxes.plan import JUDGE, SandboxPlan
@@ -396,7 +396,7 @@ class OracleReworks(SetupFailurePolicy):
             text=f"BLOCKER (preflight): {what}. Output: {setup.output[-800:]}. The acceptance "
                  "commands must run in a fresh clone after only the repository's setup "
                  "(mise.toml's setup task). Fix your tests or support files; if the fix is in "
-                 "the setup (the plan's environment) or plan/oracle.json, report BLOCKED with "
+                 "the setup (the plan's environment) or the plan's oracle.json, report BLOCKED with "
                  "it as missing_decision."))
 
 
@@ -660,10 +660,7 @@ class Panel(Phase):
         reviews = [r.doc for r in (node.review(node.cycle, role) for role in roles) if r and r.doc]
         decision = PanelDecision(sha=node.candidate_sha, cycle=node.cycle, judges=list(roles),
                                  reviews=reviews)
-        path = (f"tasks/{node.task.id}/panel.json" if node.task
-                else f"control/panel/{_slug(node.id)}.json")
-        decision.attestation = c.write_record(path, decision).attestation
-        node.panel[str(node.cycle)] = decision
+        c.write_record(f"{node.records}/panel/cycle-{node.cycle}.json", decision)   # -> node.panel
 
     def _roles(self, active: ActivePhase) -> tuple[str, ...]:
         """Its judges, for this change."""
@@ -916,12 +913,8 @@ class Verify(Phase):
             return None
         c, res = active.c, done
         assert isinstance(res, Verification)
-        path, key = self._record(active)
-        att = c.write_record(path, res).attestation
-        # The node keeps a compact copy (the stored record has the command output).
-        node.verification[key] = res.model_copy(update={
-            "attestation": att,
-            "results": [r.model_copy(update={"output": ""}) for r in res.results]})
+        att = c.write_record(f"{node.records}/verification/cycle-{node.cycle}.json",
+                             res).attestation            # projected: node.verification
         result = self._interpret(res, node.cycle, att)
         if isinstance(result, Ok):
             for kind, text in self.notes(c, node, res) if self.notes else []:
@@ -935,13 +928,6 @@ class Verify(Phase):
         """The commands it runs, for this change and node."""
         commands = self.commands
         return commands if isinstance(commands, tuple) else tuple(commands(active.c, active.node))
-
-    def _record(self, active: ActivePhase) -> tuple[str, str]:
-        """Where the verification is stored, and its key on the node: a task's per cycle."""
-        node = active.node
-        if node.task:
-            return f"tasks/{node.task.id}/verification.json", str(node.cycle)
-        return f"control/verification/{_slug(node.id)}.json", str(node.kind)
 
 
 def setup_failure(res: Verification) -> CommandResult | None:
@@ -1252,8 +1238,8 @@ class ShipGates(GateChecks):
     def unmet(self, c: ChangeCore, node: Node, evaluated: object) -> tuple[str, ...]:
         from ...model import H_CHANGE
         result: Readiness = evaluated                # type: ignore[assignment]
-        result.attestation = c.write_record("control/ship/readiness.json", result).attestation
-        c.change.ship = result
+        c.write_record("control/ship/readiness.json", result)       # projected: change.ship
+        result = c.change.ship
         approved = H_CHANGE in c.change.approvals
         unmet = tuple(g for g, r in result.gates.items() if r.status != "satisfied"
                       and (approved or g not in self.BY_APPROVAL))

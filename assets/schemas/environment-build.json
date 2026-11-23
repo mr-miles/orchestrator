@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The provisioned environment (control/environment/build.json): what each mapped role's sandboxes are created with – or, revoked, none (to be provisioned again).",
+  "type": "object",
+  "properties": {
+    "spec": {
+      "type": "string"
+    },
+    "roles": {
+      "type": "object"
+    },
+    "revoked": {
+      "type": "boolean"
+    }
+  }
+}

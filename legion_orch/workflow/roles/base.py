@@ -15,8 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .. import governance
 from ..attest import Attestation
-from ..model import Finding, Node, Record, Run
+from ..model import Finding, Node, Record, ReviewReport, ReviewResult, Run
 from ..results import Ok, PhaseResult
 from ..view import RoleContext
 
@@ -73,6 +74,17 @@ class RoleHandler:
         return Ok()
 
 
+def record_review(e: RoleContext, r: Report, review: ReviewResult) -> None:
+    """Store the judge's report with its step's records (``reports/<role>-cycle-<n>.json``);
+    the node's ``reviews`` is projected from it."""
+    run, rep = r.run, r.run.report          # as accepted (recorded before it concludes)
+    e.write_record(f"{r.node.records}/reports/{run.role}-cycle-{run.cycle}.json", ReviewReport(
+        run=run.id, role=run.role, review=review,
+        status=str(rep.status) if rep else "DONE", summary=rep.summary if rep else "",
+        attestations=[str(a) for a in r.parsed],
+        data=r.data.model_dump(mode="json") if r.data is not None else {}))
+
+
 def brief_findings(findings: list[Finding]) -> list[Finding]:
     """A report's findings, compacted for the node record."""
     return [f.brief() for f in findings[:30]]
@@ -101,20 +113,21 @@ def fix_round_note(e: RoleContext, role: str) -> str:
     head = (f"## Fix round {rnd.number}\n\nIntegration failed at `{rnd.head[:12]}`. The "
             f"failure (read all of it):\n{failure}\n\nDecision owner's comment: "
             f"{rnd.comment or '(none)'}\n\nTasks already built:\n{tasks}\n\n")
+    d = governance.draft(e)                 # the round's plan
     if role == "critic":
         return head + (
-            "Judge the round: the tasks it appends to `plan/taskgraph.json` and any document "
+            f"Judge the round: the tasks it appends to `{d}/taskgraph.json` and any document "
             "it revised. Together the new tasks must address every failure named above, and "
             "each must say in its `instructions` which failure it fixes and why.")
     return head + (
         "Plan new work on top of the integration head, as if the change started from the "
-        "existing code; accepted tasks are never reopened. Revise `plan/taskgraph.json` by "
+        f"existing code; accepted tasks are never reopened. Revise `{d}/taskgraph.json` by "
         "**appending** one or more tasks with ids no task has used, keeping every task above "
         "exactly as it is (G-FR2). Each new task's `instructions` say which failure it fixes "
         "and why, and its `context` cites the integration report. A new task may depend on "
         "accepted tasks and modify their files, and cites at least one accepted requirement "
-        "(G-FR1); requirements are unchanged. Revise `plan/spec.md` or a delta spec only if "
-        "the cause is a shared interface or contract, `plan/oracle.json` only if the "
+        f"(G-FR1); requirements are unchanged. Revise `{d}/spec.md` or a delta spec only if "
+        f"the cause is a shared interface or contract, `{d}/oracle.json` only if the "
         "acceptance tests themselves must change, and the sandbox environment only if the "
         "sandboxes must change.")
 

@@ -1,8 +1,8 @@
 """intake: requirements and risk signals (G-I1, G-I2, G-I3)."""
 from __future__ import annotations
 
-from .. import guards, risk
-from ..model import ReportStatus
+from .. import guards
+from ..model import Accepted, ReportStatus
 from ..results import Ok, PhaseResult
 from ..view import RoleContext
 from .base import Report, RoleHandler, register
@@ -24,8 +24,9 @@ class Intake(RoleHandler):
         return guards.intake(req.content, rj, q, ReportStatus.DONE)
 
     async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
-        rj = e.json_doc("intake/risk.json", r.docs[e.p("intake/risk.json")].version)
-        e.change.risk = risk.derive_tier(rj)
+        acc = Accepted(subject="risk", doc="intake/risk.json",
+                       version=r.docs[e.p("intake/risk.json")].version)
+        e.write_record(acc.path, acc)            # projected: change.risk
         e.event("risk", f"derived tier {e.change.risk.tier} (score {e.change.risk.total})",
                  r.node.id)
         return Ok()

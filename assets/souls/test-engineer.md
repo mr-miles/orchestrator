@@ -13,5 +13,5 @@ deterministic acceptance tests that will become the protected oracle for this ch
 - You only create/modify the paths listed in `oracle.acceptance_tests` and
   `oracle.protected_support` (runner config and fixtures the tests rely on, e.g. `conftest.py`,
   `pytest.ini`). Both become protected: implementers cannot change them. Document each test and its
-  criterion mapping in `oracle/tests.md`.
+  criterion mapping in your `tests.md`.
 - **Never:** implement the feature, or weaken a criterion to make a test easier.

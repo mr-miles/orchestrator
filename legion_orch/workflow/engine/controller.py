@@ -8,19 +8,25 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 
-from ...bus import Bus, Pushed
+from ...bus import Bus, DocWritten, Pushed
 from ...config import Config
 from ...git import GitRemote
 from ...identity import WorkloadBinding
 from ...notify import Notifier
 from ...sandbox import (
+    CHANGE_LABEL,
     EnvironmentBuilder,
+    Listing,
     Runner,
+    SandboxError,
     human_name,
     make_builder,
     make_runner,
 )
+from ...sandbox.templates import label_value
 from ...store import DocStore
+from ...store.journal import Journal
+from ...store.state_tables import StateTables
 from ...telemetry import Telemetry
 from ...util import stop_process
 from ..assets import Assets
@@ -44,7 +50,9 @@ class Controller:
     of the attention reminders. Implements :class:`EngineHost` for the engines. There is no
     clock: each change's work runs as tasks that await what they need.
 
-    Durable state lives only in the document store (``state.db``) and the git remote; ``tmp/``
+    Durable state lives only in ``state.db`` (the documents, and the changes' live state:
+    :class:`StateStore`), the changes' journals (``journal/``, their history) and the git
+    remote; ``tmp/``
     holds transient sandbox payloads and live agent logs and is wiped on start.
     """
 
@@ -62,8 +70,10 @@ class Controller:
         self.bus = Bus(self.spawn)          # notifications between components (bus.py)
         self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of)
         runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
+        lock = threading.RLock()            # the database's (documents and state tables)
         self.svc = Services(
-            cfg=cfg, docs=DocStore(conn, threading.RLock(), assets.schemas),
+            cfg=cfg, docs=DocStore(conn, lock, assets.schemas),
+            tables=StateTables(conn, lock), journal=Journal(cfg.state_dir / "journal"),
             hubs={w.name: GitRemote(cfg.state_dir / "git", w.name, w.source, w.base_branch,
                                     max_push_bytes=cfg.limits.git_max_push_bytes)
                   for w in cfg.workspaces},
@@ -71,6 +81,7 @@ class Controller:
             builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel),
             verify_cap=PriorityCap(cfg.limits.max_parallel_verifications),
             telemetry=telemetry or Telemetry.from_config(cfg))
+        self.svc.docs.on_write.append(self._doc_written)   # projections follow the documents
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
         self.version = 0                  # bumped on every visible change (UI streams)
@@ -82,6 +93,12 @@ class Controller:
         self.notifier = Notifier(cfg.notify, cfg.project, cfg.decision_owners, self.spawn,
                                  self._notified)
         self.a2a = None                     # the A2A transport (server/a2a.py), once it is up
+
+    def _doc_written(self, meta) -> None:
+        """A change's document has a new version: tell the change (its projections)."""
+        parts = meta.path.split("/", 2)
+        if len(parts) == 3 and parts[0] == "changes":
+            self.bus.publish(DocWritten(parts[1], parts[2], meta.version, meta.schema))
 
     # The pieces the HTTP layer reads.
     @property
@@ -186,17 +203,15 @@ class Controller:
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:
         """Rebuild every change from the store."""
-        for m in self.docs.list("changes/"):
-            parts = m.path.split("/")
-            if len(parts) == 4 and parts[2:] == ["control", "change.json"]:
-                ce = ChangeEngine(self.svc, self, parts[1])
-                ce.load()
-                if ce.change.workspace not in self.hubs:      # its workspace left the config
-                    log.warning("change %s is in workspace %r, which is not configured: not "
-                                "loaded", ce.cid, ce.change.workspace)
-                    continue
-                self.changes[ce.cid] = ce
-                self.notifier.seed(ce.attention_items)
+        for cid in self.svc.tables.changes():
+            ce = ChangeEngine(self.svc, self, cid)
+            ce.load()
+            if ce.change.workspace not in self.hubs:      # its workspace left the config
+                log.warning("change %s is in workspace %r, which is not configured: not "
+                            "loaded", ce.cid, ce.change.workspace)
+                continue
+            self.changes[ce.cid] = ce
+            self.notifier.seed(ce.attention_items)
 
     async def start(self) -> None:
         for hub in self.hubs.values():   # configure the hubs there are; a change clones one
@@ -205,10 +220,33 @@ class Controller:
         shutil.rmtree(self.svc.tmp, ignore_errors=True)   # stale payloads may contain old tokens
         self.svc.tmp.mkdir(parents=True)
         self.load()
+        await self.adopt_sandboxes()
         async with self.svc.lock:
             for ce in self.changes.values():
                 ce.recover()
         self._loop_task = asyncio.create_task(self._remind())
+
+    async def adopt_sandboxes(self) -> None:
+        """After :meth:`load`: each change's sandboxes as the gateway lists them (those labelled
+        ``legion.change=<id>``) – which exist, which are stopped (not recorded: the gateway's
+        word). A change whose listing failed keeps what it has."""
+        for ce in list(self.changes.values()):
+            listing = await self._listing(ce.cid)
+            if listing is None:
+                continue
+            async with self.svc.lock:
+                ce.adopt_sandboxes({s.name: s for s in listing.sandboxes}, listing.complete)
+
+    async def _listing(self, cid: str) -> Listing | None:
+        try:
+            listing = await self.svc.runner.list({CHANGE_LABEL: label_value(cid)})
+        except (SandboxError, ValueError, OSError) as e:
+            log.warning("listing change %s's sandboxes failed: %s", cid, e)
+            return None
+        if not listing.complete:
+            log.warning("change %s's sandboxes did not list to the end: missing ones are not "
+                        "taken to be gone", cid)
+        return listing
 
     STOP_WAIT_S = 10
 

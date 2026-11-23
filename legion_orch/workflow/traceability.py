@@ -19,8 +19,6 @@ from .model import H_REQUIREMENTS, INTEGRATION, ApprovalState, Node
 from .view import ChangeView
 
 REQUIREMENTS = "intake/requirements.md"
-TASKGRAPH = "plan/taskgraph.json"
-ORACLE = "plan/oracle.json"
 
 # a verification command that only lints, formats or type-checks: it cannot show behaviour
 _LINT = re.compile(r"\b(lint|oxlint|eslint|ruff|flake8|pylint|prettier|black|isort|fmt|format|"
@@ -181,6 +179,8 @@ def traceability(e: ChangeView) -> Traceability:
     req_ids = list(ch.requirements) or (requirements_ids(e.doc(REQUIREMENTS).content)
                                         if e.latest(REQUIREMENTS) else [])
     texts = _requirement_texts(e)
+    d = governance.draft(e)                   # the plan being made (at H-3: the one worked to)
+    TASKGRAPH, ORACLE = f"{d}/taskgraph.json", f"{d}/oracle.json"
     graph, oracle = _json(e, TASKGRAPH), _json(e, ORACLE)
     tasks = [_task(t, e.nodes.get(f"build:{t.get('id')}"))
              for t in graph.get("tasks") or [] if isinstance(t, dict)]

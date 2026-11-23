@@ -1,10 +1,10 @@
 ---
-description: "The plan/taskgraph.json and plan/oracle.json formats and their rules. Load when you write or critique a task graph or oracle."
+description: "The plan's taskgraph.json and oracle.json formats and their rules. Load when you write or critique a task graph or oracle."
 ---
 
 ## Skill: Task graph and oracle schema
 
-`plan/taskgraph.json`:
+`{{plan}}/taskgraph.json`:
 
 ```json
 {"tasks": [{
@@ -28,7 +28,7 @@ the delta specs of the task's own `requirements`, and its dependencies' commits.
 only what else the task needs, typically a few files: every entry is something the implementer
 must read.
 
-`plan/oracle.json`:
+`{{plan}}/oracle.json`:
 
 ```json
 {"acceptance_tests": ["tests/acceptance/test_users_api.py"],
@@ -59,9 +59,9 @@ an unlinked criterion is flagged to the human approving the plan, and a linked c
 at the integration head is shown against its criterion. Cover every accepted requirement with at
 least one criterion.
 
-**Delta specs:** one document per accepted requirement, `plan/specs/<REQ-id>.md`: current
+**Delta specs:** one document per accepted requirement, `{{plan}}/specs/<REQ-id>.md`: current
 behaviour, the change, contracts, and the acceptance criteria that prove it. Each is approved
-separately by a human (G-P9). `plan/spec.md` is the overview tying them together.
+separately by a human (G-P9). `{{plan}}/spec.md` is the overview tying them together.
 
 **Verification surfaces** (R2+, G-P10) declare what the integration commands really reach and pin
 the files that make that true (compose files, schemas, fixtures). The controller pins those files
@@ -91,7 +91,7 @@ task to search for them.
 built before the oracle, so it sets up the project and its tooling only, and its `verification`
 cannot use the acceptance tests. In a repository that is not blank, no task is a scaffold.
 
-**Fix rounds** (when your assignment says "Fix round n"): revise `plan/taskgraph.json` by
+**Fix rounds** (when your assignment says "Fix round n"): revise `{{plan}}/taskgraph.json` by
 **appending** tasks; every task already built stays exactly as it is, and new tasks use ids no
 task has used (G-FR2). A new task may depend on accepted tasks and modify their files; it cites at
 least one accepted requirement (G-FR1), and only the new tasks are checked for parallel overlap.

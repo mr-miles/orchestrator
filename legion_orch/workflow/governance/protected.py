@@ -10,7 +10,7 @@ from ..model import (
 )
 from ..setup import MISE_TOML
 from ..view import ChangeView
-from .approvals import ENV_SPEC
+from .approvals import draft, env_spec
 from .common import GovernanceError
 
 
@@ -27,9 +27,8 @@ def record_protected_approval(e: ChangeView, approver: str, payload: dict) -> Pr
         raise GovernanceError("a reason of ≥24 chars and more than one word is required")
     rec = ProtectedPathApproval(task=task, paths=paths, approver=approver, reason=reason)
     n = len(e.change.protected_approvals) + 1
-    rec.attestation = e.write_record(f"control/approvals/protected-paths/{n}.json", rec).attestation
-    e.change.protected_approvals.append(rec)
-    return rec
+    e.write_record(f"control/approvals/protected-paths/{n}.json", rec)   # projected
+    return e.change.protected_approvals[-1]
 
 
 def setup_paths(e: ChangeView) -> list[str]:
@@ -37,9 +36,10 @@ def setup_paths(e: ChangeView) -> list[str]:
     spec proposes one – a task must not change what runs before every check."""
     if e.change.setup_pin:
         return [MISE_TOML]
-    if e.latest(ENV_SPEC):
+    spec = env_spec(e, draft(e))
+    if e.latest(spec):
         try:
-            if e.json_doc(ENV_SPEC).get("mise"):
+            if e.json_doc(spec).get("mise"):
                 return [MISE_TOML]
         except (ValueError, AttributeError):
             pass

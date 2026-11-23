@@ -25,7 +25,7 @@ Imagine the plan shipped and failed. For each plausible cause, check the plan:
    They must also run under the repository's real test configuration: global setup or preload
    files that replace runtime globals can break them for reasons unrelated to the code.
 
-6. **Sandbox environment** (when `plan/environment.json` is among your inputs): every
+6. **Sandbox environment** (when `{{plan}}/environment.json` is among your inputs): every
    verification, acceptance and integration command can run in the profile of the role that runs
    it (the `verifier` profile for task verification commands) – each tool it calls is declared;
    network policies are the least each role needs (judges and the verifier normally need none);

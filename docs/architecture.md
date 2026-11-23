@@ -87,7 +87,7 @@ flowchart TB
 | Layer | Decides | Knows nothing about |
 | --- | --- | --- |
 | **Workflow core** (`flow/`) | Between steps: what starts when (a stage's gate is its last step), send-backs and their rework policies, fix rounds, the end | Agents, sandboxes, git, the store, node kinds, what a gate checks or who approves it |
-| **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persistence by replay | What a step does inside |
+| **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persisting the core's state (snapshot and restore) | What a step does inside |
 | **Steps** (`steps/`) | What each kind of node is made of | How a phase does its work |
 | **Phases** | Their own work and its result: ok, rework or escalate | Which kind of node they serve (policies are passed in) |
 | **Agent layer** (role handlers) | A role's guards, context, prompt variables, what its report records | Sandboxes, the next phase |
@@ -104,7 +104,7 @@ the layers above it (the import contracts in `pyproject.toml`, checked by `lint-
 | `steps/` | `StepRunner` and `StepEvents`, `ActiveStep`, the step and gate types, the phases, the node states |
 | `services/` | `AgentRunner` (the workflow's one counterpart for agents: cards, work, A2A turns, placement; `services/agents/`), `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the resolver, the end-of-change cleanup |
 | `sandboxes/` | `Sandboxes` and their sessions, sandbox plans (given as `Plans`), reflections |
-| `base/` | `ChangeCore`, `StateStore`, `Services`, node ids, the `Dispatcher` and `Work` |
+| `base/` | `ChangeCore`, `StateStore` (the change's records: live in the state tables, `store/state_tables.py`; history in an append-only JSON Lines journal, `store/journal.py`), `Services`, node ids, the `Dispatcher` and `Work` |
 
 `compose.py` builds a change's layers; `change.py` (the `ChangeEngine` facade) and
 `controller.py` sit on top. The step layer tells the runtime what happened through a protocol it
@@ -138,7 +138,7 @@ The participants, left to right:
 | Participant | Layer (§1) | Code | Responsible for (and owns) |
 | --- | --- | --- | --- |
 | **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, what a send-back or a redo resets, what a human may do at an escalated step. Knows only steps – a gate is the step that ends its stage. Owns the steps' and stages' states. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime/flow_runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow.json`), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
+| **FlowRuntime** | Workflow: the stage rules | `engine/runtime/flow_runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow`, in the state tables), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
 | **StepRunner**, **ActiveStep** | Steps | `engine/steps/` (`runner.py`, `active.py`, `node_states.py`, `step_types.py`) | The runner takes the runtime's calls and does what spans steps (a send-back's undoing, retries after a restart, housekeeping); each node's step as it runs is an `ActiveStep`: moving the node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
 | **Phases** | Orchestrator layer of a step | `engine/steps/phases.py` (their services, `engine/services/`: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
 | **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.can_start()` and `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
@@ -231,9 +231,10 @@ above the step layer names a phase: the runtime resumes, overrides (the step's m
 | `done` | `ACCEPTED` |
 
 **A change's state**, then: the core's record (the tree and its steps' and stages' states,
-`workflow.json`), and below it what the engine owns (`ChangeCore`, persisted by `StateStore`) –
-the change record, each node's detail (its state inside its step, cycle, commits, verification,
-reviews, feedback, escalation, sandbox) and the runs. Which nodes exist, their order and their
+the record `workflow`), and below it what the engine owns (`ChangeCore`) – the change record,
+each node's detail (its state inside its step, cycle, commits, verification, reviews, feedback,
+escalation, sandbox) and the runs – kept by `StateStore`: a save updates their rows in the state
+tables and appends what changed to the journal; a load reads the tables. Which nodes exist, their order and their
 dependencies are not stored: they come from the tree.
 
 An agent run is a call and a return: the report is the agent's result, checked as it is filed
@@ -639,7 +640,7 @@ stateDiagram-v2
 | Boundary | Rule | Checked by |
 | --- | --- | --- |
 | Workflow core | Pure: no I/O, no engine imports; state only through its machines' transitions | `tests/test_flow.py` (invariants after every event, hypothesis), `test_flow_states.py` |
-| FlowRuntime ↔ core | The core's state is its inputs; replaying them rebuilds it exactly | `tests/test_runtime.py` |
+| FlowRuntime ↔ core | The core's state is stored as it stands (`FlowState.snapshot`) and restored into the rebuilt tree (`FlowState.restore`): the same statuses, actions and effects from then on | `tests/test_workflow_tree.py`, `tests/test_runtime.py` |
 | Engine layers | One package per layer – `runtime/` > `steps/` > `services/` > `sandboxes/` > `base/` – importing only downward; `compose.py` alone builds them; the facade (`change.py`) never sees the step layer; nothing outside the engine imports more than `legion_orch.workflow.engine`'s own names | the import contracts in `pyproject.toml` (`lint-imports`; `test_units.py::test_the_engine_keeps_its_layers`), `test_units.py::test_the_facade_names_none_of_the_step_layer` |
 | Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
 | The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner tells the runtime (through `StepEvents`, its only view of the layer above), the runtime the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |

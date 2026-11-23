@@ -11,12 +11,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from ... import governance, guards, risk, setup
+from ... import governance, risk, setup
 from ...environment import EnvironmentSpec
 from ...model import H_CHANGE, H_ENV, H_REQUIREMENTS, ApprovalState, TierOverride
 from ...model import Approval as ApprovalRecord
 from ...results import ActionResult
-from ..base.common import ENV_SPEC, WorkflowError
+from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
@@ -69,11 +69,9 @@ class RequirementsAccepted(Approves):
             ch.tier_override = TierOverride(from_tier=derived, to_tier=tier,
                                             reason=payload.get("reason"), approver=approver)
         ch.tier = tier
-        ch.requirements = guards.requirements_ids(c.doc("intake/requirements.md").content)
         ch.panel = risk.review_panel(tier, ch.risk.scores)
         rec = ApprovalRecord(gate=H_REQUIREMENTS, approver=approver, pins=pins, tier=tier)
-        rec.attestation = c.write_record("control/approvals/requirements.json", rec).attestation
-        ch.approvals[H_REQUIREMENTS] = rec
+        rec.attestation = c.write_record("control/approvals/requirements.json", rec).attestation   # projected
         return Approved(ActionResult(tier=tier, panel=ch.panel), answered=True)
 
 
@@ -142,15 +140,16 @@ class SubjectsApproved(Approves):
     async def _approve_environment(self, c: ChangeCore, approver: str, payload: dict) -> None:
         """The sandbox environment at its current version (with the plan, at H-E1);
         provisioning follows."""
-        version = c.latest(ENV_SPEC)
+        spec = governance.env_spec(c, governance.draft(c))
+        version = c.latest(spec)
         if version is None:
-            raise WorkflowError(f"no {ENV_SPEC} to approve")
+            raise WorkflowError(f"no {spec} to approve")
         note = (payload.get("feedback") or "").strip() or None
-        rec = ApprovalRecord(gate=H_ENV, approver=approver, pins={c.p(ENV_SPEC): version},
+        rec = ApprovalRecord(gate=H_ENV, approver=approver, pins={c.p(spec): version},
                              note=note)
-        rec.attestation = c.write_record("control/approvals/environment.json", rec).attestation
-        c.change.approvals[H_ENV] = rec
-        await self._adopt_mise(c, EnvironmentSpec.model_validate(c.json_doc(ENV_SPEC, version)))
+        rec.attestation = c.write_record("control/approvals/environment.json", rec).attestation   # projected
+        governance.work_to(c, {c.p(spec): version})
+        await self._adopt_mise(c, EnvironmentSpec.model_validate(c.json_doc(spec, version)))
 
     async def _adopt_mise(self, c: ChangeCore, spec: EnvironmentSpec) -> None:
         """§5.3c: the approved spec's mise.toml goes onto the integration branch (a controller
@@ -207,7 +206,6 @@ class ChangeAccepted(Approves):
             raise WorkflowError(str(e)) from None
         missing = [r.gate for r in governance.h3_attestations(c) if r.status != "attested"]
         rec = ApprovalRecord(gate=H_CHANGE, approver=approver, head=head, note=note)
-        rec.attestation = c.write_record("control/approvals/change.json", rec).attestation
-        ch.approvals[H_CHANGE] = rec
+        rec.attestation = c.write_record("control/approvals/change.json", rec).attestation   # projected
         return Approved(ActionResult(warnings=[f"{g} has no passing attestation: H-3 waits for it"
                                                for g in missing]), answered=True)

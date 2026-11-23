@@ -6,8 +6,6 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ...governance.approvals import ENV_SPEC, PLAN_DOCS  # noqa: F401  (re-exported)
-
 log = logging.getLogger("legion")
 SKILLS_DIR = "skills"      # payload/skills/<name>/SKILL.md, installed by run-agent.sh
 
@@ -35,9 +33,8 @@ class NoAgent(WorkflowError):
 
 
 def _slug(node_id: str) -> str:
-    """A node id as a path or branch component (``build:T1`` -> ``build-t1``, ``oracle@2`` ->
-    ``oracle-2``: ``@`` would end a ``file:<path>@<version>`` attestation)."""
-    return node_id.replace(":", "-").replace("@", "-").lower()
+    """A node id as a git branch component (``build:T1`` -> ``build-t1``: no ``:`` in a ref)."""
+    return node_id.replace(":", "-").lower()
 
 
 def _parse_ts(ts: str) -> datetime:

@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from legion_orch.store import DocStore, DocStoreError, VersionConflict
+from legion_orch.store.journal import Journal
+from legion_orch.store.state_tables import StateTables
 from legion_orch.telemetry import Telemetry
 from legion_orch.workflow import guards, risk
 from legion_orch.workflow.assets import AssetError, Assets
@@ -96,7 +98,7 @@ def test_assets_render_and_pin(tmp_path):
     vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
                               "context_refs", "feedback", "candidate_sha", "write_scope",
-                              "required_docs", "workdir", "sandbox_tools")}
+                              "required_docs", "workdir", "sandbox_tools", "plan", "step")}
     vars_["task_soul"] = "backend-engineer"
     r = a.render_role("implementer", vars_)
     assert "Backend Engineer" in r.soul and r.pin.startswith("sha256:")
@@ -279,14 +281,19 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     limits = types.SimpleNamespace(max_docs_per_run=3, max_doc_bytes_per_run=10)
     svc = types.SimpleNamespace(cfg=types.SimpleNamespace(limits=limits), docs=docs, git=None,
                                 assets=None, runner=None, lock=None, procs={},
-                                telemetry=Telemetry.off())
+                                telemetry=Telemetry.off(),
+                                journal=Journal(tmp_path / "journal"),
+                                tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = Reports(ChangeCore(svc, StubHost(), "c1"), lifecycle=None, roles=None)  # writes need neither
     run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
               write_scope=["changes/c1/plan/"])
     assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
     run.write_scope = ["changes/c1/plan/", "changes/c1/tasks/T1/"]   # even a broad scope can't
     for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md",
-                "tasks/T1/verification.json", "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
+                "tasks/T1/verification/cycle-1.json", "tasks/T1/panel/cycle-1.json",
+                "tasks/T1/reports/reviewer-cycle-1.json", "control/steps/plan/reports/critic-cycle-1.json",
+                "tasks/T1/runs/r0001/assignment.json", "tasks/T1/runs/r0001/outcome.json",
+                "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
     # G-W4: per-run quota (limits: 3 versions, 10 bytes in this test)
@@ -367,9 +374,13 @@ def test_store_enforces_bound_schemas():
     with pytest.raises(SchemaViolation, match="missing heading 'Change'"):
         d.write("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n",
                 author="r1", role="planner")
-    run = {"id": "r0001", "node_id": "plan", "role": "planner", "status": "ACTIVE", "cycle": 1, "token": "x"}
-    with pytest.raises(SchemaViolation, match="run"):     # run records may never carry a token
-        d.write("changes/c1/control/runs/r0001.json", _j.dumps(run), author="controller", role="controller")
+    run = {"role": "planner", "soul": "s", "cycle": 1, "created_at": "2026-11-23T00:00:00.000Z"}
+    d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
+            role="controller")                                  # a valid assignment
+    run["token"] = "x"
+    with pytest.raises(SchemaViolation, match="run-assignment.*does not allow"):   # never a token
+        d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
+                role="controller")
     assert d.write("changes/c1/notes/anything.txt", "free text", author="r", role="r").schema == "text"
 
 
@@ -759,13 +770,15 @@ def test_report_limits():
     assert guards.report_limits("s", [], {}, "r" * 3000, None)[0].startswith("G-R8: blocked_reason")
 
 
-def test_transition_rollback_keeps_identity():
+def test_transition_rollback_keeps_identity(tmp_path):
     import types
 
     from legion_orch.workflow.engine.base.core import ChangeCore
     from legion_orch.workflow.model import Change, Node, Run
     svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
-                                lock=None, procs={}, telemetry=Telemetry.off())
+                                lock=None, procs={}, telemetry=Telemetry.off(),
+                                journal=Journal(tmp_path / "journal"),
+                                tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = ChangeCore(svc, StubHost(), "c1")
     ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
     node = Node(id="plan", kind="plan", title="Plan")
@@ -792,9 +805,9 @@ def test_protected_support_files_are_protected():
     from legion_orch.workflow import governance
     from legion_orch.workflow.model import Oracle
     e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support),
-                                                           setup_pin=None),
+                                                           setup_pin=None, plan_node="plan"),
                               cfg=types.SimpleNamespace(protected_paths=[".github/"]),
-                              latest=lambda _rel: None)
+                              latest=lambda _rel: None, current=lambda _base: None)
     assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
 
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Oracle: protected acceptance tests, commands, criteria and verification surfaces (plan/oracle.json).",
+  "description": "Oracle: protected acceptance tests, commands, criteria and verification surfaces (<plan>/oracle.json).",
   "type": "object",
   "required": [
     "acceptance_tests",

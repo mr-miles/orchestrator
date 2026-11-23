@@ -13,7 +13,7 @@ GUARDS: dict[str, str] = {
     "G-R4": "report: required docs attested at latest version, written (or rewritten unchanged) by this run",
     "G-R5": "report: required git attestation present",
     "G-R6": "report: too many rejected reports fails the run",
-    "G-W1": "docs_write: inside write scope, never control/",
+    "G-W1": "docs_write: inside write scope, never control/ nor a task's controller records",
     "G-W2": "docs_write: base_version equals latest",
     "G-W3": "store write: content matches the schema bound to the path",
     "G-W4": "docs_write: per-run write quota (document versions and bytes)",

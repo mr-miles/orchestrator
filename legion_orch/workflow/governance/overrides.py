@@ -31,9 +31,8 @@ async def record_override(e: ChangeView, approver: str, payload: dict) -> GateOv
         await resolve_or_raise(e, evidence, "G-OV1: replacement evidence")
     rec = GateOverride(kind=kind, gate=gate, reason=reason, approver=approver, evidence=evidence)
     n = len(e.change.overrides) + 1
-    rec.attestation = e.write_record(f"control/overrides/{n}.json", rec).attestation
-    e.change.overrides.append(rec)
-    return rec
+    e.write_record(f"control/overrides/{n}.json", rec)          # projected: change.overrides
+    return e.change.overrides[-1]
 
 
 def gate_set(e: ChangeView) -> list[str]:

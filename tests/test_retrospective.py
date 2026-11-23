@@ -89,7 +89,7 @@ def test_a_prompt_is_checked_against_the_current_asset_files(tmp_path):
     values = {v: "x" for v in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
                                "branch", "task_id", "task_title", "task_json", "cycle", "role",
                                "context_refs", "feedback", "candidate_sha", "write_scope",
-                               "required_docs", "workdir", "task_soul", "environment")}
+                               "required_docs", "workdir", "task_soul", "environment", "plan", "step")}
     pin, recorded = a.render_role("release", values).pin, a.manifest()
     assert a.check_prompt("release", values, pin, recorded) == {"status": "exact", "changed": []}
     soul = tmp_path / "assets/souls/release-planner.md"

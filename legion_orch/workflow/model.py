@@ -181,7 +181,7 @@ class Record(BaseModel):
 
 # ---------------------------------------------------------------------------- plan documents
 class TaskContract(Record):
-    """One task of ``plan/taskgraph.json`` (shape enforced by the taskgraph schema)."""
+    """One task of the plan's ``taskgraph.json`` (shape enforced by the taskgraph schema)."""
     id: str
     title: str
     soul: str
@@ -213,7 +213,7 @@ class Surface(Record):
 
 
 class Oracle(Record):
-    """``plan/oracle.json`` as approved (shape enforced by the oracle schema)."""
+    """The plan's ``oracle.json`` as accepted (shape enforced by the oracle schema)."""
     acceptance_tests: list[str] = []
     protected_support: list[str] = []
     acceptance_commands: list[str] = []
@@ -268,6 +268,19 @@ class ReviewResult(Record):
     findings: list[Finding] = []
     checked: list[str] = []
     doc: str | None = None           # attestation of the review document
+
+
+class ReviewReport(Record):
+    """A judge's report as accepted (``<step records>/reports/<role>-cycle-<n>.json``): the
+    review it records on its node (``node.reviews``, projected) and the report itself."""
+    run: str
+    role: str
+    review: ReviewResult
+    status: str
+    summary: str = ""
+    attestations: list[str] = []
+    data: dict[str, Any] = {}        # the structured result (the role's report_schema)
+    at: str = Field(default_factory=now_iso)
 
 
 class CommandResult(Record):
@@ -381,7 +394,7 @@ class Node(Record):
     status: NodeStatus = PENDING
     status_since: str | None = None       # when it last changed status (stamped on save)
     cycle: int = 1
-    task: TaskContract | None = None      # build contract from plan/taskgraph.json
+    task: TaskContract | None = None      # build contract from the plan's taskgraph.json
     wave: int = 0
     runs: list[str] = []
     current_run: str | None = None
@@ -425,6 +438,30 @@ class Node(Record):
 
     def current_panel(self) -> PanelDecision | None:
         return self.panel.get(str(self.cycle))
+
+    @property
+    def records(self) -> str:
+        """Where the controller files this step's records (relative to the change): a build
+        task's ``tasks/<task_id>``, any other step's ``control/steps/<node id>``. Each kind in
+        its own directory, per cycle – ``verification/cycle-<n>.json``, ``panel/cycle-<n>.json``,
+        ``reports/<role>-cycle-<n>.json`` – so the path says whose record it is."""
+        return f"tasks/{self.task.id}" if self.task else f"control/steps/{self.id}"
+
+
+def step_record(rel: str) -> tuple[str, str, str] | None:
+    """``(node id, kind, name)`` of a step record's path (relative to the change) – the inverse
+    of :attr:`Node.records`; ``None`` for any other path."""
+    parts = rel.split("/")
+    if len(parts) == 4 and parts[0] == "tasks":
+        return f"build:{parts[1]}", parts[2], parts[3]
+    if len(parts) == 5 and parts[:2] == ["control", "steps"]:
+        return parts[2], parts[3], parts[4]
+    return None
+
+
+def cycle_of(name: str) -> int:
+    """The cycle of a per-cycle record's file name (``cycle-2.json``, ``reviewer-cycle-2.json``)."""
+    return int(name.rsplit("cycle-", 1)[1].removesuffix(".json"))
 
 
 # ---------------------------------------------------------------------------- run records
@@ -576,6 +613,21 @@ class GateOverride(Record):
     attestation: str | None = None
 
 
+class Accepted(Record):
+    """``control/accepted/<subject>.json``: the version of an agent's document the controller
+    accepted as the change's ``subject`` – the oracle (when it merged, as H-2 approved it), the
+    risk assessment (when the intake report was accepted) – or, ``revoked``, none any more."""
+    subject: str                          # "oracle" | "risk"
+    doc: str | None = None                # the document, relative to the change
+    version: int | None = None
+    revoked: bool | None = None
+    at: str = Field(default_factory=now_iso)
+
+    @property
+    def path(self) -> str:
+        return f"control/accepted/{self.subject}.json"
+
+
 class ProtectedPathApproval(Record):
     task: str
     paths: list[str]
@@ -639,7 +691,7 @@ class RoleEnvironment(Record):
 
 class EnvironmentBuild(Record):
     """The provisioned environment: what each mapped role's sandboxes are created with."""
-    spec: str                             # attestation of the approved plan/environment.json
+    spec: str                             # attestation of the approved environment.json
     roles: dict[str, RoleEnvironment] = {}    # role (or "verifier") -> its environment
     log: str | None = None                # attestation of the build log
     at: str = Field(default_factory=now_iso)
@@ -698,6 +750,15 @@ class Card(Record):
     published_at: str = Field(default_factory=now_iso)
 
 
+class PlanPointer(Record):
+    """``control/plan.json``: the plan the change is working to – the plan step whose
+    directory holds its documents (``plan``, a fix round's ``plan.2``) and, once H-2 approved
+    them, the approved version of each (relative path -> version)."""
+    node: str = "plan"
+    approved: dict[str, int] = {}
+    at: str = Field(default_factory=now_iso)
+
+
 class Change(Record):
     id: str
     goal: str
@@ -711,7 +772,8 @@ class Change(Record):
     risk: RiskAssessment | None = None
     tier_override: TierOverride | None = None
     approvals: dict[str, Approval] = {}   # "H-1", "H-E1", "H-3", "oracle", "spec:<subject>"
-    oracle: Oracle | None = None          # plan/oracle.json as approved
+    plan: PlanPointer | None = None       # the plan worked to (control/plan.json)
+    oracle: Oracle | None = None          # the plan's oracle.json as accepted
     oracle_sha: str | None = None
     integration_head: str | None = None
     panel: list[str] = []
@@ -731,6 +793,17 @@ class Change(Record):
     rounds: list[FixRound] = []                            # fix rounds since the last restart
     questions: dict[str, AgentQuestion] = {}               # A2A ask_human, by task id
     verifications: dict[str, VerificationRun] = {}         # the verification service's runs
+
+    @property
+    def plan_node(self) -> str:
+        """The plan worked to: its step's node, the directory of its documents (``plan``
+        until a plan is approved)."""
+        return self.plan.node if self.plan else "plan"
+
+    def plan_doc(self, name: str) -> str:
+        """A document of the plan worked to, relative to the change (``spec.md`` ->
+        ``plan.2/spec.md``)."""
+        return f"{self.plan_node}/{name}"
 
     def round_first_build_at(self) -> str | None:
         """When the current round's first build started (round 1: the change's first build);

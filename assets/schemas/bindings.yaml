@@ -1,30 +1,43 @@
 # Path (relative to changes/<id>/) -> schema. First match wins; the last entry is the catch-all.
 # The store validates every write against the bound schema and records its name and sha.
 
-# ---- agent documents
+# ---- agent documents (a plan's under its step: plan/, a fix round's plan.2/)
 - {pattern: "intake/requirements.md", schema: requirements}
 - {pattern: "intake/risk.json", schema: risk}
 - {pattern: "intake/questions.md", schema: questions}
-- {pattern: "plan/spec.md", schema: markdown}
-- {pattern: "plan/specs/REQ-*.md", schema: delta-spec}
-- {pattern: "plan/taskgraph.json", schema: taskgraph}
-- {pattern: "plan/oracle.json", schema: oracle}
-- {pattern: "plan/environment.json", schema: environment}
+- {pattern: "plan*/spec.md", schema: markdown}
+- {pattern: "plan*/specs/REQ-*.md", schema: delta-spec}
+- {pattern: "plan*/taskgraph.json", schema: taskgraph}
+- {pattern: "plan*/oracle.json", schema: oracle}
+- {pattern: "plan*/environment.json", schema: environment}
 - {pattern: "tasks/*/evidence/*.md", schema: evidence}
 - {pattern: "release/plan.md", schema: release-plan}
 # ---- controller documents
 - {pattern: "control/change.json", schema: change}
 - {pattern: "control/graph.json", schema: graph}
 - {pattern: "control/nodes/*.json", schema: node}
-- {pattern: "control/runs/*.json", schema: run}
+- {pattern: "control/approvals/protected-paths/*.json", schema: protected-approval}
 - {pattern: "control/approvals/*.json", schema: approval}
 - {pattern: "control/approvals/*/*.json", schema: approval}
 - {pattern: "control/attestations/*.json", schema: attestation}
 - {pattern: "control/overrides/*.json", schema: override}
 - {pattern: "control/surfaces/*.json", schema: surface-pin}
-- {pattern: "control/verification/*.json", schema: verification}
-- {pattern: "tasks/*/verification.json", schema: verification}
+# a step's records (Node.records): a build task's under tasks/<task_id>/, any other step's under
+# control/steps/<node id>/ – per cycle, so the path says whose record it is
+- {pattern: "tasks/*/verification/*.json", schema: verification}
+- {pattern: "control/steps/*/verification/*.json", schema: verification}
+- {pattern: "tasks/*/panel/*.json", schema: panel-decision}
+- {pattern: "control/steps/*/panel/*.json", schema: panel-decision}
+- {pattern: "tasks/*/runs/*/assignment.json", schema: run-assignment}
+- {pattern: "control/steps/*/runs/*/assignment.json", schema: run-assignment}
+- {pattern: "tasks/*/runs/*/outcome.json", schema: run-outcome}
+- {pattern: "control/steps/*/runs/*/outcome.json", schema: run-outcome}
+- {pattern: "tasks/*/reports/*.json", schema: report}
+- {pattern: "control/steps/*/reports/*.json", schema: report}
 - {pattern: "control/ship/readiness.json", schema: readiness}
+- {pattern: "control/environment/build.json", schema: environment-build}
+- {pattern: "control/plan.json", schema: plan-pointer}
+- {pattern: "control/accepted/*.json", schema: accepted}
 - {pattern: "control/logs/*.log", schema: text}
 # ---- everything else
 - {pattern: "*.json", schema: json}

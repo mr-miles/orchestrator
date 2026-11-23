@@ -11,9 +11,10 @@ Who decides what:
 The runtime sees only steps – a stage's gate is a step like any other: the core's effects start,
 stop, resume and retry steps through the step runner, and the step runner's results (a step
 done, escalated, resumed) go back to the core. Human decisions – an answer (approving a gate is
-one), a retry, a send-back – go through :meth:`act`. The core's state is persisted as its
-inputs (``control/workflow.json``) and rebuilt by replaying them: the core is pure, so the
-replay reproduces it exactly.
+one), a retry, a send-back – go through :meth:`act`. The core's state is persisted as it stands
+(the record ``workflow``: the tree's parameters and the core's snapshot, :meth:`FlowState.snapshot`)
+and restored from it – the tree rebuilt, its rounds and task groups made again, each node's state
+as it was.
 """
 from __future__ import annotations
 
@@ -23,7 +24,6 @@ from ....telemetry import Subject
 from ... import guards, risk
 from ...flow import (
     CHANGE,
-    ActionError,
     Completed,
     EndChange,
     Escalated,
@@ -35,6 +35,7 @@ from ...flow import (
     StartStep,
     Step,
     StopStep,
+    Workflow,
     walk,
 )
 from ...flow.states import StepStatus
@@ -69,7 +70,6 @@ if TYPE_CHECKING:
     from ..services.runs import RunLifecycle
     from ..steps import StepRunner
 
-RECORD = "control/workflow.json"
 
 
 class FlowRuntime:
@@ -78,25 +78,23 @@ class FlowRuntime:
         self._cleaning = False                       # the end-of-change cleanup was started
         self.flow = FlowState(requirements_workflow())
         self.tree: dict[str, Any] | None = None       # rank, environment, blank_repo (after H-1)
-        self.inputs: list[list[Any]] = []             # every input to the core, in order
         self._feedback: dict[str, tuple[str, list[str]]] = {}   # text -> (source, docs)
         self.agent_runner: AgentRunner = None  # type: ignore[assignment]   # (compose)
 
     # ------------------------------------------------------------------ persistence
     def to_json(self) -> dict[str, Any]:
-        return {"tree": self.tree, "inputs": self.inputs}
+        return {"tree": self.tree, "core": self.flow.snapshot()}
 
     def save(self) -> None:
-        self.c.st._write("workflow.json", self.to_json())
+        """The core's record, for the state's next save: the tree's parameters and the core as
+        it stands."""
+        self.c.st.workflow = self.to_json()
 
     def load(self) -> None:
-        """Rebuild the core from its record (its effects were carried out before)."""
-        data = self.c.st._read(self.c.st.root + "workflow.json")
+        """The core as its record left it (its effects were carried out before)."""
+        data = self.c.st.workflow
         self.tree = data["tree"]
-        self.flow = self._new_flow()
-        for inp in data["inputs"]:
-            self._apply(inp, replay=True)
-        self.inputs = data["inputs"]
+        self.flow = FlowState.restore(self._workflow(), data["core"])
         self._materialize()             # the nodes in the tree's order, with its dependencies
         self.c.trace.resume(list(self.c.runs), ended=self.flow.ended is not None)
         self.c.trace.flow([(n.id, 'adopt', 'pending', str(self.status(n.id)))
@@ -104,38 +102,33 @@ class FlowRuntime:
                            if self.status(n.id) in (StepStatus.RUNNING, StepStatus.ESCALATED)],
                           self._describe)
 
-    def _new_flow(self) -> FlowState:
-        wf = (requirements_workflow() if self.tree is None
-              else build_workflow(self.tree["rank"], environment=self.tree["environment"],
-                                  blank_repo=self.tree["blank_repo"],
-                                  publish=self.tree["publish"]))
-        return FlowState(wf)
+    def _workflow(self) -> Workflow:
+        """The tree the change's record says (before the tier is decided: the requirements')."""
+        return (requirements_workflow() if self.tree is None
+                else build_workflow(self.tree["rank"], environment=self.tree["environment"],
+                                    blank_repo=self.tree["blank_repo"],
+                                    publish=self.tree["publish"]))
 
-    def _apply(self, inp: list[Any], *, replay: bool = False) -> list:
-        """One input to the core; returns its effects. ``replay``: rebuilding the core (its
-        effects were carried out then)."""
+    def _new_flow(self) -> FlowState:
+        return FlowState(self._workflow())
+
+    def _apply(self, inp: list[Any]) -> list:
+        """One input to the core; returns its effects."""
         op = inp[0]
-        try:
-            if op == "start":
-                return self.flow.start()
-            if op == "completed":
-                return self.flow.on(Completed(inp[1]))
-            if op == "escalated":
-                return self.flow.on(Escalated(inp[1], inp[2], inp[3]))
-            if op == "act":
-                return self.flow.act(inp[1], inp[2], by=inp[3], text=inp[4])
-            if op == "redo":
-                return self.flow.redo(inp[1], inp[2])
-            if op == "define":
-                return self.flow.define(inp[1], [Step(s["id"], overridable=s["overridable"],
-                                                      depends_on=s["depends_on"])
-                                                 for s in inp[2]])
-        except (ActionError, KeyError, AssertionError):
-            # a rebuilt tree (another tier) may not have what an earlier input was about:
-            # everything after the requirements was reset by then anyway
-            if not replay:
-                raise
-            return []
+        if op == "start":
+            return self.flow.start()
+        if op == "completed":
+            return self.flow.on(Completed(inp[1]))
+        if op == "escalated":
+            return self.flow.on(Escalated(inp[1], inp[2], inp[3]))
+        if op == "act":
+            return self.flow.act(inp[1], inp[2], by=inp[3], text=inp[4])
+        if op == "redo":
+            return self.flow.redo(inp[1], inp[2])
+        if op == "define":
+            return self.flow.define(inp[1], [Step(s["id"], overridable=s["overridable"],
+                                                  depends_on=s["depends_on"])
+                                             for s in inp[2]])
         raise ValueError(f"unknown workflow input {op!r}")
 
     def _describe(self, nid: str) -> Subject | None:
@@ -160,12 +153,11 @@ class FlowRuntime:
         return Subject('step', pid, kind, None)
 
     def _input(self, *inp: Any) -> list:
-        """A new input: applied, and recorded for the replay."""
+        """A new input to the core: applied (and traced)."""
         mark = len(self.flow.log)
         effects = self._apply(list(inp))
         self.c.trace.flow(self.flow.log[mark:], self._describe,
                           ended=self.flow.ended is not None)
-        self.inputs.append(list(inp))
         return effects
 
     # ------------------------------------------------------------------ starting
@@ -177,15 +169,11 @@ class FlowRuntime:
 
     def build_tree(self) -> None:
         """The tier is decided (H-1 approved): the tier, environment and repository decide the
-        rest of the tree. The core is rebuilt for it and replays every input so far (so
-        attempts, answers and send-backs are as they were; what the new tree lacks is
-        skipped)."""
+        rest of the tree. The core is restored into it as it stands (so attempts, answers and
+        send-backs are as they were; what the new tree lacks is skipped, its attempts kept)."""
+        snap = self.flow.snapshot()
         self.tree = self._tree()
-        inputs, self.inputs = self.inputs, []
-        self.flow = self._new_flow()
-        for inp in inputs:
-            self._apply(inp, replay=True)
-        self.inputs = inputs
+        self.flow = FlowState.restore(self._workflow(), snap)
         self._materialize()
 
     def _tree(self) -> dict[str, Any]:
@@ -290,7 +278,7 @@ class FlowRuntime:
         group (a blank repository's scaffold first, in its own group; a fix round: its new tasks
         only)."""
         c, n = self.c, plan.round
-        taskgraph = c.json_doc("plan/taskgraph.json")
+        taskgraph = c.json_doc(f"{plan.id}/taskgraph.json")      # the plan just accepted
         built = {b.task.id for b in c.build_nodes() if b.round < n} if n > 1 else set()
         scaffold, tasks = task_steps(taskgraph, built=built)
         if n > 1 or SCAFFOLD not in self.flow.nodes:
