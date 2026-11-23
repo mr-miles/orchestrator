@@ -22,6 +22,7 @@ comes first. Waiting work is served first come, first served.
 from __future__ import annotations
 
 import asyncio
+import heapq
 import itertools
 from typing import Protocol, TypeVar
 
@@ -177,3 +178,40 @@ class StepDispatcher:
 
 
 __all__ = ["Dispatcher", "Executable", "Reservation", "StepDispatcher", "Withdrawn"]
+
+
+class PriorityCap:
+    """At most ``limit`` holders at once, granted lowest priority first, then in request
+    order: the verification service's limit on verifier sandboxes
+    (``limits.max_parallel_verifications``), shared by every change, inside the dispatcher's."""
+
+    def __init__(self, limit: int):
+        self.limit, self.held = max(1, limit), 0
+        self._heap: list[tuple[int, int, asyncio.Future]] = []
+        self._seq = itertools.count()
+
+    @property
+    def waiting(self) -> int:
+        return sum(1 for *_, f in self._heap if not f.done())
+
+    async def acquire(self, priority: int) -> None:
+        fut = asyncio.get_running_loop().create_future()
+        heapq.heappush(self._heap, (priority, next(self._seq), fut))
+        self._grant()
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if fut.done() and not fut.cancelled():
+                self.release()              # granted as it was cancelled: give it back
+            raise
+
+    def release(self) -> None:
+        self.held -= 1
+        self._grant()
+
+    def _grant(self) -> None:
+        while self._heap and self.held < self.limit:
+            *_, fut = heapq.heappop(self._heap)
+            if not fut.done():
+                self.held += 1
+                fut.set_result(None)

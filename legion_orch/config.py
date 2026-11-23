@@ -101,6 +101,10 @@ class LimitsConfig:
     run_timeout_s: int = 3600
     setup_timeout_s: int = 900    # mise run setup after a checkout (§5.3c)
     verify_timeout_s: int = 1800
+    # verifier sandboxes running at once (within max_parallel): step verifications first, then
+    # the checks at the head, then commits verified as they are pushed, then agents' requests
+    max_parallel_verifications: int = 2
+    verification_requests_per_run: int = 10     # MCP verification_request calls per agent run
     # an A2A answer from a step whose agent is not running (a resumed turn, §A2A)
     a2a_answer_timeout_s: int = 900
     # git transport: largest accepted request (push) and concurrent git-http-backend processes

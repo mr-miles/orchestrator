@@ -290,6 +290,11 @@ function NodeBody({ node, state }: { node: Node; state: ChangeState }) {
               <CardHeader>
                 <CardTitle className="flex flex-wrap items-center gap-2">
                   {VERIFICATION_LABEL[k] ?? `Cycle ${k}`} <Verdict ok={v.ok} /> <Sha sha={v.sha} />
+                  {v.cached && (
+                    <Badge variant="outline" title={`verification ${v.run ?? ''}`}>
+                      verified already
+                    </Badge>
+                  )}
                 </CardTitle>
                 {v.infra_error && (
                   <CardDescription className="text-destructive">{v.infra_error}</CardDescription>

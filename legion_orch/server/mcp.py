@@ -46,7 +46,8 @@ you report, and answer each message with a2a_reply()."""
 
 AGENT_HIDDEN = ("/control/logs/",)
 WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report",
-                  "a2a_inbox", "a2a_reply")
+                  "a2a_inbox", "a2a_reply",
+                  "verification_request", "verification_status", "verification_evidence")
 # The gateway's MCP allowlist (sandbox network policy) is generated from exactly this list.
 MCP_TOOLS = tuple(STORE_TOOLS) + WORKFLOW_TOOLS
 
@@ -176,6 +177,74 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         outcome = await ce.handle_report(r.id, status, summary, attestations, data,
                                          blocked_reason, missing_decision, dry_run)
         return outcome.model_dump(mode="json", exclude_none=True)
+
+    # ------------------------------------------------------------------ verification service
+    def _view(v) -> dict:
+        res = v.result
+        return {"id": v.id, "sha": v.sha, "state": str(v.state), "attempt": v.attempt,
+                "commands": v.commands, "queued_at": v.queued_at, "started_at": v.started_at,
+                "ended_at": v.ended_at,
+                "results": [{"command": r.command, "exit_code": r.exit_code, "setup": r.setup}
+                            for r in res.results] if res else [],
+                "infra_error": res.infra_error if res else None,
+                "attestation": res.attestation if res else None}
+
+    async def _sha_of(ce: ChangeEngine, r: Run, sha: str | None) -> str:
+        if sha:
+            return sha
+        if r.branch:
+            tip = await ce.git.ref_sha(f"refs/heads/{r.branch}")
+            if tip:
+                return tip
+            raise ToolError(f"your branch {r.branch} is not pushed yet: push, then ask")
+        return r.judged_sha or r.base_sha
+
+    @server.tool(description="Verify your step's commands (the task's `verification`) at a commit "
+                             "in a fresh verifier sandbox, as the controller will: sha defaults "
+                             "to your pushed branch tip (judges: the commit you judge). Every "
+                             "pushed tip is verified anyway, once per sha: this returns that "
+                             "verification (queued, running, or its result) rather than running "
+                             "it again. Poll verification_status; limited per run.")
+    async def verification_request(ctx: Context, sha: str | None = None) -> dict:
+        ce, r = current(ctx)
+        try:
+            return _view(await ce.request_verification(r, await _sha_of(ce, r, sha)))
+        except WorkflowError as e:
+            raise ToolError(str(e)) from None
+
+    @server.tool(description="A verification's state (queued, running, passed, failed, "
+                             "infra_error, cancelled) and each command's exit code: by id, or "
+                             "the latest of your step's commands at sha (default: your pushed "
+                             "tip). Passed and failed are final for that commit.")
+    async def verification_status(ctx: Context, id: str | None = None,
+                                  sha: str | None = None) -> dict:
+        ce, r = current(ctx)
+        if id:
+            v = ce.change.verifications.get(id)
+        else:
+            try:
+                v = ce.latest_verification(r, await _sha_of(ce, r, sha))
+            except WorkflowError as e:
+                raise ToolError(str(e)) from None
+        if v is None:
+            raise ToolError("no such verification (verification_request starts one)")
+        return _view(v)
+
+    @server.tool(description="A finished verification's evidence: every command with its exit "
+                             "code and output (the last `lines` lines of each), as recorded.")
+    async def verification_evidence(ctx: Context, id: str, lines: int = 200) -> dict:
+        ce, _ = current(ctx)
+        v = ce.change.verifications.get(id)
+        if v is None:
+            raise ToolError(f"unknown verification {id}")
+        full = ce.verification_record(id)
+        if full is None:
+            return _view(v) | {"note": "not finished: no evidence yet"}
+        lines = max(1, min(lines, 2000))
+        return _view(v) | {"results": [
+            {"command": x["command"], "exit_code": x["exit_code"], "setup": x.get("setup", False),
+             "output": "\n".join(x.get("output", "").splitlines()[-lines:])}
+            for x in full.get("results", [])]}
 
     # ------------------------------------------------------------------ A2A inbox
     hub = A2AHub.of(ctl)

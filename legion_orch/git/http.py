@@ -19,15 +19,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import subprocess
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 
 from .remote import GitRemote
+
+log = logging.getLogger("legion.git")
 
 MAX_CGI_HEADER = 64 * 1024
 BODY_TIMEOUT_S = 600
@@ -203,8 +206,9 @@ class GitEndpoint:
 
     def __init__(self, remotes: Mapping[str, GitRemote],
                  authorize: Callable[[Request], GitGrant | None], *,
-                 max_request_bytes: int = 256 * 1024 * 1024, max_concurrency: int = 8):
-        self.remotes, self.authorize = remotes, authorize
+                 max_request_bytes: int = 256 * 1024 * 1024, max_concurrency: int = 8,
+                 on_push: Callable[[GitGrant], Awaitable[None]] | None = None):
+        self.remotes, self.authorize, self.on_push = remotes, authorize, on_push
         self.max_request_bytes = max_request_bytes
         self._slots = asyncio.Semaphore(max_concurrency)
         self._exe = os.path.join(git_exec_path(), "git-http-backend")
@@ -222,7 +226,10 @@ class GitEndpoint:
         backend = await _Backend.start(self._exe, self._cgi_env(request, grant, remote),
                                        self._slots)
         try:
-            return await self._respond(request, backend)
+            pushed = (self.on_push if request.method == "POST"
+                      and request.path_params["path"].endswith("/git-receive-pack") else None)
+            return await self._respond(request, backend,
+                                       (lambda: pushed(grant)) if pushed else None)
         except BaseException:
             await backend.close()
             raise
@@ -268,7 +275,8 @@ class GitEndpoint:
             env["GIT_PROTOCOL"] = request.headers["git-protocol"]
         return env
 
-    async def _respond(self, request: Request, backend: _Backend) -> Response:
+    async def _respond(self, request: Request, backend: _Backend,
+                       done: Callable[[], Awaitable[None]] | None = None) -> Response:
         backend.feed(request, self.max_request_bytes)
         head = await backend.read_head()
         if not await backend.body_consumed(BODY_TIMEOUT_S):
@@ -283,13 +291,26 @@ class GitEndpoint:
             return PlainTextResponse(f"git backend error: {backend.stderr_tail[-500:]}",
                                      status_code=500)
         status, headers, media, first = parsed
-        return StreamingResponse(backend.stream(first), status_code=status, headers=headers,
-                                 media_type=media)
+        body = backend.stream(first)
+        if done is not None and status == 200:
+            body = _then(body, done)                    # a push: told once git has answered
+        return StreamingResponse(body, status_code=status, headers=headers, media_type=media)
+
+
+async def _then(body: AsyncIterator[bytes], done: Callable[[], Awaitable[None]]):
+    async for chunk in body:
+        yield chunk
+    try:
+        await done()
+    except Exception as e:                          # never fails the push itself
+        log.warning("after a push: %r", e)
 
 
 def make_git_endpoint(remotes: Mapping[str, GitRemote],
                       authorize: Callable[[Request], GitGrant | None], *,
-                      max_request_bytes: int = 256 * 1024 * 1024, max_concurrency: int = 8):
-    """A Starlette request handler for ``/git/{path:path}`` (GET and POST)."""
+                      max_request_bytes: int = 256 * 1024 * 1024, max_concurrency: int = 8,
+                      on_push: Callable[[GitGrant], Awaitable[None]] | None = None):
+    """A Starlette request handler for ``/git/{path:path}`` (GET and POST). ``on_push``: told
+    after each push (``git-receive-pack``) git accepted the request for."""
     return GitEndpoint(remotes, authorize, max_request_bytes=max_request_bytes,
-                       max_concurrency=max_concurrency).handle
+                       max_concurrency=max_concurrency, on_push=on_push).handle

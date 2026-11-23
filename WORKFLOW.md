@@ -721,8 +721,31 @@ A fresh sandbox (network: controller git endpoint only, fetch-only grant) clones
 commit and runs each `verification` command; results come back through `sandbox exec` output.
 Results are written by the controller to `tasks/{{task_id}}/verification.json` (one version per cycle).
 
+**The verification service** (`engine/services/verification.py`) runs every verification – the
+step's, preflight's, the baseline's, integration's – **once per key**: the commit, the commands,
+the setup pin, the verifier image and the timeout. A passed or failed run is the key's result
+for good: anyone asking again gets it without a new sandbox. An infrastructure error is not a
+result (asked again, it runs again), and a human's decision on a step (retry, answer) makes its
+next verification a fresh attempt – what they fixed (the test setup, a flaky service) is outside
+the key; a decision owner may also run one again (`POST …/verifications/<id>/rerun`). Attempts
+stay visible. (Environment images have content-addressed tags; a configured default verifier
+image should be pinned too – a moving tag such as `:latest` is not part of the key's meaning.)
+
+* **On push.** Every tip a run pushes to its branch is verified (its task's commands), so the
+  step's Verify usually finds its candidate verified. A newer push cancels its branch's
+  verification that has not started yet.
+* **Agents** ask over MCP: `verification_request(sha?)` (their step's commands; the pushed tip by
+  default; `limits.verification_requests_per_run`), `verification_status`,
+  `verification_evidence` (each command's exit code and output).
+* **Limits.** At most `limits.max_parallel_verifications` verifier sandboxes run at once, inside
+  `limits.max_parallel`, served by priority – a step's verification, then the checks at the
+  head, then pushes, then agents. A step's verification runs in the step's own slot (a queued
+  one it needs moves there), so work in flight finishes first.
+* Runs are recorded on the change and in full at `control/verifications/<id>.json`.
+
 | ID | Rule |
 | --- | --- |
+| G-V0 | A judge is dispatched only if its candidate has a passing verification under the key as it is now (setup pin, verifier image): one that changed since is verified again first (the step escalates `unverified`; **Retry** re-verifies). |
 | G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
 | G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the node escalates `verify_unrunnable` instead of spending a rework cycle (oracle commands at integration likewise). **Retry** re-runs verification at the same candidate, e.g. after the image is fixed. |
 | G-V3 | With a pinned setup (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs. In a task's verification or at integration that is a failure like any other (the task may have caused it); at preflight and the baseline – before any build – it is handled as G-PF1 says (the baseline: escalates `setup_failed`). |

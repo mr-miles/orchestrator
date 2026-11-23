@@ -63,6 +63,7 @@ GUARDS: dict[str, str] = {
     "G-B3": "scoped diff",
     "G-B4": "evidence lists verification commands",
     "G-PP1": "protected paths changed only after a prior human approval for that task",
+    "G-V0": "judges are dispatched only on a candidate with a passing verification under the current key",
     "G-V1": "deterministic verification passes",
     "G-V2": "a command not found in the verifier escalates instead of reworking",
     "G-V3": "the repository's setup (mise run setup) runs first; a failure stops verification",

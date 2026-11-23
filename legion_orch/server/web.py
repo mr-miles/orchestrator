@@ -88,6 +88,7 @@ async def build_mcp_app(ctl: Controller) -> Starlette:
 def build_git_app(ctl: Controller) -> Starlette:
     endpoint = make_git_endpoint(
         ctl.hubs, lambda request: ctl.auth.git_grant(bearer(request.headers.get("authorization", ""))),
+        on_push=ctl.git_pushed,
         max_request_bytes=ctl.cfg.limits.git_max_push_bytes,
         max_concurrency=ctl.cfg.limits.git_max_concurrency)
     return Starlette(routes=[Route("/git/{path:path}", endpoint, methods=["GET", "POST"])])
@@ -456,6 +457,17 @@ def build_app(ctl: Controller) -> Starlette:
                                      body.get("approver", ""), body.get("payload") or {})
 
     @api()
+    async def verifications(request: Request):
+        ce = ctl.get(request.path_params["cid"])
+        sha = request.query_params.get("sha") or None
+        return {"verifications": [v.model_dump(mode="json") for v in ce.verifications(sha)]}
+
+    @api(write=True)
+    async def reverify(request: Request, body: dict):
+        ce = ctl.get(request.path_params["cid"])
+        return await ce.reverify(request.path_params["vid"], body.get("approver", ""))
+
+    @api()
     async def questions(request: Request):
         ce = ctl.get(request.path_params["cid"])
         return {"questions": [q.model_dump(mode="json") for q in ce.change.questions.values()]}
@@ -496,6 +508,8 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/changes/{cid}/events", change_events),
         Route("/api/changes/{cid}/questions", questions),
+        Route("/api/changes/{cid}/verifications", verifications),
+        Route("/api/changes/{cid}/verifications/{vid}/rerun", reverify, methods=["POST"]),
         Route("/api/changes/{cid}/questions/{qid}/answer", answer_question, methods=["POST"]),
         Route("/api/events", all_events),
         Route("/api/workspaces", list_workspaces),

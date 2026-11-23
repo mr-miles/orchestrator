@@ -17,6 +17,7 @@ from .services.provision import Provisioner
 from .services.publish import Publisher
 from .services.reports import Reports
 from .services.runs import RunLifecycle
+from .services.verification import Verifications
 from .steps import StepHolds, StepRunner
 from .steps.phases import PhaseContext
 
@@ -36,12 +37,16 @@ def compose(ce: ChangeEngine) -> None:
     reports = Reports(ce, lifecycle, roles=ce)
     agents.reports = reports
     lifecycle.agents = agents                     # an A2A message may start an agent early
+    verifications = Verifications(ce, sandboxes, ce.svc.dispatcher, lifecycle, ce.svc.verify_cap)
+    agents.verifications = verifications          # G-V0: judges see verified candidates only
+    phases.verifications = verifications
     runner = StepRunner(ce, phases, lifecycle, provisioner)
     gates = HumanGates(ce, lifecycle, runner)
     flow = FlowRuntime(ce, runner, lifecycle)
     runner.runtime = flow
     gates.flow = flow
     ce._flow, ce._gates, ce._reports, ce._lifecycle = flow, gates, reports, lifecycle
+    ce._verifications = verifications             # fronted: pushes, agents' requests, the API
     # not the facade's: for tests that drive a layer directly
     ce._sandboxes, ce._agents, ce._phases, ce._provisioner, ce._runner = (
         sandboxes, agents, phases, provisioner, runner)

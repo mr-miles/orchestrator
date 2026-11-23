@@ -16,7 +16,7 @@ from ....telemetry import Telemetry
 from ...assets import Assets
 from ...attention import AttentionItem
 from .auth import WorkloadAuth
-from .dispatch import Dispatcher
+from .dispatch import Dispatcher, PriorityCap
 
 
 @dataclass
@@ -35,6 +35,8 @@ class Services:
     procs: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     # runs the work of every change within limits.max_parallel (agent runs, verifiers)
     dispatcher: Dispatcher = field(default_factory=lambda: Dispatcher(4))
+    # verifier sandboxes at once (limits.max_parallel_verifications), by priority
+    verify_cap: PriorityCap = field(default_factory=lambda: PriorityCap(2))
     # the workspaces' sources on GitHub: a finished change's branch and pull request
     github: GitHub = field(default_factory=GitHub)
     # optional OpenTelemetry tracing (off unless configured)

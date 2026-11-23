@@ -33,7 +33,7 @@ from ..model import (
 from ..roles import REGISTRY as ROLE_HANDLERS
 from .base.auth import WorkloadAuth
 from .base.common import WorkflowError, log
-from .base.dispatch import Dispatcher
+from .base.dispatch import Dispatcher, PriorityCap
 from .base.shared import Services
 from .change import ChangeEngine
 
@@ -67,6 +67,7 @@ class Controller:
                   for w in cfg.workspaces},
             assets=assets, runner=runner, auth=self.auth, tmp=cfg.state_dir / "tmp",
             builder=builder or make_builder(cfg), dispatcher=Dispatcher(cfg.limits.max_parallel),
+            verify_cap=PriorityCap(cfg.limits.max_parallel_verifications),
             telemetry=telemetry or Telemetry.from_config(cfg))
         if cfg.environment is not None:   # fail fast: every change would escalate on it
             Library.for_config(cfg, assets.schemas)
@@ -288,6 +289,19 @@ class Controller:
         for ce in self.changes.values():
             for r in ce.runs.values():
                 yield ce.cid, r
+
+    async def git_pushed(self, grant) -> None:
+        """A run pushed its branch (the git remote, after git accepted it): the change verifies
+        the new tip."""
+        try:
+            ce, run = self.find_run(grant.identity)
+        except WorkflowError:
+            return                                     # a verifier: it never pushes
+        if not run.branch:
+            return
+        sha = await ce.git.ref_sha(f"refs/heads/{run.branch}")
+        if sha:
+            await ce.pushed(run.id, sha)
 
     def a2a_caller(self, token: str | None) -> tuple[ChangeEngine, WorkloadBinding] | None:
         """The change and agent (sandbox, task, role) an A2A request's bearer comes from."""
