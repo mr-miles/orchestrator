@@ -56,11 +56,12 @@ class Hooks(Protocol):
 class Runner:
     def __init__(self, change: str, tickets: Tickets, *, executors: Executors, branches: Branches,
                  base: str, spec: WorkflowSpec, hooks: Hooks,
-                 save: Callable[[Iterable[Ticket]], None], merger: Merger | None = None):
+                 save: Callable[[Iterable[Ticket]], None], merger: Merger | None = None,
+                 lock: asyncio.Lock | None = None):
         self.change, self.t, self.executors, self.branches = change, tickets, executors, branches
         self.base, self.spec, self.hooks, self.save = base, spec, hooks, save
         self.merger = merger or Merger(branches)
-        self.lock = asyncio.Lock()
+        self.lock = lock or asyncio.Lock()        # the engine's: the change's own lock
         self._work: dict[str, asyncio.Task] = {}        # ticket -> its round's task
         self._tasks: set[asyncio.Task] = set()          # every task until it is done
         self._held: tuple[str, Outcome] | None = None   # a sign-off's verdict, until quiet

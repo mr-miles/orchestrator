@@ -1,0 +1,269 @@
+"""TicketFlow: a change's workflow – its tickets, run by the ticket runner over the services
+(plan: ~/plans/tickets-3b.md, E4).
+
+* **Start**: the workspace is synced (the change's base), the root is built from the skeleton
+  (``assets/workflow.yaml``) and the runner starts it.
+* **The runner** (:mod:`legion_orch.workflow.tickets.runner`) applies the rules under the change's
+  lock and carries their effects out; its executors fill their ports with the services
+  (:mod:`.adapters`). Every save goes through the change (its state store, journal, bus).
+* **Hooks**: the tier from the risk being signed (H-1), a replan from the document a sign-off
+  applies (the planner's ``tickets``), a ticket's work checked against its role, an escalation
+  (the change's save raises it on the bus: the resolver hears), the end (the change ends; its
+  on-complete process – the retrospective – later).
+* **Human actions** (decision owners only): a sign-off's decision, a waiting ticket's remedy
+  (retry, waive, replan), a replan, pause and resume, abandon.
+* **Restart**: :meth:`recover` – every ticket under way goes on at the same attempt (R14).
+"""
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+from ....git.branches import Branches
+from ....git.remote import is_blank_tree
+from ... import setup
+from ...attest import FILE_RE
+from ...model import ChangeEnd, ChangeStatus
+from ...risk import derive_tier
+from ...tickets import Remedy, Replan, Status, Ticket, TicketError, Tickets, Waiting
+from ...tickets.executors import (
+    AgentExecutor,
+    Backoff,
+    CanMergeExecutor,
+    Executors,
+    Merger,
+    ProvisionExecutor,
+    PublishExecutor,
+    SignoffExecutor,
+    VerifyExecutor,
+)
+from ...tickets.plan_doc import parse_plan
+from ...tickets.runner import Runner
+from ..base.common import WorkflowError
+from ..base.core import ChangeCore
+from ..services import cleanup
+from ..services.agents import AgentRunner
+from ..services.publish import Publisher
+from ..services.runs import RunLifecycle
+from .adapters import Agents, Provision, Remote, Signoffs, Verify
+
+CLOSED = {Status.PASSED, Status.FAILED, Status.CANCELLED}
+
+
+class TicketFlow:
+    def __init__(self, c: ChangeCore, *, agents: Agents, signoffs: Signoffs, verify: Verify,
+                 provision: Provision, publisher: Publisher, agent_runner: AgentRunner,
+                 lifecycle: RunLifecycle, backoff: Backoff = Backoff()):
+        self.c, self.signoffs, self.agent_runner, self.lifecycle = c, signoffs, agent_runner, lifecycle
+        if c.assets.workflow is None:
+            raise WorkflowError("the assets have no workflow.yaml")
+        self.spec = c.assets.workflow
+        self.branches = Branches(c.git)
+        hub = c.git
+        remote = Remote(c, publisher) if hub.source and c.svc.github.repo_of(hub.source) else None
+        self.executors = Executors({
+            "agent": AgentExecutor(agents, backoff),
+            "human:signoff": SignoffExecutor(signoffs, backoff),
+            "controller:verify": VerifyExecutor(verify, backoff),
+            "controller:can-merge": CanMergeExecutor(self.branches, backoff),
+            "controller:provision": ProvisionExecutor(provision, backoff),
+            "controller:publish": PublishExecutor(remote=remote, branches=self.branches,
+                                                  base_branch=hub.base_branch,
+                                                  message=self._pr_text, backoff=backoff)})
+        self.runner: Runner | None = None
+        self._open: set[str] = set()                # agent tickets whose card is published
+
+    def _runner(self) -> Runner:
+        if self.runner is None:
+            self.runner = Runner(self.c.cid, self.c.tickets, executors=self.executors,
+                                 branches=self.branches, base=self.c.change.base_sha or "",
+                                 spec=self.spec, hooks=self, save=self._saved,
+                                 merger=Merger(self.branches), lock=self.c.lock)
+        return self.runner
+
+    # ------------------------------------------------------------------ lifecycle
+    def start(self) -> None:
+        """A new change (the caller holds the lock): its skeleton, then – once the workspace
+        is synced – its root starts."""
+        self.c.st.tickets.update({x.id: x for x in self.spec.skeleton_at(None)})
+        self.c.spawn(self._begin())
+
+    async def _begin(self) -> None:
+        """The workspace synced: the change's base, whether the repository is blank, its setup
+        pin (not in a blank repository, where what a setup needs does not exist yet)."""
+        c = self.c
+        try:
+            base = await c.git.sync()
+            blank = is_blank_tree(await c.git.tree_paths(base))
+            pin = None if blank else await setup.pin_at_base(c.git, base)
+        except Exception as e:                      # noqa: BLE001 – the change cannot start
+            async with c.lock:
+                c.event("workspace", f"{c.change.workspace} could not be synced: {e}")
+                c.save()
+            return
+        async with c.lock:
+            ch = c.change
+            ch.base_sha, ch.blank_repo, ch.setup_pin = base, blank, pin
+            await c.git.init_integration(c.cid, base)
+            c.write_record("control/workspace.json", {
+                "workspace": ch.workspace, "source": c.git.source,
+                "base_branch": c.git.base_branch, "base": base, "blank_repo": blank})
+            c.event("workspace", f"{ch.workspace} synced: the change is based on {base[:12]}"
+                    + (" (a blank repository: the plan starts with a scaffold)" if blank else ""))
+            c.save()
+        runner = self._runner()
+        runner.base = base
+        await runner.start()
+
+    def load(self) -> None:
+        """After the state was loaded: the runner over the loaded tickets."""
+        if self.c.st.tickets:
+            Tickets.over(self.c.st.tickets)             # checked
+            self._open = {t.id for t in self.c.st.tickets.values()
+                          if t.type.startswith("agent:") and t.status not in CLOSED
+                          and t.status != Status.PENDING}
+
+    async def recover(self) -> None:
+        """After a restart: every ticket under way goes on at the same attempt (R14)."""
+        if self.c.st.tickets and self.c.change.base_sha:
+            await self._runner().recover()
+
+    async def stop(self) -> None:
+        if self.runner is not None:
+            await self.runner.stop()
+
+    # ------------------------------------------------------------------ hooks (the runner's)
+    def tier(self, pointers: Mapping[str, Any]) -> str | None:
+        """The approved tier: from the risk assessment being (or already) signed."""
+        ref = pointers.get("risk")
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        if m is None:
+            return self.c.change.tier
+        try:
+            risk = derive_tier(json.loads(self.c.docs.read(m["path"], int(m["version"])).content))
+        except (ValueError, KeyError, TypeError):
+            return self.c.change.tier
+        self.c.change.risk, self.c.change.tier = risk, risk.tier
+        return risk.tier
+
+    async def replan(self, signoff: Ticket, ref: Any) -> Replan:
+        """The replan a sign-off applies: the document it signed."""
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        if m is None:
+            raise ValueError(f"{signoff.id} signed no plan document ({ref!r})")
+        try:
+            data = json.loads(self.c.docs.read(m["path"], int(m["version"])).content)
+        except ValueError as e:
+            raise ValueError(f"the plan is not JSON: {e}") from None
+        plan, v = parse_plan(data)
+        if v:
+            raise ValueError("; ".join(v))
+        return plan
+
+    def problems(self, ticket: Ticket) -> list[str]:
+        return self.c.assets.work_problems(ticket)
+
+    async def escalated(self, ticket: Ticket, reason: Waiting) -> None:
+        async with self.c.lock:
+            self.c.event("escalation", f"waiting on a human: {reason}", ticket.id)
+            self.c.save()
+
+    async def ended(self, status: Status) -> None:
+        c = self.c
+        async with c.lock:
+            c.change.status = ChangeStatus.READY if status == Status.PASSED \
+                else ChangeStatus.ABANDONED
+            self.agent_runner.close_change()
+            c.event("change", f"the change ended: {status}")
+            c.change.completed = True        # its on-complete process: the retrospective, later
+            self.lifecycle.release_sandboxes()
+            c.save()
+        c.spawn(cleanup.end_of_change(c))
+
+    def _saved(self, tickets: Iterable[Ticket]) -> None:
+        """The runner's save (the lock is held): cards follow the agent tickets, kept sandboxes
+        of closed tickets go, then the change saves."""
+        for t in tickets:
+            if not t.type.startswith("agent:"):
+                continue
+            if t.status in CLOSED and t.id in self._open:
+                self._open.discard(t.id)
+                self.agent_runner.close_ticket(t.id)
+            elif t.status not in CLOSED and t.status != Status.PENDING:
+                self._open.add(t.id)
+        self.lifecycle.release_sandboxes()
+        self.c.save()
+
+    async def _pr_text(self, work) -> str:
+        """The merge message of a publication without a remote: the approved description."""
+        ref = self.c.tickets.root.pointers.get("pr")
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        return self.c.docs.read(m["path"], int(m["version"])).content if m \
+            else f"legion {self.c.cid}: {self.c.change.goal}"
+
+    # ------------------------------------------------------------------ human actions
+    def _owner(self, approver: str) -> None:
+        if approver not in self.c.cfg.decision_owners:
+            raise WorkflowError(f"{approver} is not a decision owner "
+                                f"({', '.join(self.c.cfg.decision_owners)})")
+
+    async def act(self, ticket_id: str, action: str, approver: str,
+                  payload: Mapping[str, Any] | None = None) -> str:
+        """A decision owner's action on a ticket: ``approve`` / ``reject`` (a sign-off waiting
+        for them), ``retry`` / ``replan`` (a waiting ticket's remedy), ``waive`` (a rejected,
+        waivable criterion of a waiting ticket). Returns what happened."""
+        self._owner(approver)
+        payload = dict(payload or {})
+        c = self.c
+        if action in ("approve", "reject"):
+            async with c.lock:
+                self.signoffs.answer(ticket_id, action == "approve", approver,
+                                     str(payload.get("reason") or ""))
+                c.save()
+            return f"{ticket_id}: {action}d"
+        remedy = {"retry": Remedy.RETRY, "replan": Remedy.REPLAN, "waive": Remedy.WAIVE}.get(action)
+        if remedy is None:
+            raise WorkflowError(f"unknown action {action!r}")
+        if remedy == Remedy.WAIVE and not str(payload.get("reason") or "").strip():
+            raise WorkflowError("a waiver needs a reason")
+        try:
+            await self._runner().decide(ticket_id, remedy)
+        except TicketError as e:
+            raise WorkflowError(str(e)) from None
+        async with c.lock:
+            c.change.proposals.pop(ticket_id, None)
+            c.event("decision", f"{approver}: {action}"
+                    + (f" ({payload['reason']})" if payload.get("reason") else ""), ticket_id)
+            c.save()
+        return f"{ticket_id}: {action}"
+
+    async def change_action(self, action: str, approver: str,
+                            payload: Mapping[str, Any] | None = None) -> str:
+        """A decision owner's action on the change: ``pause``, ``resume``, ``abandon``, or
+        ``replan`` (a replan document in ``payload["plan"]``, applied while paused)."""
+        self._owner(approver)
+        payload, runner = dict(payload or {}), self._runner()
+        try:
+            if action == "pause":
+                await runner.pause()
+            elif action == "resume":
+                await runner.resume()
+            elif action == "abandon":
+                async with self.c.lock:
+                    self.c.change.ended = ChangeEnd(by=approver, node=self.c.cid, action="abandon",
+                                                    reason=str(payload.get("reason") or ""))
+                await runner.abandon()
+            elif action == "replan":
+                plan, v = parse_plan(payload.get("plan"))
+                if v:
+                    raise WorkflowError("; ".join(v))
+                await runner.replan(plan)
+            else:
+                raise WorkflowError(f"unknown action {action!r}")
+        except TicketError as e:
+            raise WorkflowError(str(e)) from None
+        async with self.c.lock:
+            self.c.event("decision", f"{approver}: {action}")
+            self.c.save()
+        return action

@@ -727,7 +727,7 @@ class AgentQuestion(Record):
     are withdrawn when the asker can no longer receive the answer (its sandbox is gone, the
     controller restarted: the A2A task lived in memory)."""
     id: str
-    node: str                          # the asking step
+    ticket: str                        # the asking agent's ticket
     role: str
     run: str | None = None
     question: str

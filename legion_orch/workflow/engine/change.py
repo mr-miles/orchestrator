@@ -1,14 +1,11 @@
 """ChangeEngine: one change's facade – the one public surface of its layers (compose.py).
 
 It is the change's :class:`ChangeCore` (state, documents, events: the :class:`ChangeView`)
-and fronts four parts:
+and fronts three parts:
 
-* :class:`FlowRuntime` – the workflow: everything that changes it goes through here
-* :class:`HumanGates` – what decision owners decide (recorded, then handed to the runtime)
+* :class:`TicketFlow` – the workflow (its tickets) and what decision owners decide
 * :class:`Reports` – what agents write and report over MCP (recorded on their runs)
 * :class:`RunLifecycle` – run logs, and failing live runs after a restart
-
-It never sees the step layer: control passes only between neighbouring layers.
 """
 from __future__ import annotations
 
@@ -37,8 +34,7 @@ from .services.verification import AGENT, HEAD_CHECK, PUSH
 from .services.verification import record_path as verification_path
 
 if TYPE_CHECKING:
-    from .runtime.flow_runtime import FlowRuntime
-    from .runtime.human import HumanGates
+    from .flow import Signoffs, TicketFlow
     from .services.agents import AgentRunner, RunTasks
     from .services.reports import Reports
     from .services.resolver import Resolver
@@ -57,15 +53,15 @@ class ChangeEngine(ChangeCore):
 
     def __init__(self, svc: Services, host: EngineHost, cid: str):
         super().__init__(svc, host, cid)
-        self._flow: FlowRuntime
-        self._gates: HumanGates
+        self._flow: TicketFlow
+        self._signoffs: Signoffs
         self._reports: Reports
         self._lifecycle: RunLifecycle
         self._verifications: Verifications
         self._tasks: RunTasks
         self._agent_runner: AgentRunner
         self._resolver: Resolver
-        compose(self)                # its layers (compose.py); it fronts only these four
+        compose(self)                # its layers (compose.py); it fronts only these
 
     # ------------------------------------------------------------------ controller
     def load(self) -> None:
@@ -73,13 +69,13 @@ class ChangeEngine(ChangeCore):
         self.st.load()
         self.projections.replay()   # the fields copied from documents (base/projections.py)
         self.st.runs_loaded()       # and the runs, from their documents
-        self._flow.load()           # the tree, replayed: it orders the nodes (and fills gaps)
+        self._flow.load()           # the tickets, checked
 
         self.seed_attention()
 
     def start(self, goal: str, workspace: str) -> None:
-        """Initialise a new change in ``workspace`` (the caller holds the lock). Its first step
-        syncs the workspace and bases the change on its base branch."""
+        """Initialise a new change in ``workspace`` (the caller holds the lock): its skeleton;
+        once the workspace is synced (its base), its root starts."""
         self.st.change = Change(id=self.cid, goal=goal, workspace=workspace)
         self._agent_runner.open_change()                     # its orchestrator, its resolver
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n")
@@ -93,23 +89,19 @@ class ChangeEngine(ChangeCore):
         self._lifecycle.adopt_sandboxes(found, complete)
 
     def recover(self) -> None:
-        """After a restart the agent processes are gone, so live runs fail (and their steps
-        escalate); every other step's phase takes its work up again (waiting, verifying,
-        merging, provisioning, a gate's checks, concluding a turn that ended with the
-        controller)."""
-        failed = {}
+        """After a restart the agent processes are gone, so live runs end (the controller's
+        error: their tickets run them again, at the same attempt – never an attempt of theirs);
+        then every ticket under way goes on (R14). The caller holds the lock."""
         for run in self.runs.values():
             if run.status in LIVE_RUN:
                 self._lifecycle.fail_run(run, "controller restarted while the run was live",
                                          FailureSource.CONTROLLER)
-                if not run.consult:        # an A2A turn's asker is gone too: nothing escalates
-                    failed.setdefault(run.node_id, run)
         self._verifications.recover()             # verifications in flight are gone
         for q in self.change.questions.values():  # their A2A tasks lived in memory
             if q.open:
                 self._withdraw(q, "the controller restarted: the asking agent's task is gone")
-        self._flow.recover(failed)                 # down the layers, as everything else
         self.save()
+        self.spawn(self._flow.recover())
 
     # ------------------------------------------------------------------ agents (MCP)
     async def agent_write(self, run: Run, path: str, content: str, base_version: int | None,
@@ -124,24 +116,26 @@ class ChangeEngine(ChangeCore):
 
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
-                            missing_decision: str | None, dry_run: bool = False) -> ReportOutcome:
+                            missing_decision: str | None, dry_run: bool = False,
+                            outputs: dict | None = None) -> ReportOutcome:
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
-                                                 blocked_reason, missing_decision, dry_run)
+                                                 blocked_reason, missing_decision, dry_run,
+                                                 outputs)
 
-    # ------------------------------------------------------------------ where a step stands
-    def step_status(self, node_id: str) -> dict:
-        """A step as it is now (workflow/context.py); WorkflowError for an unknown step."""
+    # ------------------------------------------------------------------ where a ticket stands
+    def ticket_status(self, ticket_id: str) -> dict:
+        """A ticket as it is now (workflow/context.py); WorkflowError for an unknown ticket."""
         try:
-            return context.step_status(self, node_id)
+            return context.ticket_status(self, ticket_id)
         except KeyError:
-            raise WorkflowError(f"unknown step {node_id}") from None
+            raise WorkflowError(f"unknown ticket {ticket_id}") from None
 
-    def workflow_context(self, node_id: str) -> dict:
-        """How a step fits the change (workflow/context.py)."""
+    def workflow_context(self, ticket_id: str) -> dict:
+        """How a ticket fits the change (workflow/context.py)."""
         try:
-            return context.workflow_context(self, node_id, self._flow.stages())
+            return context.workflow_context(self, ticket_id)
         except KeyError:
-            raise WorkflowError(f"unknown step {node_id}") from None
+            raise WorkflowError(f"unknown ticket {ticket_id}") from None
 
     # ------------------------------------------------------------------ inboxes (services/inbox.py)
     def task_view(self, run: Run) -> dict:
@@ -161,26 +155,28 @@ class ChangeEngine(ChangeCore):
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:
-        """A run pushed its branch to ``sha`` (the git remote): a build task's tip is verified
-        (once per sha; a newer push cancels the older tip's that has not started)."""
+        """A run pushed its branch to ``sha`` (the git remote): a build's tip is verified (once
+        per sha; a newer push cancels the older tip's that has not started)."""
         async with self.lock:
             run = self.runs.get(run_id)
-            node = self.nodes.get(run.node_id) if run else None
-            if node is None or not node.task or not run.branch or self.change.status != "ACTIVE":
+            t = self.tickets.t.get(run.ticket) if run and self.st.tickets else None
+            commands = (t.work.get("verification") if t else None) or []
+            if not commands or not run.branch or self.change.status != "ACTIVE":
                 return None
             svc = self._verifications
-            v = svc.request(svc.key(sha, node.task.verification), f"push:{run.id}", PUSH,
-                            node=node.id, branch=run.branch)
+            v = svc.request(svc.key(sha, commands), f"push:{run.id}", PUSH, node=t.id,
+                            branch=run.branch)
             self.save()
             return v
 
     def verification_key_for(self, run: Run, sha: str):
-        """The key an agent's request verifies: its step's task commands at ``sha``."""
-        node = self.nodes.get(run.node_id)
-        if node is None or not node.task:
-            raise WorkflowError(f"{run.node_id} has no verification commands of its own (only "
-                                "build tasks do)")
-        return self._verifications.key(sha, node.task.verification)
+        """The key an agent's request verifies: its ticket's commands at ``sha``."""
+        t = self.tickets.t.get(run.ticket)
+        commands = (t.work.get("verification") if t else None) or []
+        if not commands:
+            raise WorkflowError(f"{run.ticket} has no verification commands of its own (only "
+                                "builds do)")
+        return self._verifications.key(sha, commands)
 
     async def request_verification(self, run: Run, sha: str) -> VerificationRun:
         """An agent asks for its step's commands to be verified at ``sha`` (MCP): its result if
@@ -195,7 +191,7 @@ class ChangeEngine(ChangeCore):
                     raise WorkflowError(f"this run asked for {limit} verifications already "
                                         "(limits.verification_requests_per_run)")
                 run.verification_requests += 1
-            v = svc.request(key, f"agent:{run.id}", AGENT, node=run.node_id)
+            v = svc.request(key, f"agent:{run.id}", AGENT, node=run.ticket)
             self.save()
             return v
 
@@ -229,17 +225,17 @@ class ChangeEngine(ChangeCore):
             return v
 
     # ------------------------------------------------------------------ A2A (server/a2a.py)
-    def agent_state(self, node_id: str, role: str) -> str | None:
-        """A step agent as an A2A recipient: "live", "idle" or None (see RunLifecycle)."""
-        return self._lifecycle.agent_state(node_id, role)
+    def agent_state(self, ticket_id: str, role: str) -> str | None:
+        """A ticket's agent as an A2A recipient: "live", "idle" or None (see RunLifecycle)."""
+        return self._lifecycle.agent_state(ticket_id, role)
 
-    def ask_human(self, qid: str, node_id: str, role: str, run: str | None,
+    def ask_human(self, qid: str, ticket_id: str, role: str, run: str | None,
                   question: str) -> AgentQuestion:
         """Record an agent's question for a decision owner (the caller holds the lock): it is an
         attention item until answered or withdrawn."""
-        q = AgentQuestion(id=qid, node=node_id, role=role, run=run, question=question)
+        q = AgentQuestion(id=qid, ticket=ticket_id, role=role, run=run, question=question)
         self.change.questions[qid] = q
-        self.event("a2a", f"{node_id} ({role}) asks: {question[:200]}", node_id, run)
+        self.event("a2a", f"{ticket_id} ({role}) asks: {question[:200]}", ticket_id, run)
         self.save()
         return q
 
@@ -257,7 +253,8 @@ class ChangeEngine(ChangeCore):
             if not answer.strip():
                 raise WorkflowError("answer is required")
             q.answer, q.answered_by, q.answered_at = answer.strip(), approver, now_iso()
-            self.event("a2a", f"{approver} answered {q.node}: {answer.strip()[:200]}", q.node, q.run)
+            self.event("a2a", f"{approver} answered {q.ticket}: {answer.strip()[:200]}", q.ticket,
+                       q.run)
             self.save()
             return q
 
@@ -270,16 +267,25 @@ class ChangeEngine(ChangeCore):
 
     def _withdraw(self, q: AgentQuestion, reason: str) -> None:
         q.withdrawn = reason
-        self.event("a2a", f"question from {q.node} withdrawn: {reason}", q.node, q.run)
+        self.event("a2a", f"question from {q.ticket} withdrawn: {reason}", q.ticket, q.run)
 
     # ------------------------------------------------------------------ operators (web)
-    async def human_action(self, node_id: str, action: str, approver: str,
+    async def human_action(self, ticket_id: str, action: str, approver: str,
                            payload: dict | None = None) -> ActionResult:
-        return await self._gates.human_action(node_id, action, approver, payload)
+        """A decision owner's action on a ticket (a sign-off's decision, a remedy)."""
+        note = await self._flow.act(ticket_id, action, approver, payload)
+        t = self.tickets.t.get(ticket_id)
+        return ActionResult(note=note, status=str(t.status) if t else None)
 
     async def change_action(self, action: str, approver: str,
                             payload: dict | None = None) -> ActionResult:
-        return await self._gates.change_action(action, approver, payload)
+        """A decision owner's action on the change: pause, resume, abandon, replan."""
+        return ActionResult(note=await self._flow.change_action(action, approver, payload))
+
+    def signoffs_waiting(self) -> dict[str, dict]:
+        """The sign-offs waiting for a decision owner: ticket -> what it shows (its subjects)."""
+        return {tid: {"subjects": subjects, "attempt": work.attempt}
+                for tid, (work, subjects, _) in self._signoffs.waiting.items()}
 
     def log_tail(self, run_id: str, lines: int = 200) -> str:
         return self._lifecycle.log_tail(run_id, lines)
@@ -287,12 +293,8 @@ class ChangeEngine(ChangeCore):
     def stored_log(self, run_id: str) -> str:
         return self._lifecycle.stored_log(run_id)
 
-    # ------------------------------------------------------------------ RoleContext
     # ------------------------------------------------------------------ the workflow
-    def before_save(self) -> None:
-        self._flow.persist()
-
     @property
-    def workflow(self) -> FlowRuntime:
-        """The stage rules' state: gates, actions, what waits (read by the API)."""
+    def workflow(self) -> TicketFlow:
+        """The change's workflow: its tickets and their runner (read by the API)."""
         return self._flow
