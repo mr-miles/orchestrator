@@ -105,7 +105,7 @@ class LimitsConfig:
     # the checks at the head, then commits verified as they are pushed, then agents' requests
     max_parallel_verifications: int = 2
     verification_requests_per_run: int = 10     # MCP verification_request calls per agent run
-    # an A2A answer from a step whose agent is not running (a resumed turn, §A2A)
+    # an A2A answer from a step agent that is not running: its consult turn (§5.15)
     a2a_answer_timeout_s: int = 900
     # git transport: largest accepted request (push) and concurrent git-http-backend processes
     git_max_push_bytes: int = 256 * 1024 * 1024

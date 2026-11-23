@@ -14,9 +14,9 @@ identity names.
 This module is **transport**: the A2A SDK, these routes, the caller's identity, and rendering.
 What it carries is the engine's:
 
-* the **catalog** of cards – pushed by the workflow (``EngineHost.publish_cards`` /
-  ``remove_cards``), kept only here, in memory (:class:`Catalog`); cards say who an agent is,
-  never its state;
+* the **catalog** of cards – kept only here, in memory (:class:`Catalog`), from the bus's
+  ``CardsPublished`` / ``CardsWithdrawn`` (the workflow raises them as steps open and close);
+  cards say who an agent is, never its state;
 * the **messages** – a message to a card is handed to the engine's inboxes
   (``ChangeEngine.deliver``, ``engine/services/inbox.py``), which deliver it and return the
   reply; this module turns it into the A2A task's state. The one call the engine makes back is
@@ -67,11 +67,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from ..bus import CardsPublished, CardsWithdrawn, ItemAdded, TurnEnded
 from ..identity import WorkloadBinding
 from ..util import bearer
 from ..workflow.cards import card_id, card_url, identifier, ordered
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Card
+from .inbox import Inbox
 
 log = logging.getLogger("legion.a2a")
 
@@ -188,8 +190,13 @@ class A2AHub:
     def __init__(self, ctl: Controller):
         self.ctl = ctl
         self.catalog = Catalog()
-        ctl.subscribe_cards(self.catalog)                     # the workflow pushes its cards
-        ctl.a2a = self                                        # it carries follow-ups
+        # the inbox tells the engine (the agent runner) what waits on an agent
+        self.inbox = Inbox(lambda cid, card: ctl.bus.publish(ItemAdded(cid, card)))
+        ctl.a2a = self                                        # the engine's A2A counterpart
+        ctl.bus.subscribe(CardsPublished, lambda e: self.catalog.publish(e.cid, list(e.cards)))
+        ctl.bus.subscribe(CardsWithdrawn, lambda e: self.catalog.remove(e.cid, e.node))
+        ctl.bus.subscribe(TurnEnded, lambda e: self.inbox.turn_ended(e.cid, card_id(e.role, e.node)))
+        ctl.replay_cards()                                    # the cards open already
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
 
     # ------------------------------------------------------------------ cards
@@ -270,6 +277,49 @@ class A2AHub:
                 del self._dispatchers[(cid, card)]
 
     # ------------------------------------------------------------------ delivery
+    # ------------------------------------------------------------------ an agent's inbox (MCP)
+    def agent_inbox(self, ce: ChangeEngine, run, assignment: dict) -> list[dict]:
+        """Everything waiting on ``run``'s agent: its work (the workflow's), then its messages
+        and questions back (the inbox's)."""
+        card = card_id(run.role, run.node_id)
+        return [ce.task_view(run) | {"assignment": assignment}, *self.inbox.views(ce.cid, card)]
+
+    def remaining(self, ce: ChangeEngine, run) -> list[dict]:
+        """What still waits on it (returned with every reply: no need to ask again)."""
+        work = ce.task_view(run)
+        own = ([{"task_id": work["task_id"], "from": "orchestrator", "kind": "work",
+                 "state": work["state"], "last": work["messages"][-1]["text"][:500]}]
+               if work["state"] == "working" else [])
+        return own + self.inbox.views(ce.cid, card_id(run.role, run.node_id))
+
+    async def agent_reply(self, ce: ChangeEngine, run, task_id: str, text: str,
+                          state: str) -> dict:
+        """``a2a_reply``: on its work's task (the workflow's rules), a message (the inbox), or a
+        question back (sent on as the next message of its task) – with what is left."""
+        card = card_id(run.role, run.node_id)
+        if task_id == run.id:
+            waiting = [(i.task_id, i.sender) for i in self.inbox.pending(ce.cid, card)]
+            out = await ce.reply_task(run, state, text, waiting)
+            return out | {"inbox": self.remaining(ce, run)}
+        text = text.strip()
+        if not text:
+            return {"ok": False, "error": "text is required", "inbox": self.remaining(ce, run)}
+        if self.inbox.question(ce.cid, card, task_id) is not None:
+            await self.follow_up(ce.cid, card, task_id, text)
+            ce.event("a2a", f"{card} answered a question back", run.node_id, run.id)
+            return {"ok": True, "state": "sent: the conversation goes on",
+                    "inbox": self.remaining(ce, run)}
+        if state not in ("completed", "input-required", "rejected"):
+            return {"ok": False, "error": "a message's reply state is completed, "
+                                          "input-required or rejected",
+                    "inbox": self.remaining(ce, run)}
+        if not self.inbox.reply(ce.cid, card, task_id, state, text):
+            return {"ok": False, "error": f"no task {task_id} waits in your inbox (answered "
+                                          "already, or its sender cancelled it)",
+                    "inbox": self.remaining(ce, run)}
+        ce.event("a2a", f"{card} replied {state} to a message", run.node_id, run.id)
+        return {"ok": True, "state": state, "inbox": self.remaining(ce, run)}
+
     # ------------------------------------------------------------------ the engine's transport
     async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
         """``sender``'s reply to a question back, as the next message on its A2A task (to the
@@ -279,7 +329,10 @@ class A2AHub:
                    if card_id(r.role, r.node_id) == sender and r.sandbox_ref)
         caller = WorkloadBinding(sandbox=run.sandbox_ref, change=cid, task=run.node_id,
                                  role=run.role)
-        asked = next(q for q in ce.questions_back(sender) if q.task_id == task_id)
+        asked = self.inbox.question(cid, sender, task_id)
+        if asked is None:
+            raise WorkflowError(f"no question {task_id} waits for {sender}")
+        self.inbox.answered(cid, sender, task_id)
         card = self.find(ce, asked.card)
         if card is None:
             raise WorkflowError(f"{asked.card} is no longer an agent of this change")
@@ -344,8 +397,9 @@ class StepExecutor(_Executor):
             await up.reject(_text(up, "empty message"))
             return
         await up.start_work(_text(up, f"delivered to {self.card.id}; waiting for its answer"))
-        state, answer = await self.ce.deliver(self.card.id, sender_name(caller), caller.role,
-                                              body, task_id)
+        state, answer = await self.hub.inbox.deliver(self.ce.cid, self.card.id,
+                                                     sender_name(caller), caller.role, body,
+                                                     task_id)
         await finish(up, self.card.id, state, answer)
 
 

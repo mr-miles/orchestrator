@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from ....bus import Escalated, Event
 from ....store import DocVersion
 from ....telemetry import Telemetry
 from ....util import now_iso
@@ -65,7 +66,7 @@ class ChangeCore:
         self._timeline_at = time.monotonic()
         self._statuses: dict[str, str] = {}            # node statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
-        self._escalated: list[str] = []                # nodes escalated since the last save
+        self._outbox: list[Event] = []                 # events to publish once saved (bus.py)
         self._saved = asyncio.Event()                  # set (and replaced) on every save
 
     # ------------------------------------------------------------------ state
@@ -116,9 +117,9 @@ class ChangeCore:
         self._stamp_statuses()
         self._update_attention()
         self.st.save()
-        escalated, self._escalated = self._escalated, []
-        for nid in escalated:
-            self.escalated(nid)                    # the resolver is asked (services/resolver.py)
+        outbox, self._outbox = self._outbox, []
+        for event in outbox:                       # after the commit: what it raised (bus.py)
+            self.svc.bus.publish(event)
         self.flush_timeline(force=self.change is not None and self.change.status != "ACTIVE")
         self.notify()
         self.host.changed()
@@ -132,8 +133,9 @@ class ChangeCore:
         """Return at the change's next save: what a phase waits for may hold now."""
         await self._saved.wait()
 
-    def escalated(self, node_id: str) -> None:
-        """Hook: a step escalated (the facade asks the resolver)."""
+    def emit(self, event: Event) -> None:
+        """Raise an event (the caller holds the lock): published once the change has saved."""
+        self._outbox.append(event)
 
     def before_save(self) -> None:
         """Hook: the workflow's own record, saved with the change."""
@@ -156,7 +158,7 @@ class ChangeCore:
             if self._statuses.get(nid) != n.status:
                 n.status_since = now
                 if n.status == ESCALATED and n.escalation is not None:
-                    self._escalated.append(nid)
+                    self.emit(Escalated(self.cid, nid))
         self._statuses = {nid: n.status for nid, n in self.nodes.items()}
 
     def _update_attention(self) -> None:
@@ -183,26 +185,6 @@ class ChangeCore:
         """The cards the workflow publishes now (workflow/cards.py), its own first – what the
         engine goes by; the A2A catalog holds the same, as they were pushed."""
         return cards.ordered(self, cards.cards(self))
-
-    def publish_cards(self, new: list[Card], *, quiet: bool = False) -> None:
-        """Push cards to the A2A catalog (a side effect of the workflow): a step's as it starts,
-        the change's own as it starts (``quiet``: published again on a replay – no event)."""
-        if new:
-            self.host.publish_cards(self.cid, new)
-            if not quiet:
-                for card in new:
-                    self.event("a2a", f"card registered: {card.id}",
-                               card.node if card.node in self.nodes else None)
-
-    def remove_cards(self, node_id: str | None = None) -> None:
-        """Withdraw a step's cards as it ends (``node_id``), or every card as the change ends."""
-        self.host.remove_cards(self.cid, node_id)
-        self.event("a2a", f"cards removed: {node_id or 'all of the change'}",
-                   node_id if node_id in self.nodes else None)
-
-    def republish_cards(self) -> None:
-        """Push again every card the workflow publishes now (a catalog subscribed: a restart)."""
-        self.publish_cards(cards.cards(self), quiet=True)
 
     def head_moved(self, branch_head: str) -> str | None:
         """G-H1: the integration branch is written only by the controller. If it is not at the

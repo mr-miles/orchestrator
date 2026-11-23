@@ -71,6 +71,7 @@ class FakeRunner(Runner):
         self.mcp_configs: list[str] = []                 # mcp.json of every agent payload
         self.fail_stop = False
         self.payloads: dict[str, dict[str, str]] = {}    # sandbox -> payload files at create
+        self.uploaded: dict[str, dict[str, str]] = {}    # sandbox -> its latest uploaded payload
         self._reflecting: dict[str, str] = {}             # sandbox -> reflection prompt
         self.reflected: list[tuple[str, str]] = []        # (sandbox, prompt) of each reflection
         self.reflection_skills: dict[str, list[str]] = {}  # sandbox -> skills its reflection got
@@ -102,6 +103,8 @@ class FakeRunner(Runner):
     async def upload(self, name, payload_dir):
         self.uploads.append(name)
         self.run_envs.append(_run_env(payload_dir))
+        self.uploaded[name] = {str(f.relative_to(payload_dir)): f.read_text()
+                               for f in Path(payload_dir).rglob("*") if f.is_file()}
         if (Path(payload_dir) / "mcp.json").exists():
             self.mcp_configs.append((Path(payload_dir) / "mcp.json").read_text())
         if "LEGION_REQUIRE_SESSION" in self.run_envs[-1]:          # a reflection turn
@@ -291,7 +294,11 @@ class Flow:
         """Tasks that wait legitimately (across the controller's changes)."""
         procs = sum(1 for p in self.ctl.svc.procs.values() if p.returncode is None)
         steps = sum(ce._runner.waiting for ce in self.ctl.changes.values())
-        return procs + steps + self.ctl.svc.dispatcher.waiting
+        # a message awaiting its reply in the A2A inbox (its sender's task waits on it)
+        inbox = self.ctl.a2a.inbox if self.ctl.a2a is not None else None
+        messages = sum(1 for (cid, card) in (inbox._messages if inbox else {})
+                       for i in inbox.pending(cid, card) if not i.reply.done())
+        return procs + steps + self.ctl.svc.dispatcher.waiting + messages
 
     def _fingerprint(self):
         ch = self.ce.change

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ....bus import Bus
 from ....config import Config
 from ....git import GitHub, GitRemote
 from ....sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
@@ -29,6 +30,7 @@ class Services:
     runner: Runner
     auth: WorkloadAuth
     tmp: Path                                   # transient payloads and live logs only
+    bus: Bus                                    # notifications between components (bus.py)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Builds environment images (podman; no-op locally).
     builder: EnvironmentBuilder = field(default_factory=NoBuilder)
@@ -83,11 +85,18 @@ class EngineHost(Protocol):
     def attention(self, item: AttentionItem, raised: bool) -> None:
         """An attention item (§2.2) was raised or resolved: notify the decision owners."""
 
-    def publish_cards(self, cid: str, cards: list) -> None:
-        """Cards the workflow publishes (a step starts; the change starts): to the A2A catalog."""
+    async def deliver(self, cid: str, card: str, sender: str, sender_role: str, text: str,
+                      task_id: str) -> tuple[str, str]:
+        """Put a message in a card's inbox (the A2A layer's) and await its reply."""
 
-    def remove_cards(self, cid: str, node_id: str | None) -> None:
-        """A step's cards (or, ``None``, all of the change's) are withdrawn from the catalog."""
+    def inbox_messages(self, cid: str, card: str) -> list[tuple[str, str, str]]:
+        """The messages waiting in a card's inbox: (task id, sender, text), oldest first."""
+
+    def reply_message(self, cid: str, card: str, task_id: str, state: str, text: str) -> bool:
+        """The card's agent's reply to a message in its inbox."""
+
+    def fail_message(self, cid: str, card: str, task_id: str, why: str) -> None:
+        """The card's agent can no longer answer a message: it fails with why."""
 
     async def follow_up(self, cid: str, sender: str, task_id: str, text: str) -> None:
         """Send ``sender``'s reply to a question back as the next message on its A2A task (the

@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from ..base.dispatch import Dispatcher, StepDispatcher
     from ..sandboxes.sandboxes import Sandboxes
     from ..services.agent_runs import AgentRuns, Ended
+    from ..services.agents import AgentRunner
     from ..services.provision import Provisioner
     from ..services.publish import Published, Publisher
     from ..services.runs import RunLifecycle
@@ -95,6 +96,7 @@ class PhaseContext:
     agents: AgentRuns = None  # type: ignore[assignment]
     publisher: Publisher = None  # type: ignore[assignment]
     verifications: Verifications = None  # type: ignore[assignment]
+    agent_runner: AgentRunner = None  # type: ignore[assignment]
 
 
 class _Again:
@@ -430,9 +432,9 @@ async def agent_work(active: ActivePhase, role: str, plan: SandboxPlan, *,
     """An agent of ``role`` working as ``plan`` says (where its working copy starts, whether it
     keeps its sandbox and session, pushes a branch), as a phase's work (a producer's, a
     judge's): whether the step may
-    start it (G-B1, the environment), its :class:`.Work` (made by the change's agent runs: the
-    run record, the working copy's preparation, the agent's turn) dispatched on the step's
-    dispatcher, and what it did – the role handler's result after an accepted report (read
+    start it (G-B1, the environment), the work posted to the agent runner (which places it,
+    prepares the working copy and runs the agent's turns in the step's dispatcher slot), and
+    what it did – the role handler's result after an accepted report (read
     under the lock that ends the run), or the failure's or refusal's escalation. AGAIN: when
     its slot came the step no longer ``wanted`` it (its waits stopped holding); None: the step
     or the phase is over."""
@@ -443,14 +445,11 @@ async def agent_work(active: ActivePhase, role: str, plan: SandboxPlan, *,
             return None
         if refused := agents.preconditions(node, role):
             return Ended(None, refused)
-    work, prepared = agents.work(
+    outcome, prepared = await active.ctx.agent_runner.publish_work(   # the runner launches it
         node, role, plan, judged_sha,
         wanted=lambda: not active.stale() and wanted(),
-        started=started or (lambda run: None))
-    outcome = await active.dispatch.run(work)
+        started=started or (lambda run: None), dispatch=active.dispatch)
     async with c.lock:
-        if prepared.run is not None:
-            agents.finish(prepared.run, outcome)       # however the work ended
         if outcome.skipped and prepared.refused is None:
             c.save()
             return AGAIN

@@ -1045,15 +1045,19 @@ the caller's sandbox, change, task and role, and each request is answered for th
 * **Delivery.** A message to a step agent becomes a task that waits for its answer:
   * while the agent has a live run it waits in its **inbox**: MCP `inbox` lists it and
     `a2a_reply` answers it;
-  * otherwise – it is stopped between turns, or its run ended without answering – the controller
-    queues it, **starts the sandbox if it was stopped, resumes the agent's session for one turn**
-    (Skill tool only, like a reflection; `limits.a2a_answer_timeout_s`), sends back the agent's
-    answer and stops the sandbox again;
-  * an agent **not started yet** is started for it: its sandbox, soul, skills and assignment as
-    they stand, for one read-only turn (a *consult*: no commits, writes or report) whose final
-    message is the answer; then its sandbox is stopped, not deleted. Later messages resume that
-    session, and when the step gets to the role, **its run continues the same sandbox and
-    session** – it is the role's agent;
+  * otherwise the agent gets **a turn of its own**, a *consult*: a read-only run (no commits,
+    writes or report) that is not one of the step's runs, whose prompt is the message and its
+    task id. It answers with `a2a_reply(task_id=…)`, or else its final message is the answer.
+    It is bounded by `limits.a2a_answer_timeout_s`, and its sandbox is stopped afterwards, not
+    deleted:
+    * **started already** (stopped between turns, or its run ended without answering): in place,
+      in its sandbox, started if it was stopped, **its session resumed**, with only the Skill
+      tool and its MCP tools. Its working copy is not checked out or touched, and the sandbox's
+      lock is held for the whole turn;
+    * **not started yet**: its sandbox is created, with its soul, skills and assignment as they
+      stand. When the step gets to the role, **its run continues the same sandbox and session**:
+      it is the role's agent;
+    * the resolver answers in its own sandbox with all its tools, under the run timeout;
   * one A2A turn at a time per step agent, and per sandbox under its lock: a rework launched
     meanwhile waits for it.
 * **Judges are kept.** A judge's sandbox is stopped after its report, not deleted, so it can be

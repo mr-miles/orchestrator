@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from ....sandbox import agentlog
 from ....util import now_iso
-from ...cards import RESOLVER
+from ... import cards
 from ...model import (
     LIVE_RUN,
     R_ACCEPTED,
@@ -28,7 +28,6 @@ from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
-    from .agent_runs import AgentRuns
 
 
 def log_part(run_id: str, n: int) -> str:
@@ -68,7 +67,6 @@ class RunLifecycle:
     def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
         self.c, self.sandboxes = core, sandboxes
         self._ended: set[str] = set()        # released because the change ended (tried once)
-        self.agents: AgentRuns = None  # type: ignore[assignment]   # set once it exists (A2A)
 
     def live_runs(self) -> list[Run]:
         return [r for r in self.c.runs.values() if r.status in LIVE_RUN]
@@ -76,12 +74,19 @@ class RunLifecycle:
     # an agent still in its turn this long after its report was accepted is stopped
     END_TURN_GRACE_S = 300
 
+    def time_limit(self, run: Run) -> int:
+        """A run's time limit: an answer to an A2A message (a consult; not the resolver's,
+        which investigates) ``a2a_answer_timeout_s``, any other run ``run_timeout_s``."""
+        lim = self.c.cfg.limits
+        return (lim.a2a_answer_timeout_s if run.consult and run.role != cards.RESOLVER
+                else lim.run_timeout_s)
+
     def deadline(self, run: Run) -> float | None:
         """Seconds until the run's agent is stopped (its timer): the run timeout while it is
         live, the end-of-turn grace once its report was accepted; None: no limit applies."""
         now = datetime.now(UTC)
         if run.status in LIVE_RUN or open_task(run):     # working, or yet to end its task
-            due = self.c.cfg.limits.run_timeout_s - (now - _parse_ts(run.created_at)).total_seconds()
+            due = self.time_limit(run) - (now - _parse_ts(run.created_at)).total_seconds()
         elif run.status == R_REPORTED and (run.reply or run.ended_at):
             since = run.reply.at if run.reply else run.ended_at
             due = self.END_TURN_GRACE_S - (now - _parse_ts(since)).total_seconds()
@@ -97,7 +102,7 @@ class RunLifecycle:
         if proc is None or proc.returncode is not None or (self.deadline(run) or 0) > 0:
             return False
         if run.status in LIVE_RUN:
-            limit = self.c.cfg.limits.run_timeout_s
+            limit = self.time_limit(run)
             self.fail_run(run, f"timed out after {limit}s", FailureSource.TIMEOUT)
         elif run.status == R_REPORTED:
             self.c.event("agent", f"the agent did not end its turn {self.END_TURN_GRACE_S}s after "
@@ -234,14 +239,6 @@ class RunLifecycle:
         if answerer.session_run(node_id, role) is None:
             return "absent" if has_card else None
         return "live" if answerer.live(node_id, role) else "idle"
-
-    async def answer(self, node_id: str, role: str, sender: str, text: str) -> str:
-        """The step agent answers: in a resumed turn of its session, or – not started yet – in
-        its first turn (a consult, :meth:`AgentRuns.consult`), which its run later continues."""
-        if self.agent_state(node_id, role) == "absent" or role == RESOLVER:
-            # (the resolver investigates on every message: always a full turn of its own)
-            return await self.agents.consult(node_id, role, sender, text)
-        return await self.sandboxes.answerer.answer(node_id, role, sender, text)
 
     def stored_log(self, run_id: str) -> str:
         """A run's whole archived log ('' if none)."""

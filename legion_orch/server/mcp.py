@@ -31,6 +31,7 @@ from ..workflow import attest
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Run
 from ..workflow.results import ReportOutcome
+from .a2a import A2AHub
 
 INSTRUCTIONS = """Legion orchestrator tools. Start with inbox(): your work is the orchestrator's
 task in it (its first message is your assignment), with any messages from other agents. Documents
@@ -269,7 +270,8 @@ async def build_mcp(ctl: Controller) -> MCPServer:
              "output": "\n".join(x.get("output", "").splitlines()[-lines:])}
             for x in full.get("results", [])]}
 
-    # ------------------------------------------------------------------ the inbox (services/inbox.py)
+    # ------------------------------------------------------------------ the inbox (server/inbox.py)
+    hub = A2AHub.of(ctl)
 
     @server.tool(description="Everything addressed to you: your work – the orchestrator's task "
                              "(task_id = your run id), its first message your assignment, then "
@@ -278,7 +280,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                              "first, and again at milestones and before you end your task.")
     async def inbox(ctx: Context) -> dict:
         ce, r = current(ctx)
-        return {"tasks": ce.inbox(r, await get_assignment(ctx))}
+        return {"tasks": hub.agent_inbox(ce, r, await get_assignment(ctx))}
 
     @server.tool(description="End (or pause) a task in your inbox with your text; returns what is "
                              "still in your inbox (`inbox`). state: completed (default), "
@@ -292,7 +294,7 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                              "something): your text continues that conversation.")
     async def a2a_reply(ctx: Context, task_id: str, text: str, state: str = "completed") -> dict:
         ce, r = current(ctx)
-        return await ce.a2a_reply(r, task_id, text, state)
+        return await hub.agent_reply(ce, r, task_id, text, state)
 
     # the gateway's MCP allowlist must match exactly what is served
     registered = {t.name for t in await server.list_tools()}

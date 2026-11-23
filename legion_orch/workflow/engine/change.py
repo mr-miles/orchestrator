@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
-from .. import cards, context
+from .. import context
 from ..model import (
     LIVE_RUN,
     V_FINAL,
@@ -28,7 +28,7 @@ from ..model import (
     VerificationRun,
 )
 from ..results import ActionResult, ReportOutcome
-from .base.common import NoAgent, WorkflowError
+from .base.common import WorkflowError
 from .base.core import ChangeCore
 from .base.shared import EngineHost, Services
 from .compose import compose
@@ -38,7 +38,7 @@ from .services.verification import record_path as verification_path
 if TYPE_CHECKING:
     from .runtime.flow_runtime import FlowRuntime
     from .runtime.human import HumanGates
-    from .services.inbox import Inboxes, RunTasks
+    from .services.agents import AgentRunner, RunTasks
     from .services.reports import Reports
     from .services.resolver import Resolver
     from .services.runs import RunLifecycle
@@ -62,7 +62,7 @@ class ChangeEngine(ChangeCore):
         self._lifecycle: RunLifecycle
         self._verifications: Verifications
         self._tasks: RunTasks
-        self._inboxes: Inboxes
+        self._agent_runner: AgentRunner
         self._resolver: Resolver
         compose(self)                # its layers (compose.py); it fronts only these four
 
@@ -78,7 +78,7 @@ class ChangeEngine(ChangeCore):
         """Initialise a new change in ``workspace`` (the caller holds the lock). Its first step
         syncs the workspace and bases the change on its base branch."""
         self.st.change = Change(id=self.cid, goal=goal, workspace=workspace)
-        self.publish_cards(cards.change_cards(self.cid))     # its orchestrator, its resolver
+        self._agent_runner.open_change()                     # its orchestrator, its resolver
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n")
         self._flow.start()
         self.event("change", f"change {self.cid} started in {workspace}")
@@ -120,12 +120,6 @@ class ChangeEngine(ChangeCore):
         return await self._reports.handle_report(run_id, status, summary, attestations, data,
                                                  blocked_reason, missing_decision, dry_run)
 
-    # ------------------------------------------------------------------ the resolver
-    def escalated(self, node_id: str) -> None:
-        """A step escalated (ChangeCore, on a save): its resolver is asked, in the background."""
-        if self.cfg.resolver.enabled:
-            self.host.spawn(self._resolver.resolve(node_id))
-
     # ------------------------------------------------------------------ where a step stands
     def step_status(self, node_id: str) -> dict:
         """A step as it is now (workflow/context.py); WorkflowError for an unknown step."""
@@ -153,28 +147,9 @@ class ChangeEngine(ChangeCore):
         async with self.lock:
             return self._tasks.reply(run, state, text, list(unanswered))
 
-    def inbox(self, run: Run, assignment: dict) -> list[dict]:
-        """Everything waiting on ``run``'s agent: its work, messages, questions back."""
-        return self._inboxes.view(run, assignment)
-
-    async def a2a_reply(self, run: Run, task_id: str, text: str, state: str) -> dict:
-        """The agent's a2a_reply on any task in its inbox; returns what is left in it."""
-        return await self._inboxes.reply_from(run, task_id, text, state)
-
-    async def deliver(self, card_id: str, sender: str, sender_role: str, text: str,
-                      task_id: str) -> tuple[str, str]:
-        """A message to a card's agent (the A2A layer carries it): its reply (state, text)."""
-        card = next((c for c in self.a2a_cards() if c.id == card_id), None)
-        if card is None or card.node is None:
-            raise NoAgent(f"{card_id} is not an agent of this change")
-        return await self._inboxes.deliver(card, sender, sender_role, text, task_id)
-
-    def pending_messages(self, card_id: str) -> list:
-        """Messages waiting in a card's inbox (for views and tests)."""
-        return self._inboxes.pending(card_id)
-
-    def questions_back(self, card_id: str) -> list:
-        return self._inboxes.questions_for(card_id)
+    def republish_cards(self) -> None:
+        """A card catalog subscribed (a restart): the cards the workflow has open, again."""
+        self._agent_runner.republish()
 
     # ------------------------------------------------------------------ verification service
     async def pushed(self, run_id: str, sha: str) -> VerificationRun | None:
