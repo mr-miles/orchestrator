@@ -176,13 +176,16 @@ def test_a_failed_integration_is_replaced_by_fixes_and_a_new_integration():
     t.work_done("integration")
     assert t.verdict("ok", False, ["152 failed"]) == [Escalate("integration", Waiting.ESCALATED)]
     t.decide("integration", Remedy.REPLAN)
-    assert t.t["integration"].status == Status.FAILED                  # immutable history
-    assert t.t["delivery"].subtasks == [["T1"]]
+    assert t.paused and t.t["integration"].status == Status.WAITING   # the plan decides
     with pytest.raises(TicketError, match="after delivery's completed groups"):
-        t.replan(Replan(add=[Add(T("T0", type="agent:implementer"), "delivery", 0)]))
-    eff = t.replan(Replan(add=[
+        t.replan(Replan(fail=["integration"],
+                        add=[Add(T("T0", type="agent:implementer"), "delivery", 0)]))
+    assert t.t["integration"].status == Status.WAITING                # refused: nothing changed
+    eff = t.replan(Replan(fail=["integration"], add=[
         Add(T("T4", type="agent:implementer"), "delivery", 1),
         Add(T("integration.2", type="agent:integration"), "delivery", 2)]))
+    assert t.t["integration"].status == Status.FAILED                  # immutable history
+    assert t.t["delivery"].subtasks == [["T1"], ["T4"], ["integration.2"]]
     assert started(eff) == ["T4"]
     t.work_done("T4", "c" * 40)
     assert started(t.merged("T4", "d" * 40)) == ["integration.2"]
@@ -411,12 +414,14 @@ def test_choosing_a_replan_pauses_and_applying_it_resumes():
     t.work_done("T1", "a" * 40)
     t.verdict("ok", False, ["fails"])                      # T1 waits; T2 still works
     t.decide("T1", Remedy.REPLAN)
-    assert t.paused and t.t["T1"].status == Status.FAILED
+    assert t.paused and t.t["T1"].status == Status.WAITING
+    replace = Replan(fail=["T1"], add=[Add(T("T1b", type="agent:implementer"), "d", 1)])
     with pytest.raises(TicketError, match="inactive"):
-        t.replan(Replan(add=[Add(T("T1b", type="agent:implementer"), "d", 1)]))
+        t.replan(replace)
     assert t.work_done("T2") == []                         # drained: T3 does not start
-    eff = t.replan(Replan(add=[Add(T("T1b", type="agent:implementer"), "d", 1)]))
+    eff = t.replan(replace)
     assert not t.paused and started(eff) == ["T1b"]        # the backdrop was static until now
+    assert t.t["T1"].status == Status.FAILED                # replaced: immutable history
 
 
 def test_a_replan_repairs_a_grouping_ticket_whose_criterion_failed():

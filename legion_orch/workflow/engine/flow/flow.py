@@ -334,11 +334,11 @@ class TicketFlow:
     async def act(self, ticket_id: str, action: str, approver: str,
                   payload: Mapping[str, Any] | None = None) -> str:
         """A decision owner's action on a ticket: ``approve`` / ``reject`` (a sign-off waiting
-        for them), ``retry`` / ``replan`` (a waiting ticket's remedy; a retry's ``answer`` – to
-        a blocked agent's question, say – is what its next round is told), ``waive`` (a
-        rejected, waivable criterion of a waiting ticket – on the criterion, or
-        ``waive:<criterion>`` on the waiting ticket, as the resolver proposes it). Returns what
-        happened."""
+        for them), and a waiting ticket's remedies: ``retry`` (its ``answer`` – to a blocked
+        agent's question, say – is what its next round is told), ``waive:<criterion>`` (a
+        rejected, waivable criterion of it, with a ``reason``), ``replan`` (with its ``plan``:
+        the ticket fails and the plan applies as soon as nothing is active; without one, the
+        workflow waits paused for a change-level replan). Returns what happened."""
         self._owner(approver)
         payload = dict(payload or {})
         c = self.c
@@ -350,9 +350,24 @@ class TicketFlow:
             return f"{ticket_id}: {action}d"
         if action.startswith("waive:"):          # on the waiting ticket: its criterion's waiver
             ticket_id, action = action.removeprefix("waive:"), "waive"
+        elif action == "waive":
+            raise WorkflowError("waive a criterion on the ticket that waits: waive:<criterion>")
         remedy = {"retry": Remedy.RETRY, "replan": Remedy.REPLAN, "waive": Remedy.WAIVE}.get(action)
         if remedy is None:
             raise WorkflowError(f"unknown action {action!r}")
+        if remedy == Remedy.REPLAN and payload.get("plan") is not None:
+            plan, v = parse_plan(payload["plan"])
+            if v:
+                raise WorkflowError("; ".join(v))
+            try:
+                await self._runner().decide_replan(ticket_id, plan)
+            except TicketError as e:
+                raise WorkflowError(str(e)) from None
+            async with c.lock:
+                c.change.proposals.pop(ticket_id, None)
+                c.event("decision", f"{approver}: replan", ticket_id)
+                c.save()
+            return f"{ticket_id}: replan"
         if remedy == Remedy.WAIVE and not str(payload.get("reason") or "").strip():
             raise WorkflowError("a waiver needs a reason")
         answer = str(payload.get("answer") or "").strip()

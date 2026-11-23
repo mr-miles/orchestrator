@@ -118,7 +118,7 @@ async def test_a_blocked_report_waits_and_a_retry_carries_the_answer(f: Flow):
     assert out.accepted and r.status == "REPORTED"
     assert waiting(f, "intake") == ("waiting", "blocked")
     assert "greet in English or French?" in why(f, "intake")
-    with pytest.raises(WorkflowError, match="not a remedy"):
+    with pytest.raises(WorkflowError, match="waive:<criterion>"):
         await f.human("intake", "waive", reason="nothing to waive here at all")
     await f.human("intake", "retry", answer="English")
     t = f.ticket("intake")
@@ -862,13 +862,13 @@ async def test_a_failed_integration_stops_delivery_until_a_replan_fixes_it(f: Fl
     assert f.status("describe") == "pending"                 # evaluate has not started
     fix = dict(TASKS[0], id="T9", title="print the greeting", files_modified=["src/fix.txt"])
     work = {k: v for k, v in fix.items() if k not in ("id", "title", "depends_on")}
-    await f.change_action("pause")
-    await f.change_action("replan", plan={"add": [{"into": "delivery", "group": 9, "ticket": {
+    # the remedy and its plan in one decision (as the resolver proposes it): repaired, not failed
+    await f.human("delivery", "replan", plan={"add": [{"into": "delivery", "group": 9, "ticket": {
         "id": "T9", "type": "agent:implementer", "goal": fix["title"], "inputs": ["spec"],
         "work": work, "criteria": [{"id": f"{c}:T9", "type": ty} for c, ty in (
             ("verify", "controller:verify"), ("review", "agent:reviewer"),
             ("can-merge", "controller:can-merge"))]}}]})
-    await f.change_action("resume")
+    assert not f.ce.tickets.paused
     assert f.status("T9") == "working" and f.status("integration") == "pending"
     await f.implement("T9")
     await f.review("T9")

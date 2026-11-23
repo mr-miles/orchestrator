@@ -400,10 +400,12 @@ doubling; a fault no retry can fix waits at once) or `OverBudget`.
 | `blocked` | its agent reported BLOCKED (G-R2): a decision it lacks | retry (with an `answer`, which its next round is told), replan |
 | `empty` | a grouping ticket with no subtasks | replan |
 
-**Retry** runs the same ticket again – same id, same attempt count. **Waive** (with a reason)
-counts a failed criterion as passed: on the rejected criterion, or `waive:<criterion>` on the
-waiting ticket. **Replan** fails the ticket (immutable from then on) and pauses the workflow until
-a replan replaces what it was for (§4.6). Abandoning the change is always possible (§5.12). Every
+**Retry** runs the same ticket again – same id, same attempt count. **Waive** (`waive:<criterion>`
+on the waiting ticket, with a reason) counts its failed criterion as passed. **Replan** (with its
+`plan`) changes the constraints: the plan either fails the ticket – immutable from then on, its
+place taken by new tickets – or adds to it (fix builds into a `delivery` whose integration
+failed); it is checked at once and applied as soon as nothing is active (§4.6). Without a plan,
+the workflow waits paused for a change-level `replan`. Abandoning the change is always possible (§5.12). Every
 waiting ticket is sent to the resolver, which proposes one of these (§5.16).
 
 ### 4.5 Merges

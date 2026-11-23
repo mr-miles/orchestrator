@@ -67,6 +67,7 @@ class Runner:
         self._work: dict[str, asyncio.Task] = {}        # ticket -> its round's task
         self._tasks: set[asyncio.Task] = set()          # every task until it is done
         self._held: tuple[str, Outcome] | None = None   # a sign-off's verdict, until quiet
+        self._replan: Replan | None = None              # a chosen replan's plan, until quiet
 
     # ------------------------------------------------------------------ events
     async def start(self) -> None:
@@ -85,6 +86,25 @@ class Runner:
     async def resume(self, reason: str = "operator") -> None:
         async with self.lock:
             await self._carry(self.t.resume(reason))
+
+    async def decide_replan(self, tid: str, plan: Replan) -> None:
+        """A replan chosen as ``tid``'s remedy, with its plan, in one decision: the plan – which
+        fails ``tid`` (replaced) or adds to it (repaired) – is checked now, as a signed-off one
+        is, and applies as soon as nothing is active any more."""
+        if tid not in plan.fail and not any(a.into == tid for a in plan.add):
+            raise TicketError(f"a replan for {tid} fails it (replaced) or adds to it (repaired)")
+        async with self.lock:
+            tier = self._tier()
+            trial = Tickets(x.model_copy(deep=True) for x in self.t.t.values())
+            trial.decide(tid, Remedy.REPLAN)               # refused here if it is no remedy
+            v = self._prepare(plan, tier)
+            if not v:
+                trial.replan(plan, trial=True)
+                v = check_policy(self.spec, tier, trial.t) if tier else []
+            if v:
+                raise TicketError("; ".join(v))
+            self._replan = plan
+            await self._carry(self.t.decide(tid, Remedy.REPLAN))
 
     async def replan(self, plan: Replan) -> None:
         """A replan signed off outside a criterion (a human's, on an escalation): applied
@@ -147,6 +167,9 @@ class Runner:
         if self._held and self.t.active() == [self._held[0]]:     # the others have drained
             (tid, outcome), self._held = self._held, None
             await self._carry(await self._outcome(self.t.t[tid], outcome))
+        if self._replan is not None and not self.t.active():       # a chosen replan, now quiet
+            plan, self._replan = self._replan, None
+            await self._carry(self.t.replan(plan))
 
     def _spawn(self, coro) -> asyncio.Task:
         task = self.spawner(coro)

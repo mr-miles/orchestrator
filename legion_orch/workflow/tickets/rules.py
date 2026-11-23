@@ -297,15 +297,17 @@ class Tickets:
         if remedy == Remedy.RETRY:                  # the same ticket, another round (or merge)
             x.waiting = None
             self._go(x, "merge" if x.merging else "retry")
-        elif remedy == Remedy.REPLAN:               # the constraints must change: history now,
-            self._fail(x)                           # and a static backdrop for the new plan
-            self.pause(REPLANNING)
+        elif remedy == Remedy.REPLAN:               # the constraints must change: a static
+            self.pause(REPLANNING)                  # backdrop until the plan is applied (it
+                                                    # fails the ticket, or adds to it)
         return self._take()
 
-    def replan(self, plan: Replan) -> list[Effect]:
+    def replan(self, plan: Replan, *, trial: bool = False) -> list[Effect]:
         """An accepted replan (signed off), applied while the workflow is paused and nothing is
-        active – all of it or, refused, none of it; the replan's pause is lifted."""
-        self._inactive()
+        active – all of it or, refused, none of it; the replan's pause is lifted. ``trial``: on
+        a copy, to see the tree it makes (whatever is active)."""
+        if not trial:
+            self._inactive()
         with self._transaction():
             self._edit(plan)
         return self.resume(REPLANNING)

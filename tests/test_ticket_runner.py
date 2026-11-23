@@ -19,12 +19,22 @@ from legion_orch.git.remote import GitRemote
 from legion_orch.store.journal import Journal
 from legion_orch.store.state_tables import StateTables
 from legion_orch.workflow.assets import Assets
-from legion_orch.workflow.tickets import Add, Replan, Severity, Status, Ticket, Tickets, Waiting
+from legion_orch.workflow.tickets import (
+    Add,
+    Replan,
+    Severity,
+    Status,
+    Ticket,
+    TicketError,
+    Tickets,
+    Waiting,
+)
 from legion_orch.workflow.tickets.executors import (
     Backoff,
     CanMergeExecutor,
     Done,
     Executors,
+    Fault,
     GaveUp,
     Judged,
     PublishExecutor,
@@ -449,3 +459,27 @@ async def test_a_plan_whose_work_does_not_fit_its_role_fails_its_signoff(tmp_pat
     await r.settle()
     assert any("T1:" in f and "files_modified" in f for f in seen[1])
     assert ch.hooks.endings == [Status.PASSED] and r.t.t["T1"].work == WORK
+
+
+async def test_a_replan_chosen_while_work_runs_applies_once_it_has_drained(tmp_path):
+    """The remedy and its plan in one decision: checked at once, applied when nothing is active
+    – T2 still works when T1's replacement is chosen, so the plan waits for it."""
+    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge"),
+                                  build("T2", "verify", "can-merge")), tier="R0")
+    r = await ch.runner()
+    ch.script.outcomes["T1"] = lambda work: Fault("the build cannot run here", transient=False)
+    gate = ch.script.gates["T2"] = asyncio.Event()
+    await r.start()
+    await ch.hooks.escalation("T1")
+    t1b, crit = build("T1b", "verify", "can-merge")
+    for x in [t1b, *crit]:
+        SPEC.prepare(x, "R0")
+    with pytest.raises(TicketError, match="fails it .replaced. or adds to it"):
+        await r.decide_replan("T1", Replan(add=[Add(t1b, "delivery", 1, tree=crit)]))
+    plan = Replan(fail=["T1"], add=[Add(t1b, "delivery", 1, tree=crit)])
+    await r.decide_replan("T1", plan)
+    assert r.t.t["T1"].status == Status.WAITING and "T1b" not in r.t.t      # T2 still works
+    gate.set()
+    await r.settle()
+    assert r.t.t["T1"].status == Status.FAILED and r.t.t["T1b"].status == Status.PASSED
+    assert ch.hooks.endings == [Status.PASSED]

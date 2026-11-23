@@ -13,10 +13,12 @@ description: "How the resolver diagnoses a waiting ticket and proposes a remedy 
    * `waive:<criterion>` – a rejected, waivable criterion counts as passed; `payload:
      {"reason": "…"}` (required). Verification, preflight, can-merge and sign-offs cannot be
      waived;
-   * `replan` – the constraints must change: the ticket fails (it stays as history) and the
-     workflow pauses for a replan; `payload: {"plan": <a replan document>}` – the tickets that
-     replace what it was for (plan format skill: `add` after the completed groups, `cancel` or
-     `update` tickets not started, `fail` work that cannot be finished) – for the human to apply.
+   * `replan` – the constraints must change; `payload: {"plan": <a replan document>}` (plan
+     format skill: `add` after the completed groups, `cancel` or `update` tickets not started,
+     `fail` work that cannot be finished). The plan either **replaces** the ticket – it lists it
+     in `fail` and adds what takes its place – or **repairs** it – it adds under it (fix builds
+     into `delivery` when its integration failed: its criteria then judge the new head again).
+     A human applying it applies the plan in the same decision.
 2. **Look at the ticket**: `ticket_status(ticket)` and `workflow_context()` – for a build, its work
    (contract) and the tickets around it. Read the documents and evidence it cites (`docs_read`).
 3. **Ask** the agents involved over A2A when their intent matters: the stuck agent

@@ -52,7 +52,7 @@ class Waiting(StrEnum):
 class Remedy(StrEnum):
     RETRY = "retry"            # the same ticket, another round (same id, same attempt count)
     WAIVE = "waive"            # a failed, waivable criterion counts as passed
-    REPLAN = "replan"          # the constraints must change: the ticket becomes failed
+    REPLAN = "replan"          # the constraints must change: a plan fails it or adds to it
 
 
 # the remedies each reason for waiting allows (a replan is always possible)
