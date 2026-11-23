@@ -64,6 +64,7 @@ class TicketFlow:
         self._executors: Executors | None = None
         self._branches: Branches | None = None
         self.runner: Runner | None = None
+        self._merged_branches: set[str] = set()     # branches of passed tickets, deleted
 
     @property
     def branches(self) -> Branches:
@@ -211,7 +212,19 @@ class TicketFlow:
         sandboxes waiting to be stopped are stopped once nothing live uses them."""
         if self.c.st.tickets:
             self.lifecycle.release_sandboxes()
+            self._delete_merged_branches()
         self.lifecycle.sandboxes.suspend_due()
+
+    def _delete_merged_branches(self) -> None:
+        """A passed ticket's branch is merged into its parent's (§5.14): it goes; its commits
+        stay reachable from there, and every commit an agent reported is pinned as evidence."""
+        if self.runner is None:
+            return
+        for tid, t in self.c.st.tickets.items():
+            if t.status == Status.PASSED and t.owns_branch and t.parent is not None \
+                    and tid not in self._merged_branches:
+                self._merged_branches.add(tid)
+                self.c.spawn(cleanup.delete_run_branch(self.c, self.runner.branch_name(tid), tid))
 
     async def _pr_text(self, work) -> str:
         """The merge message of a publication without a remote: the approved description."""
@@ -251,8 +264,9 @@ class TicketFlow:
     async def act(self, ticket_id: str, action: str, approver: str,
                   payload: Mapping[str, Any] | None = None) -> str:
         """A decision owner's action on a ticket: ``approve`` / ``reject`` (a sign-off waiting
-        for them), ``retry`` / ``replan`` (a waiting ticket's remedy), ``waive`` (a rejected,
-        waivable criterion of a waiting ticket). Returns what happened."""
+        for them), ``retry`` / ``replan`` (a waiting ticket's remedy; a retry's ``answer`` – to
+        a blocked agent's question, say – is what its next round is told), ``waive`` (a
+        rejected, waivable criterion of a waiting ticket). Returns what happened."""
         self._owner(approver)
         payload = dict(payload or {})
         c = self.c
@@ -267,9 +281,19 @@ class TicketFlow:
             raise WorkflowError(f"unknown action {action!r}")
         if remedy == Remedy.WAIVE and not str(payload.get("reason") or "").strip():
             raise WorkflowError("a waiver needs a reason")
+        answer = str(payload.get("answer") or "").strip()
+        told = None
+        if remedy == Remedy.RETRY and answer:
+            async with c.lock:
+                if (t := c.tickets.t.get(ticket_id)) is not None and t.status == Status.WAITING:
+                    told, t.findings = list(t.findings), [*t.findings,
+                                                          f"Answer from {approver}: {answer}"]
         try:
             await self._runner().decide(ticket_id, remedy)
         except TicketError as e:
+            if told is not None:
+                async with c.lock:
+                    c.tickets.t[ticket_id].findings = told
             raise WorkflowError(str(e)) from None
         async with c.lock:
             c.change.proposals.pop(ticket_id, None)

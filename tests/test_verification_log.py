@@ -9,7 +9,6 @@ from engine_harness import Flow, scenario
 
 from legion_orch.server.views import change_state
 from legion_orch.server.web import build_app
-from legion_orch.workflow.model import REVIEWING
 
 
 @scenario()
@@ -33,10 +32,10 @@ async def test_a_verification_has_a_live_then_stored_log_served_like_a_run(f: Fl
         raise AssertionError("timed out")
 
     report = asyncio.create_task(f.implement())
-    await wait_for(lambda: "build:T1" in f.ce.verifying)
-    log = f.ce.verifying["build:T1"]
+    await wait_for(lambda: "verify:T1" in f.ce.verifying)
+    log = f.ce.verifying["verify:T1"]
     await wait_for(lambda: "grep -q hello" in f.ce.log_tail(log))
-    assert change_state(f.ctl, f.ce)["verifying"] == {"build:T1": log}
+    assert change_state(f.ctl, f.ce)["verifying"] == {"verify:T1": log}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_app(f.ctl)),
                                  base_url="http://op") as c:
         live = (await c.get(f"/api/runs/{log}/log", params={"format": "entries"})).json()
@@ -46,10 +45,10 @@ async def test_a_verification_has_a_live_then_stored_log_served_like_a_run(f: Fl
 
         gate.set()
         await report
-        assert f.status("build:T1") == REVIEWING and "build:T1" not in f.ce.verifying
-        v = f.ce.nodes["build:T1"].current_verification()
-        assert v.ok and v.log == log
-        assert f.ce.latest(f"control/logs/{log}.log")                    # stored
+        await f.settle()
+        assert f.status("verify:T1") == "passed" and "verify:T1" not in f.ce.verifying
+        assert f.status("review:T1") == "working"
+        assert f.ce.latest(f"control/runs/{log}/log")                    # stored
         done = (await c.get(f"/api/runs/{log}/log", params={"format": "entries"})).json()
         assert not done["live"] and done["status"] == "ACCEPTED"
         text = "\n".join(e["text"] for e in done["entries"])

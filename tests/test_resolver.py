@@ -1,27 +1,26 @@
 """The resolver (WORKFLOW.md §5.16): every escalation is routed to the change's resolver agent,
-which diagnoses it and proposes one of the step's human actions; a human applies, edits or
-ignores the proposal. Agents may ask the resolver directly."""
+which diagnoses it and proposes one of the ticket's remedies; a human applies, edits or ignores
+the proposal. Agents may ask the resolver directly."""
 from __future__ import annotations
 
 import asyncio
 import json
 
 from engine_harness import Flow, scenario
-from test_a2a import client, rpc, send, task_when, token
+from test_a2a import catalog, client, rpc, send, task_when, token
 
 from legion_orch.server import A2AHub
 from legion_orch.workflow import attention
 from legion_orch.workflow.cards import agent_state
-from legion_orch.workflow.model import ESCALATED
 
 
 async def blocked(f: Flow):
-    """The intake reports BLOCKED and ends its task: the step escalates."""
+    """The intake reports BLOCKED and ends its task: the ticket waits on a human."""
     run = f.run("intake")
     out = await f.report(run, [], status="BLOCKED", blocked_reason="the goal is ambiguous",
                          missing_decision="greet in which language?")
     assert out.accepted, out
-    assert f.status("intake") == ESCALATED
+    assert (f.status("intake"), f.ticket("intake").waiting) == ("waiting", "blocked")
     return run
 
 
@@ -50,7 +49,7 @@ def proposal(action: str, **payload) -> str:
 
 @scenario()
 async def test_the_resolver_has_a_card_for_the_whole_change(f: Flow):
-    card = {c.id: c for c in f.ce.a2a_cards()}["resolver"]
+    card = {c.id: c for c in catalog(f)}["resolver"]
     assert agent_state(f.ce, card) == "not started" and card.role == "resolver"
 
 
@@ -59,23 +58,23 @@ async def test_an_escalation_is_routed_to_the_resolver_and_its_proposal_is_shown
     f.cfg.resolver.enabled = True
     A2AHub.of(f.ctl)                            # the A2A layer (its inbox) is up
     await blocked(f)
-    actions = f.ce.workflow.actions("intake")
-    assert "answer" in actions
-    res = await play_resolver(f, proposal("answer", answer="Greet in English."))
-    assert res.consult and res.node_id == "resolver"
+    res = await play_resolver(f, proposal("retry", answer="Greet in English."))
+    assert res.consult and res.ticket == "resolver"
     prompt = f.runner.payloads[res.sandbox]["prompt.md"]
-    assert "Step `intake` escalated" in prompt and "greet in which language?" in prompt
+    assert "Ticket `intake` is waiting on a human" in prompt
+    assert "greet in which language?" in prompt
     await f.settle()
-    esc = f.ce.nodes["intake"].escalation
-    assert esc.proposal and esc.proposal.action == "answer"
-    assert esc.proposal.payload == {"answer": "Greet in English."}
+    p = f.ce.change.proposals["intake"]
+    assert (p.action, p.payload) == ("retry", {"answer": "Greet in English."})
     assert f.ce.latest("control/proposals/intake-1.json")
     [item] = [i for i in attention.items(f.ce) if i.kind == attention.ESCALATION]
-    assert item.proposal.startswith("answer: English")
+    assert item.proposal.startswith("retry: English")
     assert res.sandbox in f.runner.stopped and res.sandbox not in f.runner.deleted   # kept
-    # a human applies it as an ordinary decision
-    await f.human("intake", "answer", answer=esc.proposal.payload["answer"])
-    assert f.status("intake") != ESCALATED
+    # a human applies it as an ordinary decision: the next round is told the answer
+    await f.human("intake", "retry", answer=p.payload["answer"])
+    assert f.status("intake") == "working" and "intake" not in f.ce.change.proposals
+    again = f.run("intake")
+    assert any("Greet in English." in x for x in again.assignment["findings"])
 
 
 @scenario()
@@ -84,12 +83,12 @@ async def test_an_invalid_proposal_is_returned_with_the_reason(f: Flow):
     A2AHub.of(f.ctl)                            # the A2A layer (its inbox) is up
     await blocked(f)
     first = await play_resolver(f, proposal("merge_everything"))
-    second = await play_resolver(f, proposal("answer", answer="English."))
+    second = await play_resolver(f, proposal("retry", answer="English."))
     assert second.sandbox == first.sandbox                     # the same resolver, resumed
     assert second.resumed_session == "sess-resolver"
     assert "was not taken" in f.ce.timeline() or second.id != first.id     # asked again
     await f.settle()
-    assert f.ce.nodes["intake"].escalation.proposal.action == "answer"
+    assert f.ce.change.proposals["intake"].action == "retry"
 
 
 @scenario()
@@ -97,11 +96,10 @@ async def test_a_proposal_after_the_human_decided_is_stale(f: Flow):
     f.cfg.resolver.enabled = True
     A2AHub.of(f.ctl)                            # the A2A layer (its inbox) is up
     await blocked(f)
-    await f.human("intake", "answer", answer="English, decided already")
-    await play_resolver(f, proposal("answer", answer="English."))
+    await f.human("intake", "retry", answer="English, decided already")
+    await play_resolver(f, proposal("retry", answer="English."))
     await f.settle()
-    node = f.ce.nodes["intake"]
-    assert node.escalation is None or node.escalation.proposal is None
+    assert "intake" not in f.ce.change.proposals
     assert "is stale" in f.ce.timeline()
 
 

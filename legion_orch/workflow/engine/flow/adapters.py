@@ -87,7 +87,9 @@ class Agents:
             elif end.accepted:
                 self.lifecycle.accept_runs(ticket)
             c.save()
-            return end
+        if end.accepted and end.sha:            # the commit reported: kept, whatever its fate
+            await c.git.pin(run.id, end.sha)
+        return end
 
     async def _suspend(self, sandbox: str | None) -> None:
         if sandbox:

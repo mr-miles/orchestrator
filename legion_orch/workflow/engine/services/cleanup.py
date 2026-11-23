@@ -18,7 +18,8 @@ from ..base.core import ChangeCore
 async def delete_run_branch(c: ChangeCore, branch: str | None, ticket_id: str) -> None:
     """A merged ticket's branch: its commit is in its target's history now."""
     if branch and await c.git.delete_ref(f"refs/heads/{branch}"):
-        c.event("cleanup", f"deleted branch {branch} (merged)", ticket_id)
+        async with c.lock:
+            c.event("cleanup", f"deleted branch {branch} (merged)", ticket_id)
 
 
 async def delete_run_branches(c: ChangeCore, why: str) -> list[str]:

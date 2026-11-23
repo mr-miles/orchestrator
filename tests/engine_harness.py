@@ -587,6 +587,11 @@ class Flow:
         """A whole change: to the builds, each build and its review, the integration, the
         description and H-3 – published."""
         await self.to_build(**kw)
+        await self.to_end_from_build()
+
+    async def to_end_from_build(self) -> None:
+        """From the builds on: each build and its review, the integration, the description and
+        H-3 – published."""
         for task in [t for t, x in self.ce.st.tickets.items() if x.type == "agent:implementer"]:
             await self.implement(task)
             if f"review:{task}" in self.ce.st.tickets:

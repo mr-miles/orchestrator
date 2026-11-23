@@ -49,11 +49,12 @@ class Placement:
 
     def resumable_session(self, run: Run, plan: SandboxPlan) -> tuple[str, str] | None:
         """The session ``run`` continues – a plan keeping its session, or a consult answering in
-        place: the ticket's previous run of the role in its sandbox."""
+        place: the ticket's previous run of the role in its sandbox (a consult's: its previous
+        consult too – the resolver's turns are all consults; a round's work: never a consult)."""
         if not (plan.keeps_session or run.consult):
             return None
         prev = [r for r in self.c.runs.values() if r.ticket == run.ticket and r.role == run.role
-                and r.sandbox == run.sandbox and r.id != run.id and not r.consult]
+                and r.sandbox == run.sandbox and r.id != run.id and (run.consult or not r.consult)]
         if not prev:
             return None
         sid = prev[-1].session_id or agentlog.session_id(self.lifecycle.log_tail(prev[-1].id, 100_000))
