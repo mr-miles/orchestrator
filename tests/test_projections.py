@@ -97,3 +97,41 @@ async def test_a_steps_verification_and_panel_come_back_from_their_records(f: Fl
     ctl2.load()
     again = ctl2.changes[f.ce.cid].nodes["build:T1"]
     assert again.verification == node.verification and again.panel == node.panel
+
+
+@scenario()
+async def test_a_run_is_its_assignment_and_its_outcome(f: Flow):
+    await f.to_build()
+    await f.implement()
+    run = next(r for r in f.ce.runs.values() if r.role == "implementer")
+    base = f"tasks/T1/runs/{run.id}"
+    assignment = f.ce.json_doc(f"{base}/assignment.json")
+    outcome = f.ce.json_doc(f"{base}/outcome.json")
+    assert assignment["prompt_pin"] == run.prompt_pin and assignment["template_vars"] == run.template_vars
+    assert "status" not in assignment and "progress" not in assignment and "stage" not in assignment
+    assert outcome["status"] == run.status and outcome["report"]["summary"] == run.report.summary
+    assert "progress" not in outcome and "node_id" not in assignment      # the path says whose
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    again = ctl2.changes[f.ce.cid].runs[run.id]
+    assert (again.node_id, again.status, again.report, again.template_vars) == \
+        (run.node_id, run.status, run.report, run.template_vars)
+
+
+@scenario()
+async def test_a_run_live_at_a_restart_has_no_outcome_until_recovery_fails_it(f: Flow):
+    await f.intake()
+    await f.human("H-1", "accept")
+    live = f.run("plan")                                   # the planner is working
+    base = f"control/steps/plan/runs/{live.id}"
+    assert f.ce.latest(f"{base}/assignment.json") and not f.ce.latest(f"{base}/outcome.json")
+    ctl2 = Controller(f.cfg, runner=f.runner)
+    ctl2.load()
+    ce2 = ctl2.changes[f.ce.cid]
+    assert ce2.runs[live.id].status == "STARTING"          # projected from its assignment alone
+    await ctl2.adopt_sandboxes()
+    async with ctl2.svc.lock:
+        ce2.recover()
+    assert ce2.runs[live.id].status == "FAILED"
+    assert ce2.json_doc(f"{base}/outcome.json")["status"] == "FAILED"
+    assert ctl2.next_run_id() > live.id                     # run ids carry on

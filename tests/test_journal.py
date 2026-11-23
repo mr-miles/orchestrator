@@ -18,9 +18,13 @@ async def _reload(f: Flow) -> tuple[Controller, object]:
 
 
 def _dumps(ce) -> tuple:
+    """What a restart keeps: the change, the steps, and each run as its documents say (its
+    stage, latest progress and live bookkeeping are the live run's only)."""
+    from legion_orch.workflow.engine.base.state import RUN_ASSIGNMENT, RUN_OUTCOME
+    kept = {"id", "node_id", *RUN_ASSIGNMENT, *RUN_OUTCOME}
     return (ce.change.model_dump(mode="json"),
             {k: n.model_dump(mode="json") for k, n in ce.nodes.items()},
-            {k: r.model_dump(mode="json") for k, r in ce.runs.items()})
+            {k: r.model_dump(mode="json", include=kept) for k, r in ce.runs.items()})
 
 
 def test_entries_fold_to_the_record():
@@ -60,7 +64,7 @@ async def test_the_tables_hold_one_row_per_record_updated_in_place(f: Flow):
     conn, cid = f.ctl.svc.tables.conn, f.ce.cid
     count = lambda t: conn.execute(f"SELECT COUNT(*) FROM {t} WHERE change=?", (cid,)).fetchone()[0]  # noqa: E731
     assert count("changes") == 1
-    assert count("steps") == len(f.ce.nodes) and count("runs") == len(f.ce.runs)
+    assert count("steps") == len(f.ce.nodes)        # runs are documents, not rows
     # the journal's history folds to the same records
     folded = f.ctl.svc.journal.fold(cid)
     assert folded == f.ctl.svc.tables.load(cid)
@@ -78,11 +82,15 @@ async def test_the_journal_is_only_appended_to_and_a_save_appends_what_changed(f
     lines = [json.loads(x) for x in now.decode().splitlines()]
     assert [x["seq"] for x in lines] == list(range(1, len(lines) + 1))
     # a record is in full once; every later entry of it carries only what changed
-    entries = [e for x in lines for e in x["entries"] if e[0] == "run:r0001"]
-    from legion_orch.workflow.engine.base.state import GATEWAY
-    full = len(f.ce.runs["r0001"].model_dump(exclude=GATEWAY["run"]))
-    assert len(entries[0][1]) == full and len(entries) > 1
-    assert all(len(d) < full for _, d in entries[1:])
+    entries = [e for x in lines for e in x["entries"] if e[0] == "node:intake"]
+    full = len(entries[0][1])
+    assert len(entries) > 1 and all(len(d) < full for _, d in entries[1:])
+    # runs are documents: an assignment (sandbox recorded) and an outcome per conclusion
+    run = f.ce.runs["r0001"]
+    base = f"{f.ce.st.run_dir(run)}"
+    assert base == "control/steps/intake/runs/r0001"
+    assert f.ce.latest(f"{base}/assignment.json") <= 3 and f.ce.latest(f"{base}/outcome.json") <= 4
+    assert not any(e[0].startswith("run:") for x in lines for e in x["entries"])
     # one save, one line: a quiet save writes nothing
     n = len(lines)
     async with f.ctl.svc.lock:

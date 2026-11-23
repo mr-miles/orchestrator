@@ -32,6 +32,7 @@ from ...model import (
     ProtectedPathApproval,
     Readiness,
     ReviewReport,
+    Run,
     SurfacePin,
     Verification,
     cycle_of,
@@ -168,6 +169,36 @@ def _plan(c: ChangeCore, doc: DocVersion) -> None:
     c.change.plan = PlanPointer.model_validate(json.loads(doc.content))
 
 
+def _run_of(c: ChangeCore, doc: DocVersion) -> tuple[str, str] | None:
+    """``(node id, run id)`` of a run document's path: ``tasks/<task>/runs/<run>/…`` (a build
+    task's) or ``control/steps/<node>/runs/<run>/…``."""
+    p = doc.path[len(c.p("")):].split("/")
+    if len(p) == 5 and p[0] == "tasks" and p[2] == "runs":
+        return f"build:{p[1]}", p[3]
+    if len(p) == 6 and p[:2] == ["control", "steps"] and p[3] == "runs":
+        return p[2], p[4]
+    return None
+
+
+def _run_assignment(c: ChangeCore, doc: DocVersion) -> None:
+    """A run, from its assignment (live until it has an outcome). A run already in memory is
+    the controller's own: it wrote the document."""
+    if (where := _run_of(c, doc)) is None or where[1] in c.runs:
+        return
+    node_id, rid = where
+    c.runs[rid] = Run.model_validate({**json.loads(doc.content), "id": rid, "node_id": node_id})
+
+
+def _run_outcome(c: ChangeCore, doc: DocVersion) -> None:
+    """How a run ended (each version: as its conclusion moved on)."""
+    if (where := _run_of(c, doc)) is None or (run := c.runs.get(where[1])) is None:
+        return
+    data = json.loads(doc.content)
+    ended = Run.model_validate({**run.model_dump(mode="json"), **data})
+    for k in data:
+        setattr(run, k, getattr(ended, k))
+
+
 # schema -> what a new version of a document of it projects into
 PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "approval": _approval,
@@ -182,7 +213,18 @@ PROJECTORS: dict[str, Callable[[ChangeCore, DocVersion], None]] = {
     "panel-decision": _panel,
     "report": _review,
     "plan-pointer": _plan,
+    "run-assignment": _run_assignment,
+    "run-outcome": _run_outcome,
 }
+
+
+def _replay_order(m) -> tuple:
+    """Runs before what refers to them – each run's assignment first, in run order, then its
+    outcome – then every other document oldest first."""
+    if m.schema in ("run-assignment", "run-outcome"):
+        rid = m.path.rsplit("/", 2)[-2]
+        return (0 if m.schema == "run-assignment" else 1, int(rid[1:]) if rid[1:].isdigit() else 0)
+    return (2, m.created_at, m.path)
 
 
 
@@ -201,6 +243,6 @@ class Projections:
     def replay(self) -> None:
         """Every projected field from the documents as they stand (on load), oldest first."""
         metas = sorted((m for m in self.c.docs.list(self._prefix) if m.schema in PROJECTORS),
-                       key=lambda m: (m.created_at, m.path))
+                       key=_replay_order)
         for m in metas:
             PROJECTORS[m.schema](self.c, self.c.docs.read(m.path, m.version))

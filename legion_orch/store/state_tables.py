@@ -5,8 +5,9 @@ history is the journal's, :mod:`.journal`, never read on start):
 
 * ``changes`` – one row per change: its record (``record``) and the workflow's
   (``workflow``: the stage tree's parameters and the core's inputs);
-* ``steps``   – one row per node of the change (``record``);
-* ``runs``    – one row per agent run (``record``).
+* ``steps``   – one row per node of the change (``record``).
+
+(Agent runs are documents – their assignment and outcome – not rows.)
 
 Records are JSON objects of the fields the engine does not project from documents. A save
 writes the rows that changed in one transaction.
@@ -30,16 +31,10 @@ CREATE TABLE IF NOT EXISTS steps (
   record TEXT NOT NULL,
   PRIMARY KEY (change, node)
 );
-CREATE TABLE IF NOT EXISTS runs (
-  change TEXT NOT NULL,
-  run TEXT NOT NULL,
-  record TEXT NOT NULL,
-  PRIMARY KEY (change, run)
-);
 """
 
 CHANGE, WORKFLOW = "change", "workflow"
-_TABLES = {"node": ("steps", "node"), "run": ("runs", "run")}   # record prefix -> (table, key)
+_TABLES = {"node": ("steps", "node")}                          # record prefix -> (table, key)
 
 
 def _dumps(data: Any) -> str:
@@ -48,7 +43,7 @@ def _dumps(data: Any) -> str:
 
 class StateTables:
     """The live state tables, through the document store's connection and lock. Records are
-    keyed as the state store names them: ``change``, ``workflow``, ``node:<id>``, ``run:<id>``."""
+    keyed as the state store names them: ``change``, ``workflow``, ``node:<id>``."""
 
     def __init__(self, conn: sqlite3.Connection, lock: threading.RLock):
         self.conn, self.lock = conn, lock
@@ -93,8 +88,8 @@ class StateTables:
         return _TABLES[kind]
 
     def load(self, change: str) -> dict[str, dict[str, Any]]:
-        """Every record of ``change`` (record -> its fields); nodes and runs in the order they
-        were first written."""
+        """Every record of ``change`` (record -> its fields); nodes in the order they were first
+        written."""
         out: dict[str, dict[str, Any]] = {}
         with self.lock:
             row = self.conn.execute("SELECT record, workflow FROM changes WHERE change=?",

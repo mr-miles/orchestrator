@@ -292,6 +292,7 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
     for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md",
                 "tasks/T1/verification/cycle-1.json", "tasks/T1/panel/cycle-1.json",
                 "tasks/T1/reports/reviewer-cycle-1.json", "control/steps/plan/reports/critic-cycle-1.json",
+                "tasks/T1/runs/r0001/assignment.json", "tasks/T1/runs/r0001/outcome.json",
                 "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
@@ -373,9 +374,13 @@ def test_store_enforces_bound_schemas():
     with pytest.raises(SchemaViolation, match="missing heading 'Change'"):
         d.write("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n",
                 author="r1", role="planner")
-    run = {"id": "r0001", "node_id": "plan", "role": "planner", "status": "ACTIVE", "cycle": 1, "token": "x"}
-    with pytest.raises(SchemaViolation, match="run"):     # run records may never carry a token
-        d.write("changes/c1/control/runs/r0001.json", _j.dumps(run), author="controller", role="controller")
+    run = {"role": "planner", "soul": "s", "cycle": 1, "created_at": "2026-11-23T00:00:00.000Z"}
+    d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
+            role="controller")                                  # a valid assignment
+    run["token"] = "x"
+    with pytest.raises(SchemaViolation, match="run-assignment.*does not allow"):   # never a token
+        d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
+                role="controller")
     assert d.write("changes/c1/notes/anything.txt", "free text", author="r", role="r").schema == "text"
 
 

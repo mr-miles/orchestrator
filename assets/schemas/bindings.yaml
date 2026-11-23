@@ -16,7 +16,6 @@
 - {pattern: "control/change.json", schema: change}
 - {pattern: "control/graph.json", schema: graph}
 - {pattern: "control/nodes/*.json", schema: node}
-- {pattern: "control/runs/*.json", schema: run}
 - {pattern: "control/approvals/protected-paths/*.json", schema: protected-approval}
 - {pattern: "control/approvals/*.json", schema: approval}
 - {pattern: "control/approvals/*/*.json", schema: approval}
@@ -29,6 +28,10 @@
 - {pattern: "control/steps/*/verification/*.json", schema: verification}
 - {pattern: "tasks/*/panel/*.json", schema: panel-decision}
 - {pattern: "control/steps/*/panel/*.json", schema: panel-decision}
+- {pattern: "tasks/*/runs/*/assignment.json", schema: run-assignment}
+- {pattern: "control/steps/*/runs/*/assignment.json", schema: run-assignment}
+- {pattern: "tasks/*/runs/*/outcome.json", schema: run-outcome}
+- {pattern: "control/steps/*/runs/*/outcome.json", schema: run-outcome}
 - {pattern: "tasks/*/reports/*.json", schema: report}
 - {pattern: "control/steps/*/reports/*.json", schema: report}
 - {pattern: "control/ship/readiness.json", schema: readiness}
