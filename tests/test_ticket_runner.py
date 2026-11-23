@@ -54,10 +54,10 @@ def build(tid: str, *criteria: str, **kw) -> tuple[Ticket, list[Ticket]]:
 
 
 def planned(*builds: tuple[Ticket, list[Ticket]]) -> Replan:
-    """The planner's tickets: the builds in parallel, then the integration, under delivery."""
-    adds = [Add(x, "delivery", 0, new_group=i == 0, tree=crit) for i, (x, crit) in enumerate(builds)]
-    adds.append(Add(Ticket(id="integration", type="agent:integration"), "delivery", 1))
-    return Replan(add=adds)
+    """The planner's tickets: the builds in parallel under delivery (whose criteria – the
+    oracle's commands, the integration – are the skeleton's)."""
+    return Replan(add=[Add(x, "delivery", 0, new_group=i == 0, tree=crit)
+                       for i, (x, crit) in enumerate(builds)])
 
 
 class Hooks:
@@ -135,17 +135,18 @@ async def test_a_change_runs_from_its_skeleton_to_its_publication(tmp_path):
     ran = ch.script.ran()
     # the skeleton's order, the tier's tickets (R2: the oracle, not the baseline), the plan's
     order = ["intake", "H-1", "design", "critique", "H-E1", "provision", "oracle", "preflight",
-             "H-2", "integration", "describe", "H-3"]
+             "H-2", "verify:delivery", "integration", "describe", "H-3"]
     assert [t for t in ran if t in order] == order and "baseline" not in r.t.t
     assert ran.index("H-2") < min(ran.index("T1"), ran.index("T2"))
     assert max(ran.index("review:T1"), ran.index("review:T2")) < ran.index("integration")
-    # merged up the tree into the integration branch, the root's, then published into main
+    # merged up the tree – the builds into delivery's branch, judged there, then into the
+    # integration branch, the root's – then published into main
     assert r.branch_name("change") == "legion/c1/integration"
     made = set(subprocess.run(["git", "for-each-ref", "--format=%(refname:lstrip=5)",
                                "refs/heads/legion/c1/t/"], cwd=ch.hub.repo, check=True,
                               capture_output=True, text=True).stdout.split())
-    assert not made & {"requirements", "plan", "acceptance", "delivery", "release"}   # no criteria
-    assert {"T1", "T2", "oracle", "evaluate"} <= made          # agents', and evaluate's (H-3)
+    assert not made & {"requirements", "plan", "acceptance", "release"}   # no criteria
+    assert {"T1", "T2", "oracle", "delivery", "evaluate"} <= made   # agents', and those judged
     assert {"T1.txt", "T2.txt", "oracle.txt"} <= set(files_at(ch.hub, "main"))
     assert all(x.status == Status.PASSED for x in r.t.t.values())
     assert r.t.t["design"].limit == 3                      # the tier's limits, set at H-1
@@ -190,7 +191,7 @@ async def test_a_conflict_at_merge_is_a_rework_onto_the_new_head(tmp_path):
     r = await ch.runner()
 
     def same_file(work):
-        base = work.base if work.attempt == 1 else r.t.t["change"].sha
+        base = work.base if work.attempt == 1 else r.t.t["delivery"].sha   # its merge target
         return Done(commit(ch.hub, base, {"shared.txt": f"{work.ticket.id} {work.attempt}\n"},
                            f"{work.ticket.id}-{work.attempt}"))
     ch.script.outcomes["T1"] = ch.script.outcomes["T2"] = same_file
@@ -268,7 +269,7 @@ def test_the_policy_and_the_skeleton_at_each_tier():
         assert ("baseline" in t.t) == (tier == "R3")
         assert ("H-2b" in t.t and t.t["H-2b"].parent == "baseline") == (tier == "R3")
         v = check_policy(SPEC, tier, t.t)
-        assert f"tier {tier}: the plan has no agent:integration" in v      # still to be planned
+        assert not any("agent:integration" in x for x in v)    # the skeleton's: delivery's
     t = Tickets(SPEC.skeleton_at("R2"))
     t.pause()
     t.replan(planned(build("T1", "verify", "can-merge", labels=["security"])))

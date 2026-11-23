@@ -32,8 +32,9 @@ async def test_a_tickets_branch_goes_once_it_has_merged(f: Flow):
     t = f.ticket("T1")
     assert t.status == "passed", f.status()
     assert branch not in await heads(f), await heads(f)
-    # the commit stays reachable: in the integration history, and pinned as evidence
-    head = (await f.git.git("rev-parse", f"refs/heads/legion/{f.ce.cid}/integration")).strip()
+    # the commit stays reachable: in its parent's history (delivery's branch, which merges
+    # into the change's once delivery's criteria pass), and pinned as evidence
+    head = (await f.git.git("rev-parse", f"refs/heads/legion/{f.ce.cid}/t/delivery")).strip()
     assert await f.git.is_ancestor(t.sha, head), (t.sha, head)
     run = f.runs("T1", "implementer")[0]
     assert f"refs/legion/evidence/{run.id}" in await evidence(f)

@@ -845,19 +845,34 @@ async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restar
 
 
 @scenario()
-async def test_an_integration_that_fails_is_an_attempt_not_a_pass(f: Flow):
+async def test_a_failed_integration_stops_delivery_until_a_replan_fixes_it(f: Flow):
+    """The integration judges delivery's head as its criterion: a FAIL escalates delivery (no
+    rerun on an unchanged head); a replan adds a fix after the completed groups, and delivery's
+    criteria judge the new head from the first."""
     await f.to_build()
     for task in [t for t, x in f.ce.st.tickets.items() if x.type == "agent:implementer"]:
         await f.implement(task)
         if f"review:{task}" in f.ce.st.tickets:
             await f.review(task)
+    assert f.status("verify:delivery") == "passed"          # the oracle's commands, at its head
     res = await f.integration("FAIL")
     assert res.accepted, res
-    await f.settle()
-    t = f.ticket("integration")
-    assert (t.status, t.attempt) == ("working", 2), f.status()   # round again, told why
-    assert any("never printed" in x for x in t.findings), t.findings
-    assert f.status("describe") == "pending"                     # evaluate has not started
+    d = f.ticket("delivery")
+    assert (d.status, d.waiting) == ("waiting", "escalated"), f.status()
+    assert f.status("describe") == "pending"                 # evaluate has not started
+    fix = dict(TASKS[0], id="T9", title="print the greeting", files_modified=["src/fix.txt"])
+    work = {k: v for k, v in fix.items() if k not in ("id", "title", "depends_on")}
+    await f.change_action("pause")
+    await f.change_action("replan", plan={"add": [{"into": "delivery", "group": 9, "ticket": {
+        "id": "T9", "type": "agent:implementer", "goal": fix["title"], "inputs": ["spec"],
+        "work": work, "criteria": [{"id": f"{c}:T9", "type": ty} for c, ty in (
+            ("verify", "controller:verify"), ("review", "agent:reviewer"),
+            ("can-merge", "controller:can-merge"))]}}]})
+    await f.change_action("resume")
+    assert f.status("T9") == "working" and f.status("integration") == "pending"
+    await f.implement("T9")
+    await f.review("T9")
+    assert f.status("verify:delivery") == "passed"          # judged again, the new head
     await f.integration()
     await f.describe()
     await f.signoff("H-3")

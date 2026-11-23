@@ -492,9 +492,7 @@ class Tickets:
             self._wait(x, Waiting.ATTEMPTS)
             return
         x.findings = list(findings)
-        for cid in x.criteria:                      # every criterion again, as new (fresh judges)
-            c = self.t[cid]
-            c.status, c.findings, c.waived, c.attempt = Status.PENDING, [], False, 0
+        self._rerun_criteria(x)
         self._start(x)
 
     def _wait(self, x: Ticket, why: Waiting) -> None:
@@ -576,18 +574,30 @@ class Tickets:
             below.add(d.id)
 
     def _resume(self, x: Ticket) -> None:
-        """After a replan: a ticket it touched goes on from where it is."""
-        if x.status == Status.SUBTASKS:
-            self._subtasks(x)
-        elif x.status == Status.CHECKING:
-            self._check(x)
-        elif x.status == Status.WAITING and x.waiting in (Waiting.EMPTY, Waiting.ESCALATED):
+        """After a replan: a ticket it touched goes on from where it is. One waiting on its
+        criteria (escalated) or its subtasks (empty) is resumed. New subtasks run first, and
+        then every criterion runs again, from the first – they judge a new head (fresh
+        judges); without new subtasks only the criteria not passed run again."""
+        if x.status == Status.WAITING and x.waiting not in (Waiting.EMPTY, Waiting.ESCALATED):
+            return
+        if x.status not in (Status.SUBTASKS, Status.CHECKING, Status.WAITING):
+            return
+        unsettled = any(not all(self.t[m].status in SETTLED for m in g) for g in x.subtasks)
+        if x.status in (Status.CHECKING, Status.WAITING):
             x.waiting = None
-            if x.status == Status.WAITING and any(x.subtasks):
-                x.status = Status.SUBTASKS
-                self._subtasks(x)
-            else:
-                self._check(x)
+            self._rerun_criteria(x, everyone=unsettled)
+        if unsettled:
+            x.status = Status.SUBTASKS
+            self._subtasks(x)
+        else:
+            self._check(x)
+
+    def _rerun_criteria(self, x: Ticket, everyone: bool = True) -> None:
+        """Its criteria again, as new (fresh judges): all of them, or those not passed."""
+        for cid in x.criteria:
+            c = self.t[cid]
+            if everyone or c.status != Status.PASSED:
+                c.status, c.findings, c.waived, c.attempt = Status.PENDING, [], False, 0
 
     def _depth(self, tid: str) -> int:
         n, x = 0, self.t[tid]

@@ -13,8 +13,8 @@ Write, in `tickets/{{ticket_id}}/`, following the plan format skill and the work
 * `oracle.json` – the acceptance tests, commands, criteria (and at R2+ verification surfaces);
 * `environment.json` – the sandboxes (sandbox environment skill);
 * `tickets.json` – your plan as tickets: the builds under `delivery`, each with the criteria the
-  tier requires, then the integration as `delivery`'s last group; and your decision about the
-  skeleton's `scaffold` – its work, or cancelled.
+  tier requires (the integration is `delivery`'s own criterion, already there); and your
+  decision about the skeleton's `scaffold` – its work, or cancelled.
 
 Every build must be decision-complete: its `verification` commands must be able to exit 0 using
 only its own `files_modified`, against the repository's real configuration and the oracle's

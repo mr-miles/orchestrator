@@ -417,3 +417,50 @@ def test_choosing_a_replan_pauses_and_applying_it_resumes():
     assert t.work_done("T2") == []                         # drained: T3 does not start
     eff = t.replan(Replan(add=[Add(T("T1b", type="agent:implementer"), "d", 1)]))
     assert not t.paused and started(eff) == ["T1b"]        # the backdrop was static until now
+
+
+def test_a_replan_repairs_a_grouping_ticket_whose_criterion_failed():
+    """Integration judges delivery: a fail escalates delivery; a replan adds fixes after its
+    completed groups, they run, and every criterion judges the new head again from the first."""
+    t = Tickets([T("c", subtasks=[["d"]]),
+                 T("d", "c", subtasks=[["T1"]], criteria=["v", "int"]),
+                 T("T1", "d", type="agent:implementer"),
+                 crit("v", "d", Severity.ESCALATE, type="controller:verify"),
+                 crit("int", "d", Severity.ESCALATE, type="agent:integration")])
+    t.start()
+    t.work_done("T1", "a" * 40)
+    assert started(t.merged("T1", "b" * 40)) == ["v"]
+    assert started(t.verdict("v", True)) == ["int"]
+    assert t.verdict("int", False, ["the greeting is never printed"]) == [
+        Escalate("d", Waiting.ESCALATED)]                 # a grouping ticket: no rerun of its own
+    with pytest.raises(TicketError):
+        t.decide("d", Remedy.RETRY)                        # nothing outside the agents to fix
+    t.pause("operator")
+    t.replan(Replan(add=[Add(T("fix", type="agent:implementer"), "d", 1)]))
+    eff = t.resume("operator")                             # nothing starts while paused
+    assert t.t["d"].status == Status.SUBTASKS and "fix" in started(eff)
+    assert t.t["v"].status == t.t["int"].status == Status.PENDING      # judged again, later
+    t.work_done("fix", "c" * 40)
+    assert started(t.merged("fix", "e" * 40)) == ["v"]     # from the first, on the new head
+    assert started(t.verdict("v", True)) == ["int"]
+    t.verdict("int", True)
+    assert t.t["d"].status in (Status.MERGING, Status.PASSED)
+
+
+def test_a_replan_without_new_work_reruns_only_the_criteria_not_passed():
+    t = Tickets([T("c", subtasks=[["d"]]),
+                 T("d", "c", subtasks=[["T1"]], criteria=["v", "int"]),
+                 T("T1", "d", type="agent:implementer"),
+                 crit("v", "d", Severity.ESCALATE, type="controller:verify"),
+                 crit("int", "d", Severity.ESCALATE, type="agent:integration")])
+    t.start()
+    t.work_done("T1")
+    t.verdict("v", True)
+    t.verdict("int", False, ["flaky"])
+    t.pause("operator")
+    t.replan(Replan(update={}, cancel=[]))                 # touches nothing: d waits on
+    assert t.t["d"].status == Status.WAITING
+    t.replan(Replan(add=[Add(crit("int2", "d", Severity.ESCALATE, type="agent:integration"),
+                             "d", 2, criterion=True)]))
+    eff = t.resume("operator")
+    assert t.t["v"].status == Status.PASSED and started(eff) == ["int"]   # v's verdict stands

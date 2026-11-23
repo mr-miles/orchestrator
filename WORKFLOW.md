@@ -21,7 +21,7 @@ change
 ├─ requirements    intake ✓H-1
 ├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold ✓verify ✓review ✓can-merge
 │                  → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
-├─ delivery        (the planner's builds, each ✓verify ✓review… ✓can-merge) → integration
+├─ delivery        the planner's builds (each ✓verify ✓review… ✓can-merge)   ✓verify ✓integration
 ├─ evaluate        describe                                        ✓H-3
 └─ release         publish
 ```
@@ -281,7 +281,7 @@ tier may `extend` another:
 | Rule | Says | R0 | R1 | R2 | R3 |
 | --- | --- | --- | --- | --- | --- |
 | `exists` | the tree contains a ticket of each type | intake, planner, provision, integration, publish | as R0 | + oracle | + baseline |
-| `order` | each ticket of a type finishes before (`after`) / starts after (`before`) one of another | planner after intake, provision after planner, a scaffold after provision, builds after provision and before integration, integration before the final sign-off, publish after integration | as R0 | + builds after the oracle, a scaffold before it | + builds after the baseline |
+| `order` | each ticket of a type finishes before (`after`) / starts after (`before`) one of another | builds after provision and before the integration (the skeleton orders everything else) | as R0 | + builds after the oracle | + builds after the baseline |
 | `every` | the criteria every ticket of a type has | build, scaffold: verify, can-merge | build, scaffold: verify, reviewer, can-merge | + oracle: preflight, sign-off | + baseline: sign-off |
 | `labels` | the criteria a ticket labelled so (labels are inherited) has | – | `security`: security reviewer | as R1 | as R1 |
 | `limits` | attempts per type (default 3) | implementer, scaffolder, planner 3 | as R0 | as R0 | as R0 |
@@ -332,7 +332,8 @@ passes (§4.5).
 
 Every change starts from `workflow.yaml`'s `skeleton` (shown at the top): `requirements`, `plan`,
 `delivery`, `evaluate` and `release`, with the bare minimum under them. The planner fills
-`delivery` (its builds, then the integration) and may add to `evaluate` and `release`; its output
+`delivery` (its builds; `delivery`'s own criteria – the oracle's commands at its head, then the
+integration – are the skeleton's) and may add to `evaluate` and `release`; its output
 `tickets` is the **first replan** (§4.6), applied when H-E1 passes.
 
 A **sign-off** (`human:signoff`) is a criterion of the work it checks. It names the outputs it
@@ -383,7 +384,7 @@ any ─cancel (a replan, abandon)→ cancelled              a criterion's fail v
 
 An **attempt** is one round of a ticket's own work. Only the work's own failures count: a
 failed `rework` criterion, the agent giving up (its report submissions used up, G-R6; a run that
-ends without an accepted report), an integration verifier's own FAIL. Past `limit` the ticket
+ends without an accepted report). Past `limit` the ticket
 waits. Everything else waits on a human without costing one. Each executor ends in one outcome
 (`tickets/executors/base.py`): `Done` / `Judged` (a criterion's verdict), `GaveUp` (an attempt),
 `Blocked`, `Fault` (system: retried `limits.system_retries` times from `limits.system_retry_s`,
@@ -429,7 +430,8 @@ and subtasks, each `into` a parent at a subtask group or as a criterion), `cance
 applies only while the workflow is paused and nothing is active, all of it or none of it, and
 must keep the tier's policy (§3). Tickets are added only after a ticket's completed groups and
 never under a closed one: finished work is never undone, corrections are new tickets – a failed
-integration is followed by fixes and a new integration ticket. A decision owner applies one with
+integration is followed by fix builds added to `delivery`, after which its criteria judge the
+new head again. A decision owner applies one with
 the change action `replan` (the replan document in `plan`), typically the resolver's proposal;
 the planner's `tickets` is applied by H-E1. There is no limit on replans: each is started by a
 human.
@@ -795,14 +797,22 @@ On a merge the ticket passes; its branch is deleted (the merge made its commit p
 parent's history, and the evidence ref keeps every reported commit), its runs are accepted and
 its sandboxes are deleted after their agents reflect.
 
-### 5.10 `integration` – the whole change (`delivery`'s last group)
+### 5.10 `integration` – the builds together (`delivery`'s criteria)
+
+`delivery` has criteria, so it has a branch of its own: the builds merge into it, and once they
+all have, its criteria judge its head – `verify:delivery` (`controller:verify`: the oracle's
+acceptance and integration commands, in a fresh verifier; nothing to run at a tier whose oracle
+names none passes) and then `integration`, the integration verifier. Both pass: `delivery`
+merges into the change's branch. A failure escalates (a grouping ticket's criterion): the remedy
+is a replan that adds fix builds to `delivery`, after which every one of its criteria judges the
+new head again, from the first (or a waiver of the integration's verdict).
 
 * **Soul:** `integration-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`
-* **Outputs:** `report`, git `head` (its base: every build merged)  **Context:** every build's evidence and, at R3, the baseline's report
+* **Outputs:** `report`, git `head` (the commit it judges: `delivery`'s head)  **Context:** every build's evidence and, at R3, the baseline's report
 
 | ID | Rule |
 | --- | --- |
-| G-INT1 | The attested head is its base; `data.verdict ∈ {PASS, FAIL}` with findings that resolve; `data.results` covers every acceptance and integration command. `FAIL` is not done: an attempt, its findings the next round's input; at its limit it waits, and the remedy is a replan (fixes, then a new integration ticket). |
+| G-INT1 | The attested commit is the head it judges; `data.verdict ∈ {PASS, FAIL}` with findings that resolve; `data.results` covers every acceptance and integration command. |
 | G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle's commit. |
 
 `release` (role, `release-planner` soul) is kept for a live-system workflow; no tier requires it,
@@ -854,7 +864,7 @@ the change is `READY`.
 A failure found late – an integration that fails, H-3 rejecting the change – is fixed by
 **planning new work on top of what was built**, never by reopening it: the ticket waits, the
 resolver proposes a replan (§5.16), and a decision owner applies it (§4.6) – fix builds after
-`delivery`'s completed groups, then a new integration ticket; a changed signed document needs a
+`delivery`'s completed groups, after which `delivery`'s criteria judge the new head again; a changed signed document needs a
 new sign-off and new instances of the tickets that used it. No passed ticket runs again.
 
 ### 5.12 Change-level actions (human)

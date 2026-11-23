@@ -26,10 +26,7 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
                    {"id": "review:T1", "type": "agent:reviewer"},
                    {"id": "can-merge:T1", "type": "controller:can-merge"}]}},
    {"into": "delivery", "group": 0, "join": true, "ticket": {"id": "T2", …}},
-   {"into": "delivery", "group": 1, "ticket": {"id": "T3", …}},
-   {"into": "delivery", "group": 2, "ticket": {
-      "id": "integration", "type": "agent:integration", "goal": "the change, integrated",
-      "inputs": ["oracle"]}}],
+   {"into": "delivery", "group": 1, "ticket": {"id": "T3", …}}],
  "update": {"scaffold": {"work": {…}}},     // or "cancel": ["scaffold"]
 }
 ```
@@ -37,7 +34,9 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
 * **Groups are the order.** `group` is the index of a subtask group under `into`; tickets in one
   group run in parallel (the first opens it, the others `"join": true`), and a group starts from
   the head the earlier groups merged into. Put a build in a later group when it needs another's
-  code. `delivery`'s **last** group is the integration ticket, alone.
+  code. Once every build has merged, `delivery`'s own criteria judge them together – the
+  oracle's commands at its head, then the integration verifier: they are the skeleton's, not
+  yours.
 * **Ids** are names: builds `T1`, `T2` …, their criteria `<kind>:<build>` (`verify:T1`,
   `review:T1`, `security:T1`, `can-merge:T1`). Unique across the change.
 * **Criteria** run in order after the build, on its commit: `controller:verify` first (its

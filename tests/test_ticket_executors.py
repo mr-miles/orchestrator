@@ -123,10 +123,6 @@ async def test_transient_faults_are_retried_with_backoff_then_returned():
 def test_an_agent_runs_end_as_its_kind_of_outcome():
     sha = "a" * 40
     assert agent_outcome(AgentEnd(True, sha), criterion=False) == Done(sha)
-    # a ticket's own work that judges (integration) and fails: not done – an attempt
-    assert agent_outcome(AgentEnd(True, sha, verdict=Verdict.FAIL, findings=("[BLOCKER] x",)),
-                         criterion=False) == GaveUp(("[BLOCKER] x",))
-    assert agent_outcome(AgentEnd(True, sha, verdict=Verdict.PASS), criterion=False) == Done(sha)
     assert agent_outcome(AgentEnd(True, verdict=Verdict.PASS), criterion=True) == Judged(True)
     assert agent_outcome(AgentEnd(True, verdict=Verdict.REWORK, findings=("HIGH: x",)),
                          criterion=True) == Judged(False, ("HIGH: x",))

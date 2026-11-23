@@ -554,7 +554,7 @@ class Flow:
         r = self.run("integration")
         cmds = self.ce.oracle_commands()
         doc = await self.write(r, "report.md", "results")
-        head = f"git:{REPO}@{r.base_sha}"
+        head = f"git:{REPO}@{r.judged_sha or r.base_sha}"      # a judge: delivery's head
         findings = [] if verdict == "PASS" else [{
             "severity": "BLOCKER", "confidence": "HIGH", "dimension": "correctness",
             "title": "the greeting is never printed", "observation": "x", "impact": "y",
@@ -622,8 +622,9 @@ NO_ENVIRONMENT = {"summary": "the default image", "profiles": {"default": {"tool
 def plan_doc(tasks: list[dict], criteria: tuple[str, ...], scaffold: dict | None = None) -> dict:
     """The planner's tickets for task-like dicts: each a build under ``delivery`` with
     ``criteria`` (``verify``, ``review``, ``security``, ``can-merge``), grouped by its
-    ``depends_on`` (a task's group comes after its dependencies'), then the integration; the
-    skeleton's ``scaffold`` given its work (``scaffold``), else cancelled."""
+    ``depends_on`` (a task's group comes after its dependencies'); the skeleton's ``scaffold``
+    given its work (``scaffold``), else cancelled. (The integration is ``delivery``'s criterion:
+    the skeleton's.)"""
     types = {"verify": "controller:verify", "review": "agent:reviewer",
              "security": "agent:security", "can-merge": "controller:can-merge"}
     level: dict[str, int] = {}
@@ -638,9 +639,6 @@ def plan_doc(tasks: list[dict], criteria: tuple[str, ...], scaffold: dict | None
             "inputs": ["spec", "specs"], "work": work,
             "criteria": [{"id": f"{c}:{t['id']}", "type": types[c]} for c in criteria]}})
         first.add(g)
-    adds.append({"into": "delivery", "group": max(level.values(), default=-1) + 1, "ticket": {
-        "id": "integration", "type": "agent:integration", "goal": "the change, integrated",
-        "inputs": ["oracle"]}})
     if scaffold is not None:
         return {"add": adds, "update": {"scaffold": {"work": scaffold}}}
     return {"add": adds, "cancel": ["scaffold"]}

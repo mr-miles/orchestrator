@@ -63,8 +63,8 @@ class VerifyExecutor:
         if sha is None:
             return Fault("nothing to verify: no commit to judge", transient=False)
         commands = self.port.commands(work)
-        if not commands:
-            return Fault("nothing to verify: the ticket has no commands", transient=False)
+        if not commands:                  # the oracle names none (R0/R1): there is nothing to
+            return Judged(True)           # run – a build always has its own (G-P4)
 
         async def once() -> Outcome:
             return verification_outcome(await self.port.verify(work, sha, commands), self.expect)

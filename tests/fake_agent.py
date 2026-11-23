@@ -163,10 +163,7 @@ def main():
             build("T2", "write goodbye", "senior-developer", ["REQ-2"], ["src/bye.txt"],
                   ["grep -q goodbye src/bye.txt"], 0, join=True),
             build("T3", "document", "senior-developer", ["REQ-1"], ["docs/"],
-                  ["test -f docs/README.md"], 1),
-            {"into": "delivery", "group": 2, "ticket": {
-                "id": "integration", "type": "agent:integration", "goal": "the change, integrated",
-                "inputs": ["oracle"]}}],
+                  ["test -f docs/README.md"], 1)],
             "cancel": ["scaffold"]}                      # the repository has its tooling
         # the store refuses out-of-scope writes, and the agent sees why
         assert call("docs_schema", path=f"{me}/oracle.json")["schema"] == "oracle"
@@ -258,7 +255,7 @@ def main():
         print(call("report", status="DONE", summary="PR described",
                    attestations=[f"git:{REPO}@{head}", pr], outputs={"pr": pr}))
     elif role == "integration":
-        head = a["head_sha"]
+        head = a["judged_sha"]                           # a judge: delivery's head
         orc = json.loads(call("docs_read", path=f"{PLAN}/oracle.json")["content"])
         results = []
         cmds = orc["acceptance_commands"] + orc["integration_commands"]

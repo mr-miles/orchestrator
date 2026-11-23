@@ -253,7 +253,7 @@ package imports no engine; the engine's adapters fill the ports.
 
 | Type | Executor | Port → adapter → service | Outcome |
 | --- | --- | --- | --- |
-| `agent:<role>` | `AgentExecutor` | `AgentPort` → `Agents` → `AgentRunner` (placement, turns), `AgentRuns`, `Reports.conclude` | `Done(sha, outputs)`; a criterion's `Judged(verdict, findings)`; `GaveUp` (the agent's failure, an own FAIL verdict); `Blocked`; `Fault` (system, controller); `OverBudget` (timeout) |
+| `agent:<role>` | `AgentExecutor` | `AgentPort` → `Agents` → `AgentRunner` (placement, turns), `AgentRuns`, `Reports.conclude` | `Done(sha, outputs)`; a criterion's `Judged(verdict, findings)`; `GaveUp` (the agent's failure); `Blocked`; `Fault` (system, controller); `OverBudget` (timeout) |
 | `human:signoff` | `SignoffExecutor` | `SignoffPort` → `Signoffs` (the subjects resolved and shown; a decision owner's `decide`; `signoff.json`) | `Judged(approved, reason)` |
 | `controller:verify`, `controller:preflight` | `VerifyExecutor` (`expect_failures` for preflight) | `VerifyPort` → `Verify` → the verification service | `Judged`; `Fault` (infrastructure; G-V2 not retried) |
 | `controller:can-merge` | `CanMergeExecutor` | `Branches` (git, no port) | `Judged(clean, finding)`; `Fault` (git) |

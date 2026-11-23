@@ -88,9 +88,12 @@ class Runner:
 
     async def replan(self, plan: Replan) -> None:
         """A replan signed off outside a criterion (a human's, on an escalation): applied
-        while the workflow is paused and nothing is active."""
+        while the workflow is paused and nothing is active – prepared and checked as a
+        signed-off one is (what the workflow says of its types, their work, the tier's
+        policy)."""
         async with self.lock:
-            if (tier := self._tier()) and (v := self._policy(plan, tier)):
+            tier = self._tier()
+            if v := self._prepare(plan, tier) or (self._policy(plan, tier) if tier else []):
                 raise TicketError("; ".join(v))
             await self._carry(self.t.replan(plan))
 
@@ -213,15 +216,21 @@ class Runner:
         if x.applies not in signed:
             raise ValueError(f"it applies {x.applies!r}, which it did not sign")
         plan = await self.hooks.replan(x, signed[x.applies])
+        problems = self._prepare(plan, tier)
+        return plan, problems or (self._policy(plan, tier, signoff=x.id) if tier else [])
+
+    def _prepare(self, plan: Replan, tier: str | None) -> list[str]:
+        """What the workflow says of a replan's new tickets' types (waivable, attempt limits),
+        and what is wrong with any work it gives (its role's)."""
         problems = []
-        for a in plan.add:                            # what the workflow says of their types
+        for a in plan.add:
             for y in [a.ticket, *a.tree]:
                 self.spec.prepare(y, tier)
                 problems += self.hooks.problems(y)
         for tid, fields in plan.update.items():
             if "work" in fields and tid in self.t.t:
                 problems += self.hooks.problems(self.t.t[tid].model_copy(update=fields))
-        return plan, problems or (self._policy(plan, tier, signoff=x.id) if tier else [])
+        return problems
 
     def _policy(self, plan: Replan, tier: str, signoff: str | None = None) -> list[str]:
         """The tier policy's violations in the tree the replan would make (a trial on a copy)."""

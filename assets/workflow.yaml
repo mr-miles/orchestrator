@@ -80,7 +80,14 @@ skeleton:
                   type: "human:signoff"
                   signs: [report]
     - id: delivery
-      # the planner's builds, then the integration ticket as the last group
+      # the planner's builds; its criteria judge them together, at its head (its own branch:
+      # it merges into the change's once they pass – a failure escalates: fixes are a replan)
+      criteria:
+        - {id: "verify:delivery", type: "controller:verify"}    # the oracle's commands, at its head
+        - id: integration
+          type: "agent:integration"
+          goal: "the change, integrated: every acceptance and integration command, the real interfaces"
+          inputs: [oracle]
     - id: evaluate
       subtasks:
         - id: describe
@@ -100,14 +107,9 @@ tiers:                              # rules by ticket type – never by id (ids 
     exists:                         # the tree contains these
       ["agent:intake", "agent:planner", "controller:provision", "agent:integration",
        "controller:publish"]
-    order:                          # each ticket of a type finished before (after) one of another
-      - {each: "agent:planner", after: "agent:intake"}
-      - {each: "controller:provision", after: "agent:planner"}
-      - {each: "agent:scaffolder", after: "controller:provision"}
+    order:                          # where the planner may put builds (the skeleton orders the rest)
       - {each: "agent:implementer", after: "controller:provision"}
       - {each: "agent:implementer", before: "agent:integration"}
-      - {each: "agent:integration", before: "human:signoff"}      # H-3 signs the integrated change
-      - {each: "controller:publish", after: "agent:integration"}
     every:
       - {type: "agent:implementer", criteria: ["controller:verify", "controller:can-merge"]}
       - {type: "agent:scaffolder", criteria: ["controller:verify", "controller:can-merge"]}
@@ -126,7 +128,6 @@ tiers:                              # rules by ticket type – never by id (ids 
     exists: ["agent:oracle"]
     order:
       - {each: "agent:implementer", after: "agent:oracle"}        # the tests exist first
-      - {each: "agent:scaffolder", before: "agent:oracle"}        # for the project there is
     every:
       - {type: "agent:oracle", criteria: ["controller:preflight", "human:signoff"]}
   R3:
