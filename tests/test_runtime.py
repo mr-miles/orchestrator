@@ -7,7 +7,7 @@ import pytest
 from engine_harness import Flow, scenario
 
 from legion_orch.server import views
-from legion_orch.workflow.engine import Controller, WorkflowError
+from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.model import (
     ACCEPTED,
     AWAITING_HUMAN,
@@ -20,12 +20,6 @@ from legion_orch.workflow.model import (
 
 def core(f: Flow, nid: str) -> str:
     return f.ce.workflow.status(nid)
-
-
-def reloaded(f: Flow):
-    ctl = Controller(f.cfg, runner=f.runner)
-    ctl.load()
-    return ctl.changes[f.ce.cid]
 
 
 def same_core(a, b) -> None:
@@ -113,15 +107,15 @@ async def test_a_send_back_restarts_the_stage_with_its_feedback(f: Flow):
 # ---------------------------------------------------------------------------- persistence
 @scenario()
 async def test_the_core_is_rebuilt_exactly_from_its_record(f: Flow):
-    same_core(f.ce, reloaded(f))                             # requirements only
+    same_core(f.ce, (await f.restart())[1])                             # requirements only
     await f.intake()
     await f.human("H-1", "revise", feedback="again")
     await f.intake()
     await f.human("H-1", "accept", tier="R2")                # the tree is rebuilt for R2
-    same_core(f.ce, reloaded(f))
+    same_core(f.ce, (await f.restart())[1])
     await f.plan()
     await f.critique()
-    again = reloaded(f)
+    again = (await f.restart())[1]
     same_core(f.ce, again)
     assert again.workflow.actions("H-E1") == f.ce.workflow.actions("H-E1")
     assert again.workflow.flow.attempt("intake") == 2        # attempts carried into the R2 tree

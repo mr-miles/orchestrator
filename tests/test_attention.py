@@ -17,7 +17,6 @@ from legion_orch import cli
 from legion_orch.config import ATTENTION_KINDS, NotifyConfig, NotifySink, load_config
 from legion_orch.notify import Notifier
 from legion_orch.workflow import attention
-from legion_orch.workflow.engine import Controller
 from legion_orch.workflow.model import AWAITING_HUMAN, ESCALATED, ChangeStatus
 
 
@@ -196,9 +195,7 @@ async def test_a_restart_does_not_raise_or_notify_again(tmp_path):
     await f.intake()
     assert len(_sent(out)) == 1
     f.ce.flush_timeline(force=True)
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
+    ctl2, ce2 = await f.restart()
     assert [i.key for i in ce2.attention_items] == [i.key for i in f.ce.attention_items]
     assert ce2.nodes["H-1"].status_since == f.ce.nodes["H-1"].status_since
     async with ctl2.svc.lock:

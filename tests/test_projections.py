@@ -7,7 +7,6 @@ import json
 from engine_harness import Flow, scenario
 
 from legion_orch.store import now_iso
-from legion_orch.workflow.engine import Controller
 
 
 def _journalled(f: Flow, field: str) -> bool:
@@ -23,9 +22,7 @@ async def test_approvals_are_projected_from_their_documents_and_not_journalled(f
     h1 = f.ce.change.approvals["H-1"]
     assert h1.attestation == f.ce.latest_att("control/approvals/requirements.json")
     assert not _journalled(f, "approvals")                  # the document is its only copy
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
+    ctl2, ce2 = await f.restart()
     assert ce2.change.approvals == f.ce.change.approvals    # rebuilt from the documents
 
 
@@ -41,8 +38,7 @@ async def test_a_write_updates_the_projection_before_it_returns_and_a_revocation
                            "revoked": True})
         assert "H-E1" not in f.ce.change.approvals
         f.ce.save()
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
+    ctl2, _ = await f.restart()
     assert "H-E1" not in ctl2.changes[f.ce.cid].change.approvals    # the revocation holds
 
 
@@ -73,8 +69,7 @@ async def test_every_projected_field_comes_back_from_the_documents_alone(f: Flow
     assert ch.risk and ch.requirements and ch.approvals     # set by now (R1: no oracle step)
     for field in PROJECTED["change"]:
         assert not _journalled(f, field), field
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
+    ctl2, _ = await f.restart()
     assert ctl2.changes[f.ce.cid].change.model_dump() == ch.model_dump()
 
 
@@ -93,8 +88,7 @@ async def test_a_steps_verification_and_panel_come_back_from_their_records(f: Fl
     assert not any("verification" in d or "panel" in d for d in entries)
     assert all(not v.results or all(r.output == "" for r in v.results)
                for v in node.verification.values())            # the node's copy is compact
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
+    ctl2, _ = await f.restart()
     again = ctl2.changes[f.ce.cid].nodes["build:T1"]
     assert again.verification == node.verification and again.panel == node.panel
 
@@ -111,8 +105,7 @@ async def test_a_run_is_its_assignment_and_its_outcome(f: Flow):
     assert "status" not in assignment and "progress" not in assignment and "stage" not in assignment
     assert outcome["status"] == run.status and outcome["report"]["summary"] == run.report.summary
     assert "progress" not in outcome and "node_id" not in assignment      # the path says whose
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
+    ctl2, _ = await f.restart()
     again = ctl2.changes[f.ce.cid].runs[run.id]
     assert (again.node_id, again.status, again.report, again.template_vars) == \
         (run.node_id, run.status, run.report, run.template_vars)
@@ -125,9 +118,7 @@ async def test_a_run_live_at_a_restart_has_no_outcome_until_recovery_fails_it(f:
     live = f.run("plan")                                   # the planner is working
     base = f"control/steps/plan/runs/{live.id}"
     assert f.ce.latest(f"{base}/assignment.json") and not f.ce.latest(f"{base}/outcome.json")
-    ctl2 = Controller(f.cfg, runner=f.runner)
-    ctl2.load()
-    ce2 = ctl2.changes[f.ce.cid]
+    ctl2, ce2 = await f.restart()
     assert ce2.runs[live.id].status == "STARTING"          # projected from its assignment alone
     await ctl2.adopt_sandboxes()
     async with ctl2.svc.lock:

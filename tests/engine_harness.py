@@ -299,6 +299,19 @@ class Flow:
         return f
 
     # ------------------------------------------------------------------ driving
+    async def restart(self, *, recover: bool = False) -> tuple[Controller, ChangeEngine]:
+        """The controller started again on this one's state – its tables, documents and the
+        gateway's sandboxes, as :meth:`Controller.start` loads them (without its loops);
+        ``recover``: and what start() does next (live runs failed, steps taken up again)."""
+        ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
+        ctl.load()
+        await ctl.adopt_sandboxes()
+        ce = ctl.changes[self.ce.cid]
+        if recover:
+            async with ctl.svc.lock:
+                ce.recover()
+        return ctl, ce
+
     async def settle(self, timeout: float = 20) -> None:
         """Wait until nothing changes and every pending task waits legitimately: on an agent
         process that has not exited, on its step's waits, or for a slot.
