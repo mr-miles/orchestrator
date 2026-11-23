@@ -46,11 +46,10 @@ async def test_the_planner_keeps_sandbox_and_session_until_its_ticket_passes(f: 
     assert second.id != first.id and second.sandbox == sb    # same sandbox, started again
     assert sb in f.runner.restarted and f.runner.created.count(sb) == 1
     assert resume_of(f.runner.run_envs[-1]) == sid           # the rework continues the session
-    assert critic.sandbox in f.runner.stopped and critic.sandbox not in f.runner.deleted
+    assert critic.sandbox in f.runner.deleted          # its judgement is in: released
 
     give_session(f, second)
     await f.plan()
-    assert critic.sandbox in f.runner.deleted          # replaced by the next round's critic
     await f.critique("PASS")
     assert sb not in f.runner.deleted                      # H-E1 can still send the plan back
     await f.signoff("H-E1")

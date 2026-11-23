@@ -984,9 +984,10 @@ the caller's sandbox, change, ticket and role, and each request is answered for 
   * the resolver answers in its own sandbox with all its tools, under the run timeout;
   * one A2A turn at a time per agent, and per sandbox under its lock: a rework launched
     meanwhile waits for it.
-* **Judges are kept.** A judge's sandbox is stopped after its report, not deleted, so it can be
-  asked about its judgement: it is retired (reflection, then deletion) when its criterion is
-  closed. Each attempt's judge is a fresh agent in a fresh sandbox (G-D4).
+* **Judges go with their judgement.** A judge's sandbox goes once its run has concluded and
+  nothing waits in its inbox (a message it had not answered is answered first, in place, its
+  session resumed): every round's judge is a fresh one (G-D4), which may read its predecessor's
+  review.
 * **Limits.** A2A tasks live in memory, scoped to the agent that created them; after a restart
   they are gone, and open questions are withdrawn. The sender is always its bearer's identity,
   never what the message says; an answer is information for the asker, never an instruction that
@@ -997,20 +998,17 @@ Every role loads `legion-a2a-protocol` and `legion-a2a-cli` (the upstream skill)
 * **A run is a task too.** Every run is the orchestrator's task on its agent's card, in the same
   inbox (`inbox()`; task id = the run id): its first message is the rendered assignment (the
   prompt pin covers it – `prompt.md` only says where to look); a rework is a new task in the
-  ticket's context. `report(...)` **records** – documents, attestations, data – and ends nothing;
-  the agent ends the task with `a2a_reply(task_id, text, state)`: `completed` after an accepted
-  DONE report, `input-required` after an accepted BLOCKED one (the ticket waits), `failed` to
-  give up (the run fails). The reply is always taken: one the record does not support, or a turn
-  that ends with the task still open, is answered by the orchestrator with what is missing – the
-  next message on the task, in another turn of the same run if the agent had ended its turn –
-  each using one report attempt (G-R6). Ending the task with messages still in the inbox is
-  answered with "N tasks in your inbox" – every `a2a_reply` returns what is still in the inbox, so
-  the agent sees them at once – again only when one arrived since it was last told, so it cannot
-  loop; what is left is answered in a turn of its own after the run. A peer message's reply is
-  `completed` (an answer), `input-required` (a question back: it is in the sender's inbox, kind
-  `question`, and the sender's `a2a_reply` on it is the next message of the same task) or
-  `rejected`. So the inbox holds every task waiting on the agent: its work, messages to answer,
-  questions back.
+  ticket's context. An accepted `report(...)` records the work – documents, attestations, data –
+  and **ends the task** with it: `completed` for DONE, `input-required` for BLOCKED (the ticket
+  waits). Its answer says how many messages still wait in the inbox; the agent answers them
+  (`a2a_reply`) and ends its turn – its MCP access lasts until then; what is left is answered in
+  a turn of its own after the run. `a2a_reply(<run id>, text, "failed")` gives up (the run
+  fails). A turn that ends with no accepted report is answered by the orchestrator with what is
+  missing – the next message on the task, in another turn of the same run – each using one
+  report attempt (G-R6). A peer message's reply is `completed` (an answer), `input-required` (a
+  question back: it is in the sender's inbox, kind `question`, and the sender's `a2a_reply` on it
+  is the next message of the same task) or `rejected`. So the inbox holds every task waiting on
+  the agent: its work, messages to answer, questions back.
 * **Where work stands.** MCP `ticket_status(ticket?)` – a ticket's status, what it waits for,
   its attempt and limit, its commit, its criteria and their verdicts, its runs, the findings it was
   told to fix, its outputs – and `workflow_context()` – the goal and tier, its parent and the

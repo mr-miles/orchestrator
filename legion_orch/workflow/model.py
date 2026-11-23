@@ -306,7 +306,6 @@ class Run(Record):
     asked: list[str] = []
     reply: TaskReply | None = None
     # messages (A2A task ids) it was reminded of, ending its task with them unanswered: each once
-    inbox_reminded: list[str] = []
     turns: list[Turn] = []                # its agent's turns, in order (the agent runner's)
 
 

@@ -146,12 +146,11 @@ class ChangeEngine(ChangeCore):
         """The run's task as the agent's inbox shows it."""
         return self._tasks.view(run)
 
-    async def reply_task(self, run: Run, state: str, text: str,
-                         unanswered: list[tuple[str, str]] = ()) -> dict:
-        """The agent's a2a_reply on its run's task: ends it, or is answered with what is
-        missing (an ask-again; the messages still waiting in its inbox, each once)."""
+    async def reply_task(self, run: Run, state: str, text: str) -> dict:
+        """The agent's a2a_reply on its run's task: it gives up, or is answered (its accepted
+        report ended the task; or what is missing – an ask-again)."""
         async with self.lock:
-            return self._tasks.reply(run, state, text, list(unanswered))
+            return self._tasks.reply(run, state, text)
 
     def republish_cards(self) -> None:
         """A card catalog subscribed (a restart): the cards the workflow has open, again."""

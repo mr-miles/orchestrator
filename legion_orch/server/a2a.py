@@ -315,8 +315,7 @@ class A2AHub:
         question back (sent on as the next message of its task) – with what is left."""
         card = card_id(run.role, run.ticket)
         if task_id == run.id:
-            waiting = [(i.task_id, i.sender) for i in self.inbox.pending(ce.cid, card)]
-            out = await ce.reply_task(run, state, text, waiting)
+            out = await ce.reply_task(run, state, text)
             return out | {"inbox": self.remaining(ce, run)}
         text = text.strip()
         if not text:

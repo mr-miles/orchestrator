@@ -28,6 +28,7 @@ from ..store import DocCheck, DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
 from ..workflow import attest
+from ..workflow.cards import card_id
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Run
 from ..workflow.results import ReportOutcome
@@ -40,11 +41,10 @@ versioned and schema-validated (docs_write creates a new version; pass base_vers
 docs_schema(path) shows what a path must contain). Paths are relative to your change unless they
 start with changes/. Back every claim with attestations: file:<path>@<version>,
 git:<repo>/<path>@<sha> or git:<repo>@<sha>. File your results with one accepted
-report(status="DONE"|"BLOCKED") – it records, it ends nothing – then end your task with
-a2a_reply(task_id=<run id>, state="completed"|"input-required"). Rejected reports list violated
-guard ids and use up an attempt; check first with report(..., dry_run=true) and
-docs_write(..., dry_run=true), which use none. Answer the messages in your inbox with
-a2a_reply() too."""
+report(status="DONE"|"BLOCKED") – accepted, it ends your task; then end your turn. Rejected
+reports list violated guard ids and use up an attempt; check first with report(..., dry_run=true)
+and docs_write(..., dry_run=true), which use none. Answer the messages in your inbox with
+a2a_reply()."""
 
 AGENT_HIDDEN = ("/control/runs/",)
 WORKFLOW_TOOLS = ("get_assignment", "verify_attestation", "progress", "report",
@@ -178,7 +178,10 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                 mode="json", exclude_none=True)
         outcome = await ce.handle_report(r.id, status, summary, attestations, data,
                                          blocked_reason, missing_decision, dry_run, outputs)
-        return outcome.model_dump(mode="json", exclude_none=True)
+        out = outcome.model_dump(mode="json", exclude_none=True)
+        if outcome.accepted and not dry_run:          # what still waits for an answer from it
+            out["inbox"] = len(A2AHub.of(ctl).inbox.pending(ce.cid, card_id(r.role, r.ticket)))
+        return out
 
     # ------------------------------------------------------------------ where your work stands
     @server.tool(description="A ticket of your change as it is now – yours by default, or any "
@@ -278,18 +281,16 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                              "(task_id = your run id), its first message your assignment, then "
                              "the orchestrator's follow-ups – and messages other agents of the "
                              "change sent you over A2A, each waiting for your a2a_reply. Call it "
-                             "first, and again at milestones and before you end your task.")
+                             "first, and again at milestones and before you end your turn.")
     async def inbox(ctx: Context) -> dict:
         ce, r = current(ctx)
         return {"tasks": hub.agent_inbox(ce, r, await get_assignment(ctx))}
 
-    @server.tool(description="End (or pause) a task in your inbox with your text; returns what is "
-                             "still in your inbox (`inbox`). state: completed (default), "
+    @server.tool(description="Answer a task in your inbox with your text; returns what is still "
+                             "in your inbox (`inbox`). state: completed (default), "
                              "input-required, failed, rejected. Your own work's task (task_id = "
-                             "your run id): report(...) first – reply completed after an "
-                             "accepted DONE report, input-required after an accepted BLOCKED "
-                             "one, failed to give up; anything else is answered with what is "
-                             "missing. A message from another agent: completed answers it, "
+                             "your run id) is ended by your accepted report; reply failed on it "
+                             "only to give up. A message from another agent: completed answers it, "
                              "input-required asks them something back, rejected declines it "
                              "(say why). A question back (an agent you messaged asked you "
                              "something): your text continues that conversation.")

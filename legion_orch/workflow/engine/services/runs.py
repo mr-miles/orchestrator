@@ -19,10 +19,9 @@ from ...model import (
     RunFailure,
 )
 from ...tickets import Ticket
-from ..base.auth import open_task
-from ..base.common import _parse_ts
+from ..base.common import WorkflowError, _parse_ts
 from ..base.core import ChangeCore
-from ..sandboxes.plan import held
+from ..sandboxes.plan import CLOSED, held
 
 if TYPE_CHECKING:
     from ..sandboxes.sandboxes import Sandboxes
@@ -85,7 +84,7 @@ class RunLifecycle:
         """Seconds until the run's agent is stopped (its timer): the run timeout while it is
         live, the end-of-turn grace once its report was accepted; None: no limit applies."""
         now = datetime.now(UTC)
-        if run.status in LIVE_RUN or open_task(run):     # working, or yet to end its task
+        if run.status in LIVE_RUN:                       # working
             due = self.time_limit(run) - (now - _parse_ts(run.created_at)).total_seconds()
         elif run.status == R_REPORTED and (run.reply or run.ended_at):
             since = run.reply.at if run.reply else run.ended_at
@@ -112,11 +111,17 @@ class RunLifecycle:
 
     def release_sandboxes(self) -> bool:
         """Delete the sandboxes of closed tickets (passed, failed, cancelled: nothing reworks
-        there any more), and – the change ended – every sandbox, once no run uses them.
-        Returns whether anything changed."""
+        there any more), a judge's once its judgement is in (its run concluded, nothing waiting
+        in its inbox – every round's judge is a fresh one), and – the change ended – every
+        sandbox, once no run uses them. Returns whether anything changed."""
         changed = False
         live = {r.sandbox for r in self.c.runs.values() if r.status in LIVE_RUN}
+        in_turn = {r.sandbox for r in self.c.runs.values()
+                   if r.status == R_REPORTED and not r.concluded}
         for t in self.c.tickets.t.values():
+            if t.role == "criterion" and t.status not in CLOSED:
+                changed |= self._release_judges(t, live | in_turn)
+                continue
             if held(t):
                 continue
             mine = {self.c.runs[r].sandbox for r in t.runs if r in self.c.runs} | (
@@ -141,6 +146,30 @@ class RunLifecycle:
                     self.sandboxes.delete_later(sb)
                     changed = True
         return changed
+
+    def _release_judges(self, t: Ticket, busy: set[str | None]) -> bool:
+        """A criterion's judges whose judgement is in: their sandboxes go (after nothing waits
+        in the judge's inbox – what does is answered in a turn of its own first)."""
+        changed = False
+        for rid in t.runs:
+            r = self.c.runs.get(rid)
+            if r is None or not r.sandbox or r.sandbox_deleted or r.sandbox in busy \
+                    or r.sandbox in self.sandboxes.retiring or r.sandbox in self._ended:
+                continue
+            if self._waiting(cards.card_id(r.role, t.id)):
+                continue
+            self.c.event("sandbox", f"releasing {r.sandbox}: its judgement is in", t.id, r.id)
+            self._ended.add(r.sandbox)
+            self.sandboxes.delete_later(r.sandbox, self._stopped(r.sandbox))
+            changed = True
+        return changed
+
+    def _waiting(self, card: str) -> bool:
+        """Whether anything waits in a card's inbox (no A2A listener: nothing can)."""
+        try:
+            return bool(self.c.host.inbox_messages(self.c.cid, card))
+        except WorkflowError:
+            return False
 
     def _stopped(self, sandbox: str) -> bool:
         """Whether a sandbox is stopped (the gateway's word, on the runs in it)."""

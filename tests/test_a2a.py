@@ -225,9 +225,10 @@ async def test_an_unanswered_message_is_answered_in_a_turn_once_the_run_ends(f: 
 
 
 @scenario()
-async def test_a_judge_that_reported_is_kept_stopped_and_answers_from_its_session(f: Flow):
-    """A judge's sandbox is stopped after its report, not deleted, until its step ends: a
-    message resumes its session."""
+async def test_a_judge_answers_what_waits_from_its_session_then_is_released(f: Flow):
+    """A message to a judge at work that it has not answered when it reports is answered in a
+    turn of its own, in place, its session resumed; then – its judgement in, its inbox empty –
+    its sandbox goes (every round's judge is a fresh one)."""
     planner, critic = await to_critique(f)
     give_session(f, critic)
     async with client(f) as c:
@@ -241,10 +242,10 @@ async def test_a_judge_that_reported_is_kept_stopped_and_answers_from_its_sessio
     assert t["status"]["state"] == "TASK_STATE_COMPLETED", t["status"]
     assert answer_text(t) == "No blockers: the spec covers REQ-1."
     await f.settle()
-    assert critic.sandbox not in f.runner.deleted and critic.sandbox in f.runner.stopped
-    await f.plan()                            # the next cycle's critic gets a fresh sandbox
+    assert critic.sandbox in f.runner.deleted                     # its judgement is in
+    await f.plan()                            # the next round's critic gets a fresh sandbox
     second = f.run("critique", "critic")
-    assert second.sandbox != critic.sandbox and critic.sandbox in f.runner.deleted
+    assert second.sandbox != critic.sandbox
 
 
 async def consult_answers(f: Flow, role: str, node: str, answer: str, session: str) -> Run:

@@ -31,13 +31,10 @@ from ...model import LIVE_RUN, R_REPORTED, Run
 from .common import log
 
 
-def open_task(r: Run) -> bool:
-    """A run reported, its task not ended yet: its agent still replies (a2a_reply) – and is
-    asked again if it does not (services/inbox.py)."""
-    if r.status != R_REPORTED or r.consult or r.concluded or r.report is None:
-        return False
-    wanted = "input-required" if str(r.report.status) == "BLOCKED" else "completed"
-    return r.reply is None or r.reply.state != wanted
+def in_turn(r: Run) -> bool:
+    """The run's agent is still in its turn: live, or reported and not yet concluded – it may
+    still answer what waits in its inbox (its accepted report ended its task)."""
+    return r.status in LIVE_RUN or (r.status == R_REPORTED and not r.concluded)
 
 
 # Every run of every change, as (change id, run).
@@ -95,7 +92,7 @@ class WorkloadAuth:
         if b is None:
             return None
         for cid, r in self._runs():
-            if r.sandbox_ref == b.sandbox and (r.status in LIVE_RUN or open_task(r)):
+            if r.sandbox_ref == b.sandbox and in_turn(r):
                 if (cid, r.ticket, r.role) == (b.change, b.task, b.role):
                     return cid, r
                 log.warning("token for %s does not match live run %s", b, r.id)

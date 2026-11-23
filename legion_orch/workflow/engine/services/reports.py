@@ -20,6 +20,7 @@ from ...model import (
     Run,
     RunReport,
     RunStage,
+    TaskReply,
 )
 from ...results import ReportOutcome
 from ...roles import Report, handler_for
@@ -53,9 +54,9 @@ class _Admitted:
     violations: list[str] = field(default_factory=list)
 
 
-END_TURN = ("Accepted: recorded. Now end your task with a2a_reply(task_id=<your run id>, text, "
-            "state) – completed after DONE, input-required after BLOCKED – then end your turn: "
-            "the controller takes your work when it ends, and nothing you do after that counts.")
+END_TURN = ("Accepted: recorded, and your task is ended with it. Answer anything still in your "
+            "inbox (a2a_reply on each), then end your turn: the controller takes your work "
+            "when it ends, and nothing you do after that counts.")
 
 
 class Reports:
@@ -231,6 +232,9 @@ class Reports:
                                        outputs=report.outputs if report else {},
                                        blocked_reason=r.blocked_reason,
                                        missing_decision=r.missing_decision, at=run.ended_at)
+                # the accepted report ends the run's task: DONE completes it, BLOCKED asks back
+                run.reply = TaskReply(state="input-required" if r.status == ReportStatus.BLOCKED
+                                      else "completed", text=r.summary[:2000], at=run.ended_at)
                 self.c.event("report", f"{run.role} reported {r.status}: {r.summary[:200]}",
                              ticket.id, run.id)
                 # what it means is decided when the agent's turn ends (conclude)

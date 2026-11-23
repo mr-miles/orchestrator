@@ -232,8 +232,8 @@ async def test_a_critique_rework_loop_then_its_attempts_wait_on_a_human(f: Flow)
     design = f.ticket("design")
     assert (design.status, design.attempt) == ("working", 2)
     assert any("spec too thin" in x for x in design.findings)
-    # the critic's sandbox is kept, stopped, for A2A questions until a fresh one replaces it
-    assert first.sandbox in f.runner.stopped and first.sandbox not in f.runner.deleted
+    # the critic's judgement is in: its sandbox goes (each round's judge is a fresh one)
+    assert first.sandbox in f.runner.deleted
     await f.plan()
     second = f.run("critique", "critic")
     assert second.sandbox != first.sandbox                   # a fresh judge

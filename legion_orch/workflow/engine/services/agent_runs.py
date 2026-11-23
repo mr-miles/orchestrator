@@ -33,7 +33,6 @@ from ...model import (
     FailureSource,
     Run,
     RunStage,
-    TaskReply,
 )
 from ...roles import handler_for
 from ...roles.base import outputs_of_owner
@@ -41,7 +40,6 @@ from ...tickets import Status, Ticket
 from ...tickets.executors import AgentEnd
 from ...tickets.executors import Work as TicketWork
 from ...view import RoleContext
-from ..base.auth import open_task
 from ..base.common import (
     SKILLS_DIR,
     AgentBusy,
@@ -107,8 +105,7 @@ START_PROMPT = """You are the `{role}` agent of ticket `{node}` in change {chang
 Your work is a task in your inbox: call `inbox()` (legion MCP) first – task `{task}`, from the
 orchestrator, holds your assignment; messages from other agents of the change arrive there too.
 Load the `legion-harness-contract` skill before your first action. File your results with
-`report(...)`, then end the task with `a2a_reply(task_id="{task}", text=..., state=...)`:
-`completed` after an accepted DONE report, `input-required` after an accepted BLOCKED one.
+`report(...)` – accepted, it ends the task – then end your turn.
 """
 
 CONTINUE_PROMPT = """The orchestrator, on your task `{task}`:
@@ -208,20 +205,14 @@ class AgentRuns:
         tasks = self.tasks
         if run.consult or tasks is None or tasks.ended(run) or rc != 0:
             return None
-        if not (run.status in LIVE_RUN or open_task(run)):
+        if run.status not in LIVE_RUN:                  # its report ended its task
             return None
         # only an agent that ended its turn is asked again: a CLI that crashed, failed or exited
         # waiting on its background tasks fails the run as before (_exit_reason)
         result = agentlog.agent_result(self.lifecycle.log_tail(run.id, 2000))
         if result is None or result.is_error or result.pending:
             return None
-        msg = tasks.ask_again(run)
-        if msg is None and open_task(run):
-            run.reply = TaskReply(state=tasks.wanted(run),
-                                  text="(no reply: the accepted report's status is taken)")
-            self.c.event("agent", "the task was not ended: its accepted report stands",
-                         run.ticket, run.id)
-        return msg
+        return tasks.ask_again(run)
 
     async def continue_turn(self, run: Run, message: str, turn: int):
         """Resume ``run``'s agent session for another turn on ``message`` (its full tools and

@@ -1,6 +1,7 @@
-"""A run is the orchestrator's A2A task in the agent's one inbox (services/run_tasks.py):
-``report`` records, ``a2a_reply`` ends the task, and the orchestrator asks again when the reply
-does not match the record."""
+"""A run is the orchestrator's A2A task in the agent's one inbox (services/agents/tasks.py): an
+accepted ``report`` records the work and ends the task with it (DONE completes it, BLOCKED asks
+back); ``a2a_reply`` on it gives up, and the orchestrator asks again when a turn ends with no
+accepted report."""
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +26,7 @@ async def intake_report(f: Flow, run, **kw):
 async def test_the_assignment_is_the_tasks_first_message_and_the_prompt_says_where(f: Flow):
     run = f.run("intake")
     prompt = f.runner.payloads[run.sandbox]["prompt.md"]
-    assert "inbox()" in prompt and run.id in prompt and "a2a_reply" in prompt
+    assert "inbox()" in prompt and run.id in prompt and "report(" in prompt
     view = f.ce.task_view(run)
     assert view["task_id"] == run.id and view["from"] == "orchestrator"
     assert view["state"] == "working" and view["messages"][0]["text"] == run.instructions
@@ -33,27 +34,25 @@ async def test_the_assignment_is_the_tasks_first_message_and_the_prompt_says_whe
 
 
 @scenario()
-async def test_a_reply_the_record_does_not_support_is_asked_again(f: Flow):
+async def test_an_accepted_report_ends_the_task(f: Flow):
     run = f.run("intake")
     out = await f.reply(run, "completed")                      # nothing reported yet
     assert not out["ok"] and "no accepted report" in out["message"] and run.attempts == 1
     assert f.ce.task_view(run)["state"] == "working"
     await intake_report(f, run, status="DONE")
-    out = await f.reply(run, "input-required")                 # the record says DONE
-    assert not out["ok"] and 'state="completed"' in out["message"]
-    out = await f.reply(run, "completed")
-    assert out["ok"] and f.ce.task_view(run)["state"] == "completed"
+    assert f.ce.task_view(run)["state"] == "completed"         # the report ended it
+    assert (await f.reply(run, "completed"))["note"] == "the task was ended already"
     assert f.status("intake") == "working"                      # its turn has not ended yet
     await f.exit_agent(run)
     assert run.concluded and f.status("intake") == "checking"   # on to its sign-off
 
 
 @scenario()
-async def test_blocked_then_input_required_escalates(f: Flow):
+async def test_a_blocked_report_asks_back_and_escalates(f: Flow):
     run = f.run("intake")
     await intake_report(f, run, status="BLOCKED", blocked_reason="the goal is ambiguous",
                         missing_decision="greet in which language?")
-    assert (await f.reply(run, "input-required"))["ok"]
+    assert f.ce.task_view(run)["state"] == "input-required"
     await f.exit_agent(run)
     assert (f.status("intake"), f.ticket("intake").waiting) == ("waiting", "blocked")
 
@@ -70,18 +69,22 @@ async def test_failed_gives_up_and_the_run_fails(f: Flow):
 
 
 @scenario()
-async def test_the_agent_keeps_its_mcp_access_until_it_ends_its_task(f: Flow):
+async def test_the_agent_keeps_its_mcp_access_until_its_turn_ends(f: Flow):
+    """After its accepted report it may still answer what waits in its inbox; once its turn has
+    ended (the run concluded) its token is useless."""
     run = f.run("intake")
     b = WorkloadBinding(sandbox=run.sandbox_ref, change=f.ce.cid, task=run.ticket, role=run.role)
     tok = f.ctl.auth.identity.tokens.issue(b, "spiffe://t/x")
     await intake_report(f, run, status="DONE")
-    assert run.status == R_REPORTED and f.ctl.run_for_bearer(tok) is not None   # may reply
-    await f.reply(run, "completed")
-    assert f.ctl.run_for_bearer(tok) is None                     # its task is over
+    assert run.status == R_REPORTED and f.ctl.run_for_bearer(tok) is not None
+    await f.exit_agent(run)
+    assert f.ctl.run_for_bearer(tok) is None
 
 
 @scenario()
-async def test_ending_the_task_with_messages_waiting_reminds_of_each_message_once(f: Flow):
+async def test_the_report_says_what_waits_in_the_inbox(f: Flow):
+    """A message that arrived during the work: the accepted report's answer counts it, and the
+    agent answers it before it ends its turn (what is left gets a turn of its own after)."""
     planner, critic = await to_critique(f)
     async with client(f) as c:
         await rpc(c, "critic@critique", send("Is REQ-1 final?"), token(f, planner))
@@ -95,18 +98,8 @@ async def test_ending_the_task_with_messages_waiting_reminds_of_each_message_onc
     out = await f.ce.handle_report(critic.id, "DONE", "ok", plan + [doc],
                                    {"verdict": "PASS", "findings": [], "checked": ["x"]},
                                    None, None, False, {"critique": doc})
-    assert out.accepted, out
-    waiting = [(i.task_id, i.sender) for i in A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")]
-    attempts = critic.attempts
-    first = await f.ce.reply_task(critic, "completed", "done", waiting)
-    assert not first["ok"] and first["message"].startswith("1 task in your inbox")
-    assert "`inbox`" in first["message"]
-    assert critic.attempts == attempts                           # no report attempt used
-    later = waiting + [("t-new", "implementer@T9")]           # one arrived since
-    second = await f.ce.reply_task(critic, "completed", "done", later)
-    assert not second["ok"] and second["message"].startswith("2 tasks in your inbox")
-    third = await f.ce.reply_task(critic, "completed", "done", later)
-    assert third["ok"]                              # nothing it was not told of: taken
+    assert out.accepted and "inbox" in out.instruction
+    assert len(A2AHub.of(f.ctl).inbox.pending(f.ce.cid, "critic@critique")) == 1
 
 
 @scenario()
@@ -173,8 +166,7 @@ async def test_a_turn_that_ends_with_the_task_open_is_followed_by_another_and_bo
     first, second = run.turns                                       # the runner asked again
     assert (first.n, first.exit_code, first.asked) == (1, 0, None) and first.ended_at
     assert second.n == 2 and second.asked and second.exit_code is None
-    await intake_report(f, run, status="DONE")
-    assert (await f.reply(run, "completed"))["ok"]
+    await intake_report(f, run, status="DONE")               # it ends the task
     await f.exit_agent(run)
     assert f.status("intake") == "checking" and run.turns[-1].exit_code == 0
     turns = f.ce.json_doc(f"control/runs/{run.id}/outcome.json")["turns"]
