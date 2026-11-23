@@ -1,183 +1,61 @@
-"""The workflow state machine, stage by stage: happy paths, guard rejections, escalations and
-their resolution, run failures, restarts. Driven in-process by tests/engine_harness.py."""
+"""The engine on tickets, case by case: reports and their guards, sign-offs, the plan and its
+critique, verification, the implementer's and the judges' guards, merges, the run lifecycle
+(stages, failures and who they are from, retries, names), restarts and the turn that ends a run.
+Driven in-process by tests/engine_harness.py; whole changes are tests/test_ticket_engine.py's."""
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 from engine_harness import REPO, TASKS, Flow, scenario, signals
 
 from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.model import (
-    ACCEPTED,
-    AWAITING_HUMAN,
-    ESCALATED,
-    FAILED,
-    PENDING,
-    R_ACCEPTED,
     R_ACTIVE,
     R_FAILED,
     R_STARTING,
-    R_SUPERSEDED,
-    READY,
-    REVIEWING,
-    RUNNING,
-    VERIFYING,
     ChangeStatus,
     FailureSource,
-    Resume,
     RunStage,
 )
 
 
-# ====================================================================== happy paths
-@scenario()
-async def test_r1_change_runs_to_ready(f: Flow):
-    assert f.status() == {"workspace": ACCEPTED, "intake": RUNNING, "H-1": PENDING}
+def waiting(f: Flow, tid: str) -> tuple[str, str | None]:
+    t = f.ticket(tid)
+    return str(t.status), (str(t.waiting) if t.waiting else None)
+
+
+def why(f: Flow, tid: str) -> str:
+    return " ".join(f.ticket(tid).findings)
+
+
+async def to_critique(f: Flow):
     await f.intake()
-    assert f.ce.change.risk.tier == "R1" and f.status("H-1") == AWAITING_HUMAN
-    res = await f.human("H-1", "accept")
-    assert (res.tier, res.panel) == ("R1", ["reviewer"])
-    # no oracle stage at R1; H-3 is automatic, held only by its preconditions (the ship gates)
-    assert list(f.ce.nodes) == ["workspace", "intake", "H-1", "plan", "H-E1", "describe", "H-3"]
+    await f.signoff("H-1")
     await f.plan()
-    await f.critique("PASS")
-    assert f.status("build:T1") == PENDING and list(f.ce.nodes)[-3:] == ["build:T1", "describe",
-                                                                          "H-3"]
-    res = await f.human("H-E1", "approve")
-    assert res.pending == [] and f.status("H-E1") == ACCEPTED
-    impl = f.run("build:T1", "implementer")
-    await f.implement()
-    assert f.status("build:T1") == REVIEWING
-    ver = f.ce.nodes["build:T1"].current_verification()
-    assert ver.ok and ver.attestation and ver.results[0].output == ""   # compact copy on the node
-    await f.review(verdict="PASS")
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ACCEPTED and node.accepted_sha == impl.base_sha or node.accepted_sha
-    assert f.ce.change.integration_head != f.ce.change.base_sha
-    assert f.ce.change.status == ChangeStatus.READY and f.ce.change.ship.attestation
-    assert all(r.status == R_ACCEPTED for r in f.ce.runs.values())
-    assert set(f.runner.created) == set(f.runner.deleted), "every sandbox deleted once accepted"
-    assert f.ce.latest(f"control/logs/{impl.id}.log"), "agent log archived in the store"
-
-
-@scenario()
-async def test_r2_change_with_oracle_integration_and_h3(f: Flow):
-    await f.to_build(tier="R2")                        # raising the tier needs no reason
-    assert f.ce.change.tier == "R2" and f.ce.change.tier_override.to_tier == "R2"
-    assert f.ce.change.oracle_sha and f.ce.change.oracle.acceptance_tests
-    await f.implement()
-    await f.review()
-    assert f.status("integration") == RUNNING
-    await f.integration("PASS")
-    assert f.status("integration") == ACCEPTED, f.status()
-    assert f.status("H-3") == AWAITING_HUMAN
-    await f.human("H-3", "accept", feedback="looks right")
-    assert f.ce.change.approvals["H-3"].head == f.ce.change.integration_head
-    assert f.ce.change.status == ChangeStatus.READY, f.ce.change.ship
-
-
-def _operator_commit(f: Flow) -> tuple[str, object]:
-    """Commit straight onto the integration branch, as an operator did in change c261118-53c3."""
-    import subprocess
-    wt = f.git.worktree(f.ce.cid)
-    g = lambda *a: subprocess.run(["git", *a], cwd=wt, check=True, capture_output=True,
-                                  text=True).stdout.strip()
-    (wt / "setup.ts").write_text("operator fix\n")
-    g("add", "-A")
-    g("-c", "user.name=op", "-c", "user.email=op@host", "commit", "-q", "-m", "Operator fix: blob")
-    return g("rev-parse", "HEAD"), g
-
-
-@scenario()
-async def test_integration_is_not_judged_at_a_head_moved_outside_the_workflow(f: Flow):
-    """G-H1: an operator commit on the integration branch is not adopted; the re-run escalates
-    instead of judging the stale recorded head. After a reset, the re-run is told which head the
-    human answered at, and the oracle commit."""
-    await f.to_build(tier="R2")
-    await f.implement()
-    await f.review()
-    cmd = f.ce.oracle_commands()[0]
-    f.runner.commands[cmd] = (1, "152 failed\n")
-    await f.integration("PASS")                         # the controller's re-run fails (G-V1)
-    node, rec = f.ce.nodes["integration"], f.ce.change.integration_head
-    assert node.status == ESCALATED and node.escalation.kind == "integration_failed"
-    runs = len(f.runs("integration"))
-    moved, g = _operator_commit(f)
-    await f.human("integration", "answer", answer="test setup is fixed")
-    assert node.status == ESCALATED and node.escalation.kind == "head_moved", node.escalation
-    assert moved[:12] in node.escalation.reason and rec[:12] in node.escalation.reason
-    assert "G-H1" in node.escalation.reason and len(f.runs("integration")) == runs
-    assert f.ce.change.integration_head == rec          # nothing adopted
-    g("reset", "-q", "--hard", rec)
-    del f.runner.commands[cmd]
-    await f.human("integration", "retry")
-    r = f.run("integration")
-    assert len(f.runs("integration")) == runs + 1 and r.judged_sha == rec
-    fb = r.template_vars["feedback"]
-    assert 'human decision on "G-V1: 1 oracle command(s) failed at head": test setup is fixed' in fb
-    assert f"(given at integration head {rec[:12]}, the current head)" in fb
-    [d] = [x for x in f.ce.nodes["integration"].feedback if x.source == "decisions"]
-    doc = f.ce.docs.read(d.attestations[0].split(":", 1)[1].rsplit("@", 1)[0]).content
-    assert "## Question (integration_failed)" in doc and "## Answer\n\ntest setup is fixed" in doc
-    assert r.template_vars["oracle_sha"] == f.ce.change.oracle_sha != ""
-    await f.integration("PASS")
-    assert f.status("integration") == ACCEPTED
-
-
-@scenario()
-async def test_a_merge_does_not_absorb_commits_made_outside_the_workflow(f: Flow):
-    """G-H1 before a merge: git would merge the task on top of the operator's commit."""
-    await f.to_build(tier="R2")
-    await f.implement()
-    rec = f.ce.change.integration_head
-    _, g = _operator_commit(f)
-    await f.review()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "head_moved", node.escalation
-    assert f.ce.change.integration_head == rec
-    g("reset", "-q", "--hard", rec)
-    await f.human("build:T1", "retry")                  # resume MERGING: the merge runs again
-    assert node.status == ACCEPTED, (node.status, node.escalation)
-    head = f.ce.change.integration_head
-    assert head != rec and await f.git.is_ancestor(rec, head)
-    assert not await f.git.blob(head, "setup.ts")    # the operator's commit is not in it
-    assert f.status("integration") == RUNNING
-
-
-@scenario()
-async def test_h3_reject_abandons_the_change(f: Flow):
-    await f.to_build(tier="R2")
-    await f.implement()
-    await f.review()
-    await f.integration()
-    await f.human("H-3", "reject")
-    assert f.status("H-3") == FAILED and f.ce.change.status == ChangeStatus.ABANDONED
-    runs_before = len(f.ce.runs)
-    await f.settle()                                    # nothing is scheduled any more
-    assert len(f.ce.runs) == runs_before
+    return f.run("critique", "critic")
 
 
 # ====================================================================== reports (all roles)
 @scenario(max_report_attempts=2)
-async def test_rejected_reports_count_attempts_then_fail_the_run(f: Flow):
+async def test_rejected_reports_use_up_the_run_and_its_ticket_tries_again(f: Flow):
     r = f.run("intake")
-    out = await f.report(r, [])                         # required documents missing
+    out = await f.report(r, [])                         # required outputs missing
     assert not out.accepted and out.attempts_left == 1
-    assert any(v.startswith("G-R4") for v in out.violations)
-    assert r.violations and f.status("intake") == RUNNING
+    assert r.violations and f.status("intake") == "working"
     out = await f.report(r, [])
     assert out.attempts_left == 0 and r.status == R_FAILED
-    esc = f.ce.nodes["intake"].escalation
-    assert f.status("intake") == ESCALATED and esc.kind == "run_failed" and "G-R6" in esc.reason
-    assert esc.log_tail and "agent started" in esc.log_tail
+    assert r.failure.source == FailureSource.AGENT and "G-R6" in r.failure.reason
     out = await f.report(r, [])                         # a finished run cannot report again
     assert not out.accepted and "run is FAILED" in out.violations[0]
-    await f.human("intake", "retry")                    # resume READY: a fresh run is dispatched
-    assert f.run("intake").id != r.id
+    await f.settle()
+    t = f.ticket("intake")                              # the agent's failure: an attempt
+    assert (t.status, t.attempt) == ("working", 2) and f.run("intake").id != r.id
+    assert any("G-R6" in x for x in f.run("intake").assignment["findings"])
     await f.intake()
-    assert f.status("intake") == ACCEPTED
+    assert f.status("intake") == "checking"
 
 
 @scenario(max_report_attempts=1)
@@ -186,14 +64,17 @@ async def test_dry_run_reports_check_everything_and_use_no_attempt(f: Flow):
     for _ in range(3):                                   # one attempt only, yet dry runs are free
         out = await f.ce.handle_report(r.id, "DONE", "s", [], None, None, None, dry_run=True)
         assert out.dry_run and not out.accepted and not out.would_accept
-        assert any(v.startswith("G-R4") for v in out.violations) and out.attempts_left == 1
-    assert r.attempts == 0 and not r.violations and f.status("intake") == RUNNING
-    atts = [await f.write(r, "intake/requirements.md", "# Requirements\n\n- REQ-1: hi\n"),
-            await f.write(r, "intake/risk.json", signals())]
-    out = await f.ce.handle_report(r.id, "DONE", "s", atts, None, None, None, dry_run=True)
+        assert out.violations and out.attempts_left == 1
+    assert r.attempts == 0 and not r.violations and f.status("intake") == "working"
+    req = await f.write(r, "requirements.md", "# Requirements\n\n- REQ-1: hi\n")
+    risk = await f.write(r, "risk.json", signals())
+    outputs = {"requirements": req, "risk": risk}
+    out = await f.ce.handle_report(r.id, "DONE", "s", [req, risk], None, None, None, True,
+                                   outputs)
     assert out.would_accept and not out.violations and r.report is None
-    assert f.status("intake") == RUNNING                 # nothing applied
-    assert (await f.report(r, atts)).accepted and f.status("intake") == ACCEPTED
+    assert f.status("intake") == "working"               # nothing applied
+    assert (await f.report(r, [req, risk], outputs=outputs)).accepted
+    assert f.status("intake") == "checking"
 
 
 @scenario(max_report_attempts=20)
@@ -201,43 +82,52 @@ async def test_report_shape_and_limit_guards(f: Flow):
     r = f.run("intake")
     for kwargs, gid in [({"status": "LATER"}, "G-R1"), ({"status": "BLOCKED"}, "G-R2"),
                         ({"summary": "x" * 5000}, "G-R8"), ({"data": {"x": object()}}, "G-R8"),
-                        ({"atts": ["file:changes/other/intake/requirements.md@1"]}, "G-R")]:
-        out = await f.ce.handle_report(r.id, kwargs.get("status", "DONE"), kwargs.get("summary", "s"),
-                                       kwargs.get("atts", []), kwargs.get("data"), None, None)
+                        ({"atts": ["file:changes/other/tickets/intake/requirements.md@1"]},
+                         "G-R")]:
+        out = await f.ce.handle_report(r.id, kwargs.get("status", "DONE"),
+                                       kwargs.get("summary", "s"), kwargs.get("atts", []),
+                                       kwargs.get("data"), None, None)
         assert not out.accepted and any(v.startswith(gid) for v in out.violations), (kwargs, out)
+
+
+@scenario(max_report_attempts=20)
+async def test_a_report_must_name_its_roles_outputs(f: Flow):
+    r = f.run("intake")
+    req = await f.write(r, "requirements.md", "# Requirements\n\n- REQ-1: hi\n")
+    out = await f.report(r, [req], outputs={"requirements": req})
+    assert not out.accepted and any("risk" in v for v in out.violations), out.violations
+    out = await f.report(r, [req], outputs={"requirements": req, "risk": req, "extra": req})
+    assert not out.accepted and any("extra" in v for v in out.violations), out.violations
 
 
 @scenario()
 async def test_report_schema_mismatch_is_g_r7(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    r = f.run("plan", "critic")
-    plan = [f.ce.latest_att(p) for p in ("plan/spec.md", "plan/oracle.json", "plan/taskgraph.json")]
-    doc = await f.write(r, "plan/critique/cycle-1.md", "x")
-    out = await f.report(r, plan + [doc], {"verdict": "MAYBE"})
+    r = await to_critique(f)
+    design = f.ticket("design")
+    plan = [x for v in design.outputs.values() for x in (v if isinstance(v, list) else [v])]
+    doc = await f.write(r, "critique.md", "x")
+    out = await f.report(r, plan + [doc], {"verdict": "MAYBE"}, outputs={"critique": doc})
     assert not out.accepted and any(v.startswith("G-R7") for v in out.violations)
 
 
 @scenario()
-async def test_blocked_report_escalates_and_an_answer_resumes(f: Flow):
+async def test_a_blocked_report_waits_and_a_retry_carries_the_answer(f: Flow):
     r = f.run("intake")
     out = await f.report(r, status="BLOCKED", blocked_reason="goal is ambiguous",
                          missing_decision="greet in English or French?")
     assert out.accepted and r.status == "REPORTED"
-    esc = f.ce.nodes["intake"].escalation
-    assert esc.kind == "blocked" and esc.missing_decision == "greet in English or French?"
-    with pytest.raises(WorkflowError, match="answer is required"):
-        await f.human("intake", "answer")
-    await f.human("intake", "answer", answer="English")
-    node = f.ce.nodes["intake"]
-    assert node.escalation is None and node.feedback[-1].source == "decisions"
-    assert "English" in node.feedback[-1].text and node.feedback[-1].attestations
-    assert f.run("intake").assignment["feedback_items"][-1]["text"].endswith("English")
+    assert waiting(f, "intake") == ("waiting", "blocked")
+    assert "greet in English or French?" in why(f, "intake")
+    with pytest.raises(WorkflowError, match="not a remedy"):
+        await f.human("intake", "waive", reason="nothing to waive here at all")
+    await f.human("intake", "retry", answer="English")
+    t = f.ticket("intake")
+    assert t.status == "working" and t.attempt == 1          # a blocked round is no attempt
+    assert any(x.endswith("English") for x in f.run("intake").assignment["findings"])
 
 
 @scenario()
-async def test_transition_failure_rolls_back_and_escalates(f: Flow, monkeypatch=None):
+async def test_a_role_handler_that_fails_is_the_controllers_error(f: Flow):
     from legion_orch.workflow.roles import intake as intake_role
     original = intake_role.Intake.on_done
 
@@ -252,8 +142,13 @@ async def test_transition_failure_rolls_back_and_escalates(f: Flow, monkeypatch=
     # the report is accepted; what it means is applied when the agent's turn ends
     assert out.accepted and "a2a_reply" in out.instruction
     assert f.ce.change.goal == "Say hello"     # ... is rolled back
-    assert f.status("intake") == ESCALATED and f.ce.runs["r0001"].status == R_FAILED
-    assert "controller error" in f.ce.nodes["intake"].escalation.reason
+    assert f.ce.runs["r0001"].status == R_FAILED
+    assert f.ce.runs["r0001"].failure.source == FailureSource.CONTROLLER
+    await f.settle()
+    again = f.run("intake")                                  # retried by itself, at once
+    assert again.id != "r0001" and f.ticket("intake").attempt == 1   # never an attempt
+    await f.intake()
+    assert f.status("intake") == "checking"
 
 
 @scenario(report_check_timeout_s=0.05)
@@ -269,7 +164,8 @@ async def test_slow_report_checks_time_out(f: Flow):
         out = await f.intake()
     finally:
         attest.check_all = original
-    assert not out.accepted and any(v.startswith("G-R8: report checks exceeded") for v in out.violations)
+    assert not out.accepted and any(v.startswith("G-R8: report checks exceeded")
+                                    for v in out.violations)
 
 
 @scenario()
@@ -280,159 +176,84 @@ async def test_progress_marks_the_run_active_and_keeps_the_last_50(f: Flow):
     assert r.status == R_ACTIVE and len(r.progress) == 50 and r.progress[-1].message == "step 59"
 
 
-# ====================================================================== H-1
+# ====================================================================== sign-offs
 @scenario()
-async def test_h1_decision_rules(f: Flow):
+async def test_sign_off_decision_rules(f: Flow):
     await f.intake()
     with pytest.raises(WorkflowError, match="not a decision owner"):
-        await f.human("H-1", "accept", approver="mallory")
-    with pytest.raises(WorkflowError, match="unknown tier"):
-        await f.human("H-1", "accept", tier="R9")
-    with pytest.raises(WorkflowError, match="lowering the tier needs a reason"):
-        await f.human("H-1", "accept", tier="R0", reason="no")
-    with pytest.raises(WorkflowError, match="not valid for H-1"):
-        await f.human("H-1", "restart")
-    with pytest.raises(WorkflowError, match="H-1 cannot be rejected"):
-        await f.human("H-1", "reject")                # only H-3's step can be
-    assert f.ce.change.ended is None                  # nothing recorded for a refused reject
-    with pytest.raises(WorkflowError, match="unknown node"):
-        await f.human("H-9", "accept")
-    with pytest.raises(WorkflowError, match="not available for intake in ACCEPTED"):
-        await f.human("intake", "retry")              # only an escalated node can be retried
-    assert f.status("H-1") == AWAITING_HUMAN          # refused actions change nothing
-    res = await f.human("H-1", "accept", tier="R0", reason="a one-line copy change with no risk at all")
-    assert res.tier == "R0" and res.panel == [] and f.ce.change.tier_override.from_tier == "R1"
+        await f.signoff("H-1", approver="mallory")
+    with pytest.raises(WorkflowError, match="needs a reason"):
+        await f.signoff("H-1", approve=False, reason=" ")
+    with pytest.raises(WorkflowError, match="not waiting for a sign-off"):
+        await f.human("H-E1", "approve")
+    with pytest.raises(WorkflowError, match="unknown action"):
+        await f.human("H-1", "teleport")
+    with pytest.raises(WorkflowError, match="not a remedy"):
+        await f.human("intake", "retry")                    # only a waiting ticket's
+    assert f.status("H-1") == "working"                     # refused actions change nothing
+    await f.signoff("H-1")
+    rec = f.ce.json_doc("tickets/H-1/signoff.json")
+    assert (rec["decision"], rec["approver"]) == ("approved", "miles")
+    assert set(rec["subjects"]) == {"requirements", "risk"}  # exactly what was shown, pinned
+    assert f.ce.change.tier == "R1"                          # applied: the tier
 
 
 @scenario()
-async def test_h1_revise_sends_intake_back_with_feedback(f: Flow):
+async def test_a_rejected_sign_off_reworks_what_it_signs_with_the_reason(f: Flow):
     await f.intake()
-    with pytest.raises(WorkflowError, match="feedback is required"):
-        await f.human("H-1", "revise")
-    await f.human("H-1", "revise", feedback="also say goodbye")
-    intake = f.ce.nodes["intake"]
-    assert intake.cycle == 2 and intake.feedback[-1].text == "also say goodbye"
-    assert f.status("H-1") == PENDING and f.run("intake").cycle == 2
+    first = f.ticket("intake").sandbox
+    await f.signoff("H-1", approve=False, reason="also say goodbye")
+    t = f.ticket("intake")
+    assert (t.status, t.attempt) == ("working", 2)
+    assert any("also say goodbye" in x for x in f.run("intake").assignment["findings"])
+    assert f.run("intake").sandbox == first                  # its own sandbox and session
     await f.intake(reqs="- REQ-1: hello\n- REQ-2: goodbye\n")
-    await f.human("H-1", "accept")
-    assert f.ce.change.requirements == ["REQ-1", "REQ-2"]
+    await f.signoff("H-1")
+    assert "REQ-2" in f.ce.doc("tickets/intake/requirements.md").content
+    assert f.ce.tickets.root.pointers["requirements"] == f.ticket("intake").outputs["requirements"]
 
 
 # ====================================================================== plan and critique
 @scenario()
-async def test_invalid_plan_is_rejected(f: Flow):
+async def test_an_invalid_plan_is_refused_at_its_report(f: Flow):
     await f.intake()
-    await f.human("H-1", "accept")
-    cyclic = [TASKS[0] | {"depends_on": ["T2"]}, TASKS[0] | {"id": "T2", "depends_on": ["T1"],
-                                                             "files_modified": ["src/b.txt"]}]
-    out = await f.plan(tasks=cyclic)
-    assert not out.accepted and any("dependency cycle" in v for v in out.violations)
-    out = await f.plan(tasks=[TASKS[0] | {"requirements": ["REQ-7"]}])
-    assert any(v.startswith("G-P3") for v in out.violations)
-    assert f.status("plan") == RUNNING
+    await f.signoff("H-1")
+    bad = [dict(TASKS[0], files_modified=["../etc/passwd"])]
+    out = await f.plan(tasks=bad)
+    assert not out.accepted and out.violations
+    assert f.status("design") == "working"
 
 
-@scenario(critique_max_cycles=2)
-async def test_critique_rework_loop_and_budget_escalation(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    plan = f.ce.nodes["plan"]
-    assert plan.status == REVIEWING                         # the plan is critiqued, not accepted
-    first = f.run("plan", "critic")
+@scenario()
+async def test_a_critique_rework_loop_then_its_attempts_wait_on_a_human(f: Flow):
+    first = await to_critique(f)
+    assert f.status("design") == "checking"                 # the plan is critiqued first
     await f.critique("REWORK")
-    assert plan.status == RUNNING and plan.cycle == 2 and plan.feedback[-1].source == "critique"
-    assert plan.reviews["1:critic"].verdict == "REWORK"
+    design = f.ticket("design")
+    assert (design.status, design.attempt) == ("working", 2)
+    assert any("spec too thin" in x for x in design.findings)
     # the critic's sandbox is kept, stopped, for A2A questions until a fresh one replaces it
     assert first.sandbox in f.runner.stopped and first.sandbox not in f.runner.deleted
-    assert f.ce.runs[plan.runs[0]].status == R_SUPERSEDED   # the reworked plan's planner run
     await f.plan()
-    assert first.sandbox in f.runner.deleted                # the next cycle's critic is fresh
-    await f.critique("REWORK")                              # second REWORK: budget spent
-    assert plan.status == ESCALATED and plan.escalation.resume == Resume.CRITIQUE_BUDGET
-    await f.human("plan", "answer", answer="the spec is fine as it is")
-    assert plan.extra_cycles == 1 and plan.cycle == 3 and plan.status == RUNNING
-    assert {"decisions", "critique"} <= {fb.source for fb in plan.feedback[-2:]}
-    assert any("the spec is fine" in fb.text for fb in plan.feedback)
-    await f.plan()
-    await f.critique("PASS")
-    assert plan.status == ACCEPTED and "build:T1" in f.ce.nodes
-    assert f.ce.runs[plan.runs[-2]].status == R_ACCEPTED    # the planner run the critic passed
+    second = f.run("critique", "critic")
+    assert second.sandbox != first.sandbox                   # a fresh judge
+    assert first.sandbox in f.runner.deleted
+    await f.critique("REWORK")                               # the same finding again
+    assert waiting(f, "design") == ("waiting", "repeated")
+    await f.human("design", "waive:critique", reason="the spec is fine as it is, for this change")
+    await f.settle()
+    assert f.status("critique") == "passed" and f.ticket("critique").waived
+    assert f.status("H-E1") == "working"                    # on to the next criterion
 
 
-@scenario()
-async def test_critique_must_attest_the_latest_plan(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    r = f.run("plan", "critic")
-    doc = await f.write(r, "plan/critique/cycle-1.md", "x")
-    out = await f.report(r, [doc], {"verdict": "REWORK", "findings": []})
+@scenario(max_report_attempts=20)
+async def test_the_critique_must_attest_the_latest_plan(f: Flow):
+    r = await to_critique(f)
+    doc = await f.write(r, "critique.md", "x")
+    out = await f.report(r, [doc], {"verdict": "REWORK", "findings": []},
+                         outputs={"critique": doc})
     assert {"G-C1: REWORK requires at least one finding"} <= set(out.violations)
     assert any("latest plan version" in v for v in out.violations)
-
-
-# ====================================================================== H-2
-async def _planned(f: Flow, tier: str | None = None) -> None:
-    await f.intake()
-    await f.human("H-1", "accept", **({"tier": tier} if tier else {}))
-    await f.plan()
-    await f.critique()
-
-
-@scenario()
-async def test_plan_subjects_are_separate_decisions(f: Flow):
-    """H-E1 approves the plan: its spec and task graph, and each delta spec, separately."""
-    await _planned(f)
-    res = await f.human("H-E1", "approve", subjects=["plan"])
-    assert res.approved == ["plan"] and res.pending == ["REQ-1"]
-    assert f.status("H-E1") == AWAITING_HUMAN
-    res = await f.human("H-E1", "approve", approver="ana", subjects=["REQ-1"])
-    assert res.pending == [] and f.status("H-E1") == ACCEPTED
-    with pytest.raises(WorkflowError):
-        await f.ce.human_action("H-E1", "approve", "miles", {"subjects": ["oracle"]})
-
-
-@scenario()
-async def test_h2_approves_the_oracle_only(f: Flow):
-    await f.to_h2(tier="R2")
-    assert f.status("H-2") == AWAITING_HUMAN
-    with pytest.raises(WorkflowError, match="unknown approval subject"):
-        await f.ce.human_action("H-2", "approve", "miles", {"subjects": ["plan"]})
-    res = await f.human("H-2", "approve", subjects=["oracle"])
-    assert res.pending == [] and f.status("H-2") == ACCEPTED
-
-
-@scenario()
-async def test_revising_the_plan_restarts_everything_derived_from_it(f: Flow):
-    await _planned(f)
-    await f.human("H-E1", "revise", feedback="split the task")
-    assert f.status("plan") == RUNNING and f.ce.nodes["plan"].cycle == 2
-    assert f.ce.nodes["plan"].feedback[-1].text == "split the task"
-    assert f.status("H-E1") == PENDING and f.status("build:T1") == PENDING
-    assert f.ce.change.integration_head == f.ce.change.base_sha
-    await f.plan()
-    await f.critique()
-    await f.human("H-E1", "approve")
-    assert f.status("build:T1") == RUNNING
-
-
-@scenario()
-async def test_stale_approval_blocks_the_build(f: Flow):
-    """G-B1: an approved plan document changed after approval. Before its gate passed, the
-    gate asks again; after, the implementer is not dispatched."""
-    await _planned(f)
-    await f.ce.human_action("H-E1", "approve", "miles", {})    # approved, its gate not passed
-    f.ce.write_record("plan/spec.md", "# Spec changed after approval\n")
-    await f.settle()
-    gate = f.ce.nodes["H-E1"]
-    assert gate.status == AWAITING_HUMAN and "still to approve: plan" in gate.escalation.reason
-    assert not f.runs("build:T1")
-    await f.human("H-E1", "approve")                             # approved again: it passes
-    assert f.status("build:T1") == RUNNING
-    f.ce.write_record("plan/spec.md", "# Spec changed again\n")     # after the gate passed
-    refused = f.ce._agents.preconditions(f.ce.nodes["build:T1"], "implementer")
-    assert refused is not None and refused.kind == "approval" and "plan" in refused.question
 
 
 # ====================================================================== build: verification
@@ -440,63 +261,52 @@ async def test_stale_approval_blocks_the_build(f: Flow):
 async def test_failed_verification_is_rework_in_the_same_sandbox(f: Flow):
     await f.to_build()
     f.runner.commands["grep -q hello src/greet.txt"] = (1, "no match\n")
-    first = f.run("build:T1", "implementer")
+    first = f.run("T1", "implementer")
     await f.implement()
-    node = f.ce.nodes["build:T1"]
-    assert node.cycle == 2 and node.candidate_sha is None and node.status == RUNNING
-    assert node.feedback[-1].source == "verification" and "exited 1" in node.feedback[-1].text
-    assert f.ce.latest("tasks/T1/verification/cycle-1.json")
-    second = f.run("build:T1", "implementer")
-    assert second.sandbox == first.sandbox and second.sandbox in f.runner.uploads   # reused (G-D4)
+    t = f.ticket("T1")
+    assert (t.status, t.attempt) == ("working", 2) and "exited 1" in why(f, "T1")
+    second = f.run("T1", "implementer")
+    assert second.sandbox == first.sandbox and second.sandbox in f.runner.uploads   # (G-D4)
     del f.runner.commands["grep -q hello src/greet.txt"]
     await f.implement()
     await f.review()
-    assert node.status == ACCEPTED
+    await f.settle()
+    assert f.status("T1") == "passed"
 
 
 @scenario()
-async def test_verifier_infrastructure_failure_escalates_and_retry_reverifies(f: Flow):
+async def test_a_verifier_infrastructure_failure_waits_and_a_retry_verifies_again(f: Flow):
     await f.to_build()
     f.runner.setup_rc = 1
     await f.implement()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "verify_infra"
-    assert "verifier clone.sh failed" in node.escalation.reason
+    assert waiting(f, "verify:T1") == ("waiting", "system")
+    assert "clone.sh" in why(f, "verify:T1")
     verifiers = [n for n in f.runner.created if n.startswith("lgv-")]
     assert verifiers and set(verifiers) <= set(f.runner.deleted), "verifier deleted on failure"
+    assert f.ticket("T1").attempt == 1                      # never the implementer's attempt
     f.runner.setup_rc = 0
-    await f.human("build:T1", "retry")
-    assert node.status == REVIEWING
+    await f.human("verify:T1", "retry")
+    assert f.status("verify:T1") == "passed" and f.status("review:T1") == "working"
 
 
 @scenario()
-async def test_command_not_found_escalates_without_spending_a_cycle(f: Flow):
+async def test_a_command_not_found_waits_without_spending_an_attempt(f: Flow):
     """G-V2: exit 127 is the verifier image's problem, not the agent's: no rework run."""
     await f.to_build()
     f.runner.commands["grep -q hello src/greet.txt"] = (127, "bash: grep: command not found\n")
     await f.implement()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "verify_unrunnable"
-    assert "grep -q hello src/greet.txt" in node.escalation.reason
-    assert "command not found" in node.escalation.log_tail
-    assert node.cycle == 1 and not [x for x in node.feedback if x.source == "verification"]
-    assert len(f.runs("build:T1")) == 1 and f.ce.latest("tasks/T1/verification/cycle-1.json")
+    assert waiting(f, "verify:T1") == ("waiting", "system")
+    assert "G-V2" in why(f, "verify:T1") and "grep -q hello src/greet.txt" in why(f, "verify:T1")
+    assert f.ticket("T1").attempt == 1 and len(f.runs("T1")) == 1
     del f.runner.commands["grep -q hello src/greet.txt"]       # the image is fixed
-    await f.human("build:T1", "retry")
-    assert node.status == REVIEWING and node.cycle == 1
+    await f.human("verify:T1", "retry")
+    assert f.status("verify:T1") == "passed" and f.ticket("T1").attempt == 1
 
 
 @scenario()
-async def test_task_without_verification_commands_never_passes(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept", tier="R0", reason="a trivial change with nothing at stake here")
-    await f.plan()
-    await f.critique()
-    await f.human("H-E1", "approve")
-    # R0 has no panel: a passing verification merges straight away
-    await f.implement()
-    assert f.status("build:T1") == ACCEPTED
-    await f.describe()                                 # then the PR description, at every tier
+async def test_at_r0_a_passing_verification_merges_without_a_review(f: Flow):
+    await f.to_end(risk=signals(verification_quality=0, scope_breadth=0, novelty_uncertainty=0))
+    assert f.ce.change.tier == "R0" and "review:T1" not in f.ce.st.tickets
     assert f.ce.change.status == ChangeStatus.READY
 
 
@@ -504,227 +314,226 @@ async def test_task_without_verification_commands_never_passes(f: Flow):
 @scenario(max_report_attempts=20)
 async def test_implementer_guards(f: Flow):
     await f.to_build()
-    r = f.run("build:T1", "implementer")
-    t = f.ce.nodes["build:T1"].task
-    ev = await f.write(r, "tasks/T1/evidence/cycle-1.md", "- `grep -q hello src/greet.txt` -> exit 0")
+    r = f.run("T1", "implementer")
+    ev = await f.write(r, "evidence.md", "- `grep -q hello src/greet.txt` -> exit 0")
     # G-B3: a file outside the task's scope
     sha = f.commit(r, {"src/greet.txt": "hello\n", "README.md": "hacked\n"})
-    out = await f.report(r, [f"git:{REPO}@{sha}", ev])
+    out = await f.report(r, [f"git:{REPO}@{sha}", ev], outputs={"evidence": ev})
     assert any("README.md is outside the allowed paths" in v for v in out.violations)
     # G-B2: the commit is not the tip of the run's branch
     sha = f.commit(r, {"src/greet.txt": "hello\n"}, push=False)
-    out = await f.report(r, [f"git:{REPO}@{sha}", ev])
+    out = await f.report(r, [f"git:{REPO}@{sha}", ev], outputs={"evidence": ev})
     assert any(v.startswith("G-R") or v.startswith("G-B2") for v in out.violations), out
     # G-B4: the evidence must list the verification commands
     sha = f.commit(r, {"src/greet.txt": "hello\n"})
-    ev2 = await f.write(r, "tasks/T1/evidence/cycle-1.md", "- `make test` -> exit 0")
-    out = await f.report(r, [f"git:{REPO}@{sha}", ev2])
+    ev2 = await f.write(r, "evidence.md", "- `make test` -> exit 0")
+    out = await f.report(r, [f"git:{REPO}@{sha}", ev2], outputs={"evidence": ev2})
     assert any(v.startswith("G-B4") for v in out.violations)
-    assert t.verification and f.status("build:T1") == RUNNING
+    assert f.status("T1") == "working"
 
 
 @scenario()
-async def test_agent_writes_are_scoped(f: Flow):
+async def test_agent_writes_are_scoped_to_their_ticket(f: Flow):
     r = f.run("intake")
     with pytest.raises(WorkflowError, match="G-W1"):
-        await f.write(r, "plan/spec.md", "not mine")
+        await f.ce.agent_write(r, "tickets/design/spec.md", "not mine", None)
     with pytest.raises(WorkflowError, match="G-W1"):
-        await f.write(r, "control/change.json", "{}")
+        await f.ce.agent_write(r, "control/change.json", "{}", None)
 
 
 @scenario()
-async def test_build_task_context_is_scoped_to_the_task(f: Flow):
-    """Retro finding 7: a task's runs got every requirement's delta spec (18-26 refs) and agents
-    stopped reading them. Implementers and the panel get only their task's own delta specs; the
-    implementer no longer gets the risk signals; a document the controller gives at its approved
-    version is not repeated at a stale version from the task's declared context."""
-    await f.intake(reqs="- REQ-1: greet.txt says hello\n- REQ-2: bye.txt says goodbye\n")
-    await f.human("H-1", "accept")
-    t2 = dict(TASKS[0], id="T2", title="bye", requirements=["REQ-2"], files_modified=["src/bye.txt"],
-              verification=["test -f src/bye.txt"])
-    tasks = [dict(TASKS[0], context=["file:plan/spec.md@1", "file:plan/specs/REQ-2.md@1"]), t2]
-    await f.plan(tasks=tasks)
-    await f.critique("REWORK")                          # the plan is rewritten: spec.md is now v2
-    await f.plan(tasks=tasks)
+async def test_a_builds_context_is_its_inputs_and_its_own_picks(f: Flow):
+    """A build is given the approved versions of what its ticket consumes (``inputs``) and the
+    documents its work names – not everything the change has."""
+    await f.intake()
+    await f.signoff("H-1")
+    await f.plan()
+    spec_v1 = f.ticket("design").outputs["spec"]
+    await f.critique("REWORK")                          # the plan is rewritten: spec.md v2
+    await f.plan(tasks=[dict(TASKS[0], context=[spec_v1])])
     await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    p = f.ce.p
-    ctx = f.run("build:T1", "implementer").context_refs
-    assert f"file:{p('plan/spec.md')}@2" in ctx and f"file:{p('plan/spec.md')}@1" not in ctx
-    assert f"file:{p('plan/specs/REQ-1.md')}@2" in ctx
-    # the planner's explicit pick of another requirement's spec stays, as cited
-    assert f"file:{p('plan/specs/REQ-2.md')}@1" in ctx and f"file:{p('plan/specs/REQ-2.md')}@2" not in ctx
-    assert not any("intake/risk.json" in a for a in ctx)
-    assert any("intake/requirements.md" in a for a in ctx)
-    assert not any("plan/oracle.json" in a for a in ctx)      # R1: no oracle stage, none approved
-    ctx2 = f.run("build:T2", "implementer").context_refs
-    assert not any("plan/specs/REQ-1.md" in a for a in ctx2) and any("plan/specs/REQ-2.md" in a for a in ctx2)
+    await f.signoff("H-E1")
+    ctx = f.run("T1", "implementer").context_refs
+    ptr = f.ce.tickets.root.pointers
+    assert ptr["spec"] in ctx and ptr["spec"] != spec_v1
+    assert spec_v1 not in ctx                           # the approved version is given once
+    assert all(s in ctx for s in ptr["specs"])
+    assert not any("risk.json" in a for a in ctx)
     await f.implement("T1")
-    review = f.run("build:T1", "reviewer").context_refs
-    assert any("intake/risk.json" in a for a in review)
-    assert not any("plan/specs/REQ-2.md@2" in a for a in review)
+    review = f.run("review:T1", "reviewer").context_refs
+    assert f.ticket("T1").outputs["evidence"] in review   # the work it judges
 
 
-# ====================================================================== build: review panel
+# ====================================================================== build: judges
 @scenario()
-async def test_review_fail_is_rework_and_identical_findings_twice_is_a_stale_loop(f: Flow):
+async def test_a_review_fail_is_rework_and_the_same_findings_twice_wait_on_a_human(f: Flow):
     await f.to_build()
     await f.implement()
     await f.review(verdict="FAIL")
-    node = f.ce.nodes["build:T1"]
-    assert node.cycle == 2 and node.status == RUNNING
-    assert any("missing newline handling" in fb.text for fb in node.feedback)
-    assert f.ce.runs[node.runs[0]].status == R_SUPERSEDED
+    t = f.ticket("T1")
+    assert (t.status, t.attempt) == ("working", 2)
+    assert any("missing newline handling" in x for x in t.findings)
     await f.implement()
     await f.review(verdict="FAIL")                      # the same HIGH finding again
-    assert node.status == ESCALATED and node.escalation.kind == "stale_loop"
-    await f.human("build:T1", "retry")                  # REWORK_CYCLE: one extra cycle
-    assert node.extra_cycles == 1 and node.cycle == 3 and node.status == RUNNING
-    await f.implement()
-    await f.review(verdict="PASS")
-    assert node.status == ACCEPTED
-
-
-@scenario(review_max_cycles=1)
-async def test_review_cycle_budget_escalates(f: Flow):
-    await f.to_build()
-    await f.implement()
-    await f.review(verdict="FAIL")
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "cycle_budget"
-    assert node.escalation.resume == Resume.REWORK_CYCLE
+    assert waiting(f, "T1") == ("waiting", "repeated")
+    await f.human("T1", "waive:review:T1", reason="a false positive: verified by hand, twice")
+    await f.settle()
+    assert f.status("review:T1") == "passed" and f.status("T1") == "passed"
 
 
 @scenario(max_report_attempts=20)
 async def test_review_guards(f: Flow):
     await f.to_build()
     await f.implement()
-    r = f.run("build:T1", "reviewer")
+    r = f.run("review:T1", "reviewer")
     cand = f"git:{REPO}@{r.judged_sha}"
-    doc = await f.write(r, "tasks/T1/reviews/reviewer-cycle-1.md", "x")
+    doc = await f.write(r, "review.md", "x")
     high = {"severity": "BLOCKER", "confidence": "HIGH", "title": "t", "fix": "f",
             "attestations": [cand]}
+    spec = f.ce.tickets.root.pointers["spec"]
     cases = [({"verdict": "PASS", "findings": [high], "checked": ["d"]}, "G-RV3"),
              ({"verdict": "FAIL", "findings": [], "checked": ["d"]}, "G-RV3"),
              ({"verdict": "PASS", "findings": [], "checked": []}, "G-RV4"),
              ({"verdict": "FAIL", "checked": ["d"],          # evidence not in the report's list
-               "findings": [high | {"attestations": [f.ce.latest_att("plan/spec.md")]}]}, "G-RV2"),
-             ({"verdict": "FAIL", "checked": ["d"], "findings": [high | {"attestations": []}]}, "G-R7")]
+               "findings": [high | {"attestations": [spec]}]}, "G-RV2"),
+             ({"verdict": "FAIL", "checked": ["d"], "findings": [high | {"attestations": []}]},
+              "G-R7")]
     for data, gid in cases:
-        out = await f.report(r, [cand, doc], data)
+        out = await f.report(r, [cand, doc], data, outputs={"review": doc})
         assert any(v.startswith(gid) for v in out.violations), (data, out)
 
 
 @scenario()
-async def test_override_accept_needs_reason_and_passing_verification(f: Flow):
+async def test_a_verification_failure_cannot_be_waived(f: Flow):
     await f.to_build()
-    await f.implement()
-    await f.review(verdict="FAIL")
-    await f.implement()
-    await f.review(verdict="FAIL")                      # stale loop -> escalated
-    with pytest.raises(WorkflowError, match="reason"):
-        await f.human("build:T1", "override_accept", reason="ok")
-    with pytest.raises(WorkflowError, match="unknown escalation action"):
-        await f.human("build:T1", "shrug")
-    await f.human("build:T1", "override_accept", reason="the finding is a false positive, verified by hand")
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ACCEPTED and node.override.approver == "miles"
+    f.runner.commands["grep -q hello src/greet.txt"] = (1, "no match\n")
+    while f.status("T1") == "working":
+        await f.implement()
+    assert waiting(f, "T1") == ("waiting", "repeated")
+    with pytest.raises(WorkflowError):
+        await f.human("T1", "waive:verify:T1", reason="it works on my machine, honestly it does")
 
 
 @scenario()
-async def test_override_is_refused_without_passing_verification(f: Flow):
-    await f.to_build()
-    f.runner.setup_rc = 1
-    await f.implement()                                 # verify_infra escalation, no verification
-    with pytest.raises(WorkflowError, match="not waivable"):
-        await f.human("build:T1", "override_accept", reason="the finding is a false positive, verified")
-
-
-@scenario()
-async def test_override_is_only_for_build_tasks(f: Flow):
+async def test_abandoning_at_an_escalation_ends_the_change(f: Flow):
     r = f.run("intake")
     await f.report(r, status="BLOCKED", blocked_reason="x", missing_decision="y")
-    with pytest.raises(WorkflowError, match="only available for build tasks"):
-        await f.human("intake", "override_accept", reason="long enough reason with words")
-
-
-@scenario()
-async def test_abandon_from_an_escalation(f: Flow):
-    r = f.run("intake")
-    await f.report(r, status="BLOCKED", blocked_reason="x", missing_decision="y")
-    await f.human("intake", "abandon")
-    assert f.status("intake") == FAILED and f.ce.change.status == ChangeStatus.ABANDONED
+    await f.change_action("abandon", reason="not needed")
+    await f.settle()
+    assert f.ce.change.status == ChangeStatus.ABANDONED
+    assert f.status("intake") == "cancelled"
 
 
 # ====================================================================== merge
 @scenario()
-async def test_merge_conflict_is_rework_onto_the_new_head(f: Flow):
+async def test_a_merge_conflict_is_rework_onto_the_new_head(f: Flow):
     await f.to_build()
     await f.implement()
-    real_merge = f.git.merge
+    from legion_orch.git.branches import MergeCheck
+    branches = f.ce._flow.runner.merger.branches
+    real = branches.merge
     calls = []
 
-    async def conflict(cid, sha, msg):
+    async def conflict(sha, into, message):
         calls.append(sha)
-        if len(calls) == 1:
-            return False, "CONFLICT (content): src/greet.txt"
-        return await real_merge(cid, sha, msg)
-    f.git.merge = conflict
+        if len(calls) == 1:                       # someone merged first: it conflicts now
+            return MergeCheck(False, await branches.head(into) or "", ("src/greet.txt",))
+        return await real(sha, into, message)
+    branches.merge = conflict
     await f.review()
-    node = f.ce.nodes["build:T1"]
-    assert node.status == RUNNING and node.cycle == 2
-    assert node.feedback[-1].source == "merge" and "G-A2" in node.feedback[-1].text
-    assert node.base_sha == await f.git.integration_head(f.ce.cid)
+    t = f.ticket("T1")
+    assert (t.status, t.attempt) == ("working", 2), f.status()
+    assert "src/greet.txt" in why(f, "T1")
     await f.implement()
     await f.review()
-    assert node.status == ACCEPTED and len(calls) == 2
+    await f.settle()
+    assert f.status("T1") == "passed" and len(calls) == 2
 
 
 # ====================================================================== run lifecycle
 @scenario()
-async def test_agent_exit_without_report_fails_the_run(f: Flow):
+async def test_an_agent_that_exits_before_connecting_is_a_system_error(f: Flow):
     r = f.run("intake")
-    await f.exit_agent(r, rc=3)
-    assert r.status == R_FAILED and r.exit_code == 3
-    node = f.ce.nodes["intake"]
-    assert node.status == ESCALATED and "exited with code 3" in node.escalation.reason
-    assert f.ce.latest(f"control/logs/{r.id}.log")
-    assert r.sandbox not in f.runner.deleted                # kept for debugging by default
-    assert "agent started" in f.ce.log_tail(r.id)            # from the store once archived
-    f.cfg.sandbox.keep_failed = False
-    await f.human("intake", "retry")
-    r2 = f.run("intake")
-    await f.exit_agent(r2, rc=1)
-    assert r2.sandbox in f.runner.deleted and r2.sandbox_deleted
+    with open(f.ce.run_dir(r.id) / "agent.log", "a") as fh:
+        fh.write("fatal: unable to access 'http://host/git/app.git/': 403\n")
+    await f.exit_agent(r, rc=128)
+    assert (r.failure.source, r.failure.stage, r.failure.exit_code) == (
+        FailureSource.SYSTEM, RunStage.LAUNCHING, 128)
+    assert "before connecting" in r.failure.reason and "403" in r.failure.reason
+    assert r.stage == RunStage.EXITED
+    assert f.ce.latest(f"control/runs/{r.id}/log")
+    await f.settle()
+    for _ in range(f.cfg.limits.system_retries - 1):          # retried, then a human's
+        await f.exit_agent(f.run("intake"), rc=128)
+        await f.settle()
+    assert waiting(f, "intake") == ("waiting", "system")
+    assert len(f.runs("intake")) == f.cfg.limits.system_retries
+    assert f.ticket("intake").attempt == 1 and "before connecting" in why(f, "intake")
+
+
+@scenario()
+async def test_an_agent_that_exits_after_connecting_says_so(f: Flow):
+    r = f.run("intake")
+    f.ce.connected(r)
+    await f.exit_agent(r, rc=137)
+    assert r.failure.source == FailureSource.SYSTEM and r.failure.stage == RunStage.RUNNING
+    assert "exited with code 137 after connecting" in r.failure.reason
+
+
+@scenario()
+async def test_an_agent_ending_with_an_error_is_its_attempt(f: Flow):
+    r = f.run("intake")
+    with open(f.ce.run_dir(r.id) / "agent.log", "a") as fh:
+        fh.write(json.dumps({"type": "system", "subtype": "init", "model": "m", "tools": []})
+                 + "\n" + json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                                      "result": "API Error: 401 invalid OAuth token"}) + "\n")
+    await f.exit_agent(r, rc=1)
+    assert r.failure.source == FailureSource.AGENT and "API Error: 401" in r.failure.reason
+    await f.settle()
+    assert f.ticket("intake").attempt == 2
+
+
+@scenario()
+async def test_a_turn_without_a_report_is_asked_again_then_the_agents_failure(f: Flow):
+    """A turn that ends with the run's task open is answered by the orchestrator – another turn
+    of the same run, in the agent's session – within the report attempts."""
+    r = f.run("intake")
+    limit = f.cfg.limits.max_report_attempts
+    for turn in range(1, limit + 2):
+        with open(f.ce.run_dir(r.id) / "agent.log", "a") as fh:
+            fh.write(json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                                 "result": "All done!"}) + "\n")
+        await f.exit_agent(r, rc=0)
+        if r.failure:
+            break
+        assert len(r.asked) == turn and "no accepted report" in r.asked[-1]
+        assert r.id in f.ctl.svc.procs                       # its next turn runs
+    assert len(r.asked) == limit and r.failure.source == FailureSource.AGENT
+    assert "not ended" in r.failure.reason
 
 
 @scenario(run_timeout_s=1)
-async def test_runs_time_out(f: Flow):
+async def test_a_run_that_times_out_exceeds_its_budget(f: Flow):
     r = f.run("intake")
     r.created_at = "2020-01-01T00:00:00.000Z"
     f.ce.notify()                                   # its timer reads the state again
     await f.settle()
-    assert r.status == R_FAILED and "timed out" in f.ce.nodes["intake"].escalation.reason
+    assert r.status == R_FAILED and r.failure.source == FailureSource.TIMEOUT
+    assert waiting(f, "intake") == ("waiting", "budget")
 
 
 @scenario()
-async def test_sandbox_launch_failure_escalates(f: Flow):
+async def test_a_sandbox_launch_failure_is_a_system_error_while_preparing(f: Flow):
     await f.intake()
     f.runner.fail_create = "planner"
-    await f.human("H-1", "accept")
-    run = f.runs("plan")[0]
-    assert run.status == R_FAILED and f.status("plan") == ESCALATED
-    assert "sandbox launch failed" in f.ce.nodes["plan"].escalation.reason
+    await f.signoff("H-1")
+    run = f.runs("design")[0]
+    assert run.status == R_FAILED and run.failure.source == FailureSource.SYSTEM
+    assert run.failure.stage == RunStage.PREPARING
+    assert waiting(f, "design") == ("waiting", "system")
     f.runner.fail_create = None
-    await f.human("plan", "retry")
-    assert f.run("plan")
-
-
-# ---------------------------------------------------------------------- sandbox stages
-def agent_log(f: Flow, run, *lines) -> None:
-    """Append lines to a live run's agent log (as the sandbox would)."""
-    with open(f.ce.run_dir(run.id) / "agent.log", "a") as fh:
-        fh.write("".join((ln if isinstance(ln, str) else json.dumps(ln)) + "\n" for ln in lines))
+    await f.human("design", "retry")
+    assert f.run("design")
 
 
 @scenario()
@@ -741,8 +550,8 @@ async def test_run_stages_preparing_launching_running(f: Flow):
         return await real_start(name, log_file)
     f.runner.create, f.runner.start_agent = create, start
     await f.intake()
-    await f.human("H-1", "accept")
-    run = f.run("plan")
+    await f.signoff("H-1")
+    run = f.run("design")
     assert seen[-2:] == [("create", RunStage.PREPARING), ("start", RunStage.LAUNCHING)]
     assert run.stage == RunStage.LAUNCHING and run.status == R_STARTING   # not connected yet
     f.ce.connected(run)                         # the agent's first MCP call
@@ -751,101 +560,20 @@ async def test_run_stages_preparing_launching_running(f: Flow):
     assert run.stage == RunStage.EXITED and run.failure is None
 
 
-@scenario()
-async def test_launch_failure_is_a_system_error_while_preparing(f: Flow):
-    await f.intake()
-    f.runner.fail_create = "planner"
-    await f.human("H-1", "accept")
-    run = f.runs("plan")[0]
-    assert run.failure.source == FailureSource.SYSTEM and run.failure.stage == RunStage.PREPARING
-    esc = f.ce.nodes["plan"].escalation
-    assert esc.source == FailureSource.SYSTEM and "system error while preparing" in esc.reason
-
-
-@scenario()
-async def test_process_exit_before_connecting_is_a_system_error(f: Flow):
-    r = f.run("intake")
-    agent_log(f, r, "fatal: unable to access 'http://host/git/app.git/': 403")
-    await f.exit_agent(r, rc=128)
-    assert (r.failure.source, r.failure.stage, r.failure.exit_code) == (
-        FailureSource.SYSTEM, RunStage.LAUNCHING, 128)
-    assert "before connecting" in r.failure.reason and "403" in r.failure.reason
-    assert r.stage == RunStage.EXITED
-
-
-@scenario()
-async def test_process_exit_after_connecting_says_so(f: Flow):
-    r = f.run("intake")
-    f.ce.connected(r)
-    await f.exit_agent(r, rc=137)
-    assert r.failure.source == FailureSource.SYSTEM and r.failure.stage == RunStage.RUNNING
-    assert "exited with code 137 after connecting" in r.failure.reason
-    assert "system error while running" in f.ce.nodes["intake"].escalation.reason
-
-
-@scenario()
-async def test_agent_ending_with_an_error_is_an_agent_error(f: Flow):
-    r = f.run("intake")
-    agent_log(f, r, {"type": "system", "subtype": "init", "model": "m", "tools": []},
-              {"type": "result", "subtype": "success", "is_error": True,
-               "result": "API Error: 401 invalid OAuth token"})
-    await f.exit_agent(r, rc=1)
-    assert r.failure.source == FailureSource.AGENT and "API Error: 401" in r.failure.reason
-    assert f.ce.nodes["intake"].escalation.source == FailureSource.AGENT
-
-
-@scenario()
-async def test_agent_finishing_without_report_is_asked_again_then_an_agent_error(f: Flow):
-    """A turn that ends with the run's task open is answered by the orchestrator – another turn
-    of the same run, in the agent's session – within the report attempts."""
-    r = f.run("intake")
-    limit = f.cfg.limits.max_report_attempts
-    for turn in range(1, limit + 2):
-        agent_log(f, r, {"type": "result", "subtype": "success", "is_error": False,
-                         "result": "All done!"})
-        await f.exit_agent(r, rc=0)
-        if r.failure:
-            break
-        assert len(r.asked) == turn and "no accepted report" in r.asked[-1]
-        assert r.id in f.ctl.svc.procs                       # its next turn runs
-        assert "The orchestrator, on your task" in f.runner.payloads.get(r.sandbox, {}).get(
-            "prompt.md", "") or any("LEGION_RUN_ID=" + r.id in e for e in f.runner.run_envs)
-    assert len(r.asked) == limit and r.failure.source == FailureSource.AGENT
-    assert "not ended" in r.failure.reason
-
-
-@scenario(max_report_attempts=1)
-async def test_rejected_reports_are_an_agent_error(f: Flow):
-    r = f.run("intake")
-    await f.report(r, atts=["file:nope.md@1"])
-    assert r.failure.source == FailureSource.AGENT and "G-R6" in r.failure.reason
-
-
-@scenario(run_timeout_s=1)
-async def test_timeout_is_its_own_source(f: Flow):
-    r = f.run("intake")
-    r.created_at = "2020-01-01T00:00:00.000Z"
-    f.ce.notify()                                   # its timer reads the state again
-    await f.settle()
-    assert r.failure.source == FailureSource.TIMEOUT
-
-
 # ---------------------------------------------------------------------- sandbox names
 @scenario()
 async def test_sandboxes_get_readable_names_never_reused(f: Flow):
-    import re
     await f.to_build()
     await f.implement()
     await f.review()
     agents = [r.sandbox for r in f.ce.runs.values()]
-    verifiers = [v.sandbox for n in f.ce.nodes.values() for v in n.verification.values()]
+    verifiers = [n for n in f.runner.created if n.startswith("lgv-")]
     assert agents and verifiers
     assert all(re.fullmatch(r"lg-[a-z]+", n) for n in agents), agents
     assert all(re.fullmatch(r"lgv-[a-z]+", n) for n in verifiers), verifiers
-    assert len(set(agents)) == len(agents) and not set(agents) & set(verifiers)
+    assert not set(agents) & set(verifiers)
     assert set(agents) <= f.ctl.used_sandbox_names()
-    other = await f.ctl.start_change("Another goal", REPO)       # names stay unique across changes
-
+    other = await f.ctl.start_change("Another goal", REPO)       # unique across changes
     await f.settle()
     assert [r.sandbox for r in other.runs.values()] and not (
         {r.sandbox for r in other.runs.values()} & set(agents + verifiers))
@@ -855,14 +583,9 @@ async def test_sandboxes_get_readable_names_never_reused(f: Flow):
 async def test_a_name_taken_on_the_gateway_is_replaced(f: Flow):
     await f.intake()
     f.runner.clash = 2                     # two names in a row already exist on the gateway
-    await f.human("H-1", "accept")
-    run = f.run("plan")
-    assert run.sandbox in f.runner.created and len(f.runner.created) == 2   # intake + plan
-    f.runner.clash = 3                     # never free: the critic's run fails as a system error
-    await f.plan()                         # (a planner rework reuses its kept sandbox)
-    critic = f.runs("plan", "critic")[-1]
-    assert critic.failure and critic.failure.source == FailureSource.SYSTEM
-    assert "already exists" in critic.failure.reason
+    await f.signoff("H-1")
+    run = f.run("design")
+    assert run.sandbox in f.runner.created and len(f.runner.created) == 2   # intake + design
 
 
 @scenario()
@@ -870,187 +593,108 @@ async def test_a_verifier_name_taken_on_the_gateway_is_replaced(f: Flow):
     await f.to_build()
     f.runner.clash = 1
     await f.implement()
-    ver = f.ce.nodes["build:T1"].current_verification()
-    assert ver.ok and ver.sandbox in f.runner.created
+    assert f.status("verify:T1") == "passed"
 
 
 # ---------------------------------------------------------------------- retry
 @scenario()
-async def test_retry_removes_the_old_sandbox_before_the_new_run(f: Flow):
-    r = f.run("intake")
-    await f.exit_agent(r, rc=1)
-    assert r.sandbox not in f.runner.deleted                # kept for debugging until the retry
-    real_delete = f.runner.delete
-    order = []
-
-    async def delete(name):
-        order.append(("delete", name, len(f.runs("intake"))))
-        await real_delete(name)
-    f.runner.delete = delete
-    res = await f.human("intake", "retry")
-    assert "removing sandbox" in res.note
-    r2 = f.run("intake")
-    assert order == [("delete", r.sandbox, 1)], "deleted before the new run was dispatched"
-    assert r.sandbox_deleted and r2.sandbox != r.sandbox and r2.sandbox in f.runner.created
+async def test_a_retry_after_a_system_error_starts_afresh(f: Flow):
+    await f.intake()
+    f.runner.fail_create = "planner"
+    await f.signoff("H-1")
+    f.runner.fail_create = None
+    failed = f.runs("design")
+    await f.human("design", "retry")
+    r2 = f.run("design")
+    assert r2.id not in {r.id for r in failed} and f.ticket("design").attempt == 1
 
 
 @scenario()
-async def test_retry_goes_ahead_when_the_sandbox_cannot_be_removed(f: Flow):
-    r = f.run("intake")
-    await f.exit_agent(r, rc=1)
-    f.runner.fail_delete = True
-    await f.human("intake", "retry")
-    assert f.run("intake").id != r.id and not r.sandbox_deleted
-
-
-@scenario()
-async def test_retry_of_an_implementer_starts_a_fresh_sandbox(f: Flow):
-    await f.to_build()
-    impl = f.run("build:T1", "implementer")
-    node = f.ce.nodes["build:T1"]
-    assert node.sandbox == impl.sandbox
-    await f.exit_agent(impl, rc=1)
-    await f.human("build:T1", "retry")
-    impl2 = f.run("build:T1", "implementer")
-    assert impl.sandbox in f.runner.deleted and impl2.sandbox != impl.sandbox
-    assert node.sandbox == impl2.sandbox
-    await f.implement()
-    await f.review()
-    assert node.status == ACCEPTED
-
-
-@scenario()
-async def test_retry_in_progress_blocks_a_second_retry_and_yields_to_abandon(f: Flow):
-    r = f.run("intake")
-    await f.exit_agent(r, rc=1)
-    gate = asyncio.Event()
-    real_delete = f.runner.delete
-
-    async def slow_delete(name):
-        await gate.wait()
-        await real_delete(name)
-    f.runner.delete = slow_delete
-    await f.ce.human_action("intake", "retry", "miles", {})
-    assert f.ce.nodes["intake"].escalation.retrying
-    with pytest.raises(WorkflowError, match="already in progress"):
-        await f.ce.human_action("intake", "retry", "miles", {})
-    await f.ce.human_action("intake", "abandon", "miles", {})
-    gate.set()
-    await f.settle()
-    assert f.status("intake") == FAILED and len(f.runs("intake")) == 1
-
-
-@scenario()
-async def test_retry_interrupted_by_a_restart_completes(f: Flow):
-    r = f.run("intake")
-    await f.exit_agent(r, rc=1)
-    f.ce.nodes["intake"].escalation.retrying = True        # as if the controller stopped here
-    f.ce.save()
-    f.ce._runner.resume_retries()
-    await f.settle()
-    assert r.sandbox in f.runner.deleted and f.run("intake").id != r.id
-
-
-@scenario()
-async def test_failed_panel_member_resumes_reviewing(f: Flow):
+async def test_a_failed_judge_is_retried_without_reworking_the_build(f: Flow):
     await f.to_build()
     await f.implement()
-    rev = f.run("build:T1", "reviewer")
-    await f.exit_agent(rev, rc=1)
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.resume == Resume.REVIEWING
-    await f.human("build:T1", "retry")
-    assert node.status == REVIEWING and f.run("build:T1", "reviewer").id != rev.id
+    rev = f.run("review:T1", "reviewer")
+    for _ in range(f.cfg.limits.system_retries):           # the system's failure, each try
+        r = f.run("review:T1", "reviewer")
+        f.ce.connected(r)
+        await f.exit_agent(r, rc=137)
+        await f.settle()
+    assert waiting(f, "review:T1") == ("waiting", "system")
+    assert f.ticket("T1").attempt == 1
+    await f.human("review:T1", "retry")
+    assert f.run("review:T1", "reviewer").id != rev.id
     await f.review()
-    assert node.status == ACCEPTED
+    await f.settle()
+    assert f.status("T1") == "passed"
 
 
 @scenario()
-async def test_failed_sandbox_deletion_is_reported_not_fatal(f: Flow):
+async def test_a_failed_sandbox_deletion_is_reported_not_fatal(f: Flow):
     f.runner.fail_delete = True
     r = f.run("intake")
     await f.intake()
-    assert f.status("intake") == ACCEPTED and not r.sandbox_deleted
+    await f.signoff("H-1")
+    assert f.status("intake") == "passed" and not r.sandbox_deleted
 
 
 @scenario(max_parallel=1)
-async def test_parallel_limit_and_file_overlap(f: Flow):
-    tasks = [TASKS[0], TASKS[0] | {"id": "T2", "files_modified": ["src/bye.txt"]}]
+async def test_the_parallel_limit_queues_work(f: Flow):
+    tasks = [TASKS[0], dict(TASKS[0], id="T2", files_modified=["src/bye.txt"])]
     await f.to_build(tasks=tasks)
-    assert [n.status for n in f.ce.build_nodes()] == [RUNNING, READY]   # one sandbox
-    # T1's agent ends: its verifier takes the sandbox first (work in flight goes first), then
-    # its reviewer; T2 waits until T1 is merged
-    await f.implement("T1")
-    assert f.status("build:T1") == REVIEWING and f.status("build:T2") == READY
-    assert f.runs("build:T1", "reviewer")
-    await f.review("T1")
-    assert f.status("build:T1") == ACCEPTED and f.status("build:T2") == RUNNING
-    await f.implement("T2")
-    await f.review("T2")
-    assert f.ce.change.status == ChangeStatus.READY
+    assert f.status("T1") == f.status("T2") == "working"   # both under way ...
+    assert len([t for t in ("T1", "T2") if f.runs(t)]) == 1  # ... one sandbox at a time
+    assert f.ctl.svc.dispatcher.waiting == 1
 
 
 # ====================================================================== restart
 @scenario()
-async def test_restart_fails_live_runs_and_resumes_verification(f: Flow):
-    await f.to_build()
-    f.runner.setup_rc = 1
-    await f.implement()                                  # escalated verify_infra
-    node = f.ce.nodes["build:T1"]
-    node.status, node.escalation = VERIFYING, None       # as if the controller died mid-verification
-    f.ce.save()
-    live_intake_like = f.ce.runs[node.current_run]
-    assert live_intake_like.status != R_FAILED
-    f.runner.setup_rc = 0
+async def test_a_restart_runs_live_work_again_at_the_same_attempt(f: Flow):
+    r = f.run("intake")
     ctl2, ce2 = await f.restart(recover=True)
-    for _ in range(100):
-        await asyncio.sleep(0.02)
-        if ce2.nodes["build:T1"].status != VERIFYING:
-            break
-    assert ce2.nodes["build:T1"].status == REVIEWING
+    f.ctl, f.ce = ctl2, ce2
+    await f.settle()
+    assert ce2.runs[r.id].status == R_FAILED
+    assert ce2.runs[r.id].failure.source == FailureSource.CONTROLLER
+    assert "controller restarted" in ce2.runs[r.id].failure.reason
+    again = f.run("intake")
+    assert again.id != r.id and f.ticket("intake").attempt == 1
 
 
 @scenario()
-async def test_restart_fails_runs_that_were_live(f: Flow):
-    r = f.run("intake")
+async def test_a_restart_verifies_again(f: Flow):
+    await f.to_build()
+    gate = asyncio.Event()
+    real = f.runner.exec
+
+    async def exec_(name, argv, **kw):
+        if argv[-1] == "grep -q hello src/greet.txt":
+            await gate.wait()
+        return await real(name, argv, **kw)
+    f.runner.exec = exec_
+    task = asyncio.create_task(f.implement())
+    for _ in range(250):
+        await asyncio.sleep(0.02)
+        if f.ce.verifying:
+            break
+    assert f.status("verify:T1") == "working"
+    await f.ctl.stop()
+    task.cancel()
+    f.runner.exec = real
     ctl2, ce2 = await f.restart(recover=True)
-    assert ce2.runs[r.id].status == R_FAILED
-    assert ce2.nodes["intake"].status == ESCALATED
-    assert "controller restarted" in ce2.nodes["intake"].escalation.reason
+    f.ctl, f.ce = ctl2, ce2
+    await f.settle()
+    assert f.status("verify:T1") == "passed" and f.status("review:T1") == "working"
 
 
 # ====================================================================== change-level actions
 @scenario()
 async def test_change_actions_validate_their_input(f: Flow):
-    with pytest.raises(WorkflowError, match="unknown change action"):
+    with pytest.raises(WorkflowError, match="unknown action"):
         await f.change_action("teleport")
     with pytest.raises(WorkflowError, match="not a decision owner"):
-        await f.change_action("attest", approver="mallory")
+        await f.change_action("pause", approver="mallory")
     with pytest.raises(WorkflowError):
-        await f.change_action("attest", kind="nonsense", verdict="pass")
-    with pytest.raises(WorkflowError, match="reason"):
-        await f.change_action("approve_surface", surface="files")
-    with pytest.raises(WorkflowError):
-        await f.change_action("approve_protected_paths", task="T9", paths=["x"], reason="r" * 30)
-    with pytest.raises(WorkflowError):
-        await f.change_action("override", gate="nonsense")
-
-
-@scenario()
-async def test_h3_recheck_reevaluates_its_preconditions(f: Flow):
-    """H-3's preconditions are the ship gates: evaluated when it opens, again on recheck, and
-    once more when it is accepted."""
-    await f.to_build(tier="R2")
-    await f.implement()
-    await f.review()
-    await f.integration("PASS")
-    assert f.status("H-3") == AWAITING_HUMAN and f.ce.change.status == ChangeStatus.ACTIVE
-    first = f.ce.change.ship.attestation                   # evaluated as the gate opened
-    await f.human("H-3", "recheck")
-    assert f.status("H-3") == AWAITING_HUMAN
-    assert f.ce.change.ship.attestation == first       # the same verdict: no new record version
-    await f.human("H-3", "accept")
-    assert f.status("H-3") == ACCEPTED and f.ce.change.status == ChangeStatus.READY
+        await f.change_action("replan", plan={"add": "nonsense"})
 
 
 def test_signals_helper_derives_r1():
@@ -1068,109 +712,105 @@ async def test_a_change_on_a_blank_repository(f: Flow):
     assert await f.git.tree_paths(base) == [] and f.ce.change.blank_repo
     scaffold = dict(TASKS[0], id="T0", title="scaffold", files_modified=["Makefile"],
                     verification=["make -n"], scaffold=True)
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan(tasks=[scaffold, dict(TASKS[0], depends_on=["T0"])])
-    await f.critique()
-    await f.human("H-E1", "approve")      # the scaffold is built first, in the oracle stage
-    await f.implement("T0")
-    await f.review("T0")
-    assert f.status("build:T1") == RUNNING  # R1: no oracle to approve, so on to the tasks
-    await f.implement(files={"src/greet.txt": "hello\n"})
-    await f.review()
+    await f.to_end(tasks=[scaffold, dict(TASKS[0], depends_on=["T0"])])
     assert f.ce.change.status == ChangeStatus.READY
     assert await f.git.blob(base, "src/greet.txt") is None                 # nothing at base
-    assert await f.git.blob(f.ce.change.integration_head, "src/greet.txt")  # merged
+    head = (await f.git.git("rev-parse", f"refs/heads/legion/{f.ce.cid}/integration")).strip()
+    assert await f.git.blob(head, "src/greet.txt")                          # merged
 
 
 @scenario()
 async def test_a_rework_may_leave_a_required_document_unchanged(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    first = f.run("plan")
-    await f.plan()
+    first = await to_critique(f)
+    del first
     await f.critique("REWORK")
-    second = f.run("plan")
+    second = f.run("design")
     written = second.docs_written
-    att = await f.write(second, "plan/oracle.json", f.ce.doc("plan/oracle.json").content)
-    assert att == f.ce.latest_att("plan/oracle.json") and f.ce.latest("plan/oracle.json") == 1
-    assert f.ce.doc("plan/oracle.json").author == first.id
+    path = "tickets/design/oracle.json"
+    att = await f.write(second, "oracle.json", f.ce.doc(path).content)
+    assert att == f.ce.latest_att(path) and f.ce.latest(path) == 1
     assert second.confirmed_docs == [att] and second.docs_written == written   # no quota used
-    out = await f.plan()                    # rewrites oracle.json and the task graph unchanged
+    out = await f.plan()                    # rewrites oracle.json and the tickets unchanged
     assert out.accepted, out.violations
-    assert f.ce.latest("plan/taskgraph.json") == 1 and f.ce.latest("plan/spec.md") == 2
+    assert f.ce.latest("tickets/design/tickets.json") == 1
+    assert f.ce.latest("tickets/design/spec.md") == 2
 
 
 @scenario()
 async def test_only_roles_that_push_get_a_branch(f: Flow):
     """The controller prepares each sandbox in steps: a role that pushes is put on its branch,
-    every other role gets its commit detached (a judge, the candidate)."""
+    every other role gets its commit detached (a judge, the commit it judges)."""
     await f.to_build()
     await f.implement()
-    [impl], [rev] = f.runs("build:T1", "implementer"), f.runs("build:T1", "reviewer")
-    node = f.ce.nodes["build:T1"]
-    assert f.steps(impl) == [["clone.sh"], ["branch.sh", f"legion/{f.ce.cid}/build-t1", node.base_sha]]
-    assert f.steps(rev) == [["clone.sh"], ["checkout.sh", node.candidate_sha]]
+    [impl], [rev] = f.runs("T1", "implementer"), f.runs("review:T1", "reviewer")
+    t = f.ticket("T1")
+    assert f.steps(impl) == [["clone.sh"], ["branch.sh", f"legion/{f.ce.cid}/t/T1",
+                                            impl.base_sha]]
+    assert f.steps(rev) == [["clone.sh"], ["checkout.sh", t.sha]]
     assert rev.branch is None and "(none: a detached checkout" in rev.template_vars["branch"]
     [intake] = f.runs("intake")
     assert f.steps(intake) == [["clone.sh"], ["checkout.sh", f.ce.change.base_sha]]
     log = (f.ce.run_dir(rev.id) / "agent.log").read_text()
-    assert f"[legion] check out {node.candidate_sha[:12]} (detached): exit 0" in log
+    assert f"[legion] check out {t.sha[:12]} (detached): exit 0" in log
 
 
 @scenario()
-async def test_a_retried_run_continues_its_pushed_branch_in_a_fresh_sandbox(f: Flow):
-    """After a retry the sandbox is new: the controller starts the branch at its tip on the hub
-    (what the failed run pushed), not at the base."""
+async def test_a_new_attempt_continues_its_pushed_branch(f: Flow):
+    """An implementer's next attempt starts its branch at its tip on the hub (what the failed
+    run pushed), not at the base."""
     await f.to_build()
-    r = f.run("build:T1", "implementer")
+    r = f.run("T1", "implementer")
     pushed = f.commit(r, {"src/greet.txt": "half done\n"})
-    await f.exit_agent(r, rc=1)                         # no report: the run fails
-    node = f.ce.nodes["build:T1"]
-    assert node.status == "ESCALATED"
-    await f.human("build:T1", "retry")
-    r2 = f.run("build:T1", "implementer")
-    assert r2.sandbox != r.sandbox
-    assert f.steps(r2) == [["clone.sh"], ["branch.sh", r2.branch, pushed]]
+    f.ce.connected(r)
+    with open(f.ce.run_dir(r.id) / "agent.log", "a") as fh:
+        fh.write(json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                             "result": "gave up"}) + "\n")
+    await f.exit_agent(r, rc=1)                         # the agent's failure: an attempt
+    await f.settle()
+    r2 = f.run("T1", "implementer")
+    assert r2.id != r.id and f.ticket("T1").attempt == 2
+    assert f.steps(r2)[-1] == ["branch.sh", r2.branch, pushed]
 
 
 @scenario()
 async def test_without_an_environment_the_tools_are_the_default_images(f: Flow):
     await f.to_build()
-    tools = f.run("build:T1", "implementer").template_vars["sandbox_tools"]
+    tools = f.run("T1", "implementer").template_vars["sandbox_tools"]
     assert "default image" in tools and "do not assume python3, node or rsync" in tools
 
 
 @scenario()
 async def test_the_controllers_mcp_tools_load_up_front(f: Flow):
     """Not deferred behind a tool search (the agents' recurring first-turn detour)."""
-    import json
     server = json.loads(f.runner.mcp_configs[0])["mcpServers"]["legion"]
     assert server["alwaysLoad"] is True and server["url"] == f.ce.mcp_url
 
 
 # ====================================================================== the turn ends the run
+async def intake_reported(f: Flow):
+    run = f.run("intake")
+    req = await f.write(run, "requirements.md", "# Requirements\n\n- REQ-1: hello\n")
+    risk = await f.write(run, "risk.json", signals())
+    out = await f.report(run, [req, risk], exit_agent=False,
+                         outputs={"requirements": req, "risk": risk})
+    return run, out
+
+
 @scenario()
 async def test_an_accepted_report_is_taken_when_the_agents_turn_ends(f: Flow):
-    run = f.run("intake")
-    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
-            await f.write(run, "intake/risk.json", signals())]
-    out = await f.report(run, atts, exit_agent=False)
+    run, out = await intake_reported(f)
     assert out.accepted and "a2a_reply" in out.instruction
     assert run.status == "REPORTED" and not run.concluded
-    assert f.status("intake") == RUNNING and f.status("H-1") == PENDING     # nothing moved yet
+    assert f.status("intake") == "working" and f.status("H-1") == "pending"  # nothing moved yet
     await f.exit_agent(run)                                  # the turn ends: control returns
-    assert run.concluded and f.status("intake") == ACCEPTED
-    assert f.status("H-1") == AWAITING_HUMAN
+    assert run.concluded and f.status("intake") == "checking"
+    assert f.status("H-1") == "working"
 
 
 @scenario()
 async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
     from legion_orch.workflow.engine.services.runs import RunLifecycle
-    run = f.run("intake")
-    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
-            await f.write(run, "intake/risk.json", signals())]
-    await f.report(run, atts, exit_agent=False)
+    run, _ = await intake_reported(f)
     await f.reply(run)                                  # the task ended: the grace starts
     grace, RunLifecycle.END_TURN_GRACE_S = RunLifecycle.END_TURN_GRACE_S, 0
     f.ce.notify()                                       # its timer reads the state again
@@ -1178,42 +818,14 @@ async def test_an_agent_that_does_not_end_its_turn_is_stopped(f: Flow):
         await f.settle()
     finally:
         RunLifecycle.END_TURN_GRACE_S = grace
-    assert run.concluded and f.status("intake") == ACCEPTED
+    assert run.concluded and f.status("intake") == "checking"
     assert "did not end its turn" in f.ce.timeline()
 
 
 @scenario()
 async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restart(f: Flow):
-    run = f.run("intake")
-    atts = [await f.write(run, "intake/requirements.md", "# Requirements\n\n- REQ-1: hello\n"),
-            await f.write(run, "intake/risk.json", signals())]
-    await f.report(run, atts, exit_agent=False)
+    run, _ = await intake_reported(f)
     ctl2, ce2 = await f.restart(recover=True)
-    for _ in range(50):
-        await asyncio.sleep(0.02)
-        if ce2.runs[run.id].concluded:
-            break
-    assert ce2.runs[run.id].concluded and ce2.nodes["intake"].status == ACCEPTED
-
-
-@scenario()
-async def test_the_panel_waits_for_every_judge_before_escalating(f: Flow):
-    """A judge that fails does not escalate the step while another judge still works: the panel
-    escalates once every judge has finished, and a retry dispatches only the judges without a
-    review."""
-    await f.to_build()
-    f.ce.change.panel = ["reviewer", "security"]
-    await f.implement()
-    assert f.status("build:T1") == REVIEWING
-    security = f.run("build:T1", "security")
-    await f.exit_agent(security, rc=1)                      # fails while the reviewer works
-    assert f.status("build:T1") == REVIEWING and f.run("build:T1", "reviewer")
-    await f.review(role="reviewer")                         # the last judge finishes
-    node = f.ce.nodes["build:T1"]
-    assert node.status == ESCALATED and node.escalation.kind == "run_failed"
-    assert node.escalation.run == security.id and node.review(node.cycle, "reviewer")
-    await f.human("build:T1", "retry")
-    assert f.run("build:T1", "security").id != security.id      # a new security run only
-    assert not [r for r in f.runs("build:T1", "reviewer") if r.status in ("STARTING", "ACTIVE")]
-    await f.review(role="security")
-    assert f.status("build:T1") == ACCEPTED
+    f.ctl, f.ce = ctl2, ce2
+    await f.settle()
+    assert ce2.runs[run.id].concluded and f.status("intake") == "checking"

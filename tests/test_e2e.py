@@ -74,7 +74,7 @@ def _config(tmp_path, port):
         server: {{host: 127.0.0.1, port: {port}, agent_host: 127.0.0.1, public_host: 127.0.0.1,
                   mcp_port: {_free_port()}, git_port: {_free_port()}, token_port: {_free_port()},
                   a2a_port: {_free_port()}}}
-        limits: {{max_parallel: 4, review_max_cycles: 3, critique_max_cycles: 2, run_timeout_s: 120}}
+        limits: {{max_parallel: 4, run_timeout_s: 120}}
         retrospective: {{auto: false}}    # the scripted agents play no retrospective
         sandbox:
           runner: local

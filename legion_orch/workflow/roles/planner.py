@@ -44,6 +44,10 @@ class Planner(RoleHandler):
         plan, v = parse_plan(plan_data)
         if v:
             return [f"G-P1: tickets: {x}" for x in v]
+        # each ticket's work fits its role (the work schema – path shapes included), as its
+        # sign-off checks again before applying it
+        if v := [f"G-P1: {x}" for a in plan.add for x in e.assets.work_problems(a.ticket)]:
+            return v
         after = depends(plan)
         builds = [a.ticket for a in plan.add if a.ticket.type == "agent:implementer"]
         tasks = [{"id": b.id, "title": b.goal or b.id, "depends_on": after.get(b.id, []), **b.work}

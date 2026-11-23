@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...bus import DocWritten, Escalated, Pushed
+from ..tickets.executors import Backoff
 from .flow import Agents, Provision, Signoffs, TicketFlow, Verify
 from .sandboxes.sandboxes import Sandboxes
 from .services.agent_runs import AgentRuns
@@ -44,7 +45,8 @@ def compose(ce: ChangeEngine) -> None:
         ce, agents=Agents(ce, agent_runner, agents, lifecycle, dispatcher), signoffs=signoffs,
         verify=Verify(ce, verifications, dispatcher),
         provision=Provision(ce, provisioner, dispatcher), publisher=Publisher(ce),
-        agent_runner=agent_runner, lifecycle=lifecycle)
+        agent_runner=agent_runner, lifecycle=lifecycle,
+        backoff=Backoff(tries=ce.cfg.limits.system_retries, first=ce.cfg.limits.system_retry_s))
     ce._flow, ce._reports, ce._lifecycle, ce._signoffs = flow, reports, lifecycle, signoffs
     ce._verifications, ce._tasks, ce._agent_runner = verifications, tasks, agent_runner
     ce._resolver = resolver = Resolver(ce)               # every escalation goes to it

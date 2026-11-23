@@ -17,9 +17,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from ....util import now_iso
-from ...model import FailureSource, Verification
+from ...model import R_REPORTED, FailureSource, Verification
 from ...tickets import Status, Ticket
 from ...tickets.executors import AgentEnd, Decision, Work
+from ...tickets.executors.verify import EXIT_NOT_FOUND
 from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 from ..base.dispatch import Dispatcher
@@ -64,6 +65,8 @@ class Agents:
             if ticket is None:
                 return AgentEnd(False, failure=FailureSource.CONTROLLER, detail="not wanted")
             plan = plan_for(ticket, c.assets.roles[role].git)
+            if (done := self._reported(ticket, role, work.attempt)) is not None:
+                return await self._conclude(done, ticket, plan)   # a restart: its turn ended
         outcome, prepared = await self.runner.publish_work(
             ticket, role, work, plan, wanted=lambda: live(c, work) is not None,
             started=lambda run: None, dispatch=self.dispatch)
@@ -75,19 +78,31 @@ class Agents:
             if run is None:
                 return AgentEnd(False, failure=FailureSource.SYSTEM,
                                 detail=outcome.error or "the run never started")
-            end = await self.agents.conclude(run)
-            run.concluded = True
-            # its kept sandbox is stopped until the ticket's next round (or released, once the
-            # ticket is closed); a judge's is stopped for questions until its next round
-            c.spawn(self.agents.sandboxes.pause(run) if plan.keeps
-                    else self._suspend(run.sandbox))
-            if end is None:
-                end = AgentEnd(False, failure=FailureSource.SYSTEM,
-                               detail="the agent's turns ended without an outcome")
-            elif end.accepted:
-                self.lifecycle.accept_runs(ticket)
-            c.save()
-        if end.accepted and end.sha:            # the commit reported: kept, whatever its fate
+            return await self._conclude(run, ticket, plan)
+
+    def _reported(self, ticket: Ticket, role: str, attempt: int):
+        """The round's run that reported but was not concluded (the controller stopped in
+        between): its report stands; it is concluded instead of run again."""
+        return next((r for rid in reversed(ticket.runs) if (r := self.c.runs.get(rid))
+                     and r.role == role and r.attempt == attempt and not r.consult
+                     and r.status == R_REPORTED and not r.concluded), None)
+
+    async def _conclude(self, run, ticket: Ticket, plan) -> AgentEnd:
+        """How the run ended for its ticket (the lock is held); the commit it reported is
+        pinned as evidence, whatever its fate."""
+        c = self.c
+        end = await self.agents.conclude(run)
+        run.concluded = True
+        # its kept sandbox is stopped until the ticket's next round (or released, once the
+        # ticket is closed); a judge's is stopped for questions until its next round
+        c.spawn(self.agents.sandboxes.pause(run) if plan.keeps else self._suspend(run.sandbox))
+        if end is None:
+            end = AgentEnd(False, failure=FailureSource.SYSTEM,
+                           detail="the agent's turns ended without an outcome")
+        elif end.accepted:
+            self.lifecycle.accept_runs(ticket)
+        c.save()
+        if end.accepted and end.sha:
             await c.git.pin(run.id, end.sha)
         return end
 
@@ -167,13 +182,17 @@ class Verify:
         async with c.lock:
             key = self.svc.key(sha, commands)
             c.event("verify", f"verification of {sha[:12]} ({len(commands)} command(s))", tid)
+            # a known result is not run again – unless it says nothing of the commit: the
+            # verifier's infrastructure failed, or a command was not in its image (G-V2)
+            known = self.svc.result(key)
+            again = known is not None and _not_the_commits(known.result)
 
         def sandbox(name: str) -> None:
             c.verifying[tid] = name
             c.host.touch()
         try:
             run = await self.svc.verify(key, f"ticket:{tid}", STEP, node=tid, on_sandbox=sandbox,
-                                        dispatch=self.dispatch)
+                                        force=again, dispatch=self.dispatch)
         finally:
             async with c.lock:
                 c.verifying.pop(tid, None)
@@ -183,6 +202,13 @@ class Verify:
 
     async def stop(self, ticket: str) -> None:
         return None
+
+
+def _not_the_commits(v: Verification | None) -> bool:
+    """A result that is the verifier's fault, not the commit's: its infrastructure failed, or
+    a command is not in its image."""
+    return v is None or bool(v.infra_error) or any(
+        r.exit_code == EXIT_NOT_FOUND and not r.setup for r in v.results)
 
 
 class Provision:

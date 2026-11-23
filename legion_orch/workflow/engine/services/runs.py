@@ -163,6 +163,10 @@ class RunLifecycle:
             proc.kill()                      # its exit ends the run's work (AgentRuns.work)
         if ticket is None:
             return
+        if ticket.sandbox == run.sandbox and run.sandbox_ref is None and not any(
+                r.sandbox == run.sandbox and r.sandbox_ref for r in self.c.runs.values()):
+            ticket.sandbox = None            # never created: the next round creates its own
+            return
         if not self.c.cfg.sandbox.keep_failed and run.sandbox and run.role != "implementer":
             # a failed run's sandbox is not kept for the next round either: it starts afresh
             if ticket.sandbox == run.sandbox:

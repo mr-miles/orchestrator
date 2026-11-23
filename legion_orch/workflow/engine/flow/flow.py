@@ -332,7 +332,9 @@ class TicketFlow:
         """A decision owner's action on a ticket: ``approve`` / ``reject`` (a sign-off waiting
         for them), ``retry`` / ``replan`` (a waiting ticket's remedy; a retry's ``answer`` – to
         a blocked agent's question, say – is what its next round is told), ``waive`` (a
-        rejected, waivable criterion of a waiting ticket). Returns what happened."""
+        rejected, waivable criterion of a waiting ticket – on the criterion, or
+        ``waive:<criterion>`` on the waiting ticket, as the resolver proposes it). Returns what
+        happened."""
         self._owner(approver)
         payload = dict(payload or {})
         c = self.c
@@ -342,6 +344,8 @@ class TicketFlow:
                                      str(payload.get("reason") or ""))
                 c.save()
             return f"{ticket_id}: {action}d"
+        if action.startswith("waive:"):          # on the waiting ticket: its criterion's waiver
+            ticket_id, action = action.removeprefix("waive:"), "waive"
         remedy = {"retry": Remedy.RETRY, "replan": Remedy.REPLAN, "waive": Remedy.WAIVE}.get(action)
         if remedy is None:
             raise WorkflowError(f"unknown action {action!r}")

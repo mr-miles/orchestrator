@@ -442,11 +442,12 @@ class AgentRuns:
             refs += value if isinstance(value, list) else [value] if value else []
         if ticket.role == "criterion":
             refs += outputs_of_owner(self.roles, ticket)
-        refs += [attest.normalize(x, self.c.cid) for x in ticket.work.get("context", [])]
-        given = {_file_path(a) for a in refs} - {None}
-        refs += [a for a in (attest.normalize(x, self.c.cid)
-                             for x in handler_for(role).extra_context(self.roles, ticket))
-                 if _file_path(a) not in given]
+        given = {_file_path(a) for a in refs} - {None}     # at the version the controller gives
+        for x in (*ticket.work.get("context", []), *handler_for(role).extra_context(self.roles,
+                                                                                   ticket)):
+            a = attest.normalize(x, self.c.cid)
+            if _file_path(a) not in given:
+                refs.append(a)
         return list(dict.fromkeys(refs))
 
     @staticmethod

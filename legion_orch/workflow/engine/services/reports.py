@@ -258,9 +258,10 @@ class Reports:
             return AgentEnd(False, blocked=True, detail=run.report.blocked_reason or "",
                             findings=tuple(x for x in [run.report.missing_decision] if x))
         try:
-            # what the role's report means (see workflow/roles/)
-            report = self._accepted.pop(run.id, None) or await self._recheck(run, ticket)
-            said = await handler_for(run.role).on_done(self.roles, report)
+            # what the role's report means (see workflow/roles/): all or nothing
+            with self.c.st.transaction():
+                report = self._accepted.pop(run.id, None) or await self._recheck(run, ticket)
+                said = await handler_for(run.role).on_done(self.roles, report)
             return AgentEnd(True, sha=report.sha, verdict=said.verdict, findings=said.findings,
                             outputs=dict(run.report.outputs))
         except Exception as e:

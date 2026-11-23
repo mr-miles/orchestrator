@@ -222,7 +222,7 @@ def make_source_repo(path: Path, files: dict[str, str] | None = None) -> None:
 
 def make_config(tmp_path: Path, *, blank_repo: bool = False, environment: dict | None = None,
                 **limits):
-    lim = {"max_parallel": 4, "review_max_cycles": 3, "critique_max_cycles": 2,
+    lim = {"max_parallel": 4, "system_retries": 2, "system_retry_s": 0.01,
            "run_timeout_s": 120} | limits
     cfg_path = tmp_path / "orchestrator.yaml"
     source = "" if blank_repo else f", source: {tmp_path / 'src-repo'}"
