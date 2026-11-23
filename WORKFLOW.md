@@ -1,25 +1,35 @@
 # Legion Orchestrator Workflow
 
-This document specifies the orchestrator's workflow: stages, guards, risk tiers and ship gates,
-and which soul, skills and prompt each task uses. The agent-facing text itself lives in
-[`assets/`](assets/) (see §6), one file per asset, and the controller loads it from there. This
-document is not parsed.
+This document specifies the orchestrator's workflow: the tickets every change is made of, the
+guards on them, the risk tiers' policies, and which soul, skills and prompt each role uses. The
+agent-facing text itself lives in [`assets/`](assets/) (see §6), one file per asset, and the
+controller loads it from there. Apart from [`assets/workflow.yaml`](assets/workflow.yaml) (the
+skeleton and the tier policies, §4.2, §3) this document is not parsed.
 
 Every dispatch records two pins: the SHA-256 of the whole asset set and the SHA-256 of the rendered
 soul + skills + prompt. Any edit to an asset is therefore visible in the run record. Guard IDs
-(`G-…`, `H-…`) are implemented one-to-one in `legion_orch/workflow/guards/`; `tests/test_units.py` fails if
-this document and the code drift apart, or if a link below points at a missing asset.
+(`G-…`) are implemented one-to-one in the code (`legion_orch/workflow/guards/`, the role handlers,
+the executors); `tests/test_units.py` fails if this document and the code drift apart, or if a
+link below points at a missing asset. Sign-offs (`H-…`) are tickets of the skeleton.
 
-The model follows [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended):
+A change is one tree of **tickets**. A ticket is its own work, then its subtasks, then its
+acceptance criteria – and criteria are tickets too, so a human's sign-off is just the criterion
+of the work it signs. Every change starts from the same skeleton:
 
 ```
-Requirements (intake) ◆H-1 -> Plan [ Design (plan + critique) ◆H-E1 -> Oracle (oracle, preflight, baseline) ◆H-2 ]
-                     -> Delivery (build, verify, review loop; integration, release) ◆H-3 (its preconditions: the ship gates)
+change
+├─ requirements    intake ✓H-1
+├─ plan            design (planner) ✓critique ✓H-E1 → provision → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
+├─ delivery        (the planner's builds, each ✓verify ✓review… ✓can-merge) → integration
+├─ evaluate        describe                                        ✓H-3
+└─ release         publish
 ```
 
-…with the same product contract: **the controller refuses to call a change shippable until the
-evidence its risk tier demands actually exists**. Absence of evidence is not evidence of
-satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
+`✓` marks a criterion, `→` the order of subtask groups, `[…]` R2+ (the baseline R3). The
+contract is the one of [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended): **the
+controller refuses to call a change done until the evidence its risk tier demands exists** – here,
+until every ticket its tier's policy requires has passed every criterion, the human sign-offs
+included. A criterion with nothing behind it does not pass.
 
 ---
 
@@ -35,17 +45,20 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
    `read-before-write -> evidence-before-action -> minimal diff -> verify-before-report`.
 4. **No self-deferral.** A run ends in exactly one of `DONE` or `BLOCKED`. There is no "partially
    done", "deferred" or "skipped".
-5. **No automatic retries of failed runs.** A crashed, timed-out or repeatedly-rejected run is
-   escalated to a human. Rework driven by *evidence* (failed verification, review findings, critique)
-   is not a retry and is automatic, up to a cycle budget.
-6. **Independence.** Reviewers, verifiers and critics run in fresh sandboxes and never share a
-   sandbox, identity or run with the work they judge.
-7. **Humans own the boundaries.** Requirement acceptance, spec/oracle approval, escalations and
-   whole-change acceptance are human decisions recorded with a named approver from
-   `decision_owners`. No identity is inferred.
-8. **Sandbox lifecycle follows acceptance.** A sandbox lives until the work it produced is
-   accepted by the controller; then it is deleted. Failed/escalated sandboxes are kept for
-   inspection (configurable) until the human resolves the escalation.
+5. **Errors by kind.** A failed criterion is evidence: the work runs again with the findings (an
+   *attempt*), up to the ticket's limit; then a human decides. A **system** error (sandbox,
+   gateway, git, a verifier's infrastructure, a controller restart) is never the agent's: it is
+   retried with backoff and then waits on a human, and never costs an attempt. An exceeded
+   **budget** (the run timeout) and a **BLOCKED** agent wait on a human at once.
+6. **Independence.** Judges (critics, reviewers, verifiers) run in fresh sandboxes and never share
+   a sandbox, identity or run with the work they judge.
+7. **Humans own the boundaries.** Requirement acceptance, plan and oracle approval, every
+   escalation's remedy, replans and whole-change acceptance are human decisions recorded with a
+   named approver from `decision_owners`. No identity is inferred.
+8. **Finished work is never undone.** A passed ticket is closed; corrections are new tickets
+   (§4.6).
+9. **Sandbox lifecycle follows the ticket.** A ticket's agent keeps its sandbox and session until
+   the ticket is closed; then it is deleted (after the agent reflects, §5.13).
 
 ---
 
@@ -53,8 +66,8 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 
 ```
                         +-------------------- controller (python) --------------------+
- human --- web UI ----> |  workflow engine  |  guards  |  doc store  |  git remote     |
-                        |  dispatcher       |  risk/gates            |  openshell CLI  |
+ human --- web UI ----> |  ticket runner    |  guards  |  doc store  |  git remote     |
+                        |  dispatcher       |  tier policy           |  openshell CLI  |
                         +-----------^-----------------------------------------|-------+
                                     | MCP + git (gateway-injected bearer)     | sandbox create / upload /
                                     |                                         | exec / delete
@@ -65,21 +78,21 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
                      +----------------------------+      +-------------------------------+
 ```
 
-* **Sandbox per task.** A sandbox serves exactly one task in one role for its whole life: an
-  implementer sandbox is reused across that task's rework cycles; intake, planner and oracle keep
-  theirs (stopped between runs with `openshell sandbox stop`, started again for a rework) and
-  continue their agent session (`claude --resume`) until the gate that can send their work back
-  has passed (intake: H-1; planner and oracle: H-2); critics, reviewers and verifiers always get
-  their own (`openshell sandbox create --detach --name lg-<first name>
-  --provider legion-mcp --provider legion-git[-push] --policy … --upload payload:/sandbox`). The payload contains only
-  `soul.md`, `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and one script per
-  preparation step, which the controller runs in order (each logged to the run's agent log):
-  `clone.sh` (a partial clone: history, contents on demand); `branch.sh <branch> <start>` for a
-  role that pushes (its branch at its tip on the hub if pushed before, else at its base) or
-  `checkout.sh <sha>` – a detached checkout, no branch – for every other role (judges at the
-  commit they judge, read-only roles at their base); `mise-setup.sh` when a setup is pinned
-  (§5.3c; roles that work with a commit); then `run-agent.sh` starts the agent. A reused sandbox
-  skips the clone. Verifier sandboxes run the same `clone.sh` and `checkout.sh`.
+* **Sandbox per ticket.** A ticket's own agent (intake, planner, oracle, an implementer …) keeps
+  one sandbox for the ticket's whole life: stopped between rounds (`openshell sandbox stop`),
+  started again for the next attempt, its agent session continued (`claude --resume`), until the
+  ticket is closed – so the intake keeps its session until H-1 passes, the planner until H-E1,
+  the oracle until H-2. A criterion's agent (a judge) gets a fresh sandbox every round (G-D4)
+  (`openshell sandbox create --detach --name lg-<first name> --provider legion-mcp --provider
+  legion-git[-push] --policy … --upload payload:/sandbox`). The payload contains only `soul.md`,
+  `prompt.md`, `mcp.json` (MCP URL, no credentials), `run.env` and one script per preparation
+  step, which the controller runs in order (each logged to the run's log): `clone.sh` (a partial
+  clone: history, contents on demand); `branch.sh <branch> <start>` for a role that commits (its
+  ticket's branch at its tip on the hub if pushed before, else at its base) or `checkout.sh <sha>`
+  – a detached checkout, no branch – for every other role (judges at the commit they judge,
+  others at their base); `mise-setup.sh` when a setup is pinned (§5.3c; roles that work with a
+  commit); then `run-agent.sh` starts the agent. A reused sandbox skips the clone. Verifier
+  sandboxes run the same `clone.sh` and `checkout.sh`.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
 * **Workload identity (SPIFFE/SPIRE).** Set up once per OpenShell workspace
   (`legion-orch setup-openshell`): one provider profile per controller endpoint – `legion-mcp`,
@@ -88,11 +101,11 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
   (`spiffe://…/openshell/sandbox/<sandbox-id>`) and exchange it at the controller's
   `POST /oauth/token` (OAuth2 client_credentials, `jwt-spiffe` client assertion). The controller
   verifies the SVID against the SPIRE JWKS (signature, issuer, audience, expiry, sandbox prefix),
-  maps the sandbox id to the one task it serves and issues a short-lived, **task-scoped** token
-  (sandbox, change, task, role) signed with a key that never leaves controller memory. The gateway
-  injects it as `Authorization: Bearer` into requests to the controller only. Every MCP and git
-  request is then bound to the sandbox's live run, which must match the token's change, task and
-  role; when the run ends, the token is useless.
+  maps the sandbox id to the one ticket it serves and issues a short-lived, **ticket-scoped**
+  token (sandbox, change, ticket, role) signed with a key that never leaves controller memory.
+  The gateway injects it as `Authorization: Bearer` into requests to the controller only. Every
+  MCP and git request is then bound to the sandbox's live run, which must match the token's
+  change, ticket and role; when the run ends, the token is useless.
 * **Network access** comes from the providers a sandbox attaches; OpenShell adds each attached
   profile's endpoints to the sandbox's effective policy, so the sandbox policy
   ([`policies/agent-policy.template.yaml`](policies/agent-policy.template.yaml)) has no rule for
@@ -106,8 +119,8 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
     allow an MCP endpoint to share a host and port with another protocol.)
   * `legion-a2a` – `protocol: rest` for `/a2a/**` on the controller's dedicated A2A port, for the
     `a2a` CLI (`sandbox.a2a_binaries`): agent-to-agent messaging (§5.15).
-  * `legion-git-push` (roles that push: implementer, oracle) or `legion-git` (every other role) –
-    `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port, for git. Both
+  * `legion-git-push` (roles that commit: implementer, oracle) or `legion-git` (every other role)
+    – `protocol: rest` for `/git/*.git/**` on the controller's dedicated git port, for git. Both
     allow fetch and `git-receive-pack`; `legion-git` also denies `git-receive-pack`, and a deny
     rule applies across the whole effective policy, so a sandbox attaches exactly one of them.
 
@@ -116,29 +129,33 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 
   Verifier sandboxes attach `legion-git` (fetch only) and nothing else.
 
-  With the environment stage (§5.3a), the policy of a mapped role's sandbox additionally holds
+  With an environment (§5.3a), the policy of a mapped role's sandbox additionally holds
   its profile's network policies (`env_<name>`, each open to the binaries that brought it), and the
   sandbox runs the profile's image and resources.
 * **Agents push; the controller hosts the remote.** The controller serves its bare hub repository
   over git smart-HTTP (`git http-backend`) at `/git/<repo>.git`. Every live run may fetch. A run
-  may push **only** to its own branch
-  `refs/heads/legion/<change>/<node>` (enforced by a `pre-receive` hook fed by the controller);
-  ref deletion is refused, and judge roles may not push at all. The integration branch and
-  `refs/legion/**` are written only by the controller. When a report is accepted the controller
-  pins the attested sha under `refs/legion/evidence/<run>` so later force-pushes to a work branch
-  can never orphan evidence.
+  may push **only** to its ticket's branch `refs/heads/legion/<change>/t/<ticket>` (enforced by a
+  `pre-receive` hook fed by the controller); ref deletion is refused, and judges may not push at
+  all. The change's integration branch (`legion/<change>/integration`, the root's branch) and
+  `refs/legion/**` are written only by the controller. When a report with a commit is accepted
+  the controller pins it under `refs/legion/evidence/<run>`, so evidence outlives the branches.
 * **Documents** are written by agents directly to the versioned store through MCP `docs_write`.
-  Every change has its own namespace `changes/<change-id>/`. Agents use paths relative to their
-  change (`plan/spec.md`); the tools resolve them to `changes/<id>/plan/spec.md`, and attestations
-  are always stored fully qualified (`file:changes/<id>/plan/spec.md@2`). Agents may read any
-  change's documents (cross-change context) except `*/control/logs/`, and write only inside their
-  own change and write scope.
+  Every change has its own namespace `changes/<change-id>/`, and **every ticket its own
+  directory** `tickets/<ticket>/`: a ticket's agent writes only there. Agents use paths relative
+  to their change (`tickets/design/spec.md`); the tools resolve them to
+  `changes/<id>/tickets/design/spec.md`, and attestations are always stored fully qualified
+  (`file:changes/<id>/tickets/design/spec.md@2`). Agents may read any change's documents
+  (cross-change context) except `*/control/runs/*/log*`.
+* **Outputs are named.** A role declares the outputs it must produce (`roles.yaml` `outputs`:
+  `spec`, `oracle`, `tickets`, `specs*` – a `*` is a list); the agent's report says which
+  documents they are (`outputs: {spec: "file:…@3"}`), and the accepted report pins them on its
+  ticket. Sign-offs and consumers name outputs, never paths (§4.2).
 * **MCP tools** (every call bound to the calling sandbox's live run via its gateway-injected token):
 
 | Tool | Purpose |
 | --- | --- |
-| `whoami()` | run id, role, task, cycle, write scope |
-| `get_assignment()` | full assignment: contract, context attestations, feedback, base sha, branch |
+| `whoami()` | run id, role, ticket, attempt, write scope |
+| `get_assignment()` | full assignment: goal, work, inputs at their versions, findings to address, base sha, branch, the outputs to report |
 | `docs_list(prefix)` | list documents and latest versions |
 | `docs_read(path, version?)` | read an immutable version (latest by default) |
 | `docs_history(path)` | all versions with author/run and sha256 |
@@ -146,7 +163,10 @@ satisfaction – a gate with nothing behind it is `unevaluable`, which blocks.
 | `docs_write(path, content, base_version?, dry_run?)` | create version N+1; content must match the path's schema (G-W3). `base_version` must equal the current latest (optimistic concurrency); omit only for a new path. Scope-checked. Returns `file:<path>@<N>`. `dry_run`: every check (G-W1..G-W4), nothing written or counted; returns the attestation the write would produce (or `unchanged`) |
 | `verify_attestation(ref)` | check that a `file:`/`git:` reference resolves |
 | `progress(message, percent?)` | heartbeat shown live in the UI |
-| `report(status, summary, attestations, data?, blocked_reason?, missing_decision?, dry_run?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations. `dry_run`: every guard, but no attempt is counted (G-R6) and nothing is recorded or applied; returns `would_accept` and the violations (timeline event `report_checked`) |
+| `report(status, summary, attestations, outputs, data?, blocked_reason?, missing_decision?, dry_run?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations. `dry_run`: every guard, but no attempt is counted (G-R6) and nothing is recorded or applied; returns `would_accept` and the violations (timeline event `report_checked`) |
+| `ticket_status(ticket?)` / `workflow_context()` | where work stands (§5.15) |
+| `verification_request(sha?)` / `verification_status(id?)` / `verification_evidence(id)` | the verification service (§5.7) |
+| `inbox()` / `a2a_reply(task_id, text, state?)` | the agent's A2A inbox (§5.15) |
 
 ### 2.1 State and persistence
 
@@ -156,44 +176,45 @@ by side under one controller; they share `max_parallel` but nothing else.
 **Workspaces.** The config names one or more workspaces (`workspaces:` – `name`, `source`,
 `base_branch`, `publish_prefix`): the repositories changes are made in. Each has its own bare
 hub (`<state_dir>/git/served/<name>.git`), cloned from its `source` (none: a new, empty
-repository). A change is made in exactly one (`Change.workspace`, required when it starts – no workspace
-is kept for a later change across workspaces, planned in several places); its attestations name it (`git:<workspace>@<sha>`),
-and its runs' git credentials reach its hub and no other. `legion/*` is the hub's own namespace
-(integration and run branches); a finished change is published as
-`<publish_prefix><change-id>` (default `agent/`).
+repository). A change is made in exactly one (`Change.workspace`, required when it starts); its
+attestations name it (`git:<workspace>@<sha>`), and its runs' git credentials reach its hub and
+no other. `legion/*` is the hub's own namespace (integration and ticket branches) and is never
+published; a finished change is published as `<publish_prefix><change-id>` (default `agent/`,
+§5.10c).
 
 | Where | What |
 | --- | --- |
-| `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `release/`, …) |
-| `changes/<id>/<step>/` | a step agent's documents, under its step's node id (`{{step}}`): `oracle/tests.md`, `baseline/report.md`, `integration/report.md` – a fix round's are its own (`oracle.2/tests.md`, `baseline.2/report.md`) |
-| `changes/<id>/<plan step>/` | a plan's documents, under its step's node id: `plan/` (a fix round's `plan.2/`, seeded from the plan worked to when the round's plan step starts) – `spec.md`, `specs/REQ-<n>.md`, `oracle.json`, `taskgraph.json`, `environment.json`, and its critiques `critique/cycle-<n>.md` |
-| `changes/<id>/control/plan.json` | the plan worked to: its step (`plan`, `plan.2`) and the approved version of each of its documents. Written when H-E1 approves a plan, updated as its subjects are approved, reset when the plan restarts; every role after the plan reads the plan's documents through it (`{{plan}}`) |
-| `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); its step records (controller): `verification/cycle-<n>.json`, `panel/cycle-<n>.json` (the panel's pass), `reports/<role>-cycle-<n>.json` (each judge's report as accepted: its review on the step, status, summary, attestations and structured data); `feedback/<n>.md`, `decisions/<n>.md` (the escalation's question, then the human's answer) |
-| `<step records>/runs/<run>/assignment.json`, `outcome.json` | each agent run, under its step's records (a build task's `tasks/<task_id>/`, any other step's `control/steps/<node>/`): its **assignment** from dispatch – role, soul, cycle, sandbox and its SPIFFE sandbox id, branch and the shas it works at, the session it continues, its write scope, required documents and context, **the asset-set sha, rendered-prompt sha and the template values bound into its prompt**, its rendered assignment – and, once it is no longer live, its **outcome**: status, failure, exit, the session it left, its report and reply, what it used (attempts, violations, document versions, verification requests). The outcome gets a new version as its conclusion moves on (reported, then accepted). No credential exists to store. What only a live run has – its stage, latest progress message, A2A bookkeeping – stays in memory; its log is the document of everything it did. A run with an assignment and no outcome was live when the controller stopped: recovery fails it |
-| `changes/<id>/control/steps/<node>/` | any other step's records, laid out as a build task's (`verification/`, `panel/`, `reports/`, per cycle). A fix round's steps are new nodes with their own names (`plan.2`, `integration.2`), so every record's path says whose it is |
+| `changes/<id>/tickets/<ticket>/` | everything a ticket's agent wrote – its outputs (`tickets/intake/requirements.md`, `tickets/design/tickets.json`, `tickets/T1/evidence.md`, `tickets/review:T1/review.md`) – and, for a sign-off, the controller's `signoff.json`: the decision, approver, time, reason (a rejection) and each subject at the exact version shown. A rerun criterion keeps its id; the store's versions keep its rounds apart |
+| `changes/<id>/control/runs/<run>/` | each agent run (run ids are unique): `assignment.json` from dispatch – its ticket and attempt, role, soul, sandbox and its SPIFFE sandbox id, branch and the shas it works at, the session it continues, its write scope, the outputs it must report and its context, **the asset-set sha, rendered-prompt sha and the template values bound into its prompt**, its rendered assignment – `outcome.json` once it is no longer live (status, failure, exit, the session it left, its report and reply, what it used; a new version as its conclusion moves on), and `log`, `log.2` … – the agent's whole output, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB; each stream-json event carries `legion_ts`, the time the controller received it; not readable by agents). No credential exists to store. What only a live run has – its stage, latest progress message, A2A bookkeeping – stays in memory |
+| `changes/<id>/control/verifications/<id>/record.json` | each verification (§5.7) |
+| `changes/<id>/control/workspace.json` | the change's base (§5.0a) |
+| `changes/<id>/control/environment/` | `build.json` (the provisioned environment) and `provision.log` |
 | `changes/<id>/control/pr.json` | the published pull request (§5.10c): url, number, branch, head, labels |
-| `changes/<id>/control/logs/<run>.log` (`<run>.2.log`, …) | the agent's whole output, archived when it exits, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB). Each stream-json event carries `legion_ts`, the time the controller received it. Not readable by agents |
+| `changes/<id>/control/ended.json` | who abandoned the change, where it was and why (§5.13) |
+| `changes/<id>/control/proposals/<ticket>-<n>.json` | the resolver's proposals (§5.16) |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
 | `changes/<id>/control/reflections/<run>.md` | the agent's own account of what cost it time and where its guidance failed (§5.13) |
 | `changes/<id>/control/timeline/<n>.jsonl` | the controller's events (dispatch, sandbox, verification, rework, human actions), written in chunks |
 | `changes/<id>/control/assets/<sha>.json` | the hash of each asset file of an asset set the change's runs used |
-| `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship,environment}/…` | human decisions and controller evidence (`environment/build.json`: the provisioned environment) |
-| `state.db` tables `changes`, `steps` | the change's live state – what a restart loads: one row per record, updated in place as the change saves. `changes`: the change record (goal, workspace, base, tier, integration head, rounds, …) and the workflow's (the stage rules, §4.1: the tree's parameters – tier rank, environment, blank repository – and the core's state as it stands – each stage's and step's status, attempts, pending feedback and escalation, the fix rounds inserted and the task groups' steps – from which it is restored, the tree rebuilt); `steps`: each node's state inside its step (status, cycle, commits, feedback, escalation, sandbox; which nodes exist and their order come from the workflow's tree). Fields copied from documents (approvals, the oracle, reviews, verifications, …) are not stored: they are projected from their documents, as they are written and on load. Nor is which sandboxes exist and which are stopped: on start the controller lists each change's sandboxes (`openshell sandbox list --selector legion.change=<id>`, every page) and takes them as they are – a run's sandbox not listed is gone (only a listing read in full says so), one labelled for the change that no run knows is deleted |
-| `journal/<id>.jsonl` (in `state_dir`, not the store) | the change's history, append-only and never read on restart: one JSON line per save, each entry a record's changed fields (a list that grew: its new items; a node dropped: a removal) – every transition an entry, so the journal is each node's and run's audit trail |
-| git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
+| `state.db` tables `changes`, `tickets`, `hooks` | the change's live state – what a restart loads, one row per record, updated in place as the change saves. `changes`: the change record (goal, workspace, base, tier, the **pointers** – the approved version of each named output –, …); `tickets`: every ticket of the tree, its definition and its state (status, attempt, commit, findings, waiting reason, outputs, runs, kept sandbox); `hooks`: the side processes outside the tree (the retrospective). The tickets are the state: there is nothing to replay. Which sandboxes exist and which are stopped is not stored: on start the controller lists each change's sandboxes (`openshell sandbox list --selector legion.change=<id>`, every page) and takes them as they are – a run's sandbox not listed is gone (only a listing read in full says so), one labelled for the change that no run knows is deleted |
+| `journal/<id>.jsonl` (in `state_dir`, not the store) | the change's history, append-only and never read on restart: one JSON line per save, each entry a record's changed fields – every transition an entry, so the journal is each ticket's and run's audit trail |
+| git `legion/<id>/integration`, `legion/<id>/t/<ticket>`, `refs/legion/evidence/<run>` | the root's branch (the change's result), ticket branches, pinned evidence |
 
 Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset set and of its
 rendered soul + prompt, and keeps the template values it was rendered with. Re-rendering with those
 values reproduces the prompt exactly while the pin matches; otherwise the recorded asset hashes
 say which files have changed since (`Assets.check_prompt`).
 
-On disk, `state_dir` is set once per controller and holds only `state.db` (the store and the changes' live state), `journal/` (each change's history), `git/` (the
-bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted after
-upload, and live agent logs). `tmp/` is wiped on start. The access-token signing key exists only
-in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
-restart the controller rebuilds every change from its state tables, its documents and the gateway's list of its sandboxes; runs that were live lost their agent
-process, so they are failed and escalated (no automatic retry), and interrupted verification,
-merges, provisioning and gate evaluations are resumed.
+On disk, `state_dir` is set once per controller and holds only `state.db` (the store and the
+changes' live state), `journal/` (each change's history), `git/` (the bare remotes) and `tmp/`
+(sandbox payloads, deleted after upload, and live agent logs). `tmp/` is wiped on start. The
+access-token signing key exists only in memory, so tokens issued before a restart stop working
+(gateways simply request new ones). **On restart** the controller rebuilds every change from its
+state tables, its documents and the gateway's list of its sandboxes; every ticket under way goes
+on **at the same attempt** (a restart is never an attempt): a run whose report was accepted is
+concluded, any other agent's work runs again – a new run in the ticket's kept sandbox, its session
+resumed –, a merge is made again (one made before the restart is found made), verifications,
+provisioning and sign-offs resume.
 
 ### 2.2 Attention and notifications
 
@@ -203,64 +224,42 @@ all use. Nothing here gates the workflow; it only says what is waiting.
 
 | Item | When | Blocking |
 | --- | --- | --- |
-| `gate` | a human gate is `AWAITING_HUMAN` (H-1, H-E1, H-2, H-3) | yes |
-| `escalation` | a node is `ESCALATED` (its kind and reason) | yes |
-| `not_ready` | H-3 is accepted (or automatic, at R0/R1) but waits on its preconditions: the ship gates not satisfied, and why; resolved when a recheck finds them all met | yes |
+| `gate` | a sign-off is waiting for a decision owner (H-1, H-E1, H-2, H-2b, H-3, any the plan adds) | yes |
+| `escalation` | a ticket is `waiting` on a human: why (§4.4), its findings, the resolver's proposal | yes |
+| `paused` | the workflow is paused, and by whom (§4.6) | yes |
+| `unsynced` | the workspace's hub cannot follow its source (§5.0a) | yes |
+| `question` | an agent asked the humans (A2A `ask_human`, §5.15) | yes |
 | `change_ended` | the change is `READY` or `ABANDONED` | no (inbox) |
-| `retrospective` | the retrospective report is ready (each cycle is a new item) | no (inbox) |
+| `retrospective` | a retrospective report is ready (each attempt is a new item) | no (inbox) |
 
 **Needs you** lists the blocking items: they stay until the decision is made. The **inbox** holds
 the others: nothing waits for them, and the UI keeps which ones this browser has read.
 
 Every save compares the items with those of the previous save: a new item is recorded on the
 timeline (`attention`, `raised: …`) and notified, a resolved one is recorded with how long it
-waited (`resolved after 9h02m: …`). A node's `status_since` records when it last changed
-status. After a restart the items already waiting are taken as known: they are neither raised
-nor notified again.
+waited (`resolved after 9h02m: …`). A ticket's `since` records when it last changed status.
+After a restart the items already waiting are taken as known: they are neither raised nor
+notified again.
 
 **Notifications** (config `notify:`) go from the controller only; sandboxes never reach a sink.
 Each sink – `webhook` (JSON POST, optionally signed `X-Legion-Signature: sha256=<HMAC>`), `ntfy`
-(a topic URL) or `command` (JSON on stdin) – receives the item kinds in `notify.items` (default the
-blocking ones) or its own `items`. A blocking item still waiting after `notify.remind_after_s` is
-sent again; `notify.resolved: true` also sends its resolution. A delivery is tried three times,
-then recorded on the timeline (`notified`) as sent or failed; it never blocks or fails the
-change. The payload carries the item, the decision owners and a link to it in the UI
-(`notify.ui_url` + `#<change>/overview/<node>`). An escalation's reason can quote agent output,
-so it is cut to 300 characters; no document content is sent.
+(a topic URL) or `command` (JSON on stdin) – receives the item kinds in `notify.items` (default
+`gate`, `escalation`, `paused`, `unsynced`, `question`) or its own `items`. A blocking item still
+waiting after `notify.remind_after_s` is sent again; `notify.resolved: true` also sends its
+resolution. A delivery is tried three times, then recorded on the timeline (`notified`) as sent
+or failed; it never blocks or fails the change. The payload carries the item, the decision
+owners and a link to it in the UI (`notify.ui_url` + `#<change>/overview/<ticket>`). An
+escalation's reason can quote agent output, so it is cut to 300 characters; no document content
+is sent.
 
 **While you were away.** `GET /api/digest?since=<iso>` (UI: shown after 30 minutes away;
 CLI: `legion-orch digest --since 8h`) counts each change's timeline events since then – runs
 started, reports accepted and rejected, reworks, merges, escalations, human decisions – without a
 model call, and lists everything that needs you in full.
 
-### 2.3 Gate screens: traceability and what H-3 accepts
-
-The gate cards show how the pieces of the plan fit together, computed from the change's records
-by `legion_orch/workflow/traceability.py` (API `GET /api/changes/<id>/trace`, CLI
-`legion-orch trace <change> [--format md|json]`). Like §2.2 it decides nothing: the guards stay
-the authority.
-
-**The matrix** has one row per accepted requirement (its first line from `requirements.md` as
-accepted at H-1): its delta spec and H-2 status, the tasks of the latest task graph that cite it
-(once built: status, latest verification, the panel's verdicts at the current cycle), and the
-oracle's criteria for it with the tests and commands each names (`criteria[].tests`,
-`criteria[].commands`, checked by G-P12). After integration each linked criterion shows `pass` or
-`fail` from the controller's oracle command results at the integration head.
-
-**Warnings**, listed first: an H-2 subject changed since it was approved (with a diff from the
-approved version: `GET /api/doc/diff?path=&from=&to=`), a requirement no task covers, at R2+ a
-requirement with no acceptance criterion (G-P8 needs only one for the whole oracle), a
-requirement covered only by the scaffold task, a task verified only by lint or type checks, and
-a criterion that names no test or command.
-
-**At H-3** (`GET /api/changes/<id>/acceptance`) the card adds the diff `base..integration head`
-as a whole and per merged task (the task's own commits), the protected paths changed since the
-oracle commit with the G-PP1 approvals behind them, and a dry evaluation of the ship gates at the
-head (§5.11): what would not be satisfied if the change were accepted now.
-
 ---
 
-## 3. Risk tiers and gates
+## 3. Risk tiers and their policies
 
 Intake scores twelve risk signals 0–3 (`security, authorization, data_migration,
 external_side_effect, public_api, ui, performance, infrastructure, irreversible_action,
@@ -269,720 +268,643 @@ scope_breadth, novelty_uncertainty, verification_quality`).
 * Threshold tier from the total: `R0` 0–2, `R1` 3–5, `R2` 6–8, `R3` ≥ 9.
 * Hard floors: any signal at 3 ⇒ `R3`; a score of 2 on any signal other than
   `novelty_uncertainty` / `verification_quality` ⇒ at least `R2`.
-* Tier = max(threshold, floors). A human may **raise** the tier at H-1. Lowering requires a written
-  reason (≥ 24 chars, more than one word) and is recorded as an override.
+* Tier = max(threshold, floors), computed from the `risk` output H-1 signs; signing it fixes the
+  tier and **applies** it: the skeleton tickets only that tier has (`acceptance` at R2+, its
+  `baseline` at R3) are linked into the tree, and the tier's attempt limits set on the tickets not
+  yet started.
 
-| Tier | Ship gates (from Legion `DEFAULT_RISK_POLICY`) | Workflow consequence |
-| --- | --- | --- |
-| R0 | `current_task_contract_or_small_change_record`, `deterministic_verification`, `evidence_note`, `pr_description_verified` | no reviewer, no oracle task |
-| R1 | `task_contract`, `scoped_implementer_run`, `deterministic_verification`, `evidence_bundle_or_log`, `lightweight_independent_review`, `pr_description_verified` | 1 reviewer per task |
-| R2 | `approved_delta_spec`, `protected_oracle`, `task_contract`, `deterministic_verification`, `task_level_independent_review`, `integration_or_real_interface_checks`, `whole_change_acceptance_evidence`, `pr_description_verified` | oracle task with verification surfaces, reviewer per task (+security reviewer if `security`/`authorization` ≥ 2, +architecture reviewer if `scope_breadth`/`novelty_uncertainty` ≥ 2), integration verifier, H-3 |
-| R3 | `independent_baseline`, `approved_spec_and_oracle`, `protected_oracle`, `deterministic_verification`, `architecture_or_security_review`, `protected_acceptance_tests`, `security_or_e2e_evaluator`, `explicit_human_approval`, `pr_description_verified` | adds baseline, security and architecture reviewers on every task, and human attestations (§5.12) |
+Each tier is a **policy** in [`assets/workflow.yaml`](assets/workflow.yaml) (`tiers`): rules a
+tree must keep, stated by ticket **type** and order – never by id, since ids are only names. A
+tier may `extend` another:
 
-Each gate is reported as `satisfied`, `unsatisfied` or `unevaluable` by the deterministic ship check,
-which is H-3's precondition (§5.11). Where each gate's evidence comes from:
+| Rule | Says | R0 | R1 | R2 | R3 |
+| --- | --- | --- | --- | --- | --- |
+| `exists` | the tree contains a ticket of each type | intake, planner, provision, integration, publish | as R0 | + oracle | + baseline |
+| `order` | each ticket of a type finishes before (`after`) / starts after (`before`) one of another | planner after intake, provision after planner, builds after provision and before integration, integration before the final sign-off, publish after integration | as R0 | + builds after the oracle | + builds after the baseline |
+| `every` | the criteria every ticket of a type has | build: verify, can-merge | build: verify, reviewer, can-merge | + oracle: preflight, sign-off | + baseline: sign-off |
+| `labels` | the criteria a ticket labelled so (labels are inherited) has | – | `security`: security reviewer | as R1 | as R1 |
+| `limits` | attempts per type (default 3) | implementer 3, planner 3 | as R0 | as R0 | as R0 |
 
-| Gate | Evidence |
-| --- | --- |
-| `approved_delta_spec` | every delta spec `plan/specs/<REQ>.md` (and the plan) approved at H-E1 against its current version |
-| `approved_spec_and_oracle` | every subject of H-E1 (plan, delta specs) and H-2 (oracle) approved and fresh, the **last** approval before the first build run (a blank repository's scaffold excepted, §5.3b) |
-| `protected_oracle` / `protected_acceptance_tests` | acceptance-test blobs unchanged since the oracle commit, except paths a human approved beforehand (G-PP1); acceptance commands pass at head |
-| `integration_or_real_interface_checks` | integration verifier PASS, oracle and **surface** commands pass at head, surface pins unchanged or re-affirmed (G-SF1) |
-| `independent_baseline` | human `independent-baseline` attestation (pass), recorded **before** the first build run (the scaffold excepted) |
-| `security_or_e2e_evaluator` | human `security-evaluation` or `e2e-evaluation` attestation; any `fail` blocks |
-| `architecture_or_security_review` | architecture or security panel PASS on every task, or a human `architecture-review` attestation; a `fail` attestation blocks |
-| `pr_description_verified` | the PR reviewer's PASS on `delivery/pr.md` at the integration head (§5.10b) |
-| `rollback_or_forward_fix_evidence` | human `rollback-evidence` or `forward-fix-evidence` attestation (in no tier today: a live-system workflow's; addable, G-OV1) |
-| `release_observation_plan` | release planner's `release/plan.md`, or a `release-observation` `not_applicable` attestation (waiver) (in no tier today, as above) |
+"Finished before it starts" is read off the tree (`rules.precedes`): at the two tickets' nearest
+common ancestor, an earlier subtask group, a subtask before a criterion, or an earlier criterion;
+tickets of one group run in parallel, and an ancestor is never before its descendants.
 
-Gates can be added or waived by a human (G-OV1, §5.12); waived and human-judgement gates are
-listed in the readiness result.
+**The policy guard** (`check_policy`) checks every tree before it applies: the planner's (its
+`tickets` output, dry-run when the planner reports and again when H-E1 applies it) and every
+replan. A tree that breaks a rule is refused with the rules it breaks; the skeleton itself is
+checked as a partial tree (rules about types still to be planned don't apply). `legion-orch
+check` validates the file, and every run gets the skeleton and the policies as the generated
+`legion-workflow` skill, so the planner and the resolver plan into them.
+
+`workflow.yaml` also says which **criterion types** a decision owner may waive (`criteria`:
+verify, preflight, can-merge and sign-offs may not) and the **hooks** – the side processes
+outside the tree (`on_complete: retrospective`, `on_escalation: resolver`).
 
 ---
 
-## 4. State machines
+## 4. Tickets
 
-### 4.1 Stages, gates and steps
+### 4.1 The ticket
 
-A change's workflow is a tree of **stages**, most ending in a **gate** – the stage's last step;
-the steps inside a stage run in order (a stage's tasks as their dependencies allow). It is built for the change's tier,
-environment and repository once H-1 fixes the tier (`legion_orch/workflow/engine/runtime/workflow_tree.py`):
+A ticket (`legion_orch/workflow/tickets/model.py`) is:
 
-```
-Requirements   intake ─────────────────────────────────────────────── ◆ H-1 accept requirements & tier
-Plan           (done when its stages are)
-  Design       plan (planner ⇄ critic) ─────────────────────────────── ◆ H-E1 approve the plan
-  Oracle       {provision} <scaffold> [oracle preflight] [baseline] ─── ◆ H-2 approve the oracle
-Delivery       tasks (DAG of build:<id>) ─ [integration] ─ [release] ── ◆ H-3 accept the change
-```
-
-* **Per tier.** Stages without content are left out: R0/R1 have no oracle, preflight, baseline,
-  integration or release (an Oracle stage there holds only provision or the scaffold, and has no
-  gate). `[…]` R2+, the baseline and release R3.
-* **Gates** are steps: the step's work checks the gate's **preconditions** (H-3's are the tier's
-  ship gates, §3, §5.11) and then waits for a human's approval (H-E1's and H-2's subject by subject,
-  §5.5a; at R3, H-2's subjects include the `independent-baseline` attestation). At R0/R1 nobody
-  approves H-3: it passes as soon as its ship gates hold. A gate node is `AWAITING_HUMAN` while
-  it waits for a decision – an expected escalation in the core.
-* `{…}` exists only with an `environment:` section (§5.3a); `<…>` only in a blank repository
-  (§5.3b). The build tasks are added once the critic passes the plan.
-
-**Who decides what.** The stage rules run in a pure **workflow core** (`legion_orch/workflow/flow/`,
-no I/O): which step starts when, send-backs, fix rounds and the end – a gate is a step to it.
-Within a step the engine decides: its phases (§5.6–5.9), rework cycles, escalations and their
-answers, what a gate checks. The step runner reports to the core – done, escalated, resumed – and
-the core's effects start, stop, resume and retry steps (`engine/runtime/flow_runtime.py`).
-
-**Actions are generic.** On a waiting gate: **approve** (each of its subjects, §5.5a) – the
-answer to its step's escalation, **send back**, **reject** (H-3) and **recheck** (a retry: its
-checks again). On an escalated step: **answer**, **retry**, **override** (build tasks), **run again
-in place** (provisioning, §5.3a) and **send back**. **Send back** (`send_back`, with a stage
-and feedback) is offered for every stage the node's work was built on – the stages enclosing it
-and, at each level, the stages before them – nearest first; the UI's names map onto it:
-
-| Action | Sends back |
+| Field | Meaning |
 | --- | --- |
-| H-1 revise | Requirements |
-| H-E1 revise | Design (of its round) |
-| H-2 revise | Oracle (of its round) |
-| H-2 restart, **Restart plan** | Plan: every round goes |
-| an oracle, preflight or baseline escalation: **Revise the plan** (`revise_plan`) | Design |
-| an `integration_failed` escalation: **Plan a fix** (`plan_fix`) | Delivery: a fix round (§5.10a) |
+| `id`, `parent`, `role` | its name (unique in the change, path-safe), its parent, and whether it is the `root`, a `subtask` or a `criterion` of its parent |
+| `type` | `grouping` (no work of its own: its subtasks), `agent:<role>`, `human:signoff`, `controller:<action>` (`verify`, `preflight`, `can-merge`, `provision`, `publish`) |
+| `goal`, `work` | what done means, in words; its role's contract (`roles.yaml` `work_schema` – an implementer's instructions, files, verification commands, requirements) |
+| `inputs` | the pointers it consumes: approved outputs by name (`spec`, `oracle`, `environment`); its run is given them at their approved versions |
+| `labels` | risk labels; its effective labels are its own and its ancestors' (add-only) |
+| `subtasks`, `criteria` | groups of child ids – groups in order, a group's tickets in parallel –; criteria in order |
+| `severity`, `waivable` | (criteria) what a failure does – `rework` the ticket, or `escalate` (always, on a grouping ticket) –; whether a human may waive one |
+| `signs`, `applies` | (sign-offs) the outputs it signs, by name, and `head`; what its pass applies (`tier`, or a signed replan such as `tickets`) |
+| `limit` | the attempts its own work is allowed |
+| state | `status`, `attempt`, `sha` (its commit: the accepted report's, or a branch owner's head), `findings` (the failed criterion's, its next round's input), `waiting` (why it waits), `outputs` (pinned from its accepted report), `runs`, `sandbox` (kept across its attempts), `since` |
 
-The state API returns, from the core, the actions each node offers now and the stages with
-their nodes; the UI renders them as they come – a **Send back: <stage>** for each stage offered
-(Requirements and Plan behind a confirmation, Delivery as **Plan a fix round**), override only
-where the step allows it – and draws each stage as a box around its nodes on the task graph.
+**Branches follow the tree.** A ticket owns a branch if it is the root (`legion/<change>/integration`),
+an agent's own ticket, or a grouping ticket with criteria (they judge its subtree's work alone);
+any other works on its nearest owning ancestor's. A branch starts at its parent's head when the
+ticket starts, and a ticket's commit merges into its nearest owning ancestor's branch when it
+passes (§4.5).
 
-What sending a stage back does is the stage's **rework policy**. Requirements, Plan, Design and
-Oracle **start over**: everything in them, and every later stage built on them, goes back to
-pending and runs again, and the stage's first step gets the feedback. Delivery **appends a
-round**: its merged tasks stay, and a Round stage is inserted before integration (§5.10a). What a
-reset undoes outside the workflow is declared per step type (`on_reset`): the plan's restart
-re-initialises the integration branch, the oracle, the rounds, the run branches and the surface
-pins; provisioning's drops the environment approval and build.
+### 4.2 The skeleton, outputs and sign-offs
 
-### 4.2 Node status
+Every change starts from `workflow.yaml`'s `skeleton` (shown at the top): `requirements`, `plan`,
+`delivery`, `evaluate` and `release`, with the bare minimum under them. The planner fills
+`delivery` (its builds, then the integration) and may add to `evaluate` and `release`; its output
+`tickets` is the **first replan** (§4.6), applied when H-E1 passes.
+
+A **sign-off** (`human:signoff`) is a criterion of the work it checks. It names the outputs it
+signs (`signs: [spec, specs, oracle, environment, tickets]`), resolved against that work: its
+owner's pinned outputs, else the one ticket in the owner's subtree that produced the name (none,
+or several, is a fault a human fixes); `head` is the commit the owner's criteria judge. The
+subjects are resolved when the decision owners are asked; one that changes before they decide is
+asked again. A pass records `tickets/<sign-off>/signoff.json` and moves the change's **pointers**
+to exactly what was signed; a rejection is a failed criterion (the owner reworks with the reason,
+or – a grouping owner – escalates). A sign-off that `applies` something pauses the workflow while
+it is under way and applies it with its verdict: `tier` (H-1, §3) or the replan it signs (H-E1:
+the planner's `tickets`) – a replan that breaks the tier's policy fails the sign-off, its
+violations the findings, so the planner reworks.
+
+| Sign-off | Criterion of | Signs | Applies |
+| --- | --- | --- | --- |
+| H-1 | `intake` | `requirements`, `risk` | `tier` |
+| H-E1 | `design` (after the critique) | `spec`, `specs`, `oracle`, `environment`, `tickets` | `tickets` |
+| H-2 | `oracle` (after preflight), R2+ | `tests` | – |
+| H-2b | `baseline`, R3 | `report` | – |
+| H-3 | `evaluate` | `head` (the integrated change), `pr` | – |
+
+### 4.3 Lifecycle
 
 ```
-PENDING -> READY -> RUNNING -> VERIFYING -> REVIEWING -> MERGING -> ACCEPTED
-                       ^           |             |           |
-                       +-- REWORK -+-------------+-----------+   (evidence-driven, cycle budget)
-              any -> ESCALATED (human) -> READY | ACCEPTED (override) | FAILED
-              human nodes: PENDING -> AWAITING_HUMAN -> ACCEPTED (they show their gate)
-              plan: PENDING -> READY -> RUNNING -> REVIEWING (critique) -> DEFINING (its tasks) -> ACCEPTED,
-                    REWORK on REWORK
+pending ─start→ working ─work done→ subtasks ─every group passed→ checking ─every criterion passed→ [merging] → passed
+                   │                    │                             │
+                   │                    └ a subtask waiting: it stays here until that is resolved
+                   │                                                  └ a criterion fails:
+                   │                                                      rework   → working (attempt+1, its findings)
+                   │                                                      escalate → waiting
+                   └→ waiting: attempts used up, the same findings again, a system error past its
+                               backoff, an exceeded budget, a BLOCKED agent
+waiting ─retry / waive→ back where it was       ─replan→ failed (immutable)
+any ─cancel (a replan, abandon)→ cancelled              a criterion's fail verdict: rejected
 ```
 
-### 4.3 Run status
+* **Grouping tickets** run their subtask groups, then their criteria; one with no subtasks waits
+  at once (`empty`): no stage is legitimately empty.
+* **Criteria** run in order, after the work and the subtasks, stopping at the first failure; a
+  new attempt reruns every criterion from the first, on the new commit, each a fresh judge. A
+  criterion's outcome is its verdict (`passed` or `rejected`); a waived one counts as passed.
+* **Merging.** A ticket with a commit that passes its criteria is merged into its parent's branch
+  first (§4.5); merged, it passes, and the parent's commit is the new head.
+* **Passed is closed.** Nothing is ever added under a passed ticket, and it never runs again.
+
+### 4.4 Attempts, errors and waiting
+
+An **attempt** is one round of a ticket's own work. Only the work's own failures count: a
+failed `rework` criterion, the agent giving up (its report submissions used up, G-R6; a run that
+ends without an accepted report), an integration verifier's own FAIL. Past `limit` the ticket
+waits. Everything else waits on a human without costing one. Each executor ends in one outcome
+(`tickets/executors/base.py`): `Done` / `Judged` (a criterion's verdict), `GaveUp` (an attempt),
+`Blocked`, `Fault` (system: retried `limits.system_retries` times from `limits.system_retry_s`,
+doubling; a fault no retry can fix waits at once) or `OverBudget`.
+
+| `waiting` | Why | Remedies |
+| --- | --- | --- |
+| `attempts` | its attempts are used up | waive (the failed criterion, if waivable), replan |
+| `repeated` | a criterion failed with the same findings as on the previous attempt (G-RV5) | waive, replan |
+| `escalated` | an `escalate` criterion failed (on a grouping ticket: any) | waive, replan |
+| `system` | a system error outlasted its backoff | retry, replan |
+| `budget` | the run timeout (`limits.run_timeout_s`) was exceeded | retry, replan |
+| `blocked` | its agent reported BLOCKED (G-R2): a decision it lacks | retry (with an `answer`, which its next round is told), replan |
+| `empty` | a grouping ticket with no subtasks | replan |
+
+**Retry** runs the same ticket again – same id, same attempt count. **Waive** (with a reason)
+counts a failed criterion as passed: on the rejected criterion, or `waive:<criterion>` on the
+waiting ticket. **Replan** fails the ticket (immutable from then on) and pauses the workflow until
+a replan replaces what it was for (§4.6). Abandoning the change is always possible (§5.12). Every
+waiting ticket is sent to the resolver, which proposes one of these (§5.16).
+
+### 4.5 Merges
+
+`controller:can-merge` is an **early check**, so judges don't review a commit that will not merge:
+the commit rebases cleanly onto the branch it merges into (G-A2). It is not a guarantee – parallel
+siblings can both pass it, and the first to merge moves the head. The **merge** itself is not a
+ticket but a rule: when a ticket with a commit passes its criteria, the runner merges exactly that
+commit into its parent's branch, checked again under the branch's lock (`merge-tree`, then a
+compare-and-swap `update-ref`). A conflict there is a failed "can merge" – a rework onto the new
+head (an attempt, the finding names it) or, a grouping ticket, an escalation; a git error is a
+fault. A merge that is due always runs, paused or not.
+
+### 4.6 Pause and replans
+
+**Pause** (change action `pause`; `resume`): nothing starts from then on – no ticket, no
+criterion; work under way goes on to its next conclusion point (its work done, its verdict given,
+its merge made) and rests there (`paused`, holding what it does next); on resume every ticket goes
+on from where it rests. Each pause has a reason, and each resume lifts only its own.
+
+A **replan** is a document (schema in `tickets/plan_doc.py`): `add` (tickets with their criteria
+and subtasks, each `into` a parent at a subtask group or as a criterion), `cancel` and `update`
+(tickets not yet started) and `fail` (work in progress that extra tickets cannot resolve). It
+applies only while the workflow is paused and nothing is active, all of it or none of it, and
+must keep the tier's policy (§3). Tickets are added only after a ticket's completed groups and
+never under a closed one: finished work is never undone, corrections are new tickets – a failed
+integration is followed by fixes and a new integration ticket. A decision owner applies one with
+the change action `replan` (the replan document in `plan`), typically the resolver's proposal;
+the planner's `tickets` is applied by H-E1. There is no limit on replans: each is started by a
+human.
+
+### 4.7 Run status
 
 `STARTING -> ACTIVE -> REPORTED -> (ACCEPTED | SUPERSEDED)`;
 `ACTIVE -> FAILED` on crash, timeout or `max_report_attempts` rejected reports.
-On `ACCEPTED` the run's sandbox is deleted.
 
 **A run ends when its agent's turn does.** The `report` tool checks a report as it is filed, so a
 rejected one can be fixed, and records an accepted one (`REPORTED`, with the instruction to end
-the turn) – but the workflow does not move until the agent ends its turn and its process exits:
-then the role's handler judges the report and the run's phase takes the result (a BLOCKED report
-escalates). A turn that ends without an accepted report fails the run. An agent still in its turn
-300 s after its report was accepted is stopped; a run whose turn ended while the controller was
-down is concluded after the restart, its report checked again.
+the turn) – but the ticket does not move until the agent ends its turn and its process exits:
+then the role's handler reads the report – its commit, its outputs, a judge's verdict – and the
+ticket's executor takes the outcome (a BLOCKED report waits on a human). A turn that ends without
+an accepted report fails the run. An agent still in its turn 300 s after its report was accepted
+is stopped; a run whose turn ended while the controller was down is concluded after the restart,
+its report checked again.
 
 A live run's **stage** records how far its sandbox got: `PREPARING` (OpenShell is creating the
 sandbox) -> `LAUNCHING` (the payload is in place; the setup script clones the working copy and
 starts the agent) -> `RUNNING` (the agent's first MCP call: it is up and reaches the
 controller) -> `EXITED`.
 
-A failed run records its **failure source** and the stage it had reached:
+A failed run records its **failure source** and the stage it had reached, which decides its
+outcome (§4.4):
 
-| Source | When |
-| --- | --- |
-| `AGENT` | The agent failed: its CLI ended with an error result (API error, turn limit), it finished without an accepted report, or `max_report_attempts` reports were rejected. |
-| `SYSTEM` | What the agent runs on failed: sandbox creation or upload, the setup script, or the process exited with no result from the agent (crash, command not found, killed). |
-| `TIMEOUT` | The run exceeded `limits.run_timeout_s`. |
-| `CONTROLLER` | The controller restarted during the run, or failed while applying its report. |
+| Source | When | Outcome |
+| --- | --- | --- |
+| `AGENT` | The agent failed: its CLI ended with an error result (API error, turn limit), it finished without an accepted report, or `max_report_attempts` reports were rejected. | an attempt |
+| `SYSTEM` | What the agent runs on failed: sandbox creation or upload, the setup script, or the process exited with no result from the agent (crash, command not found, killed). | a fault: retried with backoff |
+| `TIMEOUT` | The run exceeded `limits.run_timeout_s`. | over budget: waits |
+| `CONTROLLER` | The controller failed while concluding its report. | a fault |
 
-The escalation carries the same source. **Retry** first deletes the failed run's sandbox, then
-resumes, so the new run always starts in a fresh sandbox. If OpenShell will not delete it, the
-retry still goes ahead and the failure is reported. A fresh implementer sandbox continues from
-the task branch as pushed to the controller; work that was never pushed is lost.
-
-Whenever an escalation is resolved with a new run (**Retry**, or an answer that resumes it), the
-node's earlier finished runs are superseded and their sandboxes deleted, after their agents
-reflect – except a sandbox the node keeps for rework. When a change ends (shipped, rejected or
-abandoned), every sandbox it still has is deleted.
+A sandbox that was never created is forgotten by its ticket, so the next round creates one. A
+fresh implementer sandbox continues from the ticket's branch as pushed to the controller; work
+that was never pushed is lost.
 
 ---
 
-## 5. Task catalogue: guards, prompt, skills, soul
+## 5. Ticket catalogue: guards, prompt, skills, soul
 
-Universal guards apply to every task and are listed once.
+Universal guards apply to every agent ticket and are listed once. Each role's documents are
+written under its ticket's directory and named by its outputs; its soul, skills, outputs and
+git requirement are in [`assets/roles.yaml`](assets/roles.yaml).
 
 ### 5.0 Universal guards
 
 | ID | When | Rule |
 | --- | --- | --- |
-| G-D1 | dispatch | Every dependency node is `ACCEPTED`. |
+| G-D1 | dispatch | A ticket's work starts only when the rules start it: every earlier subtask group of its parent passed, its own subtasks before its criteria, the criteria before it passed – and the workflow is not paused. |
 | G-D2 | dispatch | Assets resolve: soul, skills and prompt exist; every `{{var}}` is bound; the prompt pin is recorded on the run. |
-| G-D4 | dispatch | Independence: judge roles (critic, reviewer, security, integration, verifier) get a fresh sandbox and a run id distinct from the run being judged. |
+| G-D4 | dispatch | Independence: a criterion's agent (critic, reviewers, pr-reviewer) gets a fresh sandbox and a run id distinct from the work being judged, every round. |
 | G-R1 | report | `status ∈ {DONE, BLOCKED}`. |
 | G-R2 | report | `BLOCKED` requires non-empty `blocked_reason` and `missing_decision`. |
 | G-R3 | report | Every attestation parses and resolves (`file:` version exists; `git:` object exists in the controller's git remote). |
-| G-R4 | report | The role's required documents are attested at their **latest** version and were **written by this run** – or written again unchanged by it, which creates no new version (G-W2) but counts as its own. |
-| G-R5 | report | The role's required git attestation is present (`commit`, `candidate` or `head`, see roles). |
-| G-R6 | report | After `max_report_attempts` rejected reports the run is `FAILED` and the node `ESCALATED`. Dry runs (`report(..., dry_run=true)`) are not attempts. |
+| G-R4 | report | Every output the role declares is named in `outputs` (a `*` output: a list); each document is in the ticket's directory, at its **latest** version, and was **written by this run** – or written again unchanged by it, which creates no new version (G-W2) but counts as its own. |
+| G-R5 | report | The role's required git attestation is present (`commit`, `candidate` – the commit it judges – or `head` – its base –, see roles). |
+| G-R6 | report | After `max_report_attempts` rejected reports the run fails (an attempt). Dry runs (`report(..., dry_run=true)`) are not attempts. |
 | G-R7 | report | `data` matches the role's `report_schema` (`roles.yaml`): verdicts, findings, results. |
-| G-R8 | report | Size limits: summary and reasons ≤ 2,000 characters, ≤ 100 attestations, `data` ≤ 256 KiB (report schemas also cap item counts and text lengths); the checks of one report are time-limited (`limits.report_check_timeout_s`). Applying an accepted report is transactional: any controller error restores the state and escalates. |
-| G-W1 | docs_write | Path resolves inside the run's own change and the role's write scope; never controller-owned paths (`control/**`, `tasks/*/verification.json`, `tasks/*/feedback/**`, `tasks/*/decisions/**`). |
+| G-R8 | report | Size limits: summary and reasons ≤ 2,000 characters, ≤ 100 attestations, `data` ≤ 256 KiB (report schemas also cap item counts and text lengths); the checks of one report are time-limited (`limits.report_check_timeout_s`). Concluding an accepted report is transactional: any controller error restores the state and fails the run (a fault). |
+| G-W1 | docs_write | Path resolves inside the run's own change and its ticket's directory; never controller-owned paths (`control/**`, a sign-off's `signoff.json`). |
 | G-W2 | docs_write | `base_version` equals current latest (or path is new and `base_version` omitted). Content identical to the latest version creates no version: that version is returned (`unchanged: true`) and costs no G-W4 quota. |
 | G-W3 | every store write | The content matches the schema bound to its path ([`bindings.yaml`](assets/schemas/bindings.yaml)); a writer may not pick a different schema. The store records the schema name and sha with the version. Applies to agents and the controller alike. |
 | G-W4 | docs_write | Per-run quota: at most `limits.max_docs_per_run` document versions (default 200) and `limits.max_doc_bytes_per_run` bytes (default 50 MB). Refused writes say which limit was hit. |
 
-### 5.0a `workspace` – the change's base (controller, no agent)
+### 5.0a The workspace – the change's base (controller)
 
-A change's first step. The workspace's hub is brought up to date with its `source`: cloned if
+Before the root starts, the workspace's hub is brought up to date with its `source`: cloned if
 there is no hub yet, otherwise fetched, and its base branch fast-forwarded to the source's.
-`legion/*` (every change's integration and run branches) is never touched. One sync of a hub
+`legion/*` (every change's integration and ticket branches) is never touched. One sync of a hub
 runs at a time: changes started together wait for each other, and one that waited takes the
 result of the sync before it (no second fetch). The change is then based on the base branch's
-commit: its integration branch, whether the repository is blank (§5.3b) and the base's setup
+commit: its integration branch, whether the repository is blank (§5.3d) and the base's setup
 (§5.3c), recorded in `control/workspace.json`.
 
 If the hub cannot follow its source – the clone's origin is not the configured `source`, the
 source's base branch was rewritten (the hub's commit is not an ancestor of it), or the fetch
-fails – the step escalates (`workspace_unsynced`, with what differs) with the standard actions:
-the decision owner fixes the hub or the source and **retries**, or abandons the change. Once
-the change has a base it keeps it: Requirements sent back runs the step again, and it passes at
-once.
+fails – the change is `unsynced` (an attention item, with what differs): the decision owner fixes
+the hub or the source and **retries** (change action `retry`), or abandons the change.
 
-### 5.1 `intake` – start
+### 5.1 `intake` – the requirements (`requirements` ▸ `intake`)
 
 * **Soul:** `intake-analyst`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `risk-signals`, `blocked-protocol`
-* **Writes:** `intake/**`  **Required:** `intake/requirements.md`, `intake/risk.json`
-* **Guards:**
+* **Outputs:** `requirements` (`requirements.md`), `risk` (`risk.json`)
 
 | ID | Rule |
 | --- | --- |
-| G-I1 | `intake/requirements.md` contains at least one requirement id `REQ-<n>`; ids are unique. |
-| G-I2 | `intake/risk.json` has all 12 signals, each once, integer score 0–3, a rationale that is not blank (the shape is the [`risk`](assets/schemas/risk.json) schema's, enforced on write). |
-| G-I3 | If `intake/questions.md` is attested, every question is either answered in it or reported as `BLOCKED` (questions go to the human; nothing is guessed). |
-| H-1 | Human accepts requirements (approver ∈ `decision_owners`). The approval pins `requirements.md` and `risk.json` versions and the computed tier. Revise → intake re-runs with the feedback attested. |
+| G-I1 | `requirements` contains at least one requirement id `REQ-<n>`; ids are unique. |
+| G-I2 | `risk` has all 12 signals, each once, integer score 0–3, a rationale that is not blank (the shape is the [`risk`](assets/schemas/risk.json) schema's, enforced on write). |
+| G-I3 | If a `questions.md` is attested, every question is either answered in it or reported as `BLOCKED` (questions go to the human; nothing is guessed). |
+| H-1 | A decision owner signs `requirements` and `risk`; the pass fixes the tier (§3) and moves the pointers. A rejection reworks the intake with the reason. |
 
-### 5.2 `plan`
+### 5.2 `planner` – the design (`plan` ▸ `design`)
 
 * **Soul:** `architect-planner`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `taskgraph-schema`, `sandbox-environment`, `blocked-protocol`, `language-preferences`
-* **Writes:** `plan/**`  **Required:** `plan/spec.md`, `plan/oracle.json`, `plan/taskgraph.json`; with the environment stage also `plan/environment.json` (§5.3a)
+* **Inputs:** `requirements`, `risk`  **Outputs:** `spec` (`spec.md`), `specs` (a delta spec `specs/REQ-<n>.md` per requirement), `oracle` (`oracle.json`), `environment` (`environment.json`, §5.3a), `tickets` (`tickets.json`, the first replan: the builds under `delivery`, each with its criteria, then the integration; additions to `evaluate` and `release`)
+
+Each build is an `agent:implementer` ticket whose `work` is its contract
+([`work-implementer`](assets/schemas/work-implementer.json): instructions, `files_modified`,
+`files_forbidden`, `verification` commands, acceptance criteria, the requirements it serves, its
+soul, `scaffold`). Builds in one subtask group run in parallel; a later group's start from the
+head the earlier groups merged into. The tickets' criteria follow the tier's `every` and `labels`
+rules (§3) – the policy guard refuses a plan without them.
 
 | ID | Rule |
 | --- | --- |
-| G-P1 | `taskgraph.json` and `oracle.json` match the `taskgraph` and [`oracle`](assets/schemas/oracle.json) JSON Schemas (also enforced by the store on every write). |
-| G-P2 | Task ids unique; `depends_on` refers to existing tasks; graph is acyclic. |
-| G-P3 | Traceability: every accepted `REQ-*` is covered by ≥1 task; every task cites ≥1 existing `REQ-*`. |
-| G-P4 | Every task has ≥1 `verification` command and ≥1 `acceptance` criterion. |
-| G-P5 | Every task's `soul` is an implementer soul. |
-| G-P6 | Tasks with no dependency path between them have disjoint `files_modified` (parallel safety); that the paths are non-empty, relative and without `..` is the schema's (G-P1). |
-| G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`). |
-| G-P8 | R2+: `oracle.json` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
-| G-P10 | R2+: `oracle.json` declares ≥1 verification surface, with unique ids and commands that are not blank (each surface's id, commands and pinned paths are the schema's, G-P1). |
-| G-P11 | Blank repository (§5.3b): exactly one task is marked `scaffold`; it has no dependencies and every other task depends on it, directly or not. Otherwise no task is marked `scaffold` (nor a fix round's new task). |
-| G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. Unlinked criteria are allowed; the gate screens warn about them (§2.3). |
+| G-P1 | `tickets` parses as a replan (only adds, under tickets that exist, ids new and unique) and each ticket's `work` matches its role's work schema; `oracle` matches the [`oracle`](assets/schemas/oracle.json) schema. |
+| G-P2 | Build ids are unique and the order the groups give them is acyclic. |
+| G-P3 | Traceability: every accepted `REQ-*` is served by ≥1 build; every build cites ≥1 existing `REQ-*`. |
+| G-P4 | Every build has ≥1 `verification` command that is not blank (≥1 acceptance criterion is the schema's). |
+| G-P5 | Every build's `soul` is an implementer soul. |
+| G-P6 | Builds that may run in parallel (one is not in a group before the other) have disjoint `files_modified`; that the paths are non-empty, relative and without `..` is the schema's (G-P1). |
+| G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`, a pinned `mise.toml`). |
+| G-P8 | R2+: `oracle` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
+| G-P10 | R2+: `oracle` declares ≥1 verification surface, with unique ids and commands that are not blank (each surface's id, commands and pinned paths are the schema's, G-P1). |
+| G-P11 | Blank repository (§5.3d): exactly one build is marked `scaffold`, in a group before every other build. Otherwise no build is marked `scaffold`. |
+| G-P12 | R2+: a criterion's optional `tests` are among `oracle.acceptance_tests` and its `commands` among `oracle.acceptance_commands`. |
 | G-P13 | R2+: a command in `acceptance_commands` or `integration_commands` that only installs dependencies (`bun install …`, `npm ci`, `uv sync`, `pip install …`, …) belongs in `mise.toml`'s `setup` task (§5.3c): the verifier runs the setup, then acceptance, then integration – so an install placed later runs after the commands that need it. |
+| H-E1 | After the critique passes, a decision owner signs the design – `spec`, `specs`, `oracle`, `environment`, `tickets` – and its pass applies `tickets` (§4.2): the builds are linked under `delivery`. A rejection reworks the planner with the reason. |
 
-### 5.3 critique (part of `plan`)
+### 5.3 `critic` – the critique (criterion of `design`)
 
-The critic judges the plan node while it is `REVIEWING` (after each planner report), like a
-review-panel member a build task: a fresh sandbox, its verdict stored on the node
-(`reviews["<cycle>:critic"]`), the cycle being the plan's.
+The critic judges the design's outputs: a fresh sandbox each attempt, given the design's outputs
+(and its predecessor's critique, to read).
 
 * **Soul:** `plan-critic`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `pre-mortem`, `finding-format`, `language-preferences`
-* **Writes:** `critique/**`  **Required:** `critique/cycle-{{cycle}}.md`
+* **Outputs:** `critique`
 
 | ID | Rule |
 | --- | --- |
-| G-C1 | `data.verdict ∈ {PASS, REWORK}`; `REWORK` needs ≥1 finding; the report attests the plan documents at the versions critiqued, which must be the latest. |
-| G-C2 | A REWORK verdict in plan cycle `critique_max_cycles` (plus cycles a human granted) ⇒ the plan node escalates; answering grants one more cycle. |
+| G-C1 | `data.verdict ∈ {PASS, REWORK}`; `REWORK` needs ≥1 finding; the report attests the design's outputs at the versions critiqued, which must be the latest. |
+| G-C2 | `REWORK` reworks the planner with the findings – an attempt –; at the design's limit (the tier's `limits`) it waits on a human (`attempts`, or `repeated` for the same findings twice). |
 
-`PASS` accepts the plan node and creates the build nodes from `plan/taskgraph.json`. `REWORK` sends
-the plan back to the planner (a new cycle, the critique attested as feedback); it is critiqued
-again when the planner reports.
-With the environment stage the critique also covers `plan/environment.json` (it must attest the
-latest version, and the `pre-mortem` skill checks that every command can run in its role's
-sandbox); `REWORK` sends both back to the planner.
+With an environment configured the critique also covers `environment` (the `pre-mortem` skill checks
+that every command can run in its role's sandbox).
 
 ### 5.3a Sandbox environment (when configured)
 
-Part of `plan`: the planner also writes `plan/environment.json` (schema
+Part of the design: the planner also writes `environment` (schema
 [`environment`](assets/schemas/environment.json)), given the library catalogue in its
-assignment (`{{environment}}`). The report must attest the spec's latest version; a rework may
-leave it as an earlier planner run wrote it. The guards below are checked with the plan's.
+assignment (`{{environment}}`). Without one configured it writes the default (no
+profiles). The guards below are checked with the plan's.
 
 The planner specifies the sandboxes for everyone who runs or works with the code: named
 **profiles** (tools, optional extra network per tool, optional memory/vCPU/disk), and which
 role (or the deterministic `verifier`) runs in which profile. Profiles are composed from the
 **library** (`environment.library_dir`, default [`environments/`](environments/README.md)):
 tools installed with mise, each declaring its binaries and the network policies it needs, and
-network policies, credentialless endpoint lists that become rules in the sandbox policy. Selecting a tool
-brings its network, open to that tool's binaries only; a profile adds per-tool extras or goes
-`offline`. The spec
-may propose new library entries inline; they apply to this change once approved, and an operator
-can promote them into the library: the change-level action `promote_proposal` (`legion-orch library promote`,
-by a decision owner), which copies the entry from the H-E1-approved spec version and never
-overwrites a library entry.
+network policies, credentialless endpoint lists that become rules in the sandbox policy. Selecting
+a tool brings its network, open to that tool's binaries only; a profile adds per-tool extras or
+goes `offline`. The spec may propose new library entries inline; they apply to this change once
+signed off, and an operator can promote them into the library: the change-level action
+`promote_proposal` (`legion-orch library promote`, by a decision owner), which copies the entry
+from the signed spec version and never overwrites a library entry.
 
 | ID | Rule |
 | --- | --- |
-| G-E1 | The planner's report attests the latest `plan/environment.json`. Every profile's tools, and the network policies they bring or the profile adds per tool, resolve to a library entry or a proposal (proposals may not shadow library names; `name@version` only for single-tool entries); every policy in use is reachable by at least one binary of the tools using it; every mapped profile exists; no two tools of a profile set the same environment variable to different values. |
+| G-E1 | The planner's report names the latest `environment`. Every profile's tools, and the network policies they bring or the profile adds per tool, resolve to a library entry or a proposal (proposals may not shadow library names; `name@version` only for single-tool entries); every policy in use is reachable by at least one binary of the tools using it; every mapped profile exists; no two tools of a profile set the same environment variable to different values. |
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
 | G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that runs the setup (those that work with a commit), and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
-| H-E1 | After a critique PASS, a human approves the plan (§5.5a) – with it the environment, its own subject (approver ∈ `decision_owners`); the approval pins the `plan/environment.json` version. Revise sends the Design back: `plan` is reworked with the feedback attested and critiqued again. Any send-back that resets `provision` drops the approval and the build. |
 
-### `provision` – build the environment (controller, no agent)
+### 5.3b `controller:provision` – the environment, built (`plan` ▸ `provision`)
 
-The approved spec version is resolved against the library again and built: one image per
-(profile, base image) – `FROM sandbox.image` for agents, `FROM sandbox.verifier_image` for the
-verifier – with the profile's tools installed by mise under `/usr/local/share/mise` (read-only in
-every sandbox) and their `env` settings as image `ENV`, via `podman build`, tagged per change and
-recipe (`localhost/legion-env:<change>-<recipe hash>`, or pushed to `environment.registry`) and
-labelled `org.legion.change` / `org.legion.recipe`. Roles of a change with the same recipe share
-an image; another change with the same recipe gets its own tag on the same layers (the build
-cache makes it nearly free), so a change's images are its own to remove when it ends (§5.14). Network policies
-carry no credentials, so nothing is created for them in OpenShell: each is resolved into a
-`network_policies` entry (`env_<name>`, open to the binaries that brought it) recorded with the
-build and added to the policy of every sandbox of the role. CPU and memory become `sandbox create --cpu <vcpus>` and `--memory <n>Mi`; disk,
-which has no CLI flag, is rendered through `policies/sandbox-resources.template.yaml` into
-`--driver-config-json`. The result is recorded in `control/environment/build.json` and the
-change record; the build log in `control/logs/provision.log`.
+The signed-off `environment` (the pointer H-E1 moved) is resolved against the library again and
+built: one image per (profile, base image) – `FROM sandbox.image` for agents, `FROM
+sandbox.verifier_image` for the verifier – with the profile's tools installed by mise under
+`/usr/local/share/mise` (read-only in every sandbox) and their `env` settings as image `ENV`, via
+`podman build`, tagged per change and recipe (`localhost/legion-env:<change>-<recipe hash>`, or
+pushed to `environment.registry`) and labelled `org.legion.change` / `org.legion.recipe`. Roles of
+a change with the same recipe share an image; another change with the same recipe gets its own tag
+on the same layers (the build cache makes it nearly free), so a change's images are its own to
+remove when it ends (§5.14). Network policies carry no credentials, so nothing is created for them
+in OpenShell: each is resolved into a `network_policies` entry (`env_<name>`, open to the binaries
+that brought it) recorded with the build and added to the policy of every sandbox of the role. CPU
+and memory become `sandbox create --cpu <vcpus>` and `--memory <n>Mi`; disk, which has no CLI
+flag, is rendered through `policies/sandbox-resources.template.yaml` into `--driver-config-json`.
+The result is recorded in `control/environment/build.json` and the change record; the build log in
+`control/environment/provision.log`. Provisioning waits until no run of a mapped role is live and
+no verifier sandbox is in use; meanwhile new runs of mapped roles and verifications wait for it.
 
 | ID | Rule |
 | --- | --- |
-| G-PV1 | Every image a mapped profile needs is built or found. Otherwise the node escalates `provision_failed` (retry provisions again). |
-| G-PV3 | With an approved `mise.toml` that has a `setup` task: `mise run setup` succeeds at the integration head in a fresh verifier sandbox from this build. Otherwise `provision_failed` with the output. |
-| G-E5 | (dispatch of a mapped role, and every verifier sandbox) the H-E1 pin still equals the latest `plan/environment.json`. |
+| G-PV1 | Every image a mapped profile needs is built or found. Otherwise a fault: retried with backoff, then the ticket waits (`system`; retry provisions again). |
+| G-PV3 | With a pinned `mise.toml` that has a `setup` task: `mise run setup` succeeds at the change's head in a fresh verifier sandbox from this build. Otherwise the ticket waits with the output. |
+| G-E5 | (dispatch of a mapped role, and every verifier sandbox) the build was made from the `environment` the pointer names. |
 
 From then on every sandbox of a mapped role is created from its profile's image, with its
-network policies in the sandbox policy and its resources; unmapped roles keep the defaults.
-
-The build is fixed at provisioning: later library edits do not reach it. When a step escalates
-because of its environment (an agent BLOCKED for a missing tool, a verifier command not found,
-a failed setup), a decision owner may answer by **provisioning again** (`rerun:provision`, a
-reason of ≥24 chars): the provision step runs again in place – the H-E1-approved spec resolved
-against the current library again, e.g. after a library entry was fixed – while what was built
-on it stands, and the escalated step is retried in the new build. It does not change the spec:
-a tool or policy the spec does not name needs a plan revision and a new H-E1. It is offered
-only as an escalation's answer. Provisioning starts once no run of a mapped role is live and no
-verifier sandbox is in use; meanwhile new runs of mapped roles and verifications wait for it.
-Sandboxes kept across cycles by mapped roles (implementers) are then released, after their
-agent reflects, so each node's next run starts fresh in the new build and continues from its
-pushed branch. Unmapped roles' sandboxes are left alone: the planner keeps its session to H-2
-through H-E1 and provisioning. A failure escalates the provision step like any other.
+network policies in the sandbox policy and its resources; unmapped roles keep the defaults. The
+build is fixed: later library edits do not reach it. A new build is a replan (a new `provision`
+ticket, after a new sign-off of a changed `environment`).
 
 ### 5.3c Repository setup: `mise.toml`
 
 Every sandbox that works on the repository is a fresh clone. The repository's `mise.toml` says what
 a checkout needs: `[tools]`, installed when the environment's images are built, and a
 `[tasks.setup]` task – dependency installs, code generation, a build the tests need – that the
-controller runs after every checkout as `mise run setup`: first in every verifier sandbox (task
-verification, baseline, integration; G-V3), and once after the clone in the sandbox of every role
-that works with a commit (oracle, baseline, implementer, reviewers, integration; a failure is
-logged and the agent may still work). Read-only roles (intake, planner, critic, release) skip it.
-No `setup` task: nothing runs.
+controller runs after every checkout as `mise run setup`: first in every verifier sandbox (G-V3),
+and once after the clone in the sandbox of every role that works with a commit (oracle, baseline,
+implementer, reviewers, integration; a failure is logged and the agent may still work). Read-only
+roles (intake, planner, critic) skip it. No `setup` task: nothing runs.
 
 **Which version runs (G-MS1).** Only a pinned `mise.toml` (`change.setup_pin`, its git blob): the
-version approved at H-E1, else the base branch's when the change started (written before the
-change). The setup script checks the checkout's file against the pin before `mise trust` and
-`mise run setup`; any other version is not run. `mise.toml` is a protected path while a setup is
-pinned or proposed (G-P7, G-B3, G-INT2); Restart plan returns to the base branch's pin.
+version signed at H-E1, else the base branch's when the change started. The setup script checks
+the checkout's file against the pin before `mise trust` and `mise run setup`; any other version is
+not run. `mise.toml` is a protected path while a setup is pinned (G-P7, G-B3, G-INT2).
 
-**With the environment stage** the planner proposes the file in the spec (`"mise": {"content":
+**With an environment configured** the planner proposes the file in the spec (`"mise": {"content":
 …}`, with the network its setup needs in `"setup_network"`): unchanged, edited or new. H-E1 shows
-it; on approval the controller commits it to the integration branch (before any build) and pins
+it; on its pass the controller commits it to the integration branch (before any build) and pins
 it; provisioning checks its setup runs in the verifier (G-PV3). **Without it** the operator's
 images are assumed to have `mise`, and the base branch's setup task (if any) runs.
 
-**In a blank repository** (§5.3b) the base's setup task is never pinned: what it needs – a
-manifest, a lockfile – is what the scaffold creates. The setup comes with the environment stage,
-and until the scaffold is accepted provisioning does not check it (G-PV3) and the scaffold's own
-sandbox does not run it; the scaffold's **verification** does, at its candidate, so a setup that
-does not work is a failed scaffold verification (reworked). Every sandbox after the scaffold runs
-it as usual.
+**In a blank repository** (§5.3d) the base's setup task is never pinned: what it needs – a
+manifest, a lockfile – is what the scaffold creates.
 
-### 5.3b Scaffold (blank repository)
+### 5.3d Scaffold (blank repository)
 
 When a change starts, the controller lists the base commit's tree. It is **blank** if every file
 is documentation (`*.md`, `*.rst`, `*.adoc`), a top-level licence or notice file (`LICENSE*`,
 `LICENCE*`, `COPYING*`, `NOTICE*`, `AUTHORS*`), `.gitignore`, `.gitattributes`, `.editorconfig`,
 a top-level mise file (`mise.toml`, `.mise.toml`, `.tool-versions`: tool versions are not code)
-or under `.github/` – including a repository with no files at all (a workspace without a `source`). The
-change record keeps it (`blank_repo`). Without this the oracle would have to guess the layout,
-test runner and configuration the first build task will create.
+or under `.github/` – including a repository with no files at all (a workspace without a
+`source`). The change record keeps it (`blank_repo`).
 
-In a blank repository the planner's assignment (`{{scaffold}}`) asks for one **scaffold task**
+In a blank repository the planner's assignment (`{{scaffold}}`) asks for one **scaffold build**
 (`"scaffold": true`, G-P11): the project's layout, manifest, build, lint and test tooling, their
 configuration and a placeholder entry point – none of the requirements' behaviour – whose
 instructions fix every choice the acceptance tests depend on, and whose verification commands
-pass without them. The critic is told to check this.
+pass without them. It is the first group of `delivery`, built, verified, reviewed and merged like
+any build before the others start. (The oracle at R2+ runs before `delivery`, so in a blank
+repository today it writes its tests before the project exists; see §5.17.)
 
-The scaffold is a build node (`build:<id>`) at every tier, but it opens the Oracle stage (after
-provisioning) instead of joining the other tasks in Delivery:
-
-```
-plan (critique PASS) -> H-E1 -> {provision} -> build scaffold -> R2+: oracle -> preflight -> R3: baseline -> H-2 -> other builds
-```
-
-It is implemented, verified, reviewed and merged like any build task (§5.6–5.9) once H-E1 has
-approved the plan (task graph, scaffold included). G-B1 does not apply to it, and it does not
-count as the first build run for `approved_spec_and_oracle` and `independent_baseline`. The oracle
-then works at the integration head that contains it, with the scaffold's commit in its context,
-and writes its tests for that project. **Restart plan** resets the scaffold with every other build
-task (a new task graph replaces them); a fix round never adds one.
-
-### 5.4 `oracle` (R2+) – protected acceptance tests
+### 5.4 `oracle` (R2+) – protected acceptance tests (`plan` ▸ `acceptance` ▸ `oracle`)
 
 * **Soul:** `test-engineer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
-* **Writes:** `oracle/**`  **Required:** `oracle/tests.md`, git `commit`
+* **Inputs:** `spec`, `specs`, `oracle`  **Outputs:** `tests` (`tests.md`), git `commit` on its branch
 
 | ID | Rule |
 | --- | --- |
 | G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`. |
 | G-O2 | Every acceptance test path exists at the commit. |
+| H-2 | After preflight, a decision owner signs the oracle's `tests`; the pass merges its commit into the integration branch before any build. A rejection reworks the oracle. |
 
-The oracle commit is merged to the integration branch before any build task starts (a blank
-repository's scaffold excepted, §5.3b). From then on these paths are **protected**: any later
-diff touching them fails G-B3 and the `protected_oracle` gate.
+From the merge on these paths are **protected**: any later diff touching them fails G-B3 and
+G-INT2.
 
-### 5.4a `preflight` (R2+) – the oracle's commands run (controller, no agent)
-
-Once the oracle's tests are merged, the controller runs the repository's setup (§5.3c), then the
-oracle's `acceptance_commands`, at the integration head in a **fresh verifier sandbox** (G-V1 semantics:
-a new clone, the verifier image and environment profile) – not in the oracle's sandbox, whose
-installed dependencies and build output would hide what a clean run lacks. It confirms the
-commands can be run here, as the baseline and integration will run them. Before any build the
-acceptance commands are expected to fail; one that already passes is noted on the timeline.
-Results are recorded in `control/verification/preflight.json`; fix rounds run it again.
-
-| ID | Rule |
-| --- | --- |
-
-### 5.5 `baseline` (R3) – independent baseline
-
-What is true of the code before any build: which acceptance tests fail (as they should, until the
-change is built) and which failures were already there. The integration verifier is given it.
-
-* **Soul:** `baseline-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`
-* **Writes:** `baseline/**`  **Required:** `baseline/report.md`, git `head`
-
-| ID | Rule |
-| --- | --- |
-| G-BL1 | `data.results` lists every acceptance command with its exit code at the integration head; the attested head equals the current integration head. |
-
-
-**Revise the plan from an escalation.** An oracle, preflight or baseline that escalates (its
-commands cannot run, say) never reaches H-2. Its escalation therefore also offers **Revise the
-plan** (`revise_plan`, `feedback` required): it sends its round's Design back to the planner with
-the feedback – the plan is critiqued and approved at H-E1 again, and the oracle stage starts
-over from it (in round 1 with the integration branch, §4.1).
-
-### 5.5a H-E1 approve the plan, H-2 approve the oracle
-
-Each gate's subjects are separate decisions, possibly by different approvers ∈ `decision_owners`,
-each pinned to the document versions approved. H-E1 approves the plan before the oracle is
-written or any task is built on it; H-2 approves the oracle before any task but the scaffold is
-built.
-
-| ID | Rule |
-| --- | --- |
-| H-2 | **H-E1** subjects: the **plan** (`plan/spec.md` + `plan/taskgraph.json`), **each delta spec** `plan/specs/<REQ>.md` and, with an environment, the **environment** (§5.3a). **H-2** subject (R2+): the **oracle** (`plan/oracle.json` + oracle commit sha; approving it pins every verification surface). A gate completes when every one of its subjects is approved against current versions; at R3 H-2's precondition is an `independent-baseline` pass attestation, so the baseline is recorded before any build run. That attestation is decided with the oracle: approving the `independent-baseline` subject (or approving all) records it, citing `baseline/report.md` and the controller's own baseline verification (G-AT1); it is stale once the baseline runs again (a fix round). |
-
-The H-2 card shows the traceability matrix and its warnings (§2.3); a stale subject offers the
-diff since the version approved.
-
-### 5.6 `build` – one node per task in `plan/taskgraph.json`
-
-* **Soul:** the task's `soul` (`senior-developer`, `backend-engineer`, `frontend-engineer`)
-* **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
-* **Writes:** `tasks/{{task_id}}/evidence/**`  **Required:** `tasks/{{task_id}}/evidence/cycle-{{cycle}}.md`, git `commit`
-* **Sandbox:** created on first dispatch and **reused across rework cycles** (the agent keeps its
-  working copy); deleted when the node is `ACCEPTED`.
-
-| ID | Rule |
-| --- | --- |
-| G-B2 | The attested commit is the current tip of the run's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
-| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected. |
-| G-B4 | The evidence document names every `verification` command of the task with its exit code. |
-
-### 5.7 `verify` – deterministic (controller, no agent)
-
-A fresh sandbox (network: controller git endpoint only, fetch-only grant) clones the candidate
-commit and runs each `verification` command; results come back through `sandbox exec` output.
-Results are written by the controller to `tasks/{{task_id}}/verification.json` (one version per cycle).
-
-**The verification service** (`engine/services/verification.py`) runs every verification – the
-step's, preflight's, the baseline's, integration's – **once per key**: the commit, the commands,
-the setup pin, the verifier image and the timeout. A passed or failed run is the key's result
-for good: anyone asking again gets it without a new sandbox. An infrastructure error is not a
-result (asked again, it runs again), and a human's decision on a step (retry, answer) makes its
-next verification a fresh attempt – what they fixed (the test setup, a flaky service) is outside
-the key; a decision owner may also run one again (`POST …/verifications/<id>/rerun`). Attempts
-stay visible. (Environment images have content-addressed tags; a configured default verifier
-image should be pinned too – a moving tag such as `:latest` is not part of the key's meaning.)
-
-* **On push.** Every tip a run pushes to its branch is verified (its task's commands), so the
-  step's Verify usually finds its candidate verified. A newer push cancels its branch's
-  verification that has not started yet.
-* **Agents** ask over MCP: `verification_request(sha?)` (their step's commands; the pushed tip by
-  default; `limits.verification_requests_per_run`), `verification_status`,
-  `verification_evidence` (each command's exit code and output).
-* **Limits.** At most `limits.max_parallel_verifications` verifier sandboxes run at once, inside
-  `limits.max_parallel`, served by priority – a step's verification, then the checks at the
-  head, then pushes, then agents. A step's verification runs in the step's own slot (a queued
-  one it needs moves there), so work in flight finishes first.
-* Runs are recorded on the change and in full at `control/verifications/<id>.json`.
-
-| ID | Rule |
-| --- | --- |
-| G-V1 | Every command exits 0. Otherwise the node goes to `REWORK` with the failing output as a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
-| G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the node escalates `verify_unrunnable` instead of spending a rework cycle (oracle commands at integration likewise). **Retry** re-runs verification at the same candidate, e.g. after the image is fixed. |
-| G-V3 | With a pinned setup (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs. In a task's verification or at integration that is a failure like any other (the task may have caused it); at preflight and the baseline – before any build – it is handled as G-PF1 says (the baseline: escalates `setup_failed`). |
-| G-MS1 | The setup runs only from the pinned `mise.toml`: a checkout whose file differs from the pin is not trusted and its setup is not run (the step fails). |
+**`controller:preflight`** (the oracle's first criterion): the repository's setup (§5.3c), then
+the oracle's `acceptance_commands`, at the oracle's commit in a **fresh verifier sandbox** (G-V1
+semantics: a new clone, the verifier image and environment profile) – not in the oracle's
+sandbox, whose installed dependencies and build output would hide what a clean run lacks. Before
+any build the commands are expected to fail: preflight passes if they **ran**. A failing setup is
+a failed criterion (the oracle reworks); a command not found (G-V2) or an infrastructure error is
+a fault.
 
 Exit codes are only as trustworthy as the code a command runs: a test process that imports the
 code under test can be made to exit 0. So the protected acceptance tests must be **black-box and
 out of process** (they run the system as a separate process and check its outputs), and runner
 configuration they depend on is listed in `oracle.protected_support` and protected like the tests
 (G-P7, G-O1, G-INT2). The test-engineer soul requires this, the critic checks it, and humans
-approve it at H-2. Per-task verification commands are a faster, weaker check backed by review.
+sign it at H-2. Per-build verification commands are a faster, weaker check backed by review.
 
-### 5.8 `review` – independent panel
+### 5.5 `baseline` (R3) – independent baseline (`plan` ▸ `acceptance` ▸ `baseline`)
 
-Panel: R1 `code-reviewer`; R2 `code-reviewer` (+ `security-reviewer` if security/authorization ≥ 2,
-+ `architecture-reviewer` if scope_breadth/novelty_uncertainty ≥ 2); R3 all three. R0 has no panel.
-The architecture reviewer uses skill `architecture-checklist` and writes
-`tasks/{{task_id}}/reviews/architecture-cycle-{{cycle}}.md`.
+What is true of the code before any build: which acceptance tests fail (as they should, until the
+change is built) and which failures were already there. The integration verifier is given it.
 
-* **Souls:** `code-reviewer`, `security-reviewer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format` (+ `language-preferences` for `reviewer`, `security-checklist` for `security`)
-* **Writes:** `tasks/{{task_id}}/reviews/{{role}}-*` (each panel member only its own files)  **Required:** `tasks/{{task_id}}/reviews/{{role}}-cycle-{{cycle}}.md`, git `candidate`
+* **Soul:** `baseline-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`
+* **Inputs:** `spec`, `oracle`  **Outputs:** `report` (`report.md`), git `head` (its base: the head with the oracle merged)
+
+| ID | Rule |
+| --- | --- |
+| G-BL1 | `data.results` lists every acceptance and integration command with its exit code at the attested head. |
+| H-2b | A decision owner signs the baseline's `report`. A rejection reworks the baseline. |
+
+### 5.6 `implementer` – a build (`delivery` ▸ the planner's builds)
+
+* **Soul:** the build's `soul` (`senior-developer`, `backend-engineer`, `frontend-engineer`)
+* **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
+* **Outputs:** `evidence`, git `commit` on its branch
+* **Sandbox:** created on its first round and **kept across its attempts** (the agent keeps its
+  working copy and session); deleted when the ticket is closed.
+
+| ID | Rule |
+| --- | --- |
+| G-B2 | The attested commit is the current tip of the ticket's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
+| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected. |
+| G-B4 | The evidence document names every `verification` command of the build with its exit code. |
+
+Its criteria, in order, by the tier's policy: `controller:verify` (§5.7), the review panel's
+judges (§5.8), `controller:can-merge` (§4.5). A failure reworks the build with the findings, in
+the same sandbox and session.
+
+### 5.7 `controller:verify` – deterministic (criterion)
+
+A fresh sandbox (network: controller git endpoint only, fetch-only grant) clones the commit the
+criterion judges and runs the commands of the work it checks – a build's `verification`, else the
+signed oracle's – after the repository's setup; results come back through `sandbox exec` output.
+
+**The verification service** (`engine/services/verification.py`) runs every verification **once
+per key**: the commit, the commands, the setup pin, the verifier image and the timeout. A passed
+or failed run is the key's result for good: anyone asking again gets it without a new sandbox. A
+result that says nothing of the commit – an infrastructure error, a command not in the image – is
+not a result: asked again (a retry), it runs again. (Environment images have content-addressed
+tags; a configured default verifier image should be pinned too – a moving tag such as `:latest`
+is not part of the key's meaning.)
+
+* **On push.** Every tip a run pushes to its branch is verified (its ticket's commands), so the
+  criterion usually finds its commit verified. A newer push cancels its branch's verification
+  that has not started yet.
+* **Agents** ask over MCP: `verification_request(sha?)` (their ticket's commands; the pushed tip
+  by default; `limits.verification_requests_per_run`), `verification_status`,
+  `verification_evidence` (each command's exit code and output).
+* **Limits.** At most `limits.max_parallel_verifications` verifier sandboxes run at once, inside
+  `limits.max_parallel`, served by priority – a criterion's verification, then pushes, then
+  agents.
+* Runs are recorded on the change and in full at `control/verifications/<id>/record.json`.
+
+| ID | Rule |
+| --- | --- |
+| G-V1 | Every command exits 0. Otherwise the criterion fails, each failing command's output a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
+| G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the ticket waits (`system`) at once, without retries. **Retry** verifies again, e.g. after the image is fixed. |
+| G-V3 | With a pinned setup (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs and the verification fails like any other (the commit may have caused it). |
+| G-MS1 | The setup runs only from the pinned `mise.toml`: a checkout whose file differs from the pin is not trusted and its setup is not run (the verification fails). |
+
+### 5.8 The review panel (criteria)
+
+The tier's policy gives every build its judges, each a criterion with its own fresh sandbox at
+the commit it judges: R1+ `reviewer`; a ticket labelled `security` also a `security` reviewer. The
+planner may add an `architecture` reviewer (skill `architecture-checklist`) or more. A judge may
+read its predecessor's review from the earlier attempt.
+
+* **Souls:** `code-reviewer`, `security-reviewer`, `architecture-reviewer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format` (+ `language-preferences` for `reviewer`, `security-checklist` for `security`)
+* **Outputs:** `review`, git `candidate`
 
 | ID | Rule |
 | --- | --- |
 | G-RV1 | The review attests `git:<repo>@<candidate>` for exactly the commit under review. |
 | G-RV2 | Each finding has `severity ∈ {BLOCKER, WARNING, SUGGESTION}`, `confidence ∈ {HIGH, MEDIUM, LOW}`, `title`, `fix`, ≥1 resolvable attestation. |
 | G-RV3 | `PASS` is forbidden with any HIGH-confidence BLOCKER/WARNING; `FAIL` requires at least one. |
-| G-RV4 | A `PASS` on cycle 1 must list what was checked in `data.checked` (skeptical by default). |
-| G-RV5 | Loop control: after `review_max_cycles` FAIL cycles, or 2 consecutive cycles with an identical set of HIGH findings (stale loop), the node is `ESCALATED`. |
+| G-RV4 | A `PASS` on the first attempt must list what was checked in `data.checked` (skeptical by default). |
+| G-RV5 | Loop control: the same set of blocking findings on two attempts in a row makes the ticket wait (`repeated`) instead of reworking again; past its limit it waits (`attempts`). |
 
-The panel's members run in parallel and the panel decides once **every** member has finished its
-turn. A member that fails, reports BLOCKED or cannot be dispatched does not escalate the node
-while the others still work: the panel's one task runs every member and collates their results
-once all have finished, then the node escalates with each escalation (a retry dispatches only the members without a review at the cycle).
+`FAIL` reworks the build: the implementer runs again **in the same sandbox and session** with the
+HIGH findings as its input (attempt + 1), and every criterion runs again from the first.
 
-FAIL ⇒ node `REWORK`: the implementer run is re-dispatched **in the same sandbox** with all
-HIGH findings attested as feedback (cycle + 1).
-
-### 5.9 Accept and merge (controller)
+### 5.9 Merging (controller)
 
 | ID | Rule |
 | --- | --- |
-| G-A2 | `git merge --no-ff` of the candidate into `legion/<change>/integration` is clean. A conflict ⇒ `REWORK` with reason `rebase onto <head>` (counts as a cycle). |
+| G-A2 | The commit merges cleanly into the branch it merges into (`controller:can-merge`, and again at the merge, §4.5). A conflict ⇒ rework with the finding `rebase onto <head>` (an attempt). |
 
-On success: node `ACCEPTED`, implementer and reviewer runs `ACCEPTED`, **their sandboxes are deleted**.
+On a merge the ticket passes; its branch is deleted (the merge made its commit part of the
+parent's history, and the evidence ref keeps every reported commit), its runs are accepted and
+its sandboxes are deleted after their agents reflect.
 
-### 5.10 `integration` (R2+) and `release` (kept for a live-system workflow; in no tier today)
+### 5.10 `integration` – the whole change (`delivery`'s last group)
 
-* `integration` – **Soul:** `integration-verifier`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Writes:** `integration/**`; **Required:** `integration/report.md`, git `head`. **Inputs** add every task's evidence and, at R3, the baseline report and the controller's baseline run.
-* `release` – **Soul:** `release-planner`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`; **Writes:** `release/**`; **Required:** `release/plan.md`, `release/rollback.md`.
-
-| ID | Rule |
-| --- | --- |
-| G-INT1 | Attested head equals the integration head; `data.verdict ∈ {PASS, FAIL}`; `data.results` covers every acceptance and integration command. The controller also re-runs the oracle commands deterministically at the head (G-V1 semantics). FAIL ⇒ escalate. |
-| G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle commit (except paths a human approved beforehand, G-PP1). |
-| G-REL1 | `release/plan.md` contains health and rollback criteria headings; `release/rollback.md` names the revert target sha and recommends a recovery strategy on its own line, `Strategy: rollback` or `Strategy: forward-fix` (with a `Rationale:`). |
-| H-3 | Approver ∈ `decision_owners` accepts the change, pinned to the integration head sha. Any later head change invalidates it. The card shows the matrix with results, the diff per task, protected paths changed and the ship gates' dry evaluation (§2.3). The gates only a human attestation satisfies are rows on the card, attested with the acceptance (G-AT1). `rollback_or_forward_fix_evidence` shows the release planner's recommended strategy and rationale with `release/rollback.md`: confirming it attests `rollback-evidence` or `forward-fix-evidence` accordingly, citing the plan. `security_or_e2e_evaluator` is attested `pass` citing the evidence ticked (security reviews, the integration report, the controller's oracle run) or named. A row with no specific evidence behind it – any but a recommended recovery plan – may instead be attested `not_applicable` with a reason, recorded against the integration report (else the integration head); the gate itself is not waived. Every row has one **Attest** button that records it at once; the card's own action (Accept change, Re-check the ship gates; at H-2 Approve all pending for the baseline) also records every row that is complete, and says which. A gate left unattested is reported as a warning: H-3 waits on it (its preconditions, §5.11) until one is recorded. |
-
-### 5.10b `describe` – the pull request (every tier)
-
-The last step before H-3: the description H-3 accepts with the change (published as the PR after H-3).
-
-* `describer` – **Soul:** `pr-writer`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`; **Writes:** `delivery/pr.md`; **Required:** `delivery/pr.md`, git `head`. At the integration head, with the change's whole diff (`{{change_base_sha}}..{{head_sha}}`); **inputs** the goal, requirements, plan, each task's evidence, the integration report and every fix round's record.
-* `pr-reviewer` – **Soul:** `pr-reviewer`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Writes:** its own `delivery/reviews/pr-reviewer-*`; **Required:** `delivery/reviews/pr-reviewer-cycle-<n>.md`, git `head`. Judges whether the description is *faithful*: its motivation is the change's, every significant change in the diff is described, nothing described is absent, and what it says was verified was.
+* **Soul:** `integration-verifier`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`
+* **Outputs:** `report`, git `head` (its base: every build merged)  **Context:** every build's evidence and, at R3, the baseline's report
 
 | ID | Rule |
 | --- | --- |
-| G-PR1 | `delivery/pr.md` starts with the PR's title (`# <title>`, at most 120 characters) and has the sections `## Motivation`, `## Changes` and `## Verification`; every requirement of the change is cited by its id. |
-| G-PR2 | The review attests the latest version of `delivery/pr.md`; `REWORK` names at least one finding, each with evidence the report attests. |
+| G-INT1 | The attested head is its base; `data.verdict ∈ {PASS, FAIL}` with findings that resolve; `data.results` covers every acceptance and integration command. `FAIL` is not done: an attempt, its findings the next round's input; at its limit it waits, and the remedy is a replan (fixes, then a new integration ticket). |
+| G-INT2 | Protected acceptance test and `protected_support` blobs at head equal those at the oracle's commit. |
 
-### 5.10c `publish` – the pull request on GitHub (controller, no agent)
+`release` (role, `release-planner` soul) is kept for a live-system workflow; no tier requires it,
+and a plan may add it to `release`:
 
-When the workspace's `source` is on GitHub, a **Publish** stage follows Delivery (no gate): once
-H-3 accepts the change, its integration branch is pushed to the source as
-`<publish_prefix><change-id>` (default `agent/<change-id>`; `legion/*` is never pushed) and a pull
-request is opened from it against the base branch, **ready for review**: its title and body are
-the reviewed `delivery/pr.md`, followed by a footer the controller adds – `Legion change:
-<change-id>` and the risk tier. Its labels come from the step's label policies, one family
-each: today `risk:<tier>`. A label the repository lacks is created (an existing one's colour is
-left alone); each family's labels on the pull request are made exactly the wanted ones (a stale
-`risk:R1` goes when the tier is R2), and labels of other families – a human's included – stay.
-Run again (a retry, a restart), it finds the pull request and brings it up to date; the branch
-is never force-pushed. The result is `control/pr.json` (url, number, branch, head, labels) and
-the change is `READY`. A failure – `gh` not authenticated, a branch that moved on GitHub, an
-API error – escalates (`publish_failed`) with the standard actions; retry publishes again. `gh`
-runs with the host's authentication, never a sandbox's. A workspace whose source is not on
-GitHub has no Publish stage: the change ends at H-3.
-
-### 5.10a Fix rounds
-
-A late failure – the integration verifier reports FAIL, or the oracle commands fail at the head
-(`integration_failed`) – is fixed by **planning new work on top of the integration head**, as if
-the change started from existing code. Accepted tasks are never reopened: a round adds tasks.
-Round 1 is the original plan; each fix round `n ≥ 2` is a **Round stage** of Delivery, inserted
-before integration: its own Design (plan, critique ◆H-E1), its own Oracle stage (provision and the
-oracle only if the round changes them, preflight, baseline ◆H-2) and its new tasks; then
-integration runs again. Its nodes are new nodes, suffixed `.n` (`plan.2`, `H-E1.2`, `oracle.2`, …); every
-earlier node keeps its record. A round **revises the plan documents in place**: it appends tasks to
-`plan/taskgraph.json` (and revises the spec, a delta spec, the oracle or the environment only
-when the fix needs it); the store's versions and the approval pins record what each round added.
-
-**Start.** On an `integration_failed` escalation a decision owner chooses **Plan a fix**
-(`plan_fix`, optional `comment`). Refused after `limits.fix_rounds` rounds (default 2); the change
-can then still be answered, overridden at the gates or abandoned. The round is recorded in
-`control/rounds/<n>.json` (approver, comment, the head it starts from, and the failure: the
-integration run's report documents and the failed verification record). The integration node's
-escalation is cleared and Delivery is sent back: its policy appends the Round stage, integration
-returns to `PENDING` (its finished runs superseded, their sandboxes deleted after they reflect)
-and runs again after the round, a new cycle. The round's `plan.n` starts it.
-
-**Plan (planner, fix mode).** A fresh planner sandbox and session, at the integration head. Its
-assignment adds the round (`{{fix_round}}`: the failure, the comment, every task already built
-with its accepted commit) and gives the approved documents at their approved versions, the round
-record and the failure documents as context; feedback starts at the round. It revises:
-
-* `plan/taskgraph.json` – **appending** one or more tasks; every task already built stays exactly
-  as it is. Each new task's `instructions` say which failure it fixes and why, and its `context`
-  cites the integration report. Task ids stay plain (`T5`) and are never reused across rounds;
-  the graph records each task's round;
-* `plan/spec.md` or delta specs `plan/specs/<REQ>.md` where the cause is a shared interface or
-  contract (the planner writes every required document and delta spec again, as on any rework:
-  an unchanged write counts as its own, G-R4/G-P9);
-* `plan/oracle.json` **only if** the acceptance tests themselves must change;
-* `plan/environment.json` **only if** the sandboxes must change.
+* **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`  **Outputs:** the
+  release plan and rollback
 
 | ID | Rule |
 | --- | --- |
+| G-REL1 | The release plan has `## Health criteria` and `## Rollback criteria`; the rollback names the revert target sha and recommends a recovery strategy on its own line, `Strategy: rollback` or `Strategy: forward-fix` (with a `Rationale:`). |
 
-**Critique.** The critic judges the round with the integration failure as input: the appended
-tasks must together address every failure it names, each saying which one it fixes and why. G-C1
-as usual (the latest plan documents); G-C2 counts the round's own cycles.
+### 5.10b `describer` – the pull request (`evaluate` ▸ `describe`)
 
-**After the critique passes**, the round's H-E1 approves its plan: the revised task graph makes
-the `plan` subject stale, as does any revised spec or delta spec; unchanged subjects keep their
-approval. Then what the round changed runs again:
+The description H-3 signs with the change, published as the PR.
 
-* **Environment.** Unchanged ⇒ the build stands (`provision.n` passes at once). Changed (the
-  latest `plan/environment.json` is not the one H-E1 pinned) ⇒ the round's H-E1 approves the new
-  version with the plan and `provision.n` builds it, as in round 1 (§5.3a).
-* **Oracle.** Unchanged ⇒ `oracle.n` passes at once: the oracle commit, protected paths and
-  surface pins stand. Changed ⇒ the test engineer works at the integration head (its own branch
-  for the round) and its commit must stay within the (new) protected paths (G-O1, G-O2); it is
-  merged and becomes the oracle commit that G-INT2 and `protected_oracle` compare against, and its
-  approval at the round's H-2 re-pins the surfaces.
-* **Preflight** runs again at the round's head.
-* **Baseline (R3).** Every round runs the baseline again at the integration head, after the
-  oracle (changed or not) and before the round's builds: it records what fails before the fix. A
-  decision owner attests `independent-baseline` again: H-2 only completes with an attestation
-  newer than the current baseline run.
-* **Build nodes** are added for the appended tasks (`build:<id>`, the round recorded on the node);
-  they run after the round's H-2.
-
-**H-2 for the round** waits once the round's oracle, preflight and baseline are accepted; a
-revised oracle makes the `oracle` subject stale (G-B1). **Revise** at the round's H-E1 sends the
-round's Design back to the planner with the feedback (the round's tasks are planned again;
-earlier rounds stand). **Restart plan** sends the Plan back: every round goes, and every build,
-the integration branch, the oracle and the surface pins start over.
-
-**Build.** The round's tasks are dispatched from the integration head as usual: implementer,
-verification, review, merge (§5.6–5.9). Earlier rounds' tasks stay as accepted.
-
-**Integration, H-3, ship.** Integration depends on every build task of every round and runs again
-at the new head, given every round's record and failure as context. H-3 and the ship gates cover
-all rounds' tasks: each task's scope, evidence and review are checked against its own base and
-accepted commit, and the task contract is the approved `plan/taskgraph.json`, which lists every
-round's tasks. Approvals and the independent baseline must precede the **current round's** first
-build (`approved_spec_and_oracle`, `independent_baseline`); earlier rounds' builds were dispatched
-only while every approval of their time was fresh (G-B1).
-
-**Not covered.** A FAIL from `release` (R3) does not offer a round.
-
-### 5.11 Ship gates – H-3's preconditions
-
-The controller evaluates every gate of the tier (§3) against the store and the mirror, re-resolving
-every attestation it relies on, and writes `control/ship/readiness.json`. Verdict `READY` iff every
-gate is `satisfied` (or validly waived). It publishes nothing.
-
-The ship gates are **H-3's preconditions**: evaluated when H-3 opens, when it is accepted, and on
-**recheck**; the gates H-3's own acceptance satisfies (`explicit_human_approval`,
-`whole_change_acceptance_evidence`) count only once it is given. H-3 completes – and the change
-is `READY` – when it is accepted (automatically at R0/R1) and every gate holds. Until then the
-change stays active and H-3 waits: once accepted (or at R0/R1) it needs you as `not_ready`
-(§2.2), and its card lists the gates not satisfied and why, takes the attestations only a human
-can give, and rechecks once the evidence is recorded.
-
-### 5.12 Change-level governance (human)
-
-Recorded at any time by a decision owner (UI, `legion-orch govern`, or `POST /api/changes/<id>/action`).
-Each is a versioned document under `control/`, so superseding keeps the history.
-
-| Action | Record | Rules |
-| --- | --- | --- |
-| `retrospective` | node `retrospective` (§5.13); optional `focus` in `control/focus/` | only once the change has ended; runs by itself then unless `retrospective.auto: false` |
-| `prune` | `change.pruned_at` | only once the change has ended: removes its integration branch and evidence refs (§5.14) |
+* `describer` – **Soul:** `pr-writer`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`; **Inputs:** `requirements`, `spec`; **Outputs:** `pr`, git `head`. At the change's head, with its whole diff (`{{change_base_sha}}..{{head_sha}}`).
+* `pr-reviewer` – a criterion the plan may add: **Soul:** `pr-reviewer`; **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `finding-format`; **Outputs:** `review`, git `head`. Judges whether the description is *faithful*: its motivation is the change's, every significant change in the diff is described, nothing described is absent, and what it says was verified was.
 
 | ID | Rule |
 | --- | --- |
+| G-PR1 | `pr` starts with the PR's title (`# <title>`, at most 120 characters) and has the sections `## Motivation`, `## Changes` and `## Verification`; every requirement of the change is cited by its id. |
+| G-PR2 | The review attests the latest version of `pr`; `REWORK` names at least one finding, each with evidence the report attests. |
+| H-3 | A decision owner signs the change – `head`, the integrated commit, and `pr` – as `evaluate`'s criterion. A rejection escalates (a grouping ticket's criterion): the remedy is a replan, or abandoning the change. |
+
+### 5.10c `controller:publish` – the result leaves the workflow (`release` ▸ `publish`)
+
+`release` always publishes the root's result (its branch head when `release` started):
+
+* **With a source on GitHub**: the head is pushed to the source as `<publish_prefix><change-id>`
+  (default `agent/<change-id>`; `legion/*` is never pushed) and a pull request is opened from it
+  against the base branch, **ready for review**: its title and body are the signed `pr`,
+  followed by a footer the controller adds – `Legion change: <change-id>` and the risk tier. Its
+  labels: `risk:<tier>`. A label the repository lacks is created (an existing one's colour is
+  left alone); the family's labels on the pull request are made exactly the wanted ones (a
+  stale `risk:R1` goes when the tier is R2), and other labels – a human's included – stay. Run
+  again (a retry, a restart), it finds the pull request and brings it up to date; the branch is
+  never force-pushed. The result is `control/pr.json` (url, number, branch, head, labels). `gh`
+  runs with the host's authentication, never a sandbox's.
+* **Otherwise** (no source, or one not on GitHub): the head is merged into the hub's base
+  branch, the PR's text the merge commit's message.
+
+A push or GitHub failing is a fault, retried with backoff, then the ticket waits (`system`); a
+base branch it no longer merges into waits at once. Once `release` passes, the root passes and
+the change is `READY`.
+
+### 5.11 Later failures: replans
+
+A failure found late – an integration that fails, H-3 rejecting the change – is fixed by
+**planning new work on top of what was built**, never by reopening it: the ticket waits, the
+resolver proposes a replan (§5.16), and a decision owner applies it (§4.6) – fix builds after
+`delivery`'s completed groups, then a new integration ticket; a changed signed document needs a
+new sign-off and new instances of the tickets that used it. No passed ticket runs again.
+
+### 5.12 Change-level actions (human)
+
+Recorded by a decision owner (UI, CLI, or `POST /api/changes/<id>/action`); a ticket's own
+actions (`approve`, `reject`, `retry`, `waive`, `replan`) go to
+`POST /api/changes/<id>/tickets/<ticket>/action`.
+
+| Action | Does |
+| --- | --- |
+| `pause` / `resume` | §4.6 |
+| `replan` | applies a replan document (`plan`), while paused and nothing is active (§4.6) |
+| `abandon` | ends the change where it is: running work stops, everything not finished is cancelled; `reason`; `retrospective: false` skips the retrospective (§5.13) |
+| `retry` | syncs an unsynced workspace again (§5.0a) |
+| `promote_proposal` | an environment proposal into the library (§5.3a) |
+| `retrospective` | the retrospective again on an ended change, with an optional `focus` (§5.13) |
+| `prune` | only once the change has ended: removes its integration branch and evidence refs (§5.14) |
 
 ### 5.13 Reflection and retrospective
 
-**Reflection (automatic).** When an agent's sandbox is deleted because its work is done (accepted,
-superseded, or its hold ended – not after a failure), the controller first resumes the agent's
-session (`--resume`) for one reflection turn: what cost it time, which instructions were missing or
-wrong, tool and environment friction, mistakes (for an implementer: each finding raised against its
-work) and suggestions. The answer is stored as `control/reflections/<run>.md`. The agent still has
-its whole context, which a later retrospective does not. If the agent runs in a new session instead
-(the resume did not take), the reflection says so at the top and the timeline notes it; a rework
-run that does not continue its session is noted the same way. Best-effort: a missing session, an error
-or `retrospective.reflect_timeout_s` skips it, and the deletion goes ahead. Turn it off with
-`retrospective.reflect: false`; `reflect_skip_roles` lists roles that never reflect – by default
-the judges (`reviewer`, `security`, `architecture`, `critic`): what a judge missed shows in later
-outcomes, not in its own account (see `findings.json` below).
+**Reflection (automatic).** When an agent's sandbox is deleted because its work is done (its
+ticket closed – not after a failure), the controller first resumes the agent's session
+(`--resume`) for one reflection turn: what cost it time, which instructions were missing or
+wrong, tool and environment friction, mistakes (for an implementer: each finding raised against
+its work) and suggestions. The answer is stored as `control/reflections/<run>.md`. The agent still
+has its whole context, which a later retrospective does not. If the agent runs in a new session
+instead (the resume did not take), the reflection says so at the top and the timeline notes it.
+Best-effort: a missing session, an error or `retrospective.reflect_timeout_s` skips it, and the
+deletion goes ahead. Turn it off with `retrospective.reflect: false`; `reflect_skip_roles` lists
+roles that never reflect – by default the judges (`reviewer`, `security`, `architecture`,
+`critic`): what a judge missed shows in later outcomes, not in its own account (see
+`findings.json` below).
 
-**Retrospective.** When a change ends (`READY` or `ABANDONED`), node
-`retrospective` is added and dispatched even though the change is no longer active – once the
-reflections of the sandboxes released at the end have finished, as they are part of its material.
-`retrospective.auto: false` leaves it to a decision owner, who can also ask for another at any time
-after the change has ended (UI, or `change_action retrospective` with an optional `focus`).
+**Retrospective** (`hooks.on_complete`). When a change ends – `READY` or `ABANDONED` – the
+retrospective runs as a ticket outside the tree (a `hook`), even though the change is no longer
+active, once the reflections of the sandboxes released at the end have finished, as they are
+part of its material. `retrospective.auto: false` leaves it to a decision owner, who can also ask
+for another at any time after the change has ended (change action `retrospective`, with an
+optional `focus`). The change is *completed* once it is over; then it is cleaned up (§5.14). A
+restart resumes it at the same attempt.
 
-**Abandoning.** A decision owner ends a change early with **Abandon** on any escalation, or
-**Reject** at H-3, optionally giving a `reason`. Who, at which node and why is recorded in
-`control/ended.json` and the change record (`ended`, which the retrospective reads in
-`change.json`) and in the timeline. The retrospective then runs on whatever the change has
-produced so far – also with `retrospective.auto: false`, unless the action passes
-`retrospective: false`.
+**Abandoning.** A decision owner ends a change early with **Abandon**, optionally giving a
+`reason`. Who, where it was (the tickets waiting on a human) and why is recorded in
+`control/ended.json` and the change record (`ended`, which the retrospective reads) and on the
+timeline. The retrospective then runs on whatever the change has produced so far – also with
+`retrospective.auto: false`, unless the action passes `retrospective: false`.
 
 * **Soul:** `retrospective-analyst`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`
-* **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and node
+* **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and ticket
   records, the change's documents, the current assets and a prompt check per run (agents cannot
-  read `control/logs/` through MCP). Its context lists earlier changes' retrospectives.
-* **Review ledger:** `retro/findings.json`, built by the controller from the node and run records
-  when the retrospective is dispatched: per task each candidate (sha, verification, verdicts) and
-  each finding with the cycle it was first raised, the cycles it came back in and the earlier
-  candidates the same role reviewed without raising it; the critique's findings; integration
-  outcomes; human feedback. The agent judges escapes (by diffing the pinned candidates) and noise
-  against the review criteria.
-* **Writes:** `retro/`  **Required:** `retro/report.md` (summary, review effectiveness, ranked
-  findings with evidence and root cause, proposed changes as diffs against the assets, what is not worth fixing).
-* It proposes; a human applies. Asking again runs a new cycle.
-
----
+  read run logs through MCP). Its context lists earlier changes' retrospectives.
+* **Judgement ledger:** `retro/findings.json`, built by the controller from the ticket and run
+  records: per ticket with criteria each commit judged (verification, verdicts) and each finding
+  with the attempt it was first raised, the attempts it came back in and the earlier commits the
+  same judge reviewed without raising it; human feedback. The agent judges escapes (by diffing the
+  pinned commits) and noise against the review criteria.
+* **Outputs:** `report` (summary, review effectiveness, ranked findings with evidence and root
+  cause, proposed changes as diffs against the assets, what is not worth fixing).
+* It proposes; a human applies. Asking again runs a new attempt.
 
 ### 5.14 Cleanup
 
@@ -990,12 +912,9 @@ What a change leaves in the hub and on the controller's host, and when it goes:
 
 | What | Goes |
 | --- | --- |
-| a run branch (`legion/<change>/build-<task>`, `…/oracle[-rN]`) | when its node is accepted: the merge made its commit part of the integration history, and the evidence ref keeps every candidate. **Restart plan** removes all of the change's run branches (a restarted task of the same name must not continue the old plan's commits). |
-| leftover run branches and the change's environment images (local `podman` images labelled with the change) | once, when the change has ended (`READY` or `ABANDONED`), nothing of it is running and its retrospective is done (`change.cleaned_at`). A run after that – a retrospective asked for again – uses the default image. Images pushed to `environment.registry` stay: a shared registry is the operator's to clean. |
-| `legion/<change>/integration` (the deliverable: what the ship check judged) and `refs/legion/evidence/<run>` (every reported candidate, so reviews' and reports' `git:` attestations resolve) | when a human **prunes** the ended change (change action `prune`, `legion-orch prune <change>`) after taking the integration branch. The change's records stay; its `git:` attestations no longer resolve, and the ship gates can no longer be rechecked. |
-
-The controller never publishes: merging the integration branch into the repository's own branches
-is the people's step, after which `prune` tidies the hub.
+| a ticket branch (`legion/<change>/t/<ticket>`) | when its ticket has merged: the merge made its commit part of the parent's history, and `refs/legion/evidence/<run>` keeps every commit an agent reported |
+| leftover ticket branches and the change's environment images (local `podman` images labelled with the change) | once, when the change is completed (ended, its retrospective done), nothing of it is running (`change.cleaned_at`). A run after that – a retrospective asked for again – uses the default image. Images pushed to `environment.registry` stay: a shared registry is the operator's to clean. |
+| `legion/<change>/integration` (the result) and `refs/legion/evidence/<run>` (every reported commit, so reviews' and reports' `git:` attestations resolve) | when a human **prunes** the ended change (change action `prune`, `legion-orch prune <change>`). The change's records stay; its `git:` attestations no longer resolve. |
 
 ### 5.15 Agent-to-agent (A2A)
 
@@ -1003,50 +922,47 @@ A change's agents can talk to each other and to its humans over A2A (v1.0, JSON-
 `a2a` CLI in their sandboxes ([a2aproject/a2a-cli](https://github.com/a2aproject/a2a-cli)). The
 controller hosts every card on its A2A listener (`server.a2a_port`, provider `legion-a2a`); a
 sandbox makes outbound calls only. The URLs name no change: the gateway-injected bearer names
-the caller's sandbox, change, task and role, and each request is answered for that change only
+the caller's sandbox, change, ticket and role, and each request is answered for that change only
 (the registry and catalog list it, a card of another change is 404).
 
 * **Cards** ([`workflow/cards.py`](legion_orch/workflow/cards.py)) say who an agent is – id,
-  step, role, title – and nothing of its state (that is `step_status` and its tasks'). They are
-  a view of the workflow, **pushed** to the A2A layer's catalog as it goes – a step publishes its
-  agents' cards when it starts and withdraws them when it ends; the change its own for its whole
-  life – and kept nowhere else: a catalog that subscribes (the A2A listener, after a restart) is
-  given every change's cards again. Each publication and withdrawal is a timeline event (`a2a`).
+  ticket, role, title – and nothing of its state (that is `ticket_status` and its tasks'). They
+  are **pushed** to the A2A layer's catalog as a side effect of the workflow and kept nowhere
+  else: a catalog that subscribes (the A2A listener, after a restart) is given every change's
+  cards again. Each publication and withdrawal is a timeline event (`a2a`).
   * `orchestrator` – the controller itself, not a model, for as long as the change is active.
     Skills: `list_cards`; `ask_human` (a question to the decision owners: a blocking attention
-    item, notified like a gate, answered in the UI or
+    item, notified like a sign-off, answered in the UI or
     `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
   * `resolver` – the change's resolver agent (§5.16), for as long as the change is active.
-  * one per **step agent**, `<role>@<node>` – the step's producer, critic and each judge of its
-    panel (`implementer@build:T1`, `reviewer@build:T1`, `critic@plan`) – from the step's start
-    to its end, whether the agent has a sandbox yet or not. The controller's own phases
-    (verification, merge, gates) have none.
+  * one per **agent that has started** on a ticket, `<role>@<ticket>` (`implementer@T1`,
+    `reviewer@review:T1`, `critic@critique`), while it has a sandbox – running, or stopped
+    between rounds – until its sandboxes are gone. An agent that has not started has no card: a
+    message to it is refused. The controller's own tickets (verification, merges, sign-offs) have
+    none.
 * **Discovery.** `GET /a2a/cards` (JSON) and `GET /a2a/ai-catalog.json`, an
   [AI Catalog](https://ai-catalog.io/) of the cards the caller may message (identifiers
   `urn:air:legion:agent:<card>`). `run-agent.sh` registers it as catalog `legion` before the
   agent starts (`a2a catalog add`, or `update` in a reused sandbox), and sets
-  `A2ACLI_AGENT_CARD` to the orchestrator.
-* **Delivery.** A message to a step agent becomes a task that waits for its answer:
+  `A2ACLI_AGENT_CARD` to the orchestrator. Cards come and go as agents start and finish, so an
+  agent asks again (`list_cards`, `a2a catalog update legion`) rather than trusting what it saw
+  at its start.
+* **Delivery.** A message to an agent becomes a task that waits for its answer:
   * while the agent has a live run it waits in its **inbox**: MCP `inbox` lists it and
     `a2a_reply` answers it;
-  * otherwise the agent gets **a turn of its own**, a *consult*: a read-only run (no commits,
-    writes or report) that is not one of the step's runs, whose prompt is the message and its
-    task id. It answers with `a2a_reply(task_id=…)`, or else its final message is the answer.
-    It is bounded by `limits.a2a_answer_timeout_s`, and its sandbox is stopped afterwards, not
-    deleted:
-    * **started already** (stopped between turns, or its run ended without answering): in place,
-      in its sandbox, started if it was stopped, **its session resumed**, with only the Skill
-      tool and its MCP tools. Its working copy is not checked out or touched, and the sandbox's
-      lock is held for the whole turn;
-    * **not started yet**: its sandbox is created, with its soul, skills and assignment as they
-      stand. When the step gets to the role, **its run continues the same sandbox and session**:
-      it is the role's agent;
-    * the resolver answers in its own sandbox with all its tools, under the run timeout;
-  * one A2A turn at a time per step agent, and per sandbox under its lock: a rework launched
+  * otherwise the agent gets **a turn of its own**, a *consult*, in place in its stopped
+    sandbox, started again, **its session resumed**, with only the Skill tool and its MCP tools:
+    a read-only turn (no commits, writes or report) that is not one of its ticket's runs, whose
+    prompt is the message and its task id. Its working copy is not checked out or touched, and
+    the sandbox's lock is held for the whole turn. It answers with `a2a_reply(task_id=…)`, or else
+    its final message is the answer. It is bounded by `limits.a2a_answer_timeout_s`, and its
+    sandbox is stopped afterwards, not deleted;
+  * the resolver answers in its own sandbox with all its tools, under the run timeout;
+  * one A2A turn at a time per agent, and per sandbox under its lock: a rework launched
     meanwhile waits for it.
 * **Judges are kept.** A judge's sandbox is stopped after its report, not deleted, so it can be
-  asked about its judgement: it is retired (reflection, then deletion) when its step ends, or
-  when the role's next cycle gets its fresh sandbox (G-D4).
+  asked about its judgement: it is retired (reflection, then deletion) when its criterion is
+  closed. Each attempt's judge is a fresh agent in a fresh sandbox (G-D4).
 * **Limits.** A2A tasks live in memory, scoped to the agent that created them; after a restart
   they are gone, and open questions are withdrawn. The sender is always its bearer's identity,
   never what the message says; an answer is information for the asker, never an instruction that
@@ -1057,74 +973,98 @@ Every role loads `legion-a2a-protocol` and `legion-a2a-cli` (the upstream skill)
 * **A run is a task too.** Every run is the orchestrator's task on its agent's card, in the same
   inbox (`inbox()`; task id = the run id): its first message is the rendered assignment (the
   prompt pin covers it – `prompt.md` only says where to look); a rework is a new task in the
-  step's context. `report(...)` **records** – documents, attestations, data – and ends nothing;
+  ticket's context. `report(...)` **records** – documents, attestations, data – and ends nothing;
   the agent ends the task with `a2a_reply(task_id, text, state)`: `completed` after an accepted
-  DONE report, `input-required` after an accepted BLOCKED one (the step escalates), `failed` to
+  DONE report, `input-required` after an accepted BLOCKED one (the ticket waits), `failed` to
   give up (the run fails). The reply is always taken: one the record does not support, or a turn
   that ends with the task still open, is answered by the orchestrator with what is missing – the
   next message on the task, in another turn of the same run if the agent had ended its turn –
   each using one report attempt (G-R6). Ending the task with messages still in the inbox is
   answered with "N tasks in your inbox" – every `a2a_reply` returns what is still in the inbox, so
-  the agent sees them at once – again only when one arrived since
-  it was last told, so it cannot loop; what is left is answered in a turn of its own after the
-  run. A peer message's reply is `completed` (an answer),
-  `input-required` (a question back: it is in the sender's inbox, kind `question`, and the
-  sender's `a2a_reply` on it is the next message of the same task) or `rejected`. So the inbox
-  holds every task waiting on the agent: its work, messages to answer, questions back.
-* **Where work stands.** MCP `step_status(node?)` – a step's status, cycle and budget left, its
-  candidate's verification, the panel's verdicts so far, an escalation, its agents' cards – and
-  `workflow_context()` – the goal and tier, the stages and where the step is, the task's place in
-  the task graph (builds on, built on by, nearby files), the requirements and acceptance criteria
-  it serves, its judges, and whom to ask (`workflow/context.py`, from the change's state alone).
+  the agent sees them at once – again only when one arrived since it was last told, so it cannot
+  loop; what is left is answered in a turn of its own after the run. A peer message's reply is
+  `completed` (an answer), `input-required` (a question back: it is in the sender's inbox, kind
+  `question`, and the sender's `a2a_reply` on it is the next message of the same task) or
+  `rejected`. So the inbox holds every task waiting on the agent: its work, messages to answer,
+  questions back.
+* **Where work stands.** MCP `ticket_status(ticket?)` – a ticket's status, what it waits for,
+  its attempt and limit, its commit, its criteria and their verdicts, its runs, the findings it was
+  told to fix, its outputs – and `workflow_context()` – the goal and tier, its parent and the
+  groups around it, what runs before and after it, its inputs (the approved versions it
+  consumes), who judges it, and whom to ask (`workflow/context.py`, from the change's state
+  alone).
 
 ### 5.16 The resolver
 
 Every change has a **resolver** – an agent (role `resolver`, soul `resolver`), the change's own
-rather than a step's, with the A2A card `resolver` for as long as the change is active. It is
+rather than a ticket's, with the A2A card `resolver` for as long as the change is active. It is
 started on its first message and kept, stopped between messages, its session resumed for each;
 every message is a full turn of its own (its tools, MCP reads, A2A), read-only: it writes
 nothing, pushes nothing and never reports.
 
-* **Every escalation goes to it.** When a step escalates (a failure – not a gate's due
-  decision), the orchestrator sends the resolver a message with the escalation (kind, reason,
-  log tail, run), the step's state (`step_status`) and the **actions** a human may take on it.
-  It diagnoses – asking the agents involved over A2A: the stuck agent, its judges, the oracle,
-  the planner – and ends its answer with one proposal: an action, its payload, a rationale and
+* **Every escalation goes to it** (`hooks.on_escalation`). When a ticket starts waiting on a
+  human (§4.4 – not a sign-off that is merely due), the orchestrator sends the resolver a message
+  with why it waits, its findings, its last run (log tail), the ticket's state and the
+  **remedies** a human may choose. It diagnoses – asking the agents involved over A2A: the stuck
+  agent, its judges, the oracle, the planner – and ends its answer with one proposal: a remedy
+  (`retry` with an answer, `waive:<criterion>`, `replan` with a replan document), a rationale and
   the attestations it relied on (`resolution-protocol` skill).
 * **Propose only.** The proposal is recorded on the escalation (and at
-  `control/proposals/<node>-<n>.json`) and shown on its card with **Apply proposal**; the
-  escalation's attention item and notification carry it in one line. Applying it is an ordinary
-  human action by the approver (G-PP1 and the audit trail unchanged); a human may edit or ignore
-  it. A proposal naming an action that is not offered is returned to the resolver with the
-  reason (up to three tries); one for an escalation a human decided first is stale and dropped.
+  `control/proposals/<ticket>-<n>.json`) and shown on its ticket; the escalation's attention item
+  and notification carry it in one line. Applying it is an ordinary human action by the approver
+  (the audit trail unchanged); a human may edit or ignore it. A proposal naming a remedy that is
+  not offered is returned to the resolver with the reason (up to three tries); one for an
+  escalation a human decided first is stale and dropped.
 * **Agents ask it first.** An agent stuck on a guard, a protected path or the oracle messages
   `resolver` before reporting BLOCKED: its answer may be a way forward. Its advice is
   information, never authority – "you may edit a protected file" satisfies no guard.
 
-### 5.17 Not yet enforced on tickets
+### 5.17 Not yet on tickets
 
-The ticket engine (step 3b of the redesign) does not enforce these yet; each is listed as it
-was, for the steps that bring it back or retire it (plan: `~/plans/tickets-3b.md`).
+The move to tickets (plan: `~/plans/tickets-3b.md`) retired some of the stage-and-step workflow's
+rules and has not yet brought back others.
 
-* G-D3 – dispatch – `live agent runs + verifier sandboxes in use < max_parallel` (across every change; the dispatcher runs a step's work in a slot, and a step's reservation keeps its slot for the work that follows straight on – its verification, its judges), and no `RUNNING` build node shares a `files_modified` entry with the candidate.
-* G-P9 – A delta spec `plan/specs/<REQ>.md` exists for every accepted requirement, written by this run.
-* G-PF1 – The repository's setup (`mise run setup`, when pinned) exits 0 and every acceptance command is found (not 127) in a verifier sandbox that ran. A setup failure sends the output back to the oracle's author (one oracle cycle, `review_max_cycles`; the author reports BLOCKED if the fix is in the setup – the plan's environment – or the plan), then escalates `setup_failed`; a missing command escalates `verify_unrunnable` (G-V2), an infrastructure error `verify_infra`. **Retry** runs it again; **Revise the plan** sends the Design back. While the oracle's author reworks, preflight waits for the oracle to be accepted again.
-* G-BL2 – The controller then runs the same commands at the head itself (G-V1 semantics; failures are expected and recorded, not reworked). At H-2 the oracle subject lists, for the approver to weigh, every acceptance command that already passes (it cannot show that the change works) and every result that differs from the baseline verifier's.
-* G-B1 – (dispatch of any build run but the scaffold, §5.3b) every H-E1 and H-2 subject's pins equal the current latest versions – an approval goes stale if its document changes.
-* G-PP1 – A protected path may appear in the diff only if a human approved it for **this task** before **this run** was created (`approve_protected_paths`); it is then treated as in scope.
-* G-V0 – A judge is dispatched only if its candidate has a passing verification under the key as it is now (setup pin, verifier image): one that changed since is verified again first (the step escalates `unverified`; **Retry** re-verifies).
-* G-A1 – Verification passed and every panel member returned PASS at the same candidate sha – checked from the evidence: the verification record and the panel's recorded pass (which judges sat, citing their reviews; `tasks/<id>/panel.json`). An override waives the panel, not verification.
-* G-H1 – Before a merge, and before dispatching a run at the integration head (integration, baseline, release), the integration branch is at the head the controller recorded. Otherwise commits were added outside the workflow: they are **not adopted** (they bypass verification and review); the node escalates `head_moved`, naming both shas, and a retry after the branch is reset to the recorded head resumes it (the merge, or a fresh run).
-* G-PR3 – `REWORK` sends the description back to the describer with the findings, at most `critique_max_cycles` cycles (counted from the fix round's start); then a human decides (`critique_budget`).
-* G-FR1 – Requirements are unchanged: nothing under `intake/` is written and the H-1 pins stand. Every new task cites ≥1 accepted `REQ-*`; a round need not cover every requirement (earlier tasks do).
-* G-FR2 – The revised task graph keeps every task that has a build node exactly as built and appends at least one task with an id no task has used. The whole graph meets G-P1 and G-P2; the new tasks meet G-P4–G-P7. A new task may depend on accepted tasks and modify their files; only the new tasks are checked for parallel overlap (G-P6), since the accepted ones have finished. At R2+ a revised oracle meets G-P8 and G-P10.
-* `attest` – `control/attestations/<kind>.json` – G-AT1
-* `approve_protected_paths` – `control/approvals/protected-paths/<n>.json` – G-PP1
-* `approve_surface` – `control/surfaces/<id>.json` – G-SF1
-* `override` – `control/overrides/<n>.json` – G-OV1
-* G-AT1 – Kind ∈ `independent-baseline, security-evaluation, e2e-evaluation, architecture-review, rollback-evidence, forward-fix-evidence, release-observation`; verdict ∈ `pass, fail, unknown, not_applicable`; ≥1 resolvable source attestation (a waiver still names its bytes); `not_applicable` needs a waiver reason (≥24 chars, >1 word) and only it may carry one; `release-observation` cannot be `pass` (the release plan is the evidence); optional `covers` lists task ids – partial coverage leaves the gate unsatisfied. One record per kind: re-attesting supersedes, and a `fail` is never undone by a pass on a sibling kind.
-* G-SF1 – At ship, every file pinned by a verification surface has the same blob at the integration head as when pinned. A drift leaves `integration_or_real_interface_checks` unsatisfied until a human re-affirms the surface (`approve_surface`, with a reason) – a decision, never a silent re-pin.
-* G-OV1 – `add_gate` adds any known gate to this change's set; `waive_gate` needs a reason (≥24 chars) and resolvable replacement evidence, and is refused for `deterministic_verification`, `explicit_human_approval` and `whole_change_acceptance_evidence`. Tier changes happen only at H-1.
+**Given by the ticket rules** (retired as separate guards):
+
+* G-A1 (verification and every judge passed at the same commit before the merge): criteria run in
+  order on one commit, and a new attempt reruns every criterion from the first.
+* G-V0 (a judge only after its commit's verification passed): `controller:verify` is the build's
+  first criterion. (A verification key changed since – a new setup pin or image – is not
+  re-verified first.)
+* The cycle budgets (`review_max_cycles`, `critique_max_cycles`, G-PR3): a ticket's attempt limit.
+* Fix rounds (`limits.fix_rounds`, G-FR1, G-FR2, `plan_fix`): replans (§4.6, §5.11), which never
+  change finished work and add only after completed groups.
+* Send-back, override and "run again in place": replans and remedies (§4.4).
+* G-B1 (an approval goes stale when its document changes): sign-offs move the pointers, and the
+  runs are given what the pointers name.
+
+**Not yet enforced:**
+
+* G-D3 – no two builds under way share a `files_modified` entry (G-P6 keeps one plan's parallel
+  builds apart; a replan's builds are not checked against those under way).
+* G-P9 – A delta spec for every accepted requirement, written by this run.
+* G-PF1's routing – a preflight whose setup fails reworks the oracle; when the fault is in the
+  environment or the plan the oracle can only report BLOCKED.
+* G-BL2 – The controller's own run of the baseline's commands at the head (failures expected and
+  recorded), and at H-2 the acceptance commands that already pass.
+* G-PP1 – a human's approval for a protected path in one build's diff
+  (`approve_protected_paths`).
+* G-H1 – the integration branch moved outside the workflow (commits not made by a merge) is not
+  detected before a merge or a run at the head.
+* The scaffold before the oracle in a blank repository (§5.3d): the R2 order rule puts every
+  build, the scaffold included, after the oracle.
+* Staleness from pointers – a ticket done against `environment@3` while the pointer is `@5` – and
+  the mechanical follow-ups (a new sign-off, new instances of its consumers): step 5 of the plan.
+* The ship gates and H-3's preconditions, with the human attestations behind them: G-AT1
+  (`attest`, `control/attestations/<kind>.json`: `independent-baseline`, `security-evaluation`,
+  `e2e-evaluation`, `architecture-review`, `rollback-evidence`, `forward-fix-evidence`,
+  `release-observation`), G-SF1 (surface pins unchanged at the end, `approve_surface`) and
+  G-OV1 (`add_gate`, `waive_gate`). What a tier must contain is now its policy (§3), and the
+  final sign-off is H-3.
+* The gate screens' traceability matrix (requirements → builds → oracle criteria and their
+  results) and H-3's acceptance view: to be rebuilt on tickets with the UI (step 6).
+
+---
 
 ## 6. Assets
 
@@ -1132,11 +1072,11 @@ Agent-facing text is stored as files under `assets/`, with this naming conventio
 
 ```
 assets/
-  roles.yaml               role -> soul, skills, write scope, required docs, git requirement
+  roles.yaml               role -> soul, skills, outputs, work schema, report schema, git requirement
   souls/<soul>.md          agent persona, injected verbatim (never summarised)
   skills/<skill>.md        skill: frontmatter `description` (when to load it), then the body
   prompts/<role>.md        task prompt template for the role (file name = role name)
-  workflow.yaml            the tickets' skeleton, the tier policies and the hooks (being built)
+  workflow.yaml            the skeleton, the tier policies, waivable criteria and the hooks
 ```
 
 * A role's prompt is `prompts/<role>.md`, kept light: the rendered template followed by one line
@@ -1152,33 +1092,41 @@ assets/
   keeps those of the run it reflects on. The local runner gives each sandbox its own `CLAUDE_CONFIG_DIR` (with a link to the
   operator's Claude credentials), so runs never write to the operator's `~/.claude`.
 * Templates use `{{var}}` placeholders. Available variables: `change_id, goal, tier, repo_name,
-  base_sha, head_sha, oracle_sha (the protected oracle commit; empty before the oracle), branch, task_id, task_title, task_json, cycle, role, context_refs, feedback,
-  candidate_sha, write_scope, required_docs, workdir, task_soul, environment` (the planner's
-  environment instructions with the library catalogue; only the planner is given it), `fix_round` (in a
-  fix round, what it asks of the planner or the critic; empty otherwise), `scaffold` (in a blank
-  repository, what the scaffold task asks of the planner, the critic or the oracle; empty
-  otherwise). An unknown or unbound variable
-  fails G-D2. Load-time validation rejects unknown variables, missing files, souls and prompts
-  not referenced by any role, and skills without a valid `description`.
-* The implementer's soul is chosen per task (`task_soul`) from `souls_allowed` in `roles.yaml`.
-* Each role has a handler in `legion_orch/workflow/roles/`: its dispatch policy (`pushes`,
-  `judge`, `panel`, `judges_head`, `reuses_sandbox`, `keeps_session_until`,
-  `needs_fresh_approval`, which context it
-  sees), its role-specific guards, and the transition after an accepted report. Handlers work
-  against the narrow `RoleContext` interface, not engine internals.
-* **Context is scoped.** A build task's implementer and review panel get the accepted requirements,
-  the approved `plan/spec.md`, oracle and task graph, the delta specs of **the task's own
-  requirements only**, the task's declared `context`, its dependencies' commits and the oracle
-  commit; the implementer is not given `intake/risk.json`. A document the controller gives at its
-  approved version is not repeated from the task's `context` at another version, and relative
-  `file:` refs there are qualified to the change. Adding a role means assets
-  plus one handler module; the controller refuses to start if a role in `roles.yaml` has none.
+  base_sha, head_sha, change_base_sha, oracle_sha` (the oracle's commit; empty before it), `branch,
+  task_id` (the ticket's id), `task_title` (its goal), `task_json` (its work), `cycle` (its
+  attempt), `role, context_refs` (its inputs and context at their versions), `feedback` (the
+  findings it is to address), `candidate_sha` (the commit a judge judges), `write_scope` (its
+  ticket's directory), `step` (the same), `plan` (the directory of the design the pointers
+  name), `required_docs` (the outputs it must report), `workdir, task_soul, sandbox_tools,
+  environment` (the planner's environment instructions with the library catalogue; only the
+  planner is given it), `scaffold` (in a blank repository, what the scaffold build asks of the
+  planner and the critic; empty otherwise) and `fix_round` (always empty: replans replaced fix
+  rounds; it goes with the prompts' rewrite). An unknown or unbound variable fails G-D2.
+  Load-time validation rejects unknown variables, missing files, souls and prompts not
+  referenced by any role, and skills without a valid `description`.
+* `roles.yaml`'s `write` and `required_docs` predate tickets and are not used to check reports
+  any more: a run writes in its ticket's directory and reports its `outputs` (G-R4). They go
+  with the prompts' rewrite.
+* The implementer's soul is chosen per build (its work's `soul`, `task_soul`) from
+  `souls_allowed` in `roles.yaml`.
+* Each role has a handler in `legion_orch/workflow/roles/`: the context it sees beyond its
+  inputs, its prompt variables, its role-specific guards, and what its accepted report says for
+  its ticket – its commit and outputs, a judge's verdict and findings. Handlers work against the
+  narrow `RoleContext` interface, not engine internals, and never move a ticket or touch a
+  sandbox (where its agent works follows from the ticket: §2, `engine/sandboxes/plan.py`).
+  Adding a role means assets plus one handler module; the controller refuses to start if a role
+  in `roles.yaml` has none.
+* **Context is scoped.** A run is given its ticket's inputs at the versions the pointers name,
+  its work, and what its handler adds: a judge, the outputs of the work it judges (and its
+  predecessor's review); a build's implementer and judges, the delta specs of the build's own
+  requirements only and the oracle's commit; the integration verifier, every build's evidence
+  and the baseline's report. A document already given at its approved version is not repeated
+  at another, and relative `file:` refs are qualified to the change.
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)
 
-**The workflow as tickets** (replacing the stages and steps, being built):
-[`assets/workflow.yaml`](assets/workflow.yaml) – every change's skeleton, what each risk tier's plan
-must contain, and the hooks. `legion-orch check` validates it; every run also gets it as the
+**The workflow:** [`assets/workflow.yaml`](assets/workflow.yaml) – every change's skeleton, what
+each risk tier's tree must contain (§3), the waivable criteria and the hooks. `legion-orch check` validates it; every run also gets it as the
 generated `legion-workflow` skill.
 
 | Role | Prompt |
@@ -1220,7 +1168,8 @@ generated `legion-workflow` skill.
 * [`resolver`](assets/souls/resolver.md)
 
 **Schemas** ([`bindings.yaml`](assets/schemas/bindings.yaml) maps path patterns to these; agents
-can fetch them with MCP `docs_schema(path)` / `schema_get(name)`). JSON documents use JSON Schema
+can fetch them with MCP `docs_schema(path)` / `schema_get(name)`; an agent's outputs are bound
+under `tickets/*/`, run and verification records under `control/`). JSON documents use JSON Schema
 2020-12; `x-format: markdown` schemas require headings/patterns; `x-format: text` is free text.
 Cross-document rules (coverage, cycles, parallel overlap, resolvable attestations) stay in the
 guards, because a per-file schema cannot express them.
@@ -1256,7 +1205,8 @@ guards, because a per-file schema cannot express them.
 * [`git-protocol`](assets/skills/git-protocol.md)
 * [`blocked-protocol`](assets/skills/blocked-protocol.md)
 * [`risk-signals`](assets/skills/risk-signals.md)
-* [`taskgraph-schema`](assets/skills/taskgraph-schema.md)
+* [`taskgraph-schema`](assets/skills/taskgraph-schema.md) – the planner's builds (still written
+  for the task graph: rewritten for `tickets.json` with the prompts)
 * [`sandbox-environment`](assets/skills/sandbox-environment.md)
 * [`language-preferences`](assets/skills/language-preferences.md) – the index of the house
   conventions per stack, shared by every role that plans, writes, tests or judges code; edit the

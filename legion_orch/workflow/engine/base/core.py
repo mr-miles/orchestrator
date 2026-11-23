@@ -88,7 +88,7 @@ class ChangeCore:
         return self.st.tickets.get(tid) or self.st.hooks.get(tid)
 
     def setup_waits_for_scaffold(self) -> bool:
-        """A blank repository (§5.3b, §5.3c): until the scaffold build has passed, what the
+        """A blank repository (§5.3d, §5.3c): until the scaffold build has passed, what the
         setup task needs does not exist – no sandbox runs it; the scaffold's own verification
         runs it, at its commit."""
         if not self.change.blank_repo:

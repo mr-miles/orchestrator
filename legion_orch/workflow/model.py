@@ -406,7 +406,7 @@ class Change(Record):
     created_at: str = Field(default_factory=now_iso)
     status: ChangeStatus = ChangeStatus.ACTIVE
     base_sha: str | None = None
-    # the base has no build tooling or code yet (§5.3b): the plan starts with a scaffold task
+    # the base has no build tooling or code yet (§5.3d): the plan starts with a scaffold task
     blank_repo: bool = False
     tier: str | None = None                               # from the approved risk (H-1)
     risk: RiskAssessment | None = None

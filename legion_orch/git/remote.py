@@ -73,7 +73,7 @@ def paths_overlap(a: str, b: str) -> bool:
     return False
 
 
-# What a repository may hold and still be blank (§5.3b): documentation, licence files, git or
+# What a repository may hold and still be blank (§5.3d): documentation, licence files, git or
 # forge settings and tool-version files (mise) – nothing that builds, tests or runs code.
 BLANK_REPO_FILES = ("*.md", "*.rst", "*.adoc", "LICENSE*", "LICENCE*", "COPYING*", "NOTICE*",
                     "AUTHORS*", ".gitignore", ".gitattributes", ".editorconfig", ".github/",

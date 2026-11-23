@@ -553,8 +553,13 @@ class Flow:
         r = self.run("integration")
         cmds = self.ce.oracle_commands()
         doc = await self.write(r, "report.md", "results")
-        return await self.report(r, [f"git:{REPO}@{r.base_sha}", doc], {
-            "verdict": verdict, "findings": [],
+        head = f"git:{REPO}@{r.base_sha}"
+        findings = [] if verdict == "PASS" else [{
+            "severity": "BLOCKER", "confidence": "HIGH", "dimension": "correctness",
+            "title": "the greeting is never printed", "observation": "x", "impact": "y",
+            "fix": "print it", "attestations": [head]}]
+        return await self.report(r, [head, doc], {
+            "verdict": verdict, "findings": findings,
             "results": [{"command": c, "exit_code": 0} for c in cmds]}, outputs={"report": doc})
 
     PR = ("# Greet the user\n\n## Motivation\n\nREQ-1: greet.txt says hello.\n\n"

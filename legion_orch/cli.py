@@ -42,16 +42,13 @@ def _parser() -> argparse.ArgumentParser:
     dg = sub.add_parser("digest", help="what happened on a running controller since a time")
     dg.add_argument("--since", default="8h",
                     help="ISO timestamp or a duration back from now: 30m, 8h, 2d (default 8h)")
-    tr = sub.add_parser("trace", help="a change's traceability matrix: requirements, tasks, "
-                        "acceptance criteria and their results")
-    tr.add_argument("change")
-    tr.add_argument("--format", choices=["md", "json"], default="md")
     act = sub.add_parser("act", help="perform a human action on a running controller")
     act.add_argument("change")
     act.add_argument("ticket")
     act.add_argument("action")
     gov = sub.add_parser("govern", help="a change-level action: pause | resume | abandon | "
-                                        "replan (payload: {\"plan\": …})")
+                                        "replan (payload: {\"plan\": …}) | retry (an unsynced "
+                                        "workspace) | retrospective | promote_proposal")
     gov.add_argument("change")
     gov.add_argument("action")
     pn = sub.add_parser("prune", help="an ended change, once its integration branch is taken: "
@@ -105,9 +102,6 @@ class OperatorClient:
 
     def digest(self, since: str) -> dict:
         return self._call("/api/digest?" + urllib.parse.urlencode({"since": since}))
-
-    def trace(self, change: str) -> dict:
-        return self._call(f"/api/changes/{urllib.parse.quote(change)}/trace")
 
     def start(self, goal: str, workspace: str) -> dict:
         return self._call("/api/changes", {"goal": goal, "workspace": workspace})
@@ -215,15 +209,6 @@ def cmd_digest(cfg: Config, args) -> int:
     return 0
 
 
-def cmd_trace(cfg: Config, args) -> int:
-    t = OperatorClient(cfg).trace(args.change)
-    if args.format == "json":
-        return _show(t)
-    from .workflow.traceability import to_markdown
-    print(to_markdown(t, args.change), end="")
-    return 0
-
-
 def cmd_start(cfg: Config, args) -> int:
     return _show(OperatorClient(cfg).start(args.goal, args.workspace))
 
@@ -262,7 +247,7 @@ def _show(result: Any) -> int:
 
 COMMANDS = {"check": cmd_check, "serve": cmd_serve, "setup-openshell": cmd_setup_openshell,
             "changes": cmd_changes, "attention": cmd_attention, "digest": cmd_digest,
-            "trace": cmd_trace, "prune": cmd_prune, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
+            "prune": cmd_prune, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
             "library": cmd_library}
 
 

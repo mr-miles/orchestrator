@@ -5,7 +5,9 @@ a rework continues the same session (R6), and a criterion's judge is a fresh age
 (its ticket is new). The run ends in an accepted report, or a failure the runner attributes to
 its source (``FailureSource``) – which decides the outcome's kind:
 
-* an accepted report: the work is done (its commit) – a judge's verdict, for a criterion;
+* an accepted report: the work is done (its commit) – a judge's verdict, for a criterion; a
+  ticket's own work that judges (the integration verifier) and says FAIL has not done it: an
+  attempt, its findings the next round's input;
 * the agent's own failure (it gave up, its report submissions ran out, a BLOCKED report): an
   attempt, the detail its next round's input;
 * the system's or the controller's: a fault, retried with backoff (never an attempt);
@@ -46,6 +48,8 @@ def agent_outcome(end: AgentEnd, criterion: bool) -> Outcome:
     if end.accepted:
         if criterion:
             return Judged(end.verdict == Verdict.PASS, end.findings)
+        if end.verdict is not None and end.verdict != Verdict.PASS:
+            return GaveUp(end.findings or (f"its own verdict: {end.verdict}",))
         return Done(end.sha, dict(end.outputs))
     match end.failure:
         case FailureSource.TIMEOUT:

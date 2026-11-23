@@ -3,12 +3,13 @@
 A Python controller that runs a [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended)-style
 guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.com/NVIDIA/OpenShell) sandboxes.
 
-* **[WORKFLOW.md](WORKFLOW.md)** is the specification: stages, guards, risk tiers, ship gates, and
-  which soul, skills and prompt each task uses.
-* **[docs/architecture.md](docs/architecture.md)** shows how the controller is layered (the workflow
-  core, steps and their agent, sandbox and orchestrator layers, the services and infrastructure) and
-  what each layer may know, as diagrams.
-* **[assets/](assets/)** holds the agent-facing text and document schemas: `roles.yaml`, `schemas/` (JSON Schemas bound to document paths; the store validates every write and records the schema),
+* **[WORKFLOW.md](WORKFLOW.md)** is the specification: the tickets a change is made of, their
+  guards, the risk tiers' policies, and which soul, skills and prompt each role uses.
+* **[docs/architecture.md](docs/architecture.md)** shows how the controller is layered (the pure
+  ticket rules, the runner and its executors, the services, sandboxes and infrastructure) and what
+  each layer may know, as diagrams.
+* **[assets/](assets/)** holds the agent-facing text and document schemas: `workflow.yaml` (every
+  change's skeleton, the tier policies, the hooks), `roles.yaml`, `schemas/` (JSON Schemas bound to document paths; the store validates every write and records the schema),
   `souls/<soul>.md`, `skills/<skill>.md` and `prompts/<role>.md`. The controller loads and validates
   the folder at start-up, then pins the asset-set hash and the rendered-prompt hash on every run.
   WORKFLOW.md is documentation only and is never parsed.
@@ -16,34 +17,41 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   document store, progress, report) and through `git push` to their own branch on the controller's remote.
   Every claim is an attestation (`file:<path>@<version>`, `git:<repo>/<path>@<sha>`) that the controller
   resolves before anything moves forward.
-* The web UI shows the plan, the live task graph, agent progress, reviews, verification, documents and
-  ship gates, and it is where humans approve, revise and resolve escalations.
-* A sandbox is deleted as soon as the work it produced is accepted. Intake, planner and oracle
-  keep theirs, stopped, with the agent's session until the gate that can send the work back
-  passes (H-1, H-E1, H-2), so a rework continues the same conversation.
+* The web UI shows the tickets, agent progress, reviews, verification and documents, and it is where
+  humans sign off, choose remedies for escalations and replan. (It is being rebuilt on tickets.)
+* A ticket's agent keeps its sandbox, stopped between rounds, with its session until the ticket is
+  closed – the intake until H-1 passes, the planner until H-E1, the oracle until H-2 – so a rework
+  continues the same conversation. Judges get a fresh sandbox every round.
 * Before a finished agent's sandbox is deleted, the agent reflects on its session (what cost it
   time, where its instructions failed) into `control/reflections/`. When a change ends, a
   **retrospective** runs (and a decision owner can ask for more): an agent that reads the reflections, the whole agent
   logs (timestamped, with per-run digests), the timeline and the reviews, and proposes changes to
-  the souls, skills, prompts and process (`retro/report.md`). Configure with `retrospective:`
+  the souls, skills, prompts and process. Configure with `retrospective:`
   (`auto`, `reflect`, `reflect_timeout_s`, `reflect_skip_roles` – judges are skipped by default; the
   retrospective judges reviews by their escapes instead); see WORKFLOW.md §5.13.
 * The document store and the git remote are the only durable state. Each change is namespaced under
-  `changes/<id>/`, including the controller's own graph, node and run records, and is rebuilt
-  from the store on restart. Several changes can run side by side, and `state_dir` is set once.
+  `changes/<id>/` – each ticket's documents under `tickets/<id>/`, run and verification records
+  under `control/` – and its tickets are rebuilt from the state tables on restart, every ticket
+  under way going on at the same attempt. Several changes can run side by side, and `state_dir` is
+  set once.
 
 ```
-Requirements  intake                                             ◆ H-1 accept requirements & tier
-Plan          Design: planner <-> critic (with [environment])    ◆ H-E1 approve the plan
-              Oracle: [provision] [scaffold] oracle preflight [baseline]   ◆ H-2 approve the oracle
-Delivery      build DAG (verify -> review panel -> rework loop -> merge)
-              integration [release]                              ◆ H-3 accept (its preconditions: the ship gates)
+change
+├─ requirements    intake ✓H-1 (requirements, risk → the tier)
+├─ plan            design (planner) ✓critique ✓H-E1 → provision → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
+├─ delivery        the planner's builds (each ✓verify ✓review… ✓can-merge) → integration
+├─ evaluate        describe ✓H-3
+└─ release         publish
 ```
 
-The stage rules run in a pure workflow core (`legion_orch/workflow/flow/`): every gate can send
-back any stage the work was built on, a stage sent back starts over, and a late integration
-failure appends a fix round (WORKFLOW.md §4.1). Lower tiers leave stages out and approve H-3
-automatically once the ship gates hold.
+Every change is one tree of **tickets** – a ticket is its own work, then its subtask groups (in
+order; a group's tickets in parallel), then its acceptance criteria (in order) – and a human
+sign-off is just a criterion. The skeleton comes from `assets/workflow.yaml`; the planner fills
+`delivery`, and each risk tier's policy says which ticket types, criteria and order a tree must
+have. A failed criterion reworks the ticket (an attempt); past its limit, or on a system error,
+an exceeded budget or a BLOCKED agent, it waits on a human, whose remedies are retry, waive or
+replan – finished work is never undone, corrections are new tickets (WORKFLOW.md §4). The rules
+are pure (`legion_orch/workflow/tickets/rules.py`).
 
 ## Run
 
@@ -57,14 +65,13 @@ legion-orch -c orchestrator.yaml check            # validate the assets folder
 legion-orch -c orchestrator.yaml serve            # UI at http://<host>:8765/
 legion-orch -c orchestrator.yaml start "Add a /health endpoint" --workspace app   # or use the UI
 legion-orch -c orchestrator.yaml changes                            # list changes
-legion-orch -c orchestrator.yaml act <change-id> H-1 accept --approver miles
-legion-orch -c orchestrator.yaml act <change-id> H-E1 approve --approver miles --payload '{"subjects": ["REQ-1"]}'
-legion-orch -c orchestrator.yaml act <change-id> H-E1 send_back --approver miles --payload '{"stage": "design", "feedback": "split T1"}'
-legion-orch -c orchestrator.yaml govern <change-id> attest --approver miles \
-  --payload '{"kind": "security-evaluation", "verdict": "pass", "sources": ["file:tasks/T1/reviews/security-cycle-1.md@1"]}'
-# an escalation caused by the environment, answered by provisioning again (§5.3a)
-legion-orch -c orchestrator.yaml act <change-id> build:T1 rerun:provision --approver miles \
-  --payload '{"reason": "rebuild against the updated environment library"}'
+legion-orch -c orchestrator.yaml act <change-id> H-1 approve --approver miles
+legion-orch -c orchestrator.yaml act <change-id> H-E1 reject --approver miles --payload '{"reason": "split T1"}'
+# a waiting ticket's remedies: retry (with an answer for a blocked agent), waive, replan
+legion-orch -c orchestrator.yaml act <change-id> T1 retry --approver miles --payload '{"answer": "use the v2 API"}'
+legion-orch -c orchestrator.yaml act <change-id> T1 waive:review:T1 --approver miles --payload '{"reason": "…"}'
+legion-orch -c orchestrator.yaml govern <change-id> pause --approver miles
+legion-orch -c orchestrator.yaml govern <change-id> replan --approver miles --payload '{"plan": {"add": […]}}'
 ```
 
 Five listeners, one purpose each:
@@ -74,7 +81,7 @@ Five listeners, one purpose each:
 | `server.host:port` | `127.0.0.1:8765` | `/` (UI), `/api/*` (JSON + SSE, human gates) | operators only; keep it off the sandbox network |
 | `server.agent_host:mcp_port` | `0.0.0.0:8766` | `/mcp` | agents, vetted by the gateway as `protocol: mcp` |
 | `server.agent_host:git_port` | `0.0.0.0:8767` | `/git/<repo>.git` (push only to the run's branch) | agents and verifiers |
-| `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → task-scoped token) | the OpenShell gateway supervisor |
+| `server.agent_host:token_port` | `0.0.0.0:8768` | `/oauth/token` (SPIFFE JWT-SVID → ticket-scoped token) | the OpenShell gateway supervisor |
 | `server.agent_host:a2a_port` | `0.0.0.0:8769` | `/a2a/*` (A2A cards of the caller's change, its AI Catalog) | agents (the `a2a` CLI) |
 
 The UI ([`frontend/`](frontend/README.md): React, TypeScript, Vite, Tailwind CSS and shadcn/ui,
@@ -87,13 +94,10 @@ controller reads from its assets. Breadcrumbs show where you are (`Workloads ›
 change over server-sent events: `/api/changes/<id>/events` pushes the
 change's state, the change list and every change's attention items whenever they differ, and
 `/api/runs/<run>/log/events` an agent's log as it grows. The header's bell lists what **needs
-you** (gates, escalations and H-3s waiting on their ship gates, across all changes) and the **inbox** (ended changes, retrospective
+you** (sign-offs, escalations, paused changes, agents' questions, across all changes) and the **inbox** (ended changes, retrospective
 reports); `notify:` sends the same items to ntfy, a webhook or a command, with reminders while
 they wait (WORKFLOW.md §2.2). `legion-orch attention` and `legion-orch digest --since 8h` show
-them on the command line. The H-2 and H-3 cards and the Gates tab show the **traceability
-matrix** – each requirement with its delta spec, tasks and acceptance criteria, and their results
-once built – with warnings first, the diff of anything changed since it was approved, and at H-3
-the diff per task and the ship gates evaluated dry (§2.3; `legion-orch trace <change>`). Build it
+them on the command line. Build it
 before packaging (`python -m build` ships whatever is in
 `static/dist`); without a build, `/` says how to make one.
 
@@ -121,10 +125,10 @@ SPIFFE JWT-SVID at `/oauth/token` and injects the bearer into requests to the co
 
 Each agent run gets `openshell sandbox create --detach --name lg-<first name> --from <image>
 --provider … --policy <rendered policy> --upload <payload>:/sandbox`. The payload holds only `soul.md`,
-`prompt.md`, `mcp.json`, `run.env` and the step scripts. The controller then prepares the sandbox
+`prompt.md`, `mcp.json`, `run.env` and the preparation scripts. The controller then prepares the sandbox
 one step at a time (`openshell sandbox exec`): `clone.sh` (a partial clone), then `branch.sh` for a
 role that pushes or `checkout.sh` (detached at its commit) for any other, then `mise-setup.sh` when
-a setup is pinned, and finally `run-agent.sh` starts the agent. The agent pushes only its run
+a setup is pinned, and finally `run-agent.sh` starts the agent. The agent pushes only its ticket's
 branch to the controller, and writes documents over MCP. Nothing is downloaded from a sandbox. Deterministic verification runs
 in a separate, read-only sandbox through `openshell sandbox exec`. Adjust `policies/*.template.yaml`
 to match your image's binary paths. The agent is the native `claude` CLI baked into the image;
@@ -142,11 +146,11 @@ may only use what the verifier has.
 
 ### Sandbox environments
 
-With an `environment:` section in the config, the planner also writes `plan/environment.json`, naming sandbox **profiles** (tools, network policies, and
+With an `environment:` section in the config, the planner's `environment` output names sandbox **profiles** (tools, network policies, and
 memory/vCPU/disk if non-default) and which role runs in which profile. Profiles are composed from
 a library in [`environments/`](environments/README.md): tools installed with **mise**, and network
 policies (credentialless endpoint lists) that become rules in the sandbox's own policy. The spec is critiqued with the
-plan and approved at **H-E1**, with the plan. The controller then provisions it: `podman build` of one image per
+plan and signed off at **H-E1**, with the plan. The `provision` ticket then builds it: `podman build` of one image per
 profile (`FROM sandbox.image`, or `sandbox.verifier_image` for the verifier) tagged by content and
 reused when identical, and the
 resources as `sandbox create --cpu` / `--memory` (disk, which has no flag, rendered from
@@ -186,4 +190,4 @@ uploads it as the run's artifact. `mise run check` runs the same locally.
 
 `pytest` runs the unit tests, the git access-control test and a full end-to-end workflow. The e2e test
 drives scripted agents through the real MCP and git endpoints, including critique rework, a failed
-review, a failed verification and a scope-guard rejection, through to a READY ship verdict.
+review, a failed verification and a scope-guard rejection, through to a published, READY change.

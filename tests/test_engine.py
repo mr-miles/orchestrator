@@ -706,7 +706,7 @@ def test_signals_helper_derives_r1():
 @scenario(blank_repo=True)
 async def test_a_change_on_a_blank_repository(f: Flow):
     """No repo.path: the hub starts with one empty commit and a change runs to READY on it,
-    starting with a scaffold task (§5.3b)."""
+    starting with a scaffold task (§5.3d)."""
     assert f.cfg.workspaces[0].source is None
     base = f.ce.change.base_sha
     assert await f.git.tree_paths(base) == [] and f.ce.change.blank_repo
@@ -829,3 +829,23 @@ async def test_a_turn_that_ended_with_the_controller_is_concluded_after_a_restar
     f.ctl, f.ce = ctl2, ce2
     await f.settle()
     assert ce2.runs[run.id].concluded and f.status("intake") == "checking"
+
+
+@scenario()
+async def test_an_integration_that_fails_is_an_attempt_not_a_pass(f: Flow):
+    await f.to_build()
+    for task in [t for t, x in f.ce.st.tickets.items() if x.type == "agent:implementer"]:
+        await f.implement(task)
+        if f"review:{task}" in f.ce.st.tickets:
+            await f.review(task)
+    res = await f.integration("FAIL")
+    assert res.accepted, res
+    await f.settle()
+    t = f.ticket("integration")
+    assert (t.status, t.attempt) == ("working", 2), f.status()   # round again, told why
+    assert any("never printed" in x for x in t.findings), t.findings
+    assert f.status("describe") == "pending"                     # evaluate has not started
+    await f.integration()
+    await f.describe()
+    await f.signoff("H-3")
+    assert f.ce.change.status == ChangeStatus.READY

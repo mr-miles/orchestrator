@@ -576,32 +576,32 @@ def test_engine_boundaries():
 
 def test_the_engine_keeps_its_layers():
     """The import contracts in pyproject.toml (import-linter): the engine's layers import only
-    downward (runtime > steps > services > sandboxes > base), nothing outside the engine imports
-    more than the engine package's names, the facade never sees the step layer, and the
-    workflow core is pure."""
+    downward (flow > services > sandboxes > base), nothing outside the engine imports more than
+    the engine package's names, the facade never sees the sandbox layer, and the tickets know no
+    engine."""
     from importlinter.cli import EXIT_STATUS_SUCCESS, lint_imports
     assert lint_imports(config_filename=str(ROOT / "pyproject.toml"), no_cache=True,
                         no_logo=True) == EXIT_STATUS_SUCCESS     # its output says which broke
 
 
-def test_the_facade_names_none_of_the_step_layer():
-    """change.py fronts the runtime, decisions, reports and logs; the parts composed for the
-    step layer (compose.py) are never used through it."""
+def test_the_facade_names_none_of_the_services_composed_for_the_workflow():
+    """change.py fronts the workflow, the agents' reports and the run logs; the parts composed
+    for the workflow's adapters (compose.py) are never used through it."""
     src = (ROOT / "legion_orch/workflow/engine/change.py").read_text()
-    used = set(re.findall(r"self\._(runner|phases|agents|provisioner|sandboxes)\b", src))
+    used = set(re.findall(r"self\._(runner|agents|provisioner|sandboxes|publisher)\b", src))
     assert used == set(), used
 
 
-def test_the_runtime_names_no_phase_or_step_type():
-    """The runtime starts, resets, resumes, overrides and retries steps; what a step is made of
-    and where it goes on is the step layer's to say, so nothing in runtime/ names a phase's
-    status or reads a step type."""
-    phases = r"\b(RUNNING|VERIFYING|REVIEWING|MERGING|REWORK)\b"
-    types = r"\b(step_for|STEP_TYPES|GATE_TYPES|StepType)\b"
-    for f in sorted((ROOT / "legion_orch/workflow/engine/runtime").glob("*.py")):
-        src = re.sub(r"(StepStatus|ChangeStatus|NodeStatus)\.\w+", "", f.read_text())
-        assert not re.findall(phases, src), f"{f.name} names a phase"
-        assert not re.findall(types, src), f"{f.name} reads a step type"
+def test_the_ticket_rules_are_pure():
+    """The rules decide and the runner carries out: tickets/rules.py and its records do no I/O –
+    no asyncio, files, processes or git, nothing of the controller but the ticket model – so the
+    same events give the same tickets and effects (the property tests rely on it)."""
+    pure = {"__future__", "contextlib", "collections.abc", "dataclasses", "enum", "typing",
+            "pydantic", ".model"}
+    for name in ("rules.py", "model.py"):
+        src = (ROOT / "legion_orch/workflow/tickets" / name).read_text()
+        mods = set(re.findall(r"^(?:from|import) (\S+)", src, re.M))
+        assert mods <= pure, f"{name} imports {mods - pure}"
 
 
 def test_every_role_has_exactly_one_handler():
