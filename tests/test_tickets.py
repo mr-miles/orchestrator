@@ -192,6 +192,9 @@ def test_a_failed_integration_is_replaced_by_fixes_and_a_new_integration():
 def test_a_replan_waits_for_inactive_tickets_and_never_touches_closed_or_started_ones():
     t = build()
     t.start()
+    with pytest.raises(TicketError, match="while the workflow is paused"):
+        t.replan(Replan())
+    t.pause()
     with pytest.raises(TicketError, match="every ticket to be inactive"):
         t.replan(Replan())                                  # T1 and T2 are working
     t.work_done("T2")
@@ -206,6 +209,7 @@ def test_a_replan_waits_for_inactive_tickets_and_never_touches_closed_or_started
 
 def test_a_replan_that_cancels_the_root_ends_the_change_and_abandon_stops_work():
     t = build()
+    t.pause()
     assert t.replan(Replan(cancel=["change"])) == [Ended(Status.CANCELLED)]
     t = build()
     t.start()
@@ -249,6 +253,8 @@ def trees(draw):
 
 def check(t: Tickets) -> None:
     for x in t.t.values():
+        assert (x.status == Status.PAUSED) == (x.held is not None), x
+        assert t.paused or x.status != Status.PAUSED, x           # nothing rests once it runs
         assert (x.status == Status.WAITING) == (x.waiting is not None), x
         assert x.attempt <= x.limit, x
         live = [g for g in x.subtasks]
@@ -280,42 +286,53 @@ def test_any_tree_through_any_events_keeps_the_invariants(tree, data):
     t = Tickets(tree)
     t.start()
     check(t)
-    for _ in range(60):
+    for _ in range(80):
         working = [x for x in t.t.values() if x.status in (Status.WORKING, Status.MERGING)]
         waiting = [x for x in t.t.values() if x.status == Status.WAITING]
+        if data.draw(st.integers(0, 9)) == 0:                  # an operator pauses or resumes
+            t.resume() if t.paused else t.pause()
+            check(t)
+            continue
         if not working and not waiting:
+            if t.paused:
+                t.resume()
+                check(t)
+                continue
             break
+        before, eff = t.paused, []
         if working:
             x = data.draw(st.sampled_from(working))
             if x.status == Status.MERGING:
                 kind = data.draw(st.sampled_from(["merged", "merged", "conflict", "system"]))
                 if kind == "merged":
-                    t.merged(x.id, "m" * 40)
+                    eff = t.merged(x.id, "m" * 40)
                 elif kind == "conflict":
-                    t.merge_conflict(x.id, ["c"])
+                    eff = t.merge_conflict(x.id, ["c"])
                 else:
-                    t.system_error(x.id)
+                    eff = t.system_error(x.id)
             elif x.role == "criterion":
-                t.verdict(x.id, data.draw(st.booleans()), [data.draw(st.sampled_from("ab"))])
+                eff = t.verdict(x.id, data.draw(st.booleans()), [data.draw(st.sampled_from("ab"))])
             else:
                 kind = data.draw(st.sampled_from(["done", "done", "failed", "system"]))
                 if kind == "done":
-                    t.work_done(x.id, data.draw(st.sampled_from([None, "a" * 40])))
+                    eff = t.work_done(x.id, data.draw(st.sampled_from([None, "a" * 40])))
                 elif kind == "failed":
-                    t.work_failed(x.id, ["f"])
+                    eff = t.work_failed(x.id, ["f"])
                 else:
-                    t.system_error(x.id)
+                    eff = t.system_error(x.id)
         else:
             x = data.draw(st.sampled_from(waiting))
             if x.waiting in (Waiting.SYSTEM, Waiting.BUDGET):
-                t.decide(x.id, Remedy.RETRY)
+                eff = t.decide(x.id, Remedy.RETRY)
             else:
                 rejected = [c for c in x.criteria if t.t[c].status == Status.REJECTED
                             and t.t[c].waivable]
                 if rejected:
-                    t.decide(rejected[0], Remedy.WAIVE)
+                    eff = t.decide(rejected[0], Remedy.WAIVE)
                 else:
                     break
+        if before and t.paused:                                 # paused: nothing starts
+            assert not [e for e in eff if isinstance(e, StartWork)], eff
         check(t)
 
 
@@ -359,7 +376,44 @@ def test_a_refused_replan_changes_nothing():
     assert {k: v.model_dump() for k, v in t.t.items()} == before   # H-E1 still working
     quiet = Tickets([T("c", subtasks=[["delivery"]]), T("delivery", "c")])
     quiet.start()                                         # delivery is empty: it waits
+    quiet.pause()
     with pytest.raises(TicketError, match="nowhere"):
         quiet.replan(Replan(add=[Add(T("T1", type="agent:implementer"), "delivery", 0),
                                  Add(T("x"), "nowhere", 0)]))
     assert quiet.t["delivery"].subtasks == [] and "T1" not in quiet.t
+
+
+# ------------------------------------------------------------------------------- pause
+def test_a_pause_stops_everything_at_its_next_conclusion_but_merges_conclude():
+    t = build()
+    assert started(t.start()) == ["T1", "T2"]
+    t.pause()
+    assert t.work_done("T2", "b" * 40) == [Merge("T2", "b" * 40, "delivery")]   # concludes
+    assert t.merged("T2", "c" * 40) == []
+    assert t.work_done("T1", "a" * 40) == []               # its criterion does not start
+    assert t.t["T1"].status == Status.CHECKING and t.active() == []
+    assert started(t.resume()) == ["rev:T1"]               # it goes on from where it rests
+    t.pause()
+    assert t.verdict("rev:T1", False, ["HIGH: x"]) == []   # the rework rests
+    assert t.t["T1"].status == Status.PAUSED and t.t["T1"].held == "start"
+    assert t.resume("someone else") == [] and t.paused     # only its own pause is lifted
+    assert t.resume() == [StartWork("T1", 2, ("HIGH: x",))]
+
+
+def test_choosing_a_replan_pauses_and_applying_it_resumes():
+    t = Tickets([T("c", subtasks=[["d"]]),
+                 T("d", "c", subtasks=[["T1", "T2"], ["T3"]]),
+                 T("T1", "d", type="agent:implementer", criteria=["ok"]),
+                 crit("ok", "T1", Severity.ESCALATE, type="controller:verify"),
+                 T("T2", "d", type="agent:implementer"),
+                 T("T3", "d", type="agent:implementer")])
+    t.start()
+    t.work_done("T1", "a" * 40)
+    t.verdict("ok", False, ["fails"])                      # T1 waits; T2 still works
+    t.decide("T1", Remedy.REPLAN)
+    assert t.paused and t.t["T1"].status == Status.FAILED
+    with pytest.raises(TicketError, match="inactive"):
+        t.replan(Replan(add=[Add(T("T1b", type="agent:implementer"), "d", 1)]))
+    assert t.work_done("T2") == []                         # drained: T3 does not start
+    eff = t.replan(Replan(add=[Add(T("T1b", type="agent:implementer"), "d", 1)]))
+    assert not t.paused and started(eff) == ["T1b"]        # the backdrop was static until now

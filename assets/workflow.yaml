@@ -21,12 +21,14 @@ skeleton:
   subtasks:
     - id: requirements
       subtasks:
-        - {id: intake, type: "agent:intake", goal: "the requirements and the risk assessment"}
-      criteria:
-        - id: H-1
-          type: "human:signoff"
-          signs: [intake/requirements.md, intake/risk.json]
-          applies: tier
+        - id: intake
+          type: "agent:intake"
+          goal: "the requirements and the risk assessment"
+          criteria:                 # on the intake: a rejection reworks it
+            - id: H-1
+              type: "human:signoff"
+              signs: [intake/requirements.md, intake/risk.json]
+              applies: tier
     - id: plan
       subtasks:
         - id: design
@@ -46,16 +48,15 @@ skeleton:
             - id: oracle
               type: "agent:oracle"
               goal: "the acceptance tests, failing before any build"
-              criteria:
+              criteria:             # on the oracle: a rejection reworks it
                 - {id: preflight, type: "controller:verify"}
+                - id: H-2
+                  type: "human:signoff"
+                  signs: [tickets/oracle/tests.md]
             - id: baseline
               type: "agent:baseline"
               tiers: [R3]
               goal: "the baseline: what passes and fails before any build"
-          criteria:
-            - id: H-2
-              type: "human:signoff"
-              signs: [tickets/oracle/tests.md]
     - id: delivery
       branch: integration           # the change's integration branch
       # the planner's builds, then the integration ticket as the last group

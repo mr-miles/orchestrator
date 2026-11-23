@@ -17,7 +17,7 @@ from legion_orch.git.branches import Branches
 from legion_orch.git.remote import GitRemote
 from legion_orch.store.journal import Journal
 from legion_orch.store.state_tables import StateTables
-from legion_orch.workflow.tickets import Add, Remedy, Replan, Severity, Status, Ticket, Tickets, Waiting
+from legion_orch.workflow.tickets import Add, Replan, Severity, Status, Ticket, Tickets, Waiting
 from legion_orch.workflow.tickets.executors import (
     Backoff,
     CanMergeExecutor,
@@ -171,35 +171,41 @@ async def test_a_conflict_at_merge_is_a_rework_onto_the_new_head(tmp_path):
     assert "G-A2" in r.t.t[reworked[0]].findings[0]
 
 
-async def test_a_restart_resumes_controller_work_and_holds_agent_work(tmp_path):
-    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge")), tier="R0")
+async def test_a_restart_resumes_whatever_was_under_way_at_the_same_attempt(tmp_path):
+    for stuck in ("provision", "T1"):                       # a controller's work, an agent's
+        (tmp_path / stuck).mkdir()
+        ch = Change(tmp_path / stuck, planned(build("T1", "verify", "can-merge")), tier="R0")
+        r = await ch.runner()
+        gate = ch.script.gates[stuck] = asyncio.Event()
+        await r.start()
+        await ch.script.reached(stuck)
+        await r.stop()                                     # the controller goes down
+
+        r2 = await ch.runner(ch.records.load())            # and comes back
+        await r2.recover()
+        await r2.settle()
+        assert ch.script.calls[0] == (stuck, 1)            # the same round again: no attempt
+        assert ch.hooks.endings == [Status.PASSED] and ch.hooks.escalations == []
+        assert not gate.is_set() and r2.t.t[stuck].attempt == 1
+
+
+async def test_an_operators_pause_drains_the_work_and_a_resume_goes_on(tmp_path):
+    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge"),
+                                  build("T2", "verify", "can-merge")), tier="R0")
     r = await ch.runner()
-    gate = ch.script.gates["provision"] = asyncio.Event()
+    gates = {t: ch.script.gates.setdefault(t, asyncio.Event()) for t in ("T1", "T2")}
     await r.start()
-    await ch.script.reached("provision")
-    await r.stop()                                         # the controller goes down
-
-    r2 = await ch.runner(ch.records.load())                # and comes back
-    await r2.resume()
-    await r2.settle()                                      # provision runs again, and on
-    assert ch.script.ran()[0] == "provision" and ch.hooks.endings == [Status.PASSED]
-    assert not gate.is_set()
-
-    (tmp_path / "b").mkdir()
-    ch2 = Change(tmp_path / "b", planned(build("T1", "verify", "can-merge")), tier="R0")
-    r = await ch2.runner()
-    ch2.script.gates["T1"] = asyncio.Event()
-    await r.start()
-    await ch2.script.reached("T1")
-    await r.stop()
-    r2 = await ch2.runner(ch2.records.load())
-    await r2.resume()
-    await r2.settle()
-    assert r2.t.t["T1"].waiting == Waiting.SYSTEM and r2.t.t["T1"].attempt == 1   # not an attempt
-    assert ("T1", Waiting.SYSTEM) in ch2.hooks.escalations
-    await r2.decide("T1", Remedy.RETRY)                    # a human retries: it goes on
-    await r2.settle()
-    assert ch2.hooks.endings == [Status.PASSED]
+    await ch.script.reached("T1")
+    await ch.script.reached("T2")
+    await r.pause()
+    for g in gates.values():
+        g.set()
+    await r.settle()                                       # both concluded; nothing started
+    assert r.t.active() == [] and "verify:T1" not in ch.script.ran()
+    assert {r.t.t[t].status for t in ("T1", "T2")} == {Status.CHECKING}
+    await r.resume()
+    await r.settle()
+    assert ch.hooks.endings == [Status.PASSED]
 
 
 async def test_failures_escalate_and_abandon_stops_running_work(tmp_path):
@@ -226,18 +232,21 @@ def test_the_policy_and_the_skeleton_at_each_tier():
     for tier in SPEC.tiers:
         t = Tickets(SPEC.skeleton_at(None))
         t.t["H-1"].status = Status.WORKING
+        t.pause()                                          # as its start does
         t.verdict("H-1", True, apply=SPEC.tier_additions(tier, t.t))
         assert ("acceptance" in t.t) == (tier in ("R2", "R3"))
         assert ("baseline" in t.t) == (tier == "R3")
         v = check_policy(SPEC, tier, t.t)
         assert f"tier {tier}: delivery's last group must be its agent:integration" in v
     t = Tickets(SPEC.skeleton_at("R2"))
+    t.pause()
     t.replan(planned(build("T1", "verify", "can-merge", labels=["security"])))
     v = check_policy(SPEC, "R2", t.t)
     assert "tier R2: T1 (agent:implementer) must have a agent:reviewer criterion" in v
     assert "tier R2: T1 is labelled security: it must have a agent:security criterion" in v
     assert all(not x.waivable for x in t.t.values() if x.type == "human:signoff")
-    assert t.t["H-1"].severity == Severity.ESCALATE and t.t["critique"].severity == Severity.REWORK
+    assert t.t["H-1"].severity == Severity.REWORK and t.t["H-1"].parent == "intake"   # reworks
+    assert t.t["H-2"].parent == "oracle" and t.t["H-3"].severity == Severity.ESCALATE
 
 
 def test_a_workflow_file_that_cannot_work_is_refused(tmp_path):
@@ -263,7 +272,7 @@ def test_a_workflow_file_that_cannot_work_is_refused(tmp_path):
     def unknown_ticket(d):
         d["tiers"]["R0"]["requires"]["nowhere"] = ["x"]
     def rework_on_grouping(d):
-        d["skeleton"]["subtasks"][0]["criteria"][0]["severity"] = "rework"
+        d["skeleton"]["subtasks"][3]["criteria"][0]["severity"] = "rework"   # evaluate's H-3
     for broken, says in ((loops, "extends"), (unknown_role, "nobody"),
                          (unknown_ticket, "nowhere"), (rework_on_grouping, "R4")):
         with pytest.raises((AssetError, SpecError), match=says):
@@ -272,3 +281,31 @@ def test_a_workflow_file_that_cannot_work_is_refused(tmp_path):
     rendered = a.render_role("planner", dict.fromkeys(TEMPLATE_VARS, "x"))
     assert "legion-workflow" in rendered.skills
     assert "### Tier R2" in rendered.skills["legion-workflow"]
+
+
+async def test_a_signoff_that_applies_a_plan_waits_for_the_others_to_drain(tmp_path):
+    tree = [Ticket(id="c", role="root", subtasks=[["plan", "side"], ["delivery"]]),
+            Ticket(id="plan", parent="c", subtasks=[["design"]]),
+            Ticket(id="design", parent="plan", type="agent:planner", criteria=["H-E1"]),
+            Ticket(id="H-E1", parent="design", role="criterion", type="human:signoff",
+                   applies="tickets/design/tickets.json"),
+            Ticket(id="side", parent="c", type="agent:researcher"),
+            Ticket(id="delivery", parent="c")]
+    ch = Change(tmp_path, Replan(add=[Add(Ticket(id="T1", type="agent:implementer"),
+                                          "delivery", 0)]), tier=None)
+    r = await ch.runner(tree)
+    side = ch.script.gates["side"] = asyncio.Event()
+    signed = asyncio.Event()
+
+    def signoff(work):
+        signed.set()
+        return Judged(True)
+    ch.script.outcomes["H-E1"] = signoff
+    await r.start()
+    await asyncio.wait_for(signed.wait(), 10)
+    assert r.t.paused and "T1" not in r.t.t                # a static backdrop: side still works
+    side.set()
+    await r.settle()
+    assert r.t.t["T1"].status == Status.PASSED and ch.hooks.endings == [Status.PASSED]
+    assert r.t.t["design"].attempt == 1                    # held, not refused (no rework)
+    assert ch.script.ran().index("side") < ch.script.ran().index("T1")

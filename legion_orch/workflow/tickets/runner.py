@@ -9,14 +9,17 @@ event to the rules (:class:`.Tickets`) under the change's lock and carries out t
 * ``StopWork`` – the task cancelled and the executor told;
 * ``Escalate``, ``Ended`` – the hooks (``on_escalation``, ``on_complete``).
 
-A sign-off that ``applies`` something passes by applying it, in the same step (nothing starts
-first): ``tier`` – the tier's skeleton tickets –, or a replan document (the planner's tickets, a
-resolver's proposal), which must keep the tier's policy (:func:`.check_policy`) – a tree that
-does not is the sign-off's failure, its violations the findings (so the planner reworks).
+A sign-off that ``applies`` something pauses the workflow while it is under way (the rules) and
+passes by applying it, in the same step: ``tier`` – the tier's skeleton tickets –, or a replan
+document (the planner's tickets, a resolver's proposal), which must keep the tier's policy
+(:func:`.check_policy`) – a tree that does not is the sign-off's failure, its violations the
+findings (so the planner reworks). If it passes while other tickets are still active (draining
+to their conclusion points), its verdict is held until they are not.
 
-After a restart (:meth:`Runner.resume`, R14): a working agent ticket waits on a human – its run is
-gone, which is never an attempt –; a working controller ticket runs again; a merging ticket merges
-again (a merge done before the restart is found merged)."""
+After a restart (:meth:`Runner.recover`, R14): every working ticket's executor runs again, at the
+same attempt – an executor adopts the run it had if that is still alive (an agent's sandbox and
+session), so a restart is never an attempt; a merging ticket merges again (a merge done before
+the restart is found merged)."""
 from __future__ import annotations
 
 import asyncio
@@ -57,6 +60,7 @@ class Runner:
         self.lock = asyncio.Lock()
         self._work: dict[str, asyncio.Task] = {}        # ticket -> its round's task
         self._tasks: set[asyncio.Task] = set()          # every task until it is done
+        self._held: tuple[str, Outcome] | None = None   # a sign-off's verdict, until quiet
 
     # ------------------------------------------------------------------ events
     async def start(self) -> None:
@@ -67,8 +71,18 @@ class Runner:
         async with self.lock:
             await self._carry(self.t.decide(tid, remedy))
 
+    async def pause(self, reason: str = "operator") -> None:
+        """Nothing starts until :meth:`resume`: work under way goes on to its conclusion."""
+        async with self.lock:
+            await self._carry(self.t.pause(reason))
+
+    async def resume(self, reason: str = "operator") -> None:
+        async with self.lock:
+            await self._carry(self.t.resume(reason))
+
     async def replan(self, plan: Replan) -> None:
-        """A replan signed off outside a criterion (a human's, on an escalation)."""
+        """A replan signed off outside a criterion (a human's, on an escalation): applied
+        while the workflow is paused and nothing is active."""
         async with self.lock:
             if (tier := self.hooks.tier()) and (v := self._policy(plan, tier)):
                 raise TicketError("; ".join(v))
@@ -78,16 +92,13 @@ class Runner:
         async with self.lock:
             await self._carry(self.t.abandon())
 
-    async def resume(self) -> None:
-        """After a restart: each ticket that was under way goes on as R14 says."""
+    async def recover(self) -> None:
+        """After a restart: each ticket under way goes on at the same attempt (R14)."""
         async with self.lock:
-            for x in list(self.t.t.values()):
-                if x.status == Status.MERGING:
-                    await self._carry([Merge(x.id, x.sha, x.parent)])       # type: ignore[arg-type]
-                elif x.status == Status.WORKING and x.type.startswith("agent:"):
-                    await self._carry(self.t.system_error(x.id))          # its run is gone
-                elif x.status == Status.WORKING:
-                    await self._carry([StartWork(x.id, x.attempt, tuple(x.findings))])
+            await self._carry(
+                [Merge(x.id, x.sha, x.parent) if x.status == Status.MERGING  # type: ignore[arg-type]
+                 else StartWork(x.id, x.attempt, tuple(x.findings))
+                 for x in self.t.t.values() if x.status in (Status.MERGING, Status.WORKING)])
 
     async def settle(self) -> None:
         """Until nothing runs (tests, shutdown)."""
@@ -124,6 +135,9 @@ class Runner:
                     self._spawn(self.hooks.escalated(self.t.t[ticket], reason))
                 case Ended(status):
                     self._spawn(self.hooks.ended(status))
+        if self._held and self.t.active() == [self._held[0]]:     # the others have drained
+            (tid, outcome), self._held = self._held, None
+            await self._carry(await self._outcome(self.t.t[tid], outcome))
 
     def _spawn(self, coro) -> asyncio.Task:
         task = asyncio.ensure_future(coro)
@@ -148,6 +162,9 @@ class Runner:
             x = self.t.t[tid]
             if x.status != Status.WORKING or x.attempt != work.attempt:
                 return
+            if self._holds(x, outcome):
+                self._held = (tid, outcome)
+                return
             try:
                 await self._carry(await self._outcome(x, outcome))
             except Exception:                         # a bug: the ticket waits on a human
@@ -155,11 +172,16 @@ class Runner:
                 if self.t.t[tid].status == Status.WORKING:
                     await self._carry(self.t.system_error(tid))
 
+    def _holds(self, x: Ticket, outcome: Outcome) -> bool:
+        """A sign-off that applies a replan passed while others are still active: its verdict
+        waits for them (the replan's static backdrop)."""
+        return bool(x.role == "criterion" and x.applies and _passed(outcome)
+                    and [t for t in self.t.active() if t != x.id])
+
     async def _outcome(self, x: Ticket, outcome: Outcome) -> list[Effect]:
         """The outcome as the rules' event – a passing sign-off that applies something applies
         it (or fails, with why)."""
-        passed = isinstance(outcome, Done) or isinstance(outcome, Judged) and outcome.passed
-        if x.role == "criterion" and x.applies and passed:
+        if x.role == "criterion" and x.applies and _passed(outcome):
             try:
                 plan, violations = await self._applied(x)
                 if not violations:
@@ -242,3 +264,7 @@ def _report(task: asyncio.Task) -> None:
     """A task of the runner's that failed (a bug: it is logged, never lost)."""
     if not task.cancelled() and (e := task.exception()) is not None:
         log.error("ticket runner task failed", exc_info=e)
+
+
+def _passed(outcome: Outcome) -> bool:
+    return isinstance(outcome, Done) or isinstance(outcome, Judged) and outcome.passed

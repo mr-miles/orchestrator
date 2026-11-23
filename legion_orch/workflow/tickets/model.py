@@ -20,6 +20,7 @@ class Status(StrEnum):
     SUBTASKS = "subtasks"      # its subtask groups are running
     CHECKING = "checking"      # its criteria are running, in order
     MERGING = "merging"        # passed its criteria; its commit is being merged into the parent's
+    PAUSED = "paused"          # at a conclusion point while the workflow is paused (``held``: next)
     WAITING = "waiting"        # on a human: an escalation (``waiting`` says why)
     PASSED = "passed"          # done: closed – nothing is ever added under it
     REJECTED = "rejected"      # a criterion whose verdict was fail
@@ -91,6 +92,8 @@ class Ticket(BaseModel):
     findings: list[str] = []               # (a ticket) the failed criterion's findings, for its rework
     waiting: Waiting | None = None
     waived: bool = False                   # (criteria) passed by a human's waiver
+    held: Literal["start", "retry"] | None = None   # (paused) what it does on resume
+    paused: list[str] = []                 # (the root) why the workflow is paused: none – it runs
     merging: bool = False                  # its merge is owed (merging, or waiting after a merge error)
 
     @property

@@ -19,9 +19,16 @@ The rules (the numbered ones are ~/plans/tickets.md's corner-case rules):
 * a ticket with a commit that passes its criteria is merged into its parent's branch first
   (``merging``): merged, it passes and the parent's commit is the new head; a conflict is a failed
   "can merge" – rework (R8); a passed ticket is closed (R5);
-* a replan applies only while no ticket is working; it adds tickets only after a ticket's
-  completed groups (and never under a closed ticket), cancels tickets not yet started, updates
-  tickets not yet started, and fails work that extra tickets cannot resolve.
+* the workflow can be paused (``pause``, with a reason; it runs again once no reason is left):
+  then nothing starts – no ticket, no criterion, grouping tickets included; work under way goes
+  on to its next conclusion point (its work done, its verdict given, its merge made – a merge
+  that is due concludes work, so it is never held) and rests there (``paused``, ``held``: what it
+  does next); on resume every ticket goes on from where it rests;
+* a replan applies only while the workflow is paused and nothing is active (a static backdrop):
+  choosing a replan pauses it, applying one lifts that pause; a sign-off that applies a replan
+  pauses the workflow while it is under way, and applies it with its verdict. A replan adds
+  tickets only after a ticket's completed groups (and never under a closed ticket), cancels
+  and updates tickets not yet started, and fails work that extra tickets cannot resolve.
 """
 from __future__ import annotations
 
@@ -105,6 +112,14 @@ class Replan:
 UPDATABLE = {"goal", "inputs", "labels", "limit", "severity", "waivable", "signs", "type"}
 
 
+REPLANNING = "replan"                         # the pause a chosen replan makes
+
+
+def signing(tid: str) -> str:
+    """The pause a sign-off that applies a replan makes while it is under way."""
+    return f"signing {tid}"
+
+
 # ------------------------------------------------------------------------------------- rules
 class Tickets:
     def __init__(self, tickets: Iterable[Ticket]):
@@ -158,12 +173,12 @@ class Tickets:
             parent = self.t[c.parent]
             if not passed:
                 self._criterion_failed(parent, c)
-                return self._take()
-            if apply is not None and not self._edit(apply):
+            elif apply is not None and not self._edit(apply):
                 return self._take()                       # it cancelled the root
-        parent = self.t[c.parent]
-        if parent.status == Status.CHECKING:
-            self._check(parent)
+            elif parent.status == Status.CHECKING:
+                self._check(parent)
+        if c.applies:                                     # its pause is over, either way
+            return self.resume(signing(c.id))
         return self._take()
 
     def work_failed(self, tid: str, findings: Iterable[str] = ()) -> list[Effect]:
@@ -205,6 +220,26 @@ class Tickets:
         self._wait(self._working(tid), Waiting.BUDGET)
         return self._take()
 
+    @property
+    def paused(self) -> bool:
+        return bool(self.root.paused)
+
+    def pause(self, reason: str = "operator") -> list[Effect]:
+        """Nothing starts from now on (``reason``: who paused it; each lifts only its own)."""
+        if reason not in self.root.paused:
+            self.root.paused.append(reason)
+        return self._take()
+
+    def resume(self, reason: str = "operator") -> list[Effect]:
+        """``reason``'s pause lifted: with none left, every ticket goes on from where it rests."""
+        if reason in self.root.paused:
+            self.root.paused.remove(reason)
+        self._wake()
+        return self._take()
+
+    def active(self) -> list[str]:
+        return [x.id for x in self.t.values() if x.status in ACTIVE]
+
     def decide(self, tid: str, remedy: Remedy) -> list[Effect]:
         """A human's remedy on a waiting ticket – or, ``waive``, on a rejected criterion of one."""
         x = self.t[tid]
@@ -220,28 +255,27 @@ class Tickets:
             return self._take()
         if x.status != Status.WAITING or remedy not in REMEDIES[x.waiting]:
             raise TicketError(f"{remedy} is not a remedy for {tid} ({x.status}, {x.waiting})")
-        if remedy == Remedy.RETRY and x.merging:    # the merge again
-            x.waiting, x.status = None, Status.MERGING
-            self._effects.append(Merge(x.id, x.sha, x.parent))
-        elif remedy == Remedy.RETRY:                # the same ticket, another round
+        if remedy == Remedy.RETRY:                  # the same ticket, another round (or merge)
             x.waiting = None
-            x.status = Status.WORKING
-            self._effects.append(StartWork(x.id, x.attempt, tuple(x.findings)))
-        elif remedy == Remedy.REPLAN:               # the constraints must change: history now
-            self._fail(x)
+            self._go(x, "merge" if x.merging else "retry")
+        elif remedy == Remedy.REPLAN:               # the constraints must change: history now,
+            self._fail(x)                           # and a static backdrop for the new plan
+            self.pause(REPLANNING)
         return self._take()
 
     def replan(self, plan: Replan) -> list[Effect]:
-        """An accepted replan (signed off), applied while no ticket is working – all of it or,
-        refused, none of it."""
+        """An accepted replan (signed off), applied while the workflow is paused and nothing is
+        active – all of it or, refused, none of it; the replan's pause is lifted."""
         self._inactive()
         with self._transaction():
             self._edit(plan)
-        return self._take()
+        return self.resume(REPLANNING)
 
     def _inactive(self, but: str | None = None) -> None:
-        if busy := [x.id for x in self.t.values() if x.status in ACTIVE and x.id != but]:
-            raise TicketError(f"a replan waits for every ticket to be inactive: {busy} working")
+        if not self.paused:
+            raise TicketError("a replan is applied while the workflow is paused")
+        if busy := [t for t in self.active() if t != but]:
+            raise TicketError(f"a replan waits for every ticket to be inactive: {busy} active")
 
     @contextlib.contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -322,8 +356,46 @@ class Tickets:
             raise TicketError(f"{tid} is {'not ' if criterion else ''}a criterion")
         return x
 
+    def _go(self, x: Ticket, held: str) -> None:
+        """``x`` goes on – or, paused, rests until the resume (``held``: how it goes on). A
+        merge goes on even then: it concludes work already done (paused, it could be lost)."""
+        if held == "merge":
+            x.status, x.merging = Status.MERGING, True
+            self._effects.append(Merge(x.id, x.sha, x.parent))       # type: ignore[arg-type]
+        elif self.paused:
+            x.status, x.held = Status.PAUSED, held      # type: ignore[assignment]
+        elif held == "retry":
+            x.status = Status.WORKING
+            self._effects.append(StartWork(x.id, x.attempt, tuple(x.findings)))
+        else:
+            x.status = Status.PENDING
+            self._start(x)
+
+    def _wake(self) -> None:
+        """No pause left: every ticket goes on from where it rests – the paused ones as they
+        were held, then (deepest first) the ones whose next subtask or criterion is due."""
+        if self.paused:
+            return
+        root = self.root
+        if root.status == Status.PENDING and root.attempt == 0 and not root.has_work:
+            self._start(root)
+        for x in [x for x in self.t.values() if x.status == Status.PAUSED]:
+            held, x.held = x.held, None
+            self._go(x, held)                                       # type: ignore[arg-type]
+        for x in sorted(self.t.values(), key=lambda x: self._depth(x.id), reverse=True):
+            if x.status == Status.SUBTASKS:
+                self._subtasks(x)
+            elif x.status == Status.CHECKING:
+                self._check(x)
+
     def _start(self, x: Ticket) -> None:
+        if self.paused:                             # nothing starts: it rests where it is
+            if x.status != Status.PENDING:
+                x.status, x.held = Status.PAUSED, "start"
+            return
         if x.has_work:
+            if x.role == "criterion" and x.applies:  # a static backdrop while it is signed
+                self.pause(signing(x.id))
             x.attempt += 1
             x.status = Status.WORKING
             self._effects.append(StartWork(x.id, x.attempt, tuple(x.findings)))
@@ -391,8 +463,8 @@ class Tickets:
     def _pass(self, x: Ticket) -> None:
         """Its criteria passed: a subtask with a commit merges first; anything else passes."""
         if x.sha and x.role == "subtask":
-            x.status, x.merging = Status.MERGING, True
-            self._effects.append(Merge(x.id, x.sha, x.parent))
+            x.merging = True
+            self._go(x, "merge")
         else:
             self._passed(x)
 
