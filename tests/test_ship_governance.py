@@ -351,7 +351,7 @@ GREET = "sh tests/acceptance/test_greet.sh"
 
 async def _baseline(f: Flow, reported: int) -> None:
     r = f.run("baseline")
-    doc = await f.write(r, "baseline/report.md", "results before any build")
+    doc = await f.write(r, f"{r.node_id}/report.md", "results before any build")
     out = await f.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {"results": [
         {"command": c, "exit_code": reported} for c in f.ce.baseline_commands()]})
     assert out.accepted, out

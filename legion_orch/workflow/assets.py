@@ -32,7 +32,7 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 TEMPLATE_VARS = {
     "change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha", "branch",
     "task_id",
-    "task_title", "task_json", "cycle", "role", "plan", "context_refs", "feedback", "candidate_sha",
+    "task_title", "task_json", "cycle", "role", "plan", "step", "context_refs", "feedback", "candidate_sha",
     "write_scope", "required_docs", "workdir", "task_soul", "environment", "fix_round", "scaffold",
     "sandbox_tools", "change_base_sha",
 }

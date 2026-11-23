@@ -6,7 +6,7 @@ Working copy `{{workdir}}` on branch `{{branch}}` (base `{{base_sha}}`). Your sa
 {{sandbox_tools}}.
 
 Create exactly the files listed in `oracle.acceptance_tests`, one or more tests per criterion.
-Commit them, document the mapping in `oracle/tests.md`, and report `DONE` attesting the commit
+Commit them, document the mapping in `{{step}}/tests.md`, and report `DONE` attesting the commit
 `git:{{repo_name}}@<sha>` and the document.
 
 Right after your tests are merged, the controller runs the repository's setup (`mise run setup`,

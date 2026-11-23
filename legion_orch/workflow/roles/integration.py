@@ -21,7 +21,8 @@ class Integration(RoleHandler):
         base = e.current(BASELINE)
         ver = base.verification.get("baseline") if base else None
         rounds = [a for rnd in e.change.rounds for a in (rnd.attestation, *rnd.failure) if a]
-        return refs + [a for a in (e.latest_att("baseline/report.md"),
+        report = f"{base.id}/report.md" if base else None
+        return refs + [a for a in (e.latest_att(report) if report else None,
                                    ver.attestation if ver else None) if a] + rounds
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:

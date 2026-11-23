@@ -26,6 +26,13 @@ PLAN_FILES = ("spec.md", "oracle.json", "taskgraph.json")      # a plan's docume
 ENV_FILE = "environment.json"
 
 
+def step_doc(e: ChangeView, base: str, name: str) -> str:
+    """A step agent's document in the current round's step ``base`` (``baseline``,
+    ``integration``): under its node id (``baseline/report.md``, ``baseline.2/report.md``)."""
+    node = e.current(base)
+    return f"{node.id if node else base}/{name}"
+
+
 def draft(e: ChangeView) -> str:
     """The directory of the plan being made: the current round's plan step (``plan``,
     ``plan.2``) – what H-E1 approves. Once approved it is the plan worked to (``change.plan``)."""
@@ -198,7 +205,7 @@ def baseline_subject(e: ChangeView) -> BaselineSubject | None:
         return None
     ver = node.verification.get("baseline") if node.status == ACCEPTED else None
     rec = e.change.attestations.get(BASELINE_SUBJECT)
-    sources = [s for s in (e.latest_att("baseline/report.md"), ver and ver.attestation) if s]
+    sources = [s for s in (e.latest_att(step_doc(e, BASELINE, "report.md")), ver and ver.attestation) if s]
     if rec and rec.verdict == AttestationVerdict.PASS and (not ver or rec.at > ver.at):
         status = ApprovalState.APPROVED
     else:
