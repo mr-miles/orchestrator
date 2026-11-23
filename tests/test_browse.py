@@ -46,7 +46,7 @@ async def test_the_workspace_lists_its_changes_and_its_repository(f: Flow):
 @scenario()
 async def test_documents_download_at_a_version(f: Flow):
     await f.intake()
-    path = f.ce.p("intake/requirements.md")
+    path = f.ce.p("tickets/intake/requirements.md")
     async with client(f) as c:
         r = await c.get("/api/doc/raw", params={"path": path, "version": 1})
         assert r.status_code == 200 and "REQ-1" in r.text

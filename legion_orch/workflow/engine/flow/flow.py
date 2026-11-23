@@ -118,12 +118,14 @@ class TicketFlow:
             pin = None if blank else await setup.pin_at_base(c.git, base)
         except Exception as e:                      # noqa: BLE001 – the change cannot start
             async with c.lock:
+                c.change.unsynced = f"workspace {c.change.workspace}: {e}"
                 c.event("workspace", f"{c.change.workspace} could not be synced: {e}")
                 c.save()
             return
         async with c.lock:
             ch = c.change
             ch.base_sha, ch.blank_repo, ch.setup_pin = base, blank, pin
+            ch.unsynced = None
             await c.git.init_integration(c.cid, base)
             c.write_record("control/workspace.json", {
                 "workspace": ch.workspace, "source": c.git.source,
@@ -287,6 +289,9 @@ class TicketFlow:
         ended change's integration branch and evidence refs, §5.14)."""
         self._owner(approver)
         payload, runner = dict(payload or {}), self._runner()
+        if action == "retry" and self.c.change.unsynced:     # the workspace, synced again
+            await self._begin()
+            return "retried the workspace's sync"
         if action == "prune":
             async with self.c.lock:
                 note = await cleanup.prune(self.c, approver)

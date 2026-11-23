@@ -37,7 +37,7 @@ async def test_scoping_order_failures_and_coroutine_handlers():
 @scenario()
 async def test_a_changes_events_wait_for_its_save(f: Flow):
     seen = []
-    f.ctl.bus.subscribe(Escalated, lambda e: seen.append(e.node))
+    f.ctl.bus.subscribe(Escalated, lambda e: seen.append(e.ticket))
     async with f.ce.lock:
         f.ce.emit(Escalated(f.ce.cid, "x"))
         assert seen == []                      # raised under the lock: not yet

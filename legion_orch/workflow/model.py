@@ -419,3 +419,4 @@ class Change(Record):
     questions: dict[str, AgentQuestion] = {}               # A2A ask_human, by task id
     verifications: dict[str, VerificationRun] = {}         # the verification service's runs
     proposals: dict[str, ResolverProposal] = {}            # the resolver's, per waiting ticket
+    unsynced: str | None = None      # why its workspace could not be synced (it waits: retry)
