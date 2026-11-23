@@ -23,6 +23,23 @@ import { AgentQuestions } from './a2a'
 import { useNav } from './nav'
 import { TicketTree } from './ticket-tree'
 
+/** The pause a decision owner sets (``pause``); the workflow's own – a sign-off applying a
+ * replan (``signing <id>``), a chosen replan (``replan``) – lift by themselves. */
+const OPERATOR = 'operator'
+
+function pausedText(reasons: string[]): string {
+  const said = reasons.map((r) =>
+    r === OPERATOR
+      ? 'paused by a decision owner (Resume to go on)'
+      : r.startsWith('signing ')
+        ? `waiting for ${r.slice(8)}'s sign-off to apply it`
+        : r === 'replan'
+          ? 'waiting for a replan to be applied'
+          : r,
+  )
+  return `${said.join('; ')} – nothing new starts meanwhile.`
+}
+
 function ProgressBar({ state }: { state: ChangeState }) {
   const tickets = withWork(state.tickets)
   const counts = new Map<string, number>()
@@ -63,7 +80,7 @@ function ChangeActions({ state }: { state: ChangeState }) {
   const [reason, setReason] = useState('')
   const [plan, setPlan] = useState('')
   const active = state.change?.status === 'ACTIVE'
-  const paused = state.paused.length > 0
+  const paused = state.paused.includes(OPERATOR)
   if (!active) {
     if (state.change?.pruned_at) return null
     return (
@@ -217,19 +234,13 @@ export function OverviewTab({ state, selected }: { state: ChangeState; selected:
           <CardTitle className="flex flex-wrap items-center gap-2">
             {ch && <StatusBadge status={ch.status} />}
             {ch?.tier && <Badge variant="outline">tier {ch.tier}</Badge>}
-            {state.paused.length > 0 && (
-              <Badge variant="destructive" title={state.paused.join('; ')}>
-                paused
-              </Badge>
-            )}
+            {state.paused.includes(OPERATOR) && <Badge variant="destructive">paused</Badge>}
           </CardTitle>
           <CardDescription>{ch?.goal}</CardDescription>
           <CardAction>
             <ChangeActions state={state} />
           </CardAction>
-          {state.paused.length > 0 && (
-            <Muted>Paused: {state.paused.join('; ')} – nothing new starts until it resumes.</Muted>
-          )}
+          {state.paused.length > 0 && <Muted>{pausedText(state.paused)}</Muted>}
           {ch?.ended && (
             <Muted>
               Ended by {ch.ended.by}

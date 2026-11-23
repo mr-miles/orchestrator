@@ -74,6 +74,9 @@ describe('the operator UI', () => {
     ).toBeTruthy()
     expect(screen.getByRole('tab', { name: /Tickets.*1/ })).toBeTruthy() // H-1 is due
     expect(screen.getByText('Live')).toBeTruthy()
+    // the sign-off's own pause is not the operator's: no Resume, what it waits for instead
+    expect(screen.getByText(/waiting for H-1's sign-off/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
     const next = stateAtH1()
     next.signoffs = {}
     next.tickets = next.tickets.map((t) => (t.id === 'H-1' ? { ...t, status: 'passed' } : t))
@@ -300,7 +303,7 @@ describe('the operator UI', () => {
     )
     act(() => es.emit('state', { ...stateWaiting(), paused: ['operator'] }))
     expect(await screen.findByRole('button', { name: 'Resume' })).toBeTruthy()
-    expect(screen.getByText(/Paused: operator/)).toBeTruthy()
+    expect(screen.getByText(/paused by a decision owner/)).toBeTruthy()
   })
 
   test('the bell shows what needs you across changes and opens it', async () => {
