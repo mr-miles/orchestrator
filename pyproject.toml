@@ -50,6 +50,12 @@ tmp_path_retention_policy = "failed"
 # independent tests (their own temp directories, free ports): one worker per CPU – CI's and
 # mise's plain `pytest -q` included; `-n 0` runs serially (e.g. to debug one test)
 addopts = "-n auto"
+# each test's kind, set in tests/conftest.py (``-m "not e2e"``: the quick run)
+markers = [
+  "unit: no change is driven (pure functions, single components)",
+  "scenario: a change driven through the engine by the test harness",
+  "e2e: the real controller over HTTP, and the telemetry acceptance tests",
+]
 
 [tool.ruff]
 line-length = 110
