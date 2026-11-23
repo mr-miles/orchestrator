@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v2          # installs python, uv, buned)
+      - uses: jdx/mise-action@v2          # installs python, uv and bun (mise.toml)
       - name: Typecheck, lint, format check, tests
         run: mise run ui:check
       - name: Build
@@ -39,9 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v2
-      - name: Lint (ruff, the assets and the environment library)
+      - name: "Lint (ruff, the assets and the environment library)"
         run: mise run lint
-      - name: Tests (in parallel: pytest addopts -n auto)
+      - name: "Tests (in parallel: pytest addopts -n auto)"
         run: mise run test
 
   package:
@@ -57,15 +57,16 @@ jobs:
           path: legion_orch/server/static/dist
       - name: Build the zip
         id: zip
-        run: echo "path=$(mise run -q package:zip)" >> "$GITHUB_OUTP
+        run: echo "path=$(mise run -q package:zip)" >> "$GITHUB_OUTPUT"
       - name: Smoke test from a clean unpack, with uv only
         run: |
           work="$RUNNER_TEMP/unpacked"
-          mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }
+          mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }}" -d "$work"
           cd "$work"/legion-orchestrator-*
           test -f legion_orch/server/static/dist/index.html
           uv run legion-orch -c orchestrator.example.yaml check
-          uv run python -c "from legion_orch.server import web; asse').is_file()"
+          uv run python -c "from legion_orch.server import web; assert (web.UI_DIST / 'index.html').is_file()"
+      # the zip itself (not wrapped in another zip); the artifact is named after the file
       - uses: actions/upload-artifact@v7
         with:
           path: ${{ steps.zip.outputs.path }}
