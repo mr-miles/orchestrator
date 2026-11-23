@@ -12,7 +12,7 @@ The runtime sees only steps – a stage's gate is a step like any other: the cor
 stop, resume and retry steps through the step runner, and the step runner's results (a step
 done, escalated, resumed) go back to the core. Human decisions – an answer (approving a gate is
 one), a retry, a send-back – go through :meth:`act`. The core's state is persisted as its
-inputs (``control/workflow.json``) and rebuilt by replaying them: the core is pure, so the
+inputs (the state journal's record ``workflow``) and rebuilt by replaying them: the core is pure, so the
 replay reproduces it exactly.
 """
 from __future__ import annotations
@@ -69,7 +69,6 @@ if TYPE_CHECKING:
     from ..services.runs import RunLifecycle
     from ..steps import StepRunner
 
-RECORD = "control/workflow.json"
 
 
 class FlowRuntime:
@@ -87,11 +86,13 @@ class FlowRuntime:
         return {"tree": self.tree, "inputs": self.inputs}
 
     def save(self) -> None:
-        self.c.st._write("workflow.json", self.to_json())
+        """The core's record, for the state's next save (journalled as record ``workflow``:
+        its inputs only grow, so a save appends the new ones)."""
+        self.c.st.workflow = {"tree": self.tree, "inputs": list(self.inputs)}
 
     def load(self) -> None:
         """Rebuild the core from its record (its effects were carried out before)."""
-        data = self.c.st._read(self.c.st.root + "workflow.json")
+        data = self.c.st.workflow
         self.tree = data["tree"]
         self.flow = self._new_flow()
         for inp in data["inputs"]:

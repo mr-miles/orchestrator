@@ -13,6 +13,7 @@ from ....config import Config
 from ....git import GitHub, GitRemote
 from ....sandbox import EnvironmentBuilder, NoBuilder, Runner, render_policy
 from ....store import DocStore
+from ....store.journal import Journal
 from ....telemetry import Telemetry
 from ...assets import Assets
 from ...attention import AttentionItem
@@ -25,6 +26,7 @@ class Services:
     """Resources shared by every change (owned by the Controller)."""
     cfg: Config
     docs: DocStore
+    journal: Journal                           # the changes' records (base/state.py), as text
     hubs: dict[str, GitRemote]                 # one per configured workspace, by name
     assets: Assets
     runner: Runner

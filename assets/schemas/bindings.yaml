@@ -17,6 +17,7 @@
 - {pattern: "control/graph.json", schema: graph}
 - {pattern: "control/nodes/*.json", schema: node}
 - {pattern: "control/runs/*.json", schema: run}
+- {pattern: "control/approvals/protected-paths/*.json", schema: protected-approval}
 - {pattern: "control/approvals/*.json", schema: approval}
 - {pattern: "control/approvals/*/*.json", schema: approval}
 - {pattern: "control/attestations/*.json", schema: attestation}

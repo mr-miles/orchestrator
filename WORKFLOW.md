@@ -167,16 +167,13 @@ and its runs' git credentials reach its hub and no other. `legion/*` is the hub'
 | `changes/<id>/<stage docs>` | change-level agent documents (`intake/`, `plan/`, `critique/`, `oracle/`, `baseline/`, `integration/`, `release/`) |
 | `changes/<id>/tasks/<task_id>/` | everything about one build task: `evidence/cycle-<n>.md` and `reviews/<role>-cycle-<n>.md` (agents); `verification.json`, `feedback/<n>.md`, `decisions/<n>.md` (controller: the escalation's question, then the human's answer) |
 | `changes/<id>/control/pr.json` | the published pull request (§5.10c): url, number, branch, head, labels |
-| `changes/<id>/control/change.json` | change record: goal, workspace, base, tier, risk, approvals, oracle, integration head, ship result |
-| `changes/<id>/control/workflow.json` | the workflow's stage rules (§4.1): the tree's parameters (tier rank, environment, blank repository) and every input the workflow core was given, in order – human decisions, step results, task graphs. The core is pure, so replaying them rebuilds it exactly |
-| `changes/<id>/control/nodes/<node>.json` | a node's detail (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox); one new version per transition, so the version history is the node's audit trail. Which nodes exist and their order come from the workflow's tree |
-| `changes/<id>/control/runs/<run>.json` | run record: role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session (and the run whose session it resumed), attempts, violations, report, progress. No credential exists to store. |
 | `changes/<id>/control/logs/<run>.log` (`<run>.2.log`, …) | the agent's whole output, archived when it exits, in parts of ≤1 MiB (a log over 64 MiB keeps its first and last 32 MiB). Each stream-json event carries `legion_ts`, the time the controller received it. Not readable by agents |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
 | `changes/<id>/control/reflections/<run>.md` | the agent's own account of what cost it time and where its guidance failed (§5.13) |
 | `changes/<id>/control/timeline/<n>.jsonl` | the controller's events (dispatch, sandbox, verification, rework, human actions), written in chunks |
 | `changes/<id>/control/assets/<sha>.json` | the hash of each asset file of an asset set the change's runs used |
 | `changes/<id>/control/{approvals,attestations,surfaces,overrides,verification,decisions,feedback,ship,environment}/…` | human decisions and controller evidence (`environment/build.json`: the provisioned environment) |
+| `journal/<id>.jsonl` (in `state_dir`, not the store) | the change's own records, as an append-only journal – one JSON line per save, each entry a record's changed fields (a list that grew: its new items); every 1,000 entries, and on each load, a snapshot of every record in full, and a load folds from the latest one. The records: `change` (goal, workspace, base, tier, risk, approvals, oracle, integration head, ship result); `workflow` (the stage rules, §4.1: the tree's parameters – tier rank, environment, blank repository – and every input the workflow core was given, in order; the core is pure, so replaying them rebuilds it exactly); `node:<node>` (its state inside its step, cycle, commits, verification, reviews, feedback, escalation, sandbox – every transition an entry, so the journal is the node's audit trail; which nodes exist and their order come from the workflow's tree); `run:<run>` (role, soul, cycle, sandbox and its SPIFFE sandbox id, branch, **asset-set sha, rendered-prompt sha and the template values bound into the prompt**, the agent session and the run whose session it resumed, attempts, violations, report, progress; no credential exists to store). A change saved before the journal has these as documents (`control/change.json`, `control/workflow.json`, `control/nodes/`, `control/runs/`): it is loaded from them once, then journalled |
 | git `legion/<id>/integration`, `legion/<id>/<node>`, `refs/legion/evidence/<run>` | integration branch, work branches, pinned evidence |
 
 Rendered prompts are not stored: a run is labelled with the SHA-256 of the asset set and of its
@@ -184,11 +181,11 @@ rendered soul + prompt, and keeps the template values it was rendered with. Re-r
 values reproduces the prompt exactly while the pin matches; otherwise the recorded asset hashes
 say which files have changed since (`Assets.check_prompt`).
 
-On disk, `state_dir` is set once per controller and holds only `state.db` (the store), `git/` (the
+On disk, `state_dir` is set once per controller and holds only `state.db` (the store), `journal/` (each change's records), `git/` (the
 bare remote and one integration worktree per change) and `tmp/` (sandbox payloads, deleted after
 upload, and live agent logs). `tmp/` is wiped on start. The access-token signing key exists only
 in memory, so tokens issued before a restart stop working (gateways simply request new ones). On
-restart the controller rebuilds every change from the store; runs that were live lost their agent
+restart the controller rebuilds every change from its journal; runs that were live lost their agent
 process, so they are failed and escalated (no automatic retry), and interrupted verification,
 merges, provisioning and gate evaluations are resumed.
 
@@ -1222,6 +1219,7 @@ guards, because a per-file schema cannot express them.
 * [`node`](assets/schemas/node.json)
 * [`oracle`](assets/schemas/oracle.json)
 * [`override`](assets/schemas/override.json)
+* [`protected-approval`](assets/schemas/protected-approval.json)
 * [`questions`](assets/schemas/questions.json)
 * [`readiness`](assets/schemas/readiness.json)
 * [`release-plan`](assets/schemas/release-plan.json)
