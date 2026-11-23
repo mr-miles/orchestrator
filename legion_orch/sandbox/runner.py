@@ -33,7 +33,7 @@ from pathlib import Path
 from ..config import Config
 from ..util import now_iso, stop_process
 from .names import check_name
-from .templates import base_values, render, sandbox_providers, spec_to_args
+from .templates import base_values, label_value, render, sandbox_providers, spec_to_args
 
 # Obtains a bearer for a sandbox ref (what the OpenShell gateway does for real sandboxes).
 Gateway = Callable[[str], Awaitable[str]]
@@ -67,6 +67,39 @@ class SandboxSpec:
 
 class SandboxError(Exception):
     pass
+
+
+CHANGE_LABEL = "legion.change"
+STOPPED = "Stopped"
+
+
+@dataclass(frozen=True)
+class GatewaySandbox:
+    """A sandbox as the gateway lists it (``openshell sandbox list``): its name, id, phase
+    (``Ready``, ``Stopped``, …) and labels; our sandboxes' exact ids are annotations
+    (``legion.task``)."""
+    name: str
+    id: str = ""
+    phase: str = ""
+    labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def change(self) -> str | None:
+        """The change it was created for (its ``legion.change`` label), if it is ours."""
+        return self.labels.get(CHANGE_LABEL)
+
+    @property
+    def stopped(self) -> bool:
+        return self.phase == STOPPED
+
+
+@dataclass(frozen=True)
+class Listing:
+    """The gateway's sandboxes; ``complete``: every one of them (one page, read in full) – only
+    a complete listing says a sandbox is gone."""
+    sandboxes: tuple[GatewaySandbox, ...]
+    complete: bool = True
 
 
 async def _run(argv: list[str], timeout: float, env: dict | None = None,
@@ -157,6 +190,9 @@ class Runner:
         """Stop a sandbox kept between runs; its workspace (and agent session) is preserved."""
     async def start(self, name: str) -> None:
         """Start a stopped sandbox again."""
+    async def list(self) -> Listing:
+        """Every sandbox of the workspace, as the gateway knows them."""
+        return Listing(())
 
 
 def openshell_cli(cfg: Config) -> list[str]:
@@ -222,6 +258,16 @@ class OpenShellRunner(Runner):
     async def start(self, name):
         await self._os("sandbox", "start", name, timeout=900)
 
+    async def list(self) -> Listing:
+        """``sandbox list --output json`` (the workspace's). A further page (a
+        ``next_page_token``) is not read: the listing is then incomplete."""
+        out = json.loads(await self._os("sandbox", "list", "--output", "json", timeout=120))
+        found = tuple(GatewaySandbox(name=s.get("name", ""), id=s.get("id", ""),
+                                     phase=s.get("phase", ""), labels=s.get("labels") or {},
+                                     annotations=s.get("annotations") or {})
+                      for s in out.get("sandboxes", []))
+        return Listing(found, complete=not out.get("next_page_token"))
+
 
 class LocalRunner(Runner):
     """Development runner: /sandbox maps to <state>/local-sandboxes/<name>; ref == name."""
@@ -258,6 +304,11 @@ class LocalRunner(Runner):
         if r.exists():
             raise SandboxError(f"sandbox {spec.name} already exists")
         r.mkdir(parents=True)
+        (r / ".legion-sandbox.json").write_text(json.dumps(   # what the gateway would list
+            {"labels": {k: label_value(v) for k, v in (
+                (CHANGE_LABEL, spec.change), ("legion.task", spec.task),
+                ("legion.role", spec.role), ("legion.run", spec.run)) if v},
+             "annotations": {"legion.task": spec.task}}))
         self._link_credentials(spec.name)
         await self.upload(spec.name, spec.payload_dir)
         return spec.name
@@ -286,6 +337,16 @@ class LocalRunner(Runner):
 
     async def delete(self, name):
         shutil.rmtree(self._root(name), ignore_errors=True)
+
+    async def list(self) -> Listing:
+        """The local sandboxes (their directories); never stopped (stop is a no-op here)."""
+        found = []
+        for meta in sorted(self.root.glob("*/.legion-sandbox.json")) if self.root.exists() else []:
+            data = json.loads(meta.read_text())
+            found.append(GatewaySandbox(name=meta.parent.name, id=meta.parent.name, phase="Ready",
+                                        labels=data.get("labels", {}),
+                                        annotations=data.get("annotations", {})))
+        return Listing(tuple(found))
 
 
 def make_runner(cfg: Config, dev_gateway: Gateway | None = None) -> Runner:

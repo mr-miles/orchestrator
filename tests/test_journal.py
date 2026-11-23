@@ -9,9 +9,11 @@ from legion_orch.store.journal import Journal, apply, diff
 from legion_orch.workflow.engine import Controller
 
 
-def _reload(f: Flow) -> tuple[Controller, object]:
+async def _reload(f: Flow) -> tuple[Controller, object]:
+    """A restart: the tables, then the gateway's sandboxes (as Controller.start)."""
     ctl2 = Controller(f.cfg, runner=f.runner)
     ctl2.load()
+    await ctl2.adopt_sandboxes()
     return ctl2, ctl2.changes[f.ce.cid]
 
 
@@ -43,7 +45,7 @@ async def test_a_restart_loads_the_same_records_from_the_tables_alone(f: Flow):
     await f.settle()
     before = _dumps(f.ce)
     f.ctl.svc.journal.path(f.ce.cid).unlink()          # the history is not read on start
-    _, ce2 = _reload(f)
+    _, ce2 = await _reload(f)
     assert _dumps(ce2) == before
     assert list(ce2.nodes) == list(f.ce.nodes) and list(ce2.runs) == list(f.ce.runs)
     # the controller's records are no documents
@@ -77,7 +79,8 @@ async def test_the_journal_is_only_appended_to_and_a_save_appends_what_changed(f
     assert [x["seq"] for x in lines] == list(range(1, len(lines) + 1))
     # a record is in full once; every later entry of it carries only what changed
     entries = [e for x in lines for e in x["entries"] if e[0] == "run:r0001"]
-    full = len(f.ce.runs["r0001"].model_dump())
+    from legion_orch.workflow.engine.base.state import GATEWAY
+    full = len(f.ce.runs["r0001"].model_dump(exclude=GATEWAY["run"]))
     assert len(entries[0][1]) == full and len(entries) > 1
     assert all(len(d) < full for _, d in entries[1:])
     # one save, one line: a quiet save writes nothing
@@ -96,7 +99,7 @@ async def test_a_line_cut_short_by_a_crash_is_skipped_and_the_next_save_starts_a
         fh.write('{"seq": 999, "entries": [["change", {"status": "BRO')     # the crash
     fresh = Journal(f.cfg.state_dir / "journal")
     assert fresh.fold(cid) == before                     # the torn save is not history
-    ctl2, ce2 = _reload(f)                               # the controller after the crash
+    ctl2, ce2 = await _reload(f)                               # the controller after the crash
     async with ctl2.svc.lock:
         ce2.change.goal = "after the crash"
         ce2.save()

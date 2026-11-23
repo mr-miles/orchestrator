@@ -15,6 +15,7 @@ from pathlib import Path
 from ....sandbox import (
     AGENT_PREFIX,
     VERIFIER_PREFIX,
+    GatewaySandbox,
     SandboxEnv,
     SandboxError,
     SandboxSpec,
@@ -214,6 +215,30 @@ class Sandboxes:
             if r.sandbox == name:
                 r.sandbox_stopped = False
 
+    def adopt(self, found: dict[str, GatewaySandbox], complete: bool) -> None:
+        """On start (under the lock): the change's sandboxes as the gateway lists them – which
+        exist and which are stopped is the gateway's word, not a record. A run's sandbox the
+        gateway does not list is gone (only a ``complete`` listing says so); one labelled for the
+        change that no run knows (created, then the controller stopped before recording it) is
+        deleted."""
+        c, known = self.c, set()
+        for run in c.runs.values():
+            if not run.sandbox or not run.sandbox_ref:
+                continue                              # never created
+            known.add(run.sandbox)
+            sb = found.get(run.sandbox)
+            if sb is not None:
+                run.sandbox_deleted, run.sandbox_stopped = False, sb.stopped
+            elif complete:
+                run.sandbox_deleted, run.sandbox_stopped = True, False
+        for node in c.nodes.values():
+            sb = found.get(node.sandbox or "")
+            node.sandbox_stopped = bool(sb and sb.stopped)
+        for name in sorted(set(found) - known):
+            c.event("cleanup", f"sandbox {name} is labelled for this change but no run of it "
+                    "has it: deleting it")
+            c.spawn(self.delete(name))
+
     def stopped(self, name: str) -> bool:
         return any(r.sandbox == name and r.sandbox_stopped for r in self.c.runs.values()) \
             or any(n.sandbox == name and n.sandbox_stopped for n in self.c.nodes.values())
@@ -376,7 +401,10 @@ class Sandboxes:
         async with self.c.lock:
             for r in self.c.runs.values():
                 if r.sandbox == name:
-                    r.sandbox_deleted = True
+                    r.sandbox_deleted, r.sandbox_stopped = True, False   # gone, not stopped
+            for n in self.c.nodes.values():
+                if n.sandbox == name:
+                    n.sandbox_stopped = False
             self.c.event("sandbox", f"sandbox {name} deleted")
             self.c.save()
         return True

@@ -15,12 +15,15 @@ from .projections import PROJECTED
 
 CONTROL = "control/"
 _KINDS = {"node": ("nodes", "node"), "run": ("runs", "run")}     # record prefix -> (attr, schema)
+# the gateway's to say, on start (Sandboxes.adopt): whether a sandbox exists, whether it is stopped
+GATEWAY = {"node": {"sandbox_stopped"}, "run": {"sandbox_deleted", "sandbox_stopped"}}
 
 
 class StateStore:
     """A change's records: ``change``, ``workflow`` (:class:`.FlowRuntime`'s tree and inputs,
     which order the nodes once it is rebuilt), ``node:<id>`` and ``run:<id>`` – the fields the
-    engine does not project from documents (:mod:`.projections`).
+    engine does not project from documents (:mod:`.projections`) nor learn from the gateway on
+    start (:data:`GATEWAY`: which sandboxes exist and which are stopped).
 
     * **Live state** – the state tables in ``state.db`` (:mod:`legion_orch.store.state_tables`):
       each record's current values, updated in place. A restart loads only these.
@@ -49,9 +52,10 @@ class StateStore:
         out = {CHANGE: self.change.model_dump(mode="json", exclude=PROJECTED["change"])}
         if self.workflow is not None:
             out[WORKFLOW] = self.workflow
-        out |= {f"node:{k}": n.model_dump(mode="json", exclude=PROJECTED["node"])
+        out |= {f"node:{k}": n.model_dump(mode="json", exclude=PROJECTED["node"] | GATEWAY["node"])
                 for k, n in self.nodes.items()}
-        out |= {f"run:{k}": r.model_dump(mode="json") for k, r in self.runs.items()}
+        out |= {f"run:{k}": r.model_dump(mode="json", exclude=GATEWAY["run"])
+                for k, r in self.runs.items()}
         return out
 
     def _check(self, record: str, data: dict[str, Any]) -> None:
