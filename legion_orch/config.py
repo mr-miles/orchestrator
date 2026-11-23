@@ -5,15 +5,36 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+REMOVED_KEYS = {
+    "agent_command": "sandbox.agent_command was removed: the controller builds the agent command, "
+                     "because a custom one silently dropped --resume (reworks and reflections "
+                     "lost their session). Set sandbox.agent_bin to choose the agent CLI.",
+}
 
 
-@dataclass
-class WorkspaceConfig:
+class Section(BaseModel):
+    """A config section: its fields are checked as read, an unknown key is an error, a removed
+    one says what replaced it."""
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _removed(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if True in data:      # YAML 1.1 reads a bare `on:` key as true
+                raise ValueError("`on:` is read as `true` in YAML; the key is `items:`")
+            if removed := sorted(set(data) & set(REMOVED_KEYS)):
+                raise ValueError(" ".join(REMOVED_KEYS[k] for k in removed))
+        return data
+
+
+class WorkspaceConfig(Section):
     """A repository changes are made in. Its name is used in attestations
     (``git:<name>/<path>@<sha>``) and names its hub (``<state_dir>/git/served/<name>.git``)."""
     name: str
@@ -36,8 +57,7 @@ def _valid_ref_prefix(prefix: str) -> bool:
     return r.returncode == 0
 
 
-@dataclass
-class ServerConfig:
+class ServerConfig(Section):
     # Operator listener: web UI + JSON API (human gates). Keep it off the sandbox network.
     host: str = "127.0.0.1"
     port: int = 8765
@@ -84,15 +104,15 @@ class ServerConfig:
     def a2a_url(self) -> str:
         return self._public(self.a2a_port) + "/a2a"
 
-    @property
-    def token_url(self) -> str:
-        return f"{self.token_scheme}://{self.token_host}:{self.token_port}/oauth/token"
     # Optional token required for human actions in the web UI (header X-Operator-Token).
     operator_token: str | None = None
 
+    @property
+    def token_url(self) -> str:
+        return f"{self.token_scheme}://{self.token_host}:{self.token_port}/oauth/token"
 
-@dataclass
-class LimitsConfig:
+
+class LimitsConfig(Section):
     max_parallel: int = 4         # sandboxes in use at once (agent runs and verifiers), every change
     review_max_cycles: int = 3
     critique_max_cycles: int = 3   # a real BLOCKER in cycle 1 often needs two more to settle
@@ -111,14 +131,13 @@ class LimitsConfig:
     git_max_push_bytes: int = 256 * 1024 * 1024
     git_max_concurrency: int = 8
     # time limit for checking one report (attestations, git checks, role guards)
-    report_check_timeout_s: int = 120
+    report_check_timeout_s: float = 120
     # per-run document write quota (G-W4): versions and total bytes an agent run may write
     max_docs_per_run: int = 200
     max_doc_bytes_per_run: int = 50 * 1024 * 1024
 
 
-@dataclass
-class SandboxConfig:
+class SandboxConfig(Section):
     runner: str = "openshell"  # openshell | local
     openshell_bin: str = "openshell"
     # OpenShell workspace every sandbox, provider and profile operation targets (passed as the
@@ -128,14 +147,14 @@ class SandboxConfig:
     gateway: str | None = None
     image: str | None = None  # --from for agent sandboxes
     verifier_image: str | None = None  # --from for deterministic verifier sandboxes
-    providers: list[str] = field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
     # Binaries in the agent image allowed to call the controller's MCP endpoint
-    agent_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/claude"])
+    agent_binaries: list[str] = Field(default_factory=lambda: ["/usr/local/bin/claude"])
     # Binaries allowed to reach the controller's A2A endpoint (the a2a CLI, github.com/a2aproject/a2a-cli)
-    a2a_binaries: list[str] = field(default_factory=lambda: ["/usr/local/bin/a2a"])
+    a2a_binaries: list[str] = Field(default_factory=lambda: ["/usr/local/bin/a2a"])
     # Binaries allowed to reach the controller's git remote. git's HTTP traffic is sent by its
     # remote helper: /usr/lib/git-core on Debian/Ubuntu, /usr/libexec/git-core on Fedora/RHEL/Alpine.
-    git_binaries: list[str] = field(default_factory=lambda: [
+    git_binaries: list[str] = Field(default_factory=lambda: [
         "/usr/bin/git", "/usr/lib/git-core/git-remote-http", "/usr/lib/git-core/git-remote-https"])
     # Folder with the templates for everything created in OpenShell (policies, sandboxes,
     # provider profile, provider); see policies/README.md for the placeholder vocabulary.
@@ -150,18 +169,16 @@ class SandboxConfig:
     # of the command (see agent_command): it has to read the payload, use the controller's MCP
     # config and resume the agent's session on rework and for reflection.
     agent_bin: str = "claude"
-    extra_create_args: list[str] = field(default_factory=list)
+    extra_create_args: list[str] = Field(default_factory=list)
 
 
-@dataclass
-class ResolverConfig:
+class ResolverConfig(Section):
     # Send every escalation to the change's resolver agent (WORKFLOW.md §5.16), which proposes
     # a decision for a human; off: escalations wait for a human with no proposal.
     enabled: bool = True
 
 
-@dataclass
-class RetrospectiveConfig:
+class RetrospectiveConfig(Section):
     # Before an agent's sandbox is deleted because its work is done, resume its session for one
     # reflection turn (what cost it time, guidance that was missing or wrong), stored in
     # control/reflections/. Best-effort: a failed or timed-out reflection never blocks the change.
@@ -172,12 +189,11 @@ class RetrospectiveConfig:
     reflect_timeout_s: int = 600
     # Judges are skipped: what they missed shows in later outcomes (findings.json), not in
     # their own account, and the panel would otherwise reflect once per member per cycle.
-    reflect_skip_roles: list[str] = field(default_factory=lambda: [
+    reflect_skip_roles: list[str] = Field(default_factory=lambda: [
         "retrospective", "reviewer", "security", "architecture", "critic"])
 
 
-@dataclass
-class EnvironmentConfig:
+class EnvironmentConfig(Section):
     """The sandbox-environment stage (§5.3a of WORKFLOW.md): the planner specifies the tools,
     network policies and resources sandboxes need; after approval (H-E1) the controller builds them.
     Leave the ``environment:`` section out of the config to run without the stage."""
@@ -196,8 +212,7 @@ class EnvironmentConfig:
     max_disk_mib: int = 204800
 
 
-@dataclass
-class IdentityConfig:
+class IdentityConfig(Section):
     """Workload identity (SPIFFE/SPIRE via the OpenShell gateway). See legion_orch/identity.py."""
     trust_prefix: str = "spiffe://openshell.local/openshell/sandbox/"
     jwks_uri: str | None = None          # SPIRE OIDC discovery JWKS, e.g. https://spire-oidc/keys
@@ -214,70 +229,54 @@ class IdentityConfig:
 # Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates, escalations and
 # agents' questions (A2A ask_human), and the inbox's ended changes and retrospective reports.
 ATTENTION_KINDS = ("gate", "escalation", "not_ready", "question", "change_ended", "retrospective")
-SINK_KINDS = ("webhook", "ntfy", "command")
+AttentionKind = Literal["gate", "escalation", "not_ready", "question", "change_ended",
+                        "retrospective"]
 
 
-@dataclass
-class NotifySink:
+class NotifySink(Section):
     """Where notifications go. ``webhook``: POST the JSON item to ``url`` (signed with HMAC-SHA256
     in ``X-Legion-Signature`` when ``secret_env`` names an environment variable holding the
     secret). ``ntfy``: publish to the topic URL ``url`` (e.g. https://ntfy.sh/my-topic).
     ``command``: run ``argv`` with the JSON item on stdin (email, chat, anything else)."""
-    kind: str
+    kind: Literal["webhook", "ntfy", "command"]
     url: str | None = None
     secret_env: str | None = None
-    argv: list[str] = field(default_factory=list)
-    items: list[str] | None = None      # this sink's item kinds (default: the section's ``items``)
+    argv: list[str] = Field(default_factory=list)
+    items: list[AttentionKind] | None = None   # its item kinds (default: the section's ``items``)
     name: str | None = None             # shown in the timeline (default: the kind)
 
     @property
     def label(self) -> str:
         return self.name or self.kind
 
+    @model_validator(mode="after")
+    def _where(self) -> NotifySink:
+        if self.kind in ("webhook", "ntfy") and not (self.url or "").startswith(("http://", "https://")):
+            raise ValueError(f"notify sink {self.label}: url must be an http(s) URL")
+        if self.kind == "command" and not self.argv:
+            raise ValueError(f"notify sink {self.label}: argv is required")
+        return self
 
-@dataclass
-class NotifyConfig:
+
+class NotifyConfig(Section):
     """Outbound notifications for attention items (WORKFLOW.md §2.2). Sent by the controller
     only – sandboxes never reach a sink. Without sinks nothing is sent; the UI shows the items
     either way."""
     # Base URL of the operator UI, for links to the item (e.g. https://legion.example/).
     ui_url: str | None = None
     # Item kinds to notify: gate and escalation (blocking), change_ended, retrospective (inbox).
-    items: list[str] = field(default_factory=lambda: ["gate", "escalation", "not_ready", "question"])
+    items: list[AttentionKind] = ["gate", "escalation", "not_ready", "question"]
     # Repeat a blocking item while it is still waiting (seconds; 0 = never). Inbox items are
     # sent once.
     remind_after_s: int = 3600
     # Also notify when a blocking item is resolved (lets a chat thread or pager close it).
     resolved: bool = False
     timeout_s: int = 10                 # per delivery attempt
-    sinks: list[NotifySink] = field(default_factory=list)
+    sinks: list[NotifySink] = Field(default_factory=list)
 
 
-def _notify_config(raw: dict | None) -> NotifyConfig:
-    raw = dict(raw or {})
-    for d, where in [(raw, "notify")] + [(s, "a notify sink") for s in raw.get("sinks") or []
-                                         if isinstance(s, dict)]:
-        if True in d:      # YAML 1.1 reads a bare `on:` key as true
-            raise ValueError(f"{where}: `on:` is read as `true` in YAML; the key is `items:`")
-    sinks = [_build(NotifySink, s) for s in raw.pop("sinks", None) or []]
-    cfg = _build(NotifyConfig, raw)
-    cfg.sinks = sinks
-    for kinds, where in [(cfg.items, "notify.items")] + [(s.items or [], f"notify sink {s.label}.items")
-                                                  for s in sinks]:
-        if bad := sorted(set(kinds) - set(ATTENTION_KINDS)):
-            raise ValueError(f"{where}: unknown item kinds {bad} (known: {list(ATTENTION_KINDS)})")
-    for s in sinks:
-        if s.kind not in SINK_KINDS:
-            raise ValueError(f"notify sink kind {s.kind!r} is not one of {list(SINK_KINDS)}")
-        if s.kind in ("webhook", "ntfy") and not (s.url or "").startswith(("http://", "https://")):
-            raise ValueError(f"notify sink {s.label}: url must be an http(s) URL")
-        if s.kind == "command" and not s.argv:
-            raise ValueError(f"notify sink {s.label}: argv is required")
-    return cfg
 
-
-@dataclass
-class TelemetryConfig:
+class TelemetryConfig(Section):
     """Opt-in OpenTelemetry spans over OTLP/HTTP. Headers and credentials come only from the
     standard OTEL_EXPORTER_OTLP_* environment variables, never from this file."""
     # True forces telemetry on, False forces it off, None: on only when an OTLP endpoint
@@ -287,35 +286,36 @@ class TelemetryConfig:
     endpoint: str | None = None
     # service.name resource attribute; None: the exporter's default.
     service_name: str | None = None
-    # Export timeout in seconds (>= 1).
-    timeout_s: int = 5
+    # Export timeout in seconds.
+    timeout_s: int = Field(5, ge=1)
 
-    def __post_init__(self) -> None:
-        if self.endpoint is not None and not self.endpoint.startswith(("http://", "https://")):
+    @field_validator("endpoint")
+    @classmethod
+    def _http(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith(("http://", "https://")):
             raise ValueError("telemetry.endpoint must be an http(s) URL")
-        if self.timeout_s < 1:
-            raise ValueError("telemetry.timeout_s must be at least 1")
+        return v
 
 
-@dataclass
-class Config:
+class Config(Section):
     project: str
-    workspaces: list[WorkspaceConfig]
-    decision_owners: list[str]
-    state_dir: Path
-    assets_dir: Path
-    workflow_doc: Path  # displayed in the UI only; never parsed
-    server: ServerConfig = field(default_factory=ServerConfig)
-    limits: LimitsConfig = field(default_factory=LimitsConfig)
-    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
-    identity: IdentityConfig = field(default_factory=IdentityConfig)
+    workspaces: list[WorkspaceConfig] = Field(min_length=1)
+    decision_owners: list[str] = Field(min_length=1)       # at least one human approver
+    # (relative paths are the config file's directory's, base_dir)
+    state_dir: Path = Path(".legion-orch")
+    assets_dir: Path = Path("assets")
+    workflow_doc: Path = Path("WORKFLOW.md")  # displayed in the UI only; never parsed
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
     environment: EnvironmentConfig | None = None    # None: no sandbox-environment stage
-    retrospective: RetrospectiveConfig = field(default_factory=RetrospectiveConfig)
-    resolver: ResolverConfig = field(default_factory=ResolverConfig)
-    notify: NotifyConfig = field(default_factory=NotifyConfig)
-    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
-    protected_paths: list[str] = field(default_factory=list)
-    base_dir: Path = field(default_factory=Path.cwd)
+    retrospective: RetrospectiveConfig = Field(default_factory=RetrospectiveConfig)
+    resolver: ResolverConfig = Field(default_factory=ResolverConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    protected_paths: list[str] = Field(default_factory=list)
+    base_dir: Path = Field(default_factory=Path.cwd)
 
     def workspace(self, name: str) -> WorkspaceConfig:
         for w in self.workspaces:
@@ -328,12 +328,35 @@ class Config:
         p = Path(p)
         return p if p.is_absolute() else (self.base_dir / p)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _sections(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "repo" in data:
+                raise ValueError("repo: was replaced by workspaces: – a list of {name, source, "
+                                 "base_branch, publish_prefix}")
+            if "environment" in data and data["environment"] is None:   # `environment:` alone
+                data = data | {"environment": {}}
+        return data
 
-REMOVED_KEYS = {
-    "agent_command": "sandbox.agent_command was removed: the controller builds the agent command, "
-                     "because a custom one silently dropped --resume (reworks and reflections "
-                     "lost their session). Set sandbox.agent_bin to choose the agent CLI.",
-}
+    @model_validator(mode="after")
+    def _whole(self) -> Config:
+        for name in ("state_dir", "assets_dir", "workflow_doc"):
+            setattr(self, name, (self.base_dir / getattr(self, name)).resolve())
+        s = self.server
+        ports = [s.port, s.mcp_port, s.git_port, s.token_port, s.a2a_port]
+        if len(set(ports)) != len(ports):
+            raise ValueError(f"server ports must be distinct (operator, mcp, git, token, a2a): {ports}")
+        if not self.sandbox.workspace.strip():
+            raise ValueError("sandbox.workspace must name an OpenShell workspace")
+        if self.identity.dev_spire is None:
+            self.identity.dev_spire = self.sandbox.runner == "local"
+        if not self.identity.dev_spire and not self.identity.jwks_uri:
+            raise ValueError("identity.jwks_uri (SPIRE JWKS) is required unless identity.dev_spire is true")
+        if s.operator_token is None:
+            s.operator_token = os.environ.get("LEGION_OPERATOR_TOKEN")
+        _check_workspaces(self.workspaces, self.base_dir)
+        return self
 
 
 def agent_command(sc: SandboxConfig, *, tools: bool = True) -> str:
@@ -351,65 +374,12 @@ def agent_command(sc: SandboxConfig, *, tools: bool = True) -> str:
             '< "$LEGION_PAYLOAD/prompt.md"')
 
 
-def _build(cls, data: dict[str, Any] | None):
-    data = dict(data or {})
-    if removed := sorted(set(data) & set(REMOVED_KEYS)):
-        raise ValueError(" ".join(REMOVED_KEYS[k] for k in removed))
-    known = {f for f in cls.__dataclass_fields__}
-    unknown = set(data) - known
-    if unknown:
-        raise ValueError(f"unknown {cls.__name__} keys: {sorted(unknown)}")
-    return cls(**data)
-
-
 def load_config(path: str | Path) -> Config:
     path = Path(path).resolve()
-    raw = yaml.safe_load(path.read_text()) or {}
-    base = path.parent
-    if "repo" in raw:
-        raise ValueError("repo: was replaced by workspaces: – a list of {name, source, "
-                         "base_branch, publish_prefix}")
-    owners = raw.get("decision_owners") or []
-    if not owners:
-        raise ValueError("decision_owners must name at least one human approver")
-    cfg = Config(
-        project=raw["project"],
-        workspaces=[_build(WorkspaceConfig, w) for w in raw.get("workspaces") or []],
-        decision_owners=list(owners),
-        state_dir=(base / raw.get("state_dir", ".legion-orch")).resolve(),
-        assets_dir=(base / raw.get("assets_dir", "assets")).resolve(),
-        workflow_doc=(base / raw.get("workflow_doc", "WORKFLOW.md")).resolve(),
-        server=_build(ServerConfig, raw.get("server")),
-        limits=_build(LimitsConfig, raw.get("limits")),
-        sandbox=_build(SandboxConfig, raw.get("sandbox")),
-        identity=_build(IdentityConfig, raw.get("identity")),
-        environment=_build(EnvironmentConfig, raw["environment"]) if "environment" in raw else None,
-        retrospective=_build(RetrospectiveConfig, raw.get("retrospective")),
-        resolver=_build(ResolverConfig, raw.get("resolver")),
-        notify=_notify_config(raw.get("notify")),
-        telemetry=_build(TelemetryConfig, raw.get("telemetry")),
-        protected_paths=list(raw.get("protected_paths") or []),
-        base_dir=base,
-    )
-    ports = [cfg.server.port, cfg.server.mcp_port, cfg.server.git_port, cfg.server.token_port,
-             cfg.server.a2a_port]
-    if len(set(ports)) != len(ports):
-        raise ValueError(f"server ports must be distinct (operator, mcp, git, token, a2a): {ports}")
-    if not (cfg.sandbox.workspace or "").strip():
-        raise ValueError("sandbox.workspace must name an OpenShell workspace")
-    if cfg.identity.dev_spire is None:
-        cfg.identity.dev_spire = cfg.sandbox.runner == "local"
-    if not cfg.identity.dev_spire and not cfg.identity.jwks_uri:
-        raise ValueError("identity.jwks_uri (SPIRE JWKS) is required unless identity.dev_spire is true")
-    if cfg.server.operator_token is None:
-        cfg.server.operator_token = os.environ.get("LEGION_OPERATOR_TOKEN")
-    _check_workspaces(cfg.workspaces, base)
-    return cfg
+    return Config.model_validate((yaml.safe_load(path.read_text()) or {}) | {"base_dir": path.parent})
 
 
 def _check_workspaces(workspaces: list[WorkspaceConfig], base: Path) -> None:
-    if not workspaces:
-        raise ValueError("workspaces must name at least one repository")
     names = [w.name for w in workspaces]
     if dup := sorted({n for n in names if names.count(n) > 1}):
         raise ValueError(f"workspace names must be unique: {dup}")

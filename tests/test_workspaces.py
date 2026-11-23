@@ -18,7 +18,7 @@ from legion_orch.workflow.engine.base.common import WorkflowError
 async def two_workspaces(tmp_path) -> Flow:
     """The test workspace (a source repository) and ``scratch`` (no source: a blank one)."""
     f = Flow(tmp_path)
-    f.cfg.workspaces.append(WorkspaceConfig("scratch"))
+    f.cfg.workspaces.append(WorkspaceConfig(name="scratch"))
     f.ctl = Controller(f.cfg, runner=f.runner, builder=f.builder)
     for hub in f.ctl.hubs.values():
         await hub.ensure()

@@ -257,11 +257,12 @@ async def test_webhook_and_ntfy_sinks(tmp_path, monkeypatch):
 
 # ====================================================================== config
 @pytest.mark.parametrize("notify, error", [
-    ({"items": ["gate", "nope"]}, "unknown item kinds"),
-    ({"sinks": [{"kind": "email"}]}, "is not one of"),
+    ({"items": ["gate", "nope"]}, r"notify\.items\.1\n.*'gate', 'escalation'"),
+    ({"sinks": [{"kind": "email"}]}, r"notify\.sinks\.0\.kind\n.*'webhook', 'ntfy' or 'command'"),
     ({"sinks": [{"kind": "webhook"}]}, "url must be"),
     ({"sinks": [{"kind": "command"}]}, "argv is required"),
-    ({"sinks": [{"kind": "ntfy", "url": "https://ntfy.sh/t", "colour": 1}]}, "unknown NotifySink keys"),
+    ({"sinks": [{"kind": "ntfy", "url": "https://ntfy.sh/t", "colour": 1}]},
+     r"notify\.sinks\.0\.colour\n.*Extra inputs"),
 ])
 def test_notify_config_is_validated(tmp_path, notify, error):
     (tmp_path / "c.yaml").write_text(textwrap.dedent(f"""

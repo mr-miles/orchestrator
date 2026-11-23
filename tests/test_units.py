@@ -913,13 +913,13 @@ def test_workspaces_are_checked_at_load(tmp_path):
                                          "sandbox: {runner: local}\n")
         return load_config(tmp_path / "c.yaml")
     for ws, msg in [("repo: {name: app}", "replaced by workspaces"),
-                    ("workspaces: []", "at least one"),
+                    ("workspaces: []", r"workspaces\n.*at least 1 item"),
                     ("workspaces: [{name: a}, {name: a}]", "unique"),
                     ("workspaces: [{name: ../x}]", "path segment"),
                     ("workspaces: [{name: x.git}]", "path segment"),
                     ("workspaces: [{name: a, publish_prefix: legion/}]", "outside legion/"),
                     ("workspaces: [{name: a, publish_prefix: 'bad..'}]", "valid branch name"),
-                    ("workspaces: [{name: a, path: x}]", "unknown WorkspaceConfig keys")]:
+                    ("workspaces: [{name: a, path: x}]", r"workspaces\.0\.path\n.*Extra inputs")]:
         with pytest.raises(ValueError, match=msg):
             load(ws)
     cfg = load("workspaces: [{name: a}, {name: b, publish_prefix: bots/legion-}]")
