@@ -49,10 +49,6 @@ async def _flow_with(tmp_path, *sinks: NotifySink, **notify) -> Flow:
     return f
 
 
-def run(coro):
-    return asyncio.run(coro)
-
-
 # ====================================================================== items
 @scenario()
 async def test_a_gate_is_raised_once_and_resolved_with_its_wait(f: Flow):

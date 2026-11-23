@@ -18,22 +18,6 @@ SETUP = '[tools]\npython = "3.12"\nuv = "0.9"\n\n[tasks.setup]\nrun = "uv sync -
 TOOLS_ONLY = '[tools]\npython = "3.12"\n'
 
 
-def repo_with(tmp_path, mise: str | None) -> None:
-    """The source repository the change starts from, with this mise.toml on main."""
-    path = tmp_path / "src-repo"
-    make_source_repo(path)
-    if mise is not None:
-        (path / "mise.toml").write_text(mise)
-        g = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
-        g("add", "-A")
-        g("commit", "-q", "-m", "mise")
-
-
-def run(coro):
-    import asyncio
-    return asyncio.run(coro)
-
-
 def envs(f: Flow) -> list[dict[str, str]]:
     """Each dispatched run's run.env."""
     import shlex
@@ -47,7 +31,7 @@ def first(f: Flow, node: str, key: str):
 # ====================================================================== the base branch's setup
 @pytest.mark.anyio
 async def test_a_base_setup_task_runs_first_in_every_verifier_and_agent_sandbox(tmp_path):
-    repo_with(tmp_path, SETUP)
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
 
     f = await Flow.create(tmp_path)
     pin = f.ce.change.setup_pin
@@ -67,7 +51,7 @@ async def test_a_base_setup_task_runs_first_in_every_verifier_and_agent_sandbox(
 
 @pytest.mark.anyio
 async def test_no_setup_task_means_no_setup(tmp_path):
-    repo_with(tmp_path, TOOLS_ONLY)
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": TOOLS_ONLY})
 
     f = await Flow.create(tmp_path)
     assert f.ce.change.setup_pin is None
@@ -80,7 +64,7 @@ async def test_no_setup_task_means_no_setup(tmp_path):
 
 @pytest.mark.anyio
 async def test_a_failing_setup_stops_a_build_verification_as_a_failure(tmp_path):
-    repo_with(tmp_path, SETUP)
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
 
     f = await Flow.create(tmp_path)
     f.runner.commands[f.ce.change.setup_pin.blob] = (1, "lockfile out of date\n")
@@ -93,7 +77,7 @@ async def test_a_failing_setup_stops_a_build_verification_as_a_failure(tmp_path)
 
 @pytest.mark.anyio
 async def test_a_failing_setup_escalates_the_baseline(tmp_path):
-    repo_with(tmp_path, SETUP)
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
 
     f = await Flow.create(tmp_path)
     await f.to_h2(tier="R3")
@@ -112,7 +96,7 @@ async def test_a_failing_setup_escalates_the_baseline(tmp_path):
 
 @pytest.mark.anyio
 async def test_a_task_may_not_change_the_pinned_mise_toml(tmp_path):
-    repo_with(tmp_path, SETUP)
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
 
     f = await Flow.create(tmp_path)
     await f.to_build()
@@ -131,8 +115,6 @@ def env_spec(**kw) -> dict:
 
 @pytest.mark.anyio
 async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provision(tmp_path):
-    repo_with(tmp_path, None)
-
     f = Flow(tmp_path, environment={})
     await f.git.ensure()
     f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
@@ -155,8 +137,6 @@ async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provisi
 
 @pytest.mark.anyio
 async def test_a_setup_that_fails_at_provision_escalates_it(tmp_path):
-    repo_with(tmp_path, None)
-
     f = Flow(tmp_path, environment={})
     await f.git.ensure()
     f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)

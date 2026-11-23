@@ -3,11 +3,8 @@ oracle's acceptance commands in a fresh verifier sandbox before the baseline and
 first in every verifier (G-V3), install-only commands kept out of the oracle's lists (G-P13)."""
 from __future__ import annotations
 
-import functools
-import subprocess
-
 import pytest
-from engine_harness import ORACLE, TASKS, Flow, make_source_repo, scenario
+from engine_harness import ORACLE, TASKS, Flow, scenario
 
 from legion_orch.workflow import setup
 from legion_orch.workflow.guards.plan import setup_steps
@@ -19,31 +16,12 @@ SETUP = "mise run setup"
 ACCEPT = ORACLE["acceptance_commands"][0]
 
 
-def with_setup(fn):
-    """Run ``fn(flow)`` on a change whose base branch has a mise.toml with a setup task."""
-    @pytest.mark.anyio
-    @functools.wraps(fn)
-    async def test(tmp_path):
-        path = tmp_path / "src-repo"
-        make_source_repo(path)
-        (path / "mise.toml").write_text(MISE)
-        g = lambda *a: subprocess.run(["git", *a], cwd=path, check=True, capture_output=True)
-        g("add", "-A")
-        g("commit", "-q", "-m", "mise")
-
-        await fn(await Flow.create(tmp_path))
-    import inspect
-    test.__signature__ = inspect.Signature(
-        [inspect.Parameter("tmp_path", inspect.Parameter.POSITIONAL_OR_KEYWORD)])
-    return test
-
-
 def results(f: Flow, node: str, key: str) -> list[tuple[str, int, bool]]:
     v = f.ce.nodes[node].verification[key]
     return [(r.command, r.exit_code, r.setup) for r in v.results]
 
 
-@with_setup
+@scenario(repo_files={"mise.toml": MISE})
 async def test_r2_runs_preflight_after_the_oracle_and_before_h2(f: Flow):
     assert f.ce.change.setup_pin.blob == PIN
     await f.to_h2(tier="R2")
@@ -64,7 +42,7 @@ async def test_r3_baseline_follows_preflight(f: Flow):
     assert f.status("preflight") == "ACCEPTED"
 
 
-@with_setup
+@scenario(repo_files={"mise.toml": MISE})
 async def test_a_failing_setup_sends_the_tests_back_to_the_oracle(f: Flow):
     f.runner.commands[PIN] = (1, "error: lockfile had changes, but lockfile is frozen\n")
     await f.to_h2(tier="R2")
@@ -79,7 +57,7 @@ async def test_a_failing_setup_sends_the_tests_back_to_the_oracle(f: Flow):
     assert oracle.status == "ACCEPTED" and pre.status == "ACCEPTED" and f.status("H-2") == "AWAITING_HUMAN"
 
 
-@with_setup
+@scenario(repo_files={"mise.toml": MISE})
 async def test_preflight_escalates_once_the_oracle_budget_is_spent(f: Flow):
     f.cfg.limits.review_max_cycles = 1
     f.runner.commands[PIN] = (1, "network unreachable\n")
@@ -103,7 +81,7 @@ async def test_a_command_the_verifier_lacks_escalates_and_retry_runs_it_again(f:
     assert pre.status == "ACCEPTED" and f.status("H-2") == "AWAITING_HUMAN"
 
 
-@with_setup
+@scenario(repo_files={"mise.toml": MISE})
 async def test_every_verifier_runs_the_setup_first(f: Flow):
     await f.to_build(tier="R2")
     await f.implement()

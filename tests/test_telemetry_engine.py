@@ -2,7 +2,6 @@
 an abandon at an escalation, a restart, a failing exporter, and what never reaches a span."""
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
@@ -54,10 +53,6 @@ def one(spans, name: str):
 
 def attr(span, key: str):
     return span.attributes.get(key)
-
-
-def run(coro):
-    asyncio.run(coro)
 
 
 @pytest.mark.anyio
