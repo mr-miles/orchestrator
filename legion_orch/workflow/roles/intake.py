@@ -1,32 +1,22 @@
-"""intake: requirements and risk signals (G-I1, G-I2, G-I3)."""
+"""intake: the requirements and the risk assessment (G-I1, G-I2), from the goal."""
 from __future__ import annotations
 
+import json
+
 from .. import guards
-from ..model import Accepted, ReportStatus
-from ..results import Ok, PhaseResult
+from ..model import ReportStatus
 from ..view import RoleContext
-from .base import Report, RoleHandler, register
+from .base import Report, RoleHandler, output, register
 
 
 @register
 class Intake(RoleHandler):
     roles = ("intake",)
-    sees_requirements = False
-    sees_oracle_commit = False
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
-        req_path = e.p("intake/requirements.md")
-        req = e.docs.read(req_path, r.docs[req_path].version)
-        rj, err = guards.load_json(e.docs, r.docs[e.p("intake/risk.json")], "G-I2")
-        if err:
-            return err
-        q = e.doc("intake/questions.md").content if e.latest("intake/questions.md") else None
-        return guards.intake(req.content, rj, q, ReportStatus.DONE)
-
-    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
-        acc = Accepted(subject="risk", doc="intake/risk.json",
-                       version=r.docs[e.p("intake/risk.json")].version)
-        e.write_record(acc.path, acc)            # projected: change.risk
-        e.event("risk", f"derived tier {e.change.risk.tier} (score {e.change.risk.total})",
-                 r.node.id)
-        return Ok()
+        req, risk = output(e, r, "requirements"), output(e, r, "risk")
+        try:
+            rj = json.loads(risk or "")
+        except ValueError as x:
+            return [f"G-I2: risk is not JSON: {x}"]
+        return guards.intake(req or "", rj, None, ReportStatus.DONE)

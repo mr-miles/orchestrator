@@ -13,6 +13,6 @@ from . import (  # noqa: F401  (registration side effects)
     resolver,
     retrospective,
 )
-from .base import REGISTRY, Report, RoleHandler, handler_for, register, roles_where
+from .base import REGISTRY, Report, RoleHandler, Said, handler_for, register
 
-__all__ = ["REGISTRY", "Report", "RoleHandler", "handler_for", "register", "roles_where"]
+__all__ = ["REGISTRY", "Report", "RoleHandler", "Said", "handler_for", "register"]
