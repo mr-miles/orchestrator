@@ -321,8 +321,7 @@ class Controller:
         names = set(self._reserved_names)
         for ce in self.changes.values():
             names.update(r.sandbox for r in ce.runs.values() if r.sandbox)
-            for node in ce.nodes.values():
-                names.update(v.sandbox for v in node.verification.values() if v.sandbox)
+            names.update(v.sandbox for v in ce.change.verifications.values() if v.sandbox)
         return names
 
     def new_sandbox_name(self, prefix: str) -> str:
@@ -347,10 +346,9 @@ class Controller:
         for ce in self.changes.values():
             if log_id in ce.verifying.values():
                 return ce, None
-            for node in ce.nodes.values():
-                for v in node.verification.values():
-                    if v.log == log_id:
-                        return ce, v
+            for v in ce.change.verifications.values():
+                if v.sandbox == log_id or (v.result and v.result.log == log_id):
+                    return ce, v.result
         raise WorkflowError(f"unknown run {log_id}")
 
     def _runs_by_change(self):

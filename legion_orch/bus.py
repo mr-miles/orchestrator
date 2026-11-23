@@ -70,8 +70,8 @@ class CardsPublished(Event):
 
 @dataclass(frozen=True)
 class CardsWithdrawn(Event):
-    """A step's cards (``node``), or – ``None`` – all of the change's, are gone."""
-    node: str | None
+    """A ticket's cards (``ticket``), or – ``None`` – all of the change's, are gone."""
+    ticket: str | None
 
 
 @dataclass(frozen=True)
@@ -92,15 +92,15 @@ class ItemAdded(Event):
 
 @dataclass(frozen=True)
 class TurnEnded(Event):
-    """A run of ``role`` on ``node`` is over: what it left in its inbox wants turns of its own."""
-    node: str
+    """A run of ``role`` on ``ticket`` is over: what it left in its inbox wants turns of its own."""
+    ticket: str
     role: str
 
 
 @dataclass(frozen=True)
 class Escalated(Event):
-    """A step escalated (a failure, not a gate's due decision)."""
-    node: str
+    """A ticket started waiting on a human (an escalation)."""
+    ticket: str
 
 
 @dataclass(frozen=True)

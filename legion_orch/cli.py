@@ -48,10 +48,10 @@ def _parser() -> argparse.ArgumentParser:
     tr.add_argument("--format", choices=["md", "json"], default="md")
     act = sub.add_parser("act", help="perform a human action on a running controller")
     act.add_argument("change")
-    act.add_argument("node")
+    act.add_argument("ticket")
     act.add_argument("action")
-    gov = sub.add_parser("govern", help="change-level governance: attest | override | "
-                                        "approve_protected_paths | approve_surface")
+    gov = sub.add_parser("govern", help="a change-level action: pause | resume | abandon | "
+                                        "replan (payload: {\"plan\": …})")
     gov.add_argument("change")
     gov.add_argument("action")
     pn = sub.add_parser("prune", help="an ended change, once its integration branch is taken: "
@@ -112,8 +112,9 @@ class OperatorClient:
     def start(self, goal: str, workspace: str) -> dict:
         return self._call("/api/changes", {"goal": goal, "workspace": workspace})
 
-    def node_action(self, change: str, node: str, action: str, approver: str, payload: dict) -> dict:
-        return self._call(f"/api/changes/{change}/nodes/{node}/action",
+    def ticket_action(self, change: str, ticket: str, action: str, approver: str,
+                      payload: dict) -> dict:
+        return self._call(f"/api/changes/{change}/tickets/{ticket}/action",
                           {"action": action, "approver": approver, "payload": payload})
 
     def change_action(self, change: str, action: str, approver: str, payload: dict) -> dict:
@@ -174,15 +175,15 @@ def cmd_setup_openshell(cfg: Config, args) -> int:
 def cmd_changes(cfg: Config, args) -> int:
     for c in OperatorClient(cfg).changes():
         print(f"{c['id']}  {c['status']:<9} {c['tier'] or '--'}  "
-              f"{c['accepted']}/{c['nodes']} accepted  {c['goal'][:60]}")
+              f"{c['passed']}/{c['tickets']} passed  {c['goal'][:60]}")
     return 0
 
 
 def _print_items(title: str, items: list[dict], ui_url: str | None) -> None:
     print(f"{title} ({len(items)})")
     for i in items:
-        link = f"  {ui_url.rstrip('/')}/#{i['change']}/overview/{i['node']}" \
-            if ui_url and i.get("node") else ""
+        link = f"  {ui_url.rstrip('/')}/#{i['change']}/overview/{i['ticket']}" \
+            if ui_url and i.get("ticket") else ""
         print(f"  {i['since'][:16]}  {i['change']}  {i['title']}{link}")
         if i.get("reason"):
             print(f"      {i['reason']}")
@@ -228,7 +229,7 @@ def cmd_start(cfg: Config, args) -> int:
 
 
 def cmd_act(cfg: Config, args) -> int:
-    return _show(OperatorClient(cfg).node_action(args.change, args.node, args.action,
+    return _show(OperatorClient(cfg).ticket_action(args.change, args.ticket, args.action,
                                                  args.approver, args.payload))
 
 

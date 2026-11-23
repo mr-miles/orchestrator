@@ -61,7 +61,7 @@ class Resolver:
 
     def escalated(self, event):
         """The bus: a ticket escalated – asked unless the resolver is off (``resolver.enabled``)."""
-        return self.resolve(event.node) if self.c.cfg.resolver.enabled else None
+        return self.resolve(event.ticket) if self.c.cfg.resolver.enabled else None
 
     def brief(self, ticket_id: str) -> dict | None:
         """What the resolver is told of an escalation (None: the ticket is not waiting)."""

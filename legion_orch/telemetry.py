@@ -337,11 +337,11 @@ class ChangeTrace(NullTrace):
                     self._runs_skipped.add(rid)
             elif rid not in self._runs_skipped:
                 if live:
-                    step = self._open.get("step:" + str(r.node_id))
+                    step = self._open.get("step:" + str(r.ticket))
                     self._add(key, f"agent {r.role}", {
                         "legion.change.id": self._cid, "legion.run.id": rid,
-                        "legion.run.role": r.role, "legion.node.id": r.node_id,
-                        "legion.cycle": r.cycle}, step.span if step else None)
+                        "legion.run.role": r.role, "legion.node.id": r.ticket,
+                        "legion.cycle": r.attempt}, step.span if step else None)
                 else:
                     self._runs_skipped.add(rid)
 

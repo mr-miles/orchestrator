@@ -24,6 +24,7 @@ from ....git.branches import Branches
 from ....git.remote import is_blank_tree
 from ... import setup
 from ...attest import FILE_RE
+from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ...model import ChangeEnd, ChangeStatus
 from ...risk import derive_tier
 from ...tickets import Remedy, Replan, Status, Ticket, TicketError, Tickets, Waiting
@@ -208,6 +209,28 @@ class TicketFlow:
             raise WorkflowError(f"{approver} is not a decision owner "
                                 f"({', '.join(self.c.cfg.decision_owners)})")
 
+    def _promote(self, approver: str, payload: Mapping[str, Any]) -> str:
+        """Copy a proposal of the approved environment spec (the ``environment`` pointer) into
+        the library."""
+        ref = self.c.tickets.root.pointers.get("environment") if self.c.st.tickets else None
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        if m is None:
+            raise WorkflowError("there is no approved environment spec")
+        try:
+            kind = Kind(payload.get("kind"))
+        except ValueError:
+            raise WorkflowError(f"kind must be one of {[k.value for k in Kind]}") from None
+        spec = EnvironmentSpec.model_validate(json.loads(
+            self.c.docs.read(m["path"], int(m["version"])).content))
+        try:
+            dest = promote(Library.for_config(self.c.cfg, self.c.assets.schemas), spec, kind,
+                           str(payload.get("name") or ""), f"{ref} (promoted by {approver})")
+            Library.for_config(self.c.cfg, self.c.assets.schemas)     # still valid as a whole
+        except LibraryError as e:
+            raise WorkflowError(str(e)) from None
+        self.c.event("library", f"{approver} promoted {kind} {payload.get('name')} into {dest}")
+        return f"wrote {dest}"
+
     async def act(self, ticket_id: str, action: str, approver: str,
                   payload: Mapping[str, Any] | None = None) -> str:
         """A decision owner's action on a ticket: ``approve`` / ``reject`` (a sign-off waiting
@@ -240,10 +263,22 @@ class TicketFlow:
 
     async def change_action(self, action: str, approver: str,
                             payload: Mapping[str, Any] | None = None) -> str:
-        """A decision owner's action on the change: ``pause``, ``resume``, ``abandon``, or
-        ``replan`` (a replan document in ``payload["plan"]``, applied while paused)."""
+        """A decision owner's action on the change: ``pause``, ``resume``, ``abandon``,
+        ``replan`` (a replan document in ``payload["plan"]``, applied while paused),
+        ``promote_proposal`` (an approved environment proposal into the library), ``prune`` (an
+        ended change's integration branch and evidence refs, §5.14)."""
         self._owner(approver)
         payload, runner = dict(payload or {}), self._runner()
+        if action == "prune":
+            async with self.c.lock:
+                note = await cleanup.prune(self.c, approver)
+                self.c.save()
+            return note
+        if action == "promote_proposal":
+            async with self.c.lock:
+                note = self._promote(approver, payload)
+                self.c.save()
+            return note
         try:
             if action == "pause":
                 await runner.pause()

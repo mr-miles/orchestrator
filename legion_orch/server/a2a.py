@@ -99,7 +99,7 @@ STEP_SKILL = AgentSkill(
 
 
 def sender_name(b: WorkloadBinding) -> str:
-    """The sender as its card id (``<role>@<node>``)."""
+    """The sender as its card id (``<role>@<ticket>``)."""
     return card_id(b.role, b.task)
 
 
@@ -157,12 +157,12 @@ class Catalog:
         for card in cards:
             mine.setdefault(card.id, card)
 
-    def remove(self, change: str, node: str | None) -> None:
-        if node is None:
+    def remove(self, change: str, ticket: str | None) -> None:
+        if ticket is None:
             self._cards.pop(change, None)
             return
         mine = self._cards.get(change, {})
-        for cid in [c.id for c in mine.values() if c.node == node]:
+        for cid in [c.id for c in mine.values() if c.ticket == ticket]:
             del mine[cid]
 
     def cards(self, change: str) -> list[Card]:
@@ -194,8 +194,8 @@ class A2AHub:
         self.inbox = Inbox(lambda cid, card: ctl.bus.publish(ItemAdded(cid, card)))
         ctl.a2a = self                                        # the engine's A2A counterpart
         ctl.bus.subscribe(CardsPublished, lambda e: self.catalog.publish(e.cid, list(e.cards)))
-        ctl.bus.subscribe(CardsWithdrawn, lambda e: self.catalog.remove(e.cid, e.node))
-        ctl.bus.subscribe(TurnEnded, lambda e: self.inbox.turn_ended(e.cid, card_id(e.role, e.node)))
+        ctl.bus.subscribe(CardsWithdrawn, lambda e: self.catalog.remove(e.cid, e.ticket))
+        ctl.bus.subscribe(TurnEnded, lambda e: self.inbox.turn_ended(e.cid, card_id(e.role, e.ticket)))
         ctl.replay_cards()                                    # the cards open already
         self._dispatchers: dict[tuple[str, str], JsonRpcDispatcher] = {}
 
@@ -213,14 +213,14 @@ class A2AHub:
     def agent_card(self, ce: ChangeEngine, card: Card) -> AgentCard:
         """The A2A agent card: who the agent is – no state (that is the step's and its
         tasks')."""
-        if card.node is None:
+        if card.ticket is None:
             desc = (f"The orchestrator of change {ce.cid} ({ce.change.goal[:200]}): the controller "
                     "itself, not a model. Lists the change's cards and asks its decision owners. "
                     'Skills are named in a data part {"skill": …} or by a leading /<skill> in the '
                     "text.")
             skills = ORCHESTRATOR_SKILLS
         else:
-            desc = (f"The {card.role} agent of step {card.node} in change {ce.cid}: {card.title}. "
+            desc = (f"The {card.role} agent of ticket {card.ticket} in change {ce.cid}: {card.title}. "
                     "Message it at any time: it answers whether or not it is running.")
             skills = [STEP_SKILL]
         return AgentCard(
@@ -234,16 +234,16 @@ class A2AHub:
     def registry(self, ce: ChangeEngine, caller: WorkloadBinding) -> list[dict]:
         """The caller's change's cards, but its own: who each agent is (its state is the step's:
         MCP step_status)."""
-        return [{"id": c.id, "node": c.node, "role": c.role, "title": c.title,
+        return [{"id": c.id, "ticket": c.ticket, "role": c.role, "title": c.title,
                  "url": self.url(c.id)}
-                for c in self.cards(ce) if (c.node, c.role) != (caller.task, caller.role)]
+                for c in self.cards(ce) if (c.ticket, c.role) != (caller.task, caller.role)]
 
     def ai_catalog(self, ce: ChangeEngine, caller: WorkloadBinding) -> dict:
         """The change's cards as an AI Catalog (what ``a2a catalog add`` registers): one A2A
         agent entry per card the caller may message."""
         entries = []
         for c in self.registry(ce, caller):
-            tags = ["orchestrator"] if c["node"] is None else [c["role"], c["node"]]
+            tags = ["orchestrator"] if c["ticket"] is None else [c["role"], c["ticket"]]
             entries.append({"identifier": identifier(c["id"]), "displayName": c["id"],
                             "type": "application/a2a-agent-card+json", "url": c["url"],
                             "description": c["title"], "tags": tags})
@@ -255,7 +255,7 @@ class A2AHub:
         key = (ce.cid, card.id)
         d = self._dispatchers.get(key)
         if d is None:
-            executor = (OrchestratorExecutor(self, ce) if card.node is None
+            executor = (OrchestratorExecutor(self, ce) if card.ticket is None
                         else StepExecutor(self, ce, card))
             handler = DefaultRequestHandlerV2(executor, InMemoryTaskStore(),
                                               self.agent_card(ce, card))
@@ -281,7 +281,7 @@ class A2AHub:
     def agent_inbox(self, ce: ChangeEngine, run, assignment: dict) -> list[dict]:
         """Everything waiting on ``run``'s agent: its work (the workflow's), then its messages
         and questions back (the inbox's)."""
-        card = card_id(run.role, run.node_id)
+        card = card_id(run.role, run.ticket)
         return [ce.task_view(run) | {"assignment": assignment}, *self.inbox.views(ce.cid, card)]
 
     def remaining(self, ce: ChangeEngine, run) -> list[dict]:
@@ -290,13 +290,13 @@ class A2AHub:
         own = ([{"task_id": work["task_id"], "from": "orchestrator", "kind": "work",
                  "state": work["state"], "last": work["messages"][-1]["text"][:500]}]
                if work["state"] == "working" else [])
-        return own + self.inbox.views(ce.cid, card_id(run.role, run.node_id))
+        return own + self.inbox.views(ce.cid, card_id(run.role, run.ticket))
 
     async def agent_reply(self, ce: ChangeEngine, run, task_id: str, text: str,
                           state: str) -> dict:
         """``a2a_reply``: on its work's task (the workflow's rules), a message (the inbox), or a
         question back (sent on as the next message of its task) – with what is left."""
-        card = card_id(run.role, run.node_id)
+        card = card_id(run.role, run.ticket)
         if task_id == run.id:
             waiting = [(i.task_id, i.sender) for i in self.inbox.pending(ce.cid, card)]
             out = await ce.reply_task(run, state, text, waiting)
@@ -306,7 +306,7 @@ class A2AHub:
             return {"ok": False, "error": "text is required", "inbox": self.remaining(ce, run)}
         if self.inbox.question(ce.cid, card, task_id) is not None:
             await self.follow_up(ce.cid, card, task_id, text)
-            ce.event("a2a", f"{card} answered a question back", run.node_id, run.id)
+            ce.event("a2a", f"{card} answered a question back", run.ticket, run.id)
             return {"ok": True, "state": "sent: the conversation goes on",
                     "inbox": self.remaining(ce, run)}
         if state not in ("completed", "input-required", "rejected"):
@@ -317,7 +317,7 @@ class A2AHub:
             return {"ok": False, "error": f"no task {task_id} waits in your inbox (answered "
                                           "already, or its sender cancelled it)",
                     "inbox": self.remaining(ce, run)}
-        ce.event("a2a", f"{card} replied {state} to a message", run.node_id, run.id)
+        ce.event("a2a", f"{card} replied {state} to a message", run.ticket, run.id)
         return {"ok": True, "state": state, "inbox": self.remaining(ce, run)}
 
     # ------------------------------------------------------------------ the engine's transport
@@ -326,8 +326,8 @@ class A2AHub:
         card that asked) – what the sender would do with ``a2a send --task-id``."""
         ce = self.ctl.changes[cid]
         run = next(r for r in reversed(list(ce.runs.values()))
-                   if card_id(r.role, r.node_id) == sender and r.sandbox_ref)
-        caller = WorkloadBinding(sandbox=run.sandbox_ref, change=cid, task=run.node_id,
+                   if card_id(r.role, r.ticket) == sender and r.sandbox_ref)
+        caller = WorkloadBinding(sandbox=run.sandbox_ref, change=cid, task=run.ticket,
                                  role=run.role)
         asked = self.inbox.question(cid, sender, task_id)
         if asked is None:
