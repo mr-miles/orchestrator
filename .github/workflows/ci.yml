@@ -60,13 +60,13 @@ jobs:
         run: echo "path=$(mise run -q package:zip)" >> "$GITHUB_OUTPUT"
       - name: Smoke test from a clean unpack, with uv only
         run: |
+          uv="$(mise which uv)"      # the uv binary itself: mise's shim needs a mise.toml, and the unpacked zip has none
           work="$RUNNER_TEMP/unpacked"
           mkdir -p "$work" && unzip -q "${{ steps.zip.outputs.path }}" -d "$work"
           cd "$work"/legion-orchestrator-*
           test -f legion_orch/server/static/dist/index.html
-          uv run legion-orch -c orchestrator.example.yaml check
-          uv run python -c "from legion_orch.server import web; assert (web.UI_DIST / 'index.html').is_file()"
-      # the zip itself (not wrapped in another zip); the artifact is named after the file
+          "$uv" run legion-orch -c orchestrator.example.yaml check
+          "$uv" run python -c "from legion_orch.server import web; assert (web.UI_DIST / 'index.html').is_file()"      # the zip itself (not wrapped in another zip); the artifact is named after the file
       - uses: actions/upload-artifact@v7
         with:
           path: ${{ steps.zip.outputs.path }}
