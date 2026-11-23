@@ -270,6 +270,21 @@ class ReviewResult(Record):
     doc: str | None = None           # attestation of the review document
 
 
+class ReviewReport(Record):
+    """A judge's report as accepted (``<review>.report.json``, beside its review document): the
+    review it records on its node (``node.reviews[key]``, projected) and the report itself."""
+    run: str
+    role: str
+    node: str
+    key: str                         # where its review sits on the node
+    review: ReviewResult
+    status: str
+    summary: str = ""
+    attestations: list[str] = []
+    data: dict[str, Any] = {}        # the structured result (the role's report_schema)
+    at: str = Field(default_factory=now_iso)
+
+
 class CommandResult(Record):
     command: str
     exit_code: int

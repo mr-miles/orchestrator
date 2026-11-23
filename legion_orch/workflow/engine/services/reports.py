@@ -72,7 +72,7 @@ class Reports:
         change namespace. ``dry_run``: every check, nothing written or counted."""
         path = self.c.p(path)
         rel = path[len(self.c.p("")):]
-        controller_owned = rel.startswith("control/") or (
+        controller_owned = rel.startswith("control/") or rel.endswith(".report.json") or (
             rel.startswith("tasks/") and (rel.split("/")[2:3] in (["verification.json"], ["feedback"],
                                                                   ["decisions"])))
         if controller_owned or not any(path.startswith(w) for w in run.write_scope):

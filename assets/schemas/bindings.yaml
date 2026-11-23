@@ -13,6 +13,7 @@
 - {pattern: "tasks/*/evidence/*.md", schema: evidence}
 - {pattern: "release/plan.md", schema: release-plan}
 # ---- controller documents
+- {pattern: "*.report.json", schema: report}     # a judge's report, beside its review
 - {pattern: "control/change.json", schema: change}
 - {pattern: "control/graph.json", schema: graph}
 - {pattern: "control/nodes/*.json", schema: node}

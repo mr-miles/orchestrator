@@ -7,7 +7,7 @@ from .. import guards
 from ..model import Node, ReviewResult, Verdict
 from ..results import Ok, PhaseResult
 from ..view import RoleContext
-from .base import Report, RoleHandler, brief_findings, evidence_of, register
+from .base import Report, RoleHandler, brief_findings, evidence_of, record_review, register
 
 
 def _change_context(e: RoleContext) -> list[str]:
@@ -56,8 +56,8 @@ class PrReviewer(RoleHandler):
     async def on_done(self, e: RoleContext, r: Report) -> None:
         """Records the review; the describe step's critique phase says what it means."""
         run, node, data = r.run, r.node, r.data
-        node.reviews[node.review_key(run.cycle, run.role)] = ReviewResult(
+        record_review(e, r, node.review_key(run.cycle, run.role), ReviewResult(
             verdict=data.verdict, sha=run.judged_sha, run=run.id,
-            findings=brief_findings(data.findings), doc=str(r.docs[run.required_docs[0]]))
+            findings=brief_findings(data.findings), doc=str(r.docs[run.required_docs[0]])))  # -> node.reviews
         return None
 

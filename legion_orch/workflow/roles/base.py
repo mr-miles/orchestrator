@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..attest import Attestation
-from ..model import Finding, Node, Record, Run
+from ..model import Finding, Node, Record, ReviewReport, ReviewResult, Run
 from ..results import Ok, PhaseResult
 from ..view import RoleContext
 
@@ -71,6 +71,18 @@ class RoleHandler:
     async def on_done(self, e: RoleContext, r: Report) -> PhaseResult | None:
         """Default: the agent's work passes its phase."""
         return Ok()
+
+
+def record_review(e: RoleContext, r: Report, key: str, review: ReviewResult) -> None:
+    """Store the judge's report beside its review document (``<review>.report.json``); the
+    node's ``reviews[key]`` is projected from it."""
+    run, rep = r.run, r.run.report          # as accepted (recorded before it concludes)
+    doc = run.required_docs[0].rsplit(".", 1)[0] + ".report.json"
+    e.write_record(doc, ReviewReport(
+        run=run.id, role=run.role, node=r.node.id, key=key, review=review,
+        status=str(rep.status) if rep else "DONE", summary=rep.summary if rep else "",
+        attestations=[str(a) for a in r.parsed],
+        data=r.data.model_dump(mode="json") if r.data is not None else {}))
 
 
 def brief_findings(findings: list[Finding]) -> list[Finding]:

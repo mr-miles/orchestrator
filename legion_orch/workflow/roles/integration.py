@@ -6,7 +6,7 @@ from .. import governance, guards
 from ..model import BASELINE, Resume, ReviewResult, Verdict
 from ..results import Escalate, Ok, PhaseResult
 from ..view import RoleContext
-from .base import Report, RoleHandler, brief_findings, evidence_of, register
+from .base import Report, RoleHandler, brief_findings, evidence_of, record_review, register
 
 
 @register
@@ -32,8 +32,8 @@ class Integration(RoleHandler):
 
     async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
         node, data = r.node, r.data
-        node.reviews["integration"] = ReviewResult(
-            verdict=data.verdict, sha=r.sha, run=r.run.id, findings=brief_findings(data.findings))
+        record_review(e, r, "integration", ReviewResult(             # -> node.reviews
+            verdict=data.verdict, sha=r.sha, run=r.run.id, findings=brief_findings(data.findings)))
         if data.verdict != Verdict.PASS:
             return Escalate("integration_failed", "integration verifier reported FAIL",
                             Resume.READY, run=r.run.id)
