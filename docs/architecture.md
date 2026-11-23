@@ -370,4 +370,4 @@ Rules:
 | Runner | fake ports, real git branches (`test_ticket_runner.py`) | git |
 | Dispatcher | scripted work (`test_dispatch.py`) | nothing |
 | Sandboxes | the fake runner (`test_sandboxes.py`) | fake runner |
-| Whole workflow | the engine harness (`tests/engine_harness.py`), scripted agents (`test_engine.py`, `test_ticket_engine.py` …) and end to end with fake agents over MCP (`test_e2e.py`); the traced engine (`test_telemetry_engine.py`) and out of process (`tests/acceptance/`) | fake runner / local runner, real git and store |
+| Whole workflow | the engine harness (`tests/engine_harness.py`), scripted agents (`test_engine.py` …) and end to end with fake agents over MCP (`test_e2e.py`); the traced engine (`test_telemetry_engine.py`) and out of process (`tests/acceptance/`) | fake runner / local runner, real git and store |
