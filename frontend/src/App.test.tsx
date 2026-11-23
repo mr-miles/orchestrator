@@ -5,6 +5,7 @@ import { ThemeProvider } from '@/components/theme-provider'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { SettingsProvider } from '@/lib/settings'
 import App from './App'
+import { EscalationDefaults, ResolverProposalDefaults, VerificationDefaults } from './lib/api.gen'
 import {
   attentionAtH1,
   CHANGES,
@@ -145,7 +146,13 @@ describe('the operator UI', () => {
       status: 'VERIFYING',
       candidate_sha: 'a'.repeat(40),
       verification: {
-        '1': { sha: 'b'.repeat(40), ok: false, results: [], log: 'lgv-old' },
+        '1': {
+          ...VerificationDefaults,
+          sha: 'b'.repeat(40),
+          ok: false,
+          results: [],
+          log: 'lgv-old',
+        },
       },
     })
     await act(async () => {
@@ -212,10 +219,12 @@ describe('the operator UI', () => {
       title: 'Intake',
       status: 'ESCALATED',
       escalation: {
+        ...EscalationDefaults,
         kind: 'blocked',
         reason: 'the goal is ambiguous',
         resume: 'READY',
         proposal: {
+          ...ResolverProposalDefaults,
           action: 'answer',
           payload: { answer: 'Greet in English.' },
           rationale: "English is the repository's language",
@@ -675,7 +684,12 @@ describe('the operator UI', () => {
           ? {
               ...n,
               status: 'ESCALATED' as const,
-              escalation: { kind: 'run_failed', reason: 'the agent crashed', resume: 'READY' },
+              escalation: {
+                ...EscalationDefaults,
+                kind: 'run_failed',
+                reason: 'the agent crashed',
+                resume: 'READY' as const,
+              },
             }
           : n,
       ),

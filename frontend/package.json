@@ -4,15 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "bun --bun vite",
-    "build": "tsc -b && bun --bun vite build",
+    "types": "cd .. && uv run --quiet python scripts/gen_types.py",
+    "dev": "bun run types && bun --bun vite",
+    "build": "bun run types && tsc -b && bun --bun vite build",
     "preview": "bun --bun vite preview",
     "typecheck": "tsc -b",
     "lint": "oxlint --deny-warnings",
     "format": "bun --bun prettier --write .",
     "format:check": "bun --bun prettier --check .",
     "test": "bun test",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun test"
+    "check": "bun run types && bun run typecheck && bun run lint && bun run format:check && bun test"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

@@ -99,7 +99,7 @@ def change_state(ctl: Controller, ce: ChangeEngine) -> dict:
 
 
 def _item(i) -> dict:
-    return i.model_dump(mode="json") | {"key": i.key}
+    return i.model_dump(mode="json")
 
 
 def attention(ctl: Controller) -> dict:
