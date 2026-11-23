@@ -35,9 +35,8 @@ class NoAgent(WorkflowError):
 
 
 def _slug(node_id: str) -> str:
-    """A node id as a path or branch component (``build:T1`` -> ``build-t1``, ``oracle@2`` ->
-    ``oracle-2``: ``@`` would end a ``file:<path>@<version>`` attestation)."""
-    return node_id.replace(":", "-").replace("@", "-").lower()
+    """A node id as a git branch component (``build:T1`` -> ``build-t1``: no ``:`` in a ref)."""
+    return node_id.replace(":", "-").lower()
 
 
 def _parse_ts(ts: str) -> datetime:

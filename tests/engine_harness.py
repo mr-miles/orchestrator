@@ -331,9 +331,9 @@ class Flow:
         return self.ctl.hub(REPO)
 
     def nid(self, node: str) -> str:
-        """A base id (``plan``, ``H-2``) means the current fix round's node; ``plan@2`` is
+        """A base id (``plan``, ``H-2``) means the current fix round's node; ``plan.2`` is
         that round's."""
-        cur = self.ce.current(node) if "@" not in node else None
+        cur = self.ce.current(node) if "." not in node else None
         return cur.id if cur else node
 
     def status(self, node: str | None = None):

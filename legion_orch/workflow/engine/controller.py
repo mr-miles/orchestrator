@@ -37,7 +37,6 @@ from .base.auth import WorkloadAuth
 from .base.common import WorkflowError, log
 from .base.dispatch import Dispatcher, PriorityCap
 from .base.shared import Services
-from .base.state import StateStore
 from .change import ChangeEngine
 
 
@@ -197,7 +196,7 @@ class Controller:
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:
         """Rebuild every change from the store."""
-        for cid in StateStore.change_ids(self.docs, self.svc.journal):
+        for cid in self.svc.journal.changes():
             ce = ChangeEngine(self.svc, self, cid)
             ce.load()
             if ce.change.workspace not in self.hubs:      # its workspace left the config

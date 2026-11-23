@@ -55,8 +55,8 @@ class PrReviewer(RoleHandler):
 
     async def on_done(self, e: RoleContext, r: Report) -> None:
         """Records the review; the describe step's critique phase says what it means."""
-        run, node, data = r.run, r.node, r.data
-        record_review(e, r, node.review_key(run.cycle, run.role), ReviewResult(
+        run, data = r.run, r.data
+        record_review(e, r, ReviewResult(
             verdict=data.verdict, sha=run.judged_sha, run=run.id,
             findings=brief_findings(data.findings), doc=str(r.docs[run.required_docs[0]])))  # -> node.reviews
         return None

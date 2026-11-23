@@ -73,13 +73,12 @@ class RoleHandler:
         return Ok()
 
 
-def record_review(e: RoleContext, r: Report, key: str, review: ReviewResult) -> None:
-    """Store the judge's report beside its review document (``<review>.report.json``); the
-    node's ``reviews[key]`` is projected from it."""
+def record_review(e: RoleContext, r: Report, review: ReviewResult) -> None:
+    """Store the judge's report with its step's records (``reports/<role>-cycle-<n>.json``);
+    the node's ``reviews`` is projected from it."""
     run, rep = r.run, r.run.report          # as accepted (recorded before it concludes)
-    doc = run.required_docs[0].rsplit(".", 1)[0] + ".report.json"
-    e.write_record(doc, ReviewReport(
-        run=run.id, role=run.role, node=r.node.id, key=key, review=review,
+    e.write_record(f"{r.node.records}/reports/{run.role}-cycle-{run.cycle}.json", ReviewReport(
+        run=run.id, role=run.role, review=review,
         status=str(rep.status) if rep else "DONE", summary=rep.summary if rep else "",
         attestations=[str(a) for a in r.parsed],
         data=r.data.model_dump(mode="json") if r.data is not None else {}))

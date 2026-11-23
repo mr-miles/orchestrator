@@ -12,7 +12,7 @@ Delivery       tasks (DAG) ─ [integration] ─ describe ───────�
 
 A gate (◆) is a step that ends its stage: its work checks what it needs and waits for a human's
 approval (engine/steps.py). Step ids are the engine's node ids; a fix round's are suffixed
-``@n`` (``plan@2``, ``H-2@2``). The build tasks are known once the plan is accepted:
+``.n`` (``plan.2``, ``H-2.2``). The build tasks are known once the plan is accepted:
 :func:`task_steps` gives the steps of the ``tasks`` group (and a blank repository's ``scaffold``
 group, before the oracle)."""
 from __future__ import annotations
