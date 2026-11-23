@@ -1,8 +1,9 @@
 """The agent runner: what the workflow talks to about agents (~/plans/inbox-runner.md).
 
-* The workflow tells it when the change and its steps open and close.
-* Cards travel on the bus (``CardsPublished`` / ``CardsWithdrawn``, after the change saves);
-  the A2A catalog subscribes.
+* The workflow tells it when the change opens and closes; it hears what the change's tickets do
+  on the bus (``TicketMoved``) and keeps the cards from that – never reading the workflow.
+* Cards travel on the bus (``CardsPublished`` / ``CardsWithdrawn``); the A2A catalog
+  subscribes.
 * The A2A inbox's ``ItemAdded`` (a bus event) tells it when something waits on an agent – also
   when a run's turns end with messages left in its inbox: for an agent not running
   it takes the waiting messages one by one – a consult if it has not started (always for the
@@ -20,7 +21,7 @@ import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from .....bus import CardsPublished, CardsWithdrawn, ItemAdded
+from .....bus import CardsPublished, CardsWithdrawn, ItemAdded, TicketMoved
 from .....util import now_iso
 from .... import cards
 from ....model import Run, Turn
@@ -55,44 +56,66 @@ class AgentRunner:
         self.c, self.lifecycle, self.agents = core, lifecycle, agents
         self.sandboxes, self.dispatcher = sandboxes, dispatcher
         self._busy: set[str] = set()          # cards whose messages are being answered
+        self._heard: dict[str, cards.Heard] = {}   # the change's tickets, as announced
+        self._carded: set[str] = set()             # the tickets whose card is published
+        self._open = False                         # the change's own cards are published
         core.svc.bus.subscribe(ItemAdded, lambda e: self.item_added(e.card), cid=core.cid)
+        core.svc.bus.subscribe(TicketMoved, self.ticket_moved, cid=core.cid)
 
     # ------------------------------------------------------------------ the workflow tells it
     def open_change(self) -> None:
         """The change started: its own agents' cards (orchestrator, resolver)."""
+        self._open = True
         self._publish(cards.change_cards(self.c.cid))
 
     def close_change(self) -> None:
         """The change ended: every card goes."""
+        self._open, self._carded = False, set()
         self._remove(None)
 
-    def open_ticket(self, ticket: Ticket) -> None:
-        """An agent ticket started: its agent's card."""
-        self._publish(cards.ticket_cards(ticket))
+    def ticket_moved(self, e: TicketMoved) -> None:
+        """The bus: a ticket moved – the cards follow what was announced (a criterion's from
+        its owner's start, an open ticket's until it is closed). A replay (the change loaded)
+        only rebuilds the record: the cards are published again when a catalog subscribes."""
+        self._heard[e.ticket] = cards.Heard(e.ticket, e.type, e.role, e.parent, e.status)
+        want = {t for t, h in self._heard.items() if cards.carded(self._heard, h)}
+        if e.replay:
+            self._carded, self._open = want, True
+            return
+        if not self._open:
+            return
+        for tid in sorted(want - self._carded):
+            self._publish([cards.ticket_card(self._heard[tid])], now=True)
+        for tid in sorted(self._carded - want):
+            self._remove(tid, now=True)
+        self._carded = want
 
-    def close_ticket(self, ticket_id: str) -> None:
-        """A ticket was closed (passed, failed, cancelled): its card goes."""
-        self._remove(ticket_id)
+    def cards(self) -> list:
+        """The change's cards now: its own, then its tickets' in the order they were heard of."""
+        if not self._open:
+            return []
+        own = cards.change_cards(self.c.cid)
+        return cards.ordered(own + [cards.ticket_card(self._heard[t]) for t in self._carded],
+                             list(self._heard))
 
     def republish(self) -> None:
-        """A catalog subscribed (a restart): every card the workflow has open, again – at once
-        (no change is being saved)."""
-        cs = cards.cards(self.c)
-        if cs:
+        """A catalog subscribed (a restart): every card open, again – at once (no change is
+        being saved)."""
+        if cs := self.cards():
             self.c.svc.bus.publish(CardsPublished(self.c.cid, tuple(cs), replay=True))
 
-    def _publish(self, new: list) -> None:
+    def _publish(self, new: list, *, now: bool = False) -> None:
         if not new:
             return
-        self.c.emit(CardsPublished(self.c.cid, tuple(new)))
+        event = CardsPublished(self.c.cid, tuple(new))
+        self.c.svc.bus.publish(event) if now else self.c.emit(event)
         for card in new:
-            self.c.event("a2a", f"card registered: {card.id}",
-                         card.ticket if card.ticket in self.c.tickets.t else None)
+            self.c.event("a2a", f"card registered: {card.id}", card.ticket)
 
-    def _remove(self, ticket_id: str | None) -> None:
-        self.c.emit(CardsWithdrawn(self.c.cid, ticket_id))
-        self.c.event("a2a", f"cards removed: {ticket_id or 'all of the change'}",
-                     ticket_id if ticket_id in self.c.tickets.t else None)
+    def _remove(self, ticket_id: str | None, *, now: bool = False) -> None:
+        event = CardsWithdrawn(self.c.cid, ticket_id)
+        self.c.svc.bus.publish(event) if now else self.c.emit(event)
+        self.c.event("a2a", f"cards removed: {ticket_id or 'all of the change'}", ticket_id)
 
     # ------------------------------------------------------------------ the workflow's work
     async def publish_work(self, ticket: Ticket, role: str, tw: TicketWork, plan: SandboxPlan,

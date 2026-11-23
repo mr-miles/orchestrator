@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import cards as card_views
 from .tickets.rules import precedes
 from .view import ChangeView
 
@@ -51,5 +50,5 @@ def workflow_context(e: ChangeView, ticket_id: str) -> dict[str, Any]:
                   and x.type != "grouping"][:50],
         "inputs": {i: e.tickets.root.pointers.get(i) for i in t.inputs},
         "judged_by": [c for c in t.criteria],
-        "cards": [c.id for c in card_views.cards(e)],
+        "cards": [c.id for c in e.a2a_cards()],
     }

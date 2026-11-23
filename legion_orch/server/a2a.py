@@ -205,7 +205,7 @@ class A2AHub:
 
     def cards(self, ce: ChangeEngine) -> list[Card]:
         """The change's cards in the catalog, its own first."""
-        return ordered(ce, self.catalog.cards(ce.cid))
+        return ordered(self.catalog.cards(ce.cid), [c.ticket for c in ce.a2a_cards() if c.ticket])
 
     def find(self, ce: ChangeEngine, card_id: str) -> Card | None:
         return self.catalog.get(ce.cid, card_id)

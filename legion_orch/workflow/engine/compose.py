@@ -39,6 +39,7 @@ def compose(ce: ChangeEngine) -> None:
     # the workflow's one counterpart for agents: cards, inboxes, turns (services/agents/)
     agent_runner = AgentRunner(ce, lifecycle, agents, sandboxes, dispatcher)
     agents.runner = agent_runner
+    ce.cards_source = agent_runner.cards            # the cards: the agent runner's (from the bus)
     signoffs = Signoffs(ce)
     flow = TicketFlow(
         ce, agents=Agents(ce, agent_runner, agents, lifecycle, dispatcher), signoffs=signoffs,

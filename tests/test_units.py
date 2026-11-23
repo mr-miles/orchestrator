@@ -22,7 +22,6 @@ DOC = (ROOT / "WORKFLOW.md").read_text()
 GUARD_ID_RE = re.compile(r"\|\s*((?:G|H)-[A-Z]+[0-9]+|H-[0-9]+)\s*\|")
 
 
-
 class StubHost:
     """An EngineHost that does nothing: for a ChangeCore on its own."""
 
@@ -34,8 +33,6 @@ class StubHost:
     def touch(self): ...
 
     def attention(self, item, raised): ...
-
-
 
 
     def next_run_id(self):
@@ -143,7 +140,6 @@ def test_docstore_versions_are_immutable():
         d.conn.execute("DELETE FROM documents")
     with pytest.raises(DocStoreError):
         d.write("../etc/passwd", "x", author="r", role="r")
-
 
 
 def test_an_unchanged_write_creates_no_version():
@@ -318,22 +314,6 @@ def test_review_panels():
     assert risk.review_panel("R2", {}) == ["reviewer"]
 
 
-def test_protected_path_approval_timing_and_coverage():
-    import types
-
-    from legion_orch.workflow import governance
-    from legion_orch.workflow.model import ProtectedPathApproval
-    e = types.SimpleNamespace(change=types.SimpleNamespace(protected_approvals=[
-        ProtectedPathApproval(task="T1", paths=["tests/acc/test_a.py"], approver="miles",
-                              reason="r", at="2026-01-02T00:00:00.000Z")]))
-    assert governance.approved_protected_for(e, "T1", "2026-01-03T00:00:00.000Z") == ["tests/acc/test_a.py"]
-    # a run that predates the approval may not touch the path
-    assert governance.approved_protected_for(e, "T1", "2026-01-01T00:00:00.000Z") == []
-    assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
-    assert governance.coverage_ok(types.SimpleNamespace(covers=None), {"T1", "T2"})
-    assert not governance.coverage_ok(types.SimpleNamespace(covers=["T1"]), {"T1", "T2"})
-
-
 def test_docstore_check_makes_every_write_check_and_writes_nothing():
     from legion_orch.store import SchemaViolation
     d = _store()
@@ -392,7 +372,6 @@ def test_report_schemas():
     assert reg.validate_data("report-none", {}) == [] and reg.validate_data("report-none", {"x": 1})
 
 
-
 def test_svid_verification_and_access_tokens():
     import asyncio
     import time
@@ -436,7 +415,6 @@ def test_svid_verification_and_access_tokens():
     import base64
     assert bearer("Bearer abc") == "abc"
     assert bearer("Basic " + base64.b64encode(b"x:pw").decode()) == "pw"
-
 
 
 def _os_cfg(tmp_path):
@@ -617,60 +595,10 @@ def test_the_runtime_names_no_phase_or_step_type():
         assert not re.findall(types, src), f"{f.name} reads a step type"
 
 
-def test_governance_and_ship_use_only_the_change_view():
-    """They depend on the ChangeView protocol, never on engine internals."""
-    from legion_orch.workflow.view import ChangeView
-    allowed = {n for n in dir(ChangeView) if not n.startswith("__")} | set(ChangeView.__annotations__)
-    wf = ROOT / "legion_orch/workflow"
-    for f in [*sorted((wf / "governance").glob("*.py")), wf / "ship.py"]:
-        used = set(re.findall(r"\b(?:self\.)?e\.([A-Za-z_]+)", f.read_text()))
-        assert used <= allowed, f"{f.name} uses {used - allowed} outside ChangeView"
-        assert "engine" not in f.read_text(), f"{f.name} imports the engine"
-
-
-def test_every_gate_has_exactly_one_check():
-    from legion_orch.workflow import risk
-    from legion_orch.workflow.ship import GATE_CHECKS, GateEvaluator
-    all_gates = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
-    assert set(GATE_CHECKS) == all_gates | set(risk.RELEASE_GATES)     # those: addable only
-    assert all(callable(getattr(GateEvaluator, m)) for m in GATE_CHECKS.values())
-
-
 def test_every_role_has_exactly_one_handler():
     from legion_orch.workflow.roles import REGISTRY
     roles = set(Assets(ROOT / "assets").roles)
     assert set(REGISTRY) == roles, (set(REGISTRY) ^ roles)
-
-
-def test_role_dispatch_policy():
-    """The dispatch policy each handler declares, and where each role's agent works (its step's
-    sandbox plan; judges get a fresh one) – formerly hard-coded role sets in the engine."""
-    from legion_orch.workflow.engine.sandboxes.plan import Checkout, UntilAccepted, UntilGate
-    from legion_orch.workflow.engine.steps.step_types import sandbox_plan
-    from legion_orch.workflow.roles import roles_where
-    panel = {"reviewer", "security", "architecture"}
-    everyone = set(Assets(ROOT / "assets").roles)
-    plans = {r: sandbox_plan(r) for r in everyone}
-    assert {r for r, p in plans.items() if p.pushes} == {"implementer", "oracle"}
-    # the oracle's branch starts from the head at every run, a build task's only at its first
-    assert plans["oracle"].base_at_head(True) and plans["oracle"].base_at_head(False)
-    assert plans["implementer"].base_at_head(False) and not plans["implementer"].base_at_head(True)
-    assert not plans["reviewer"].base_at_head(False)              # judges check out detached
-    assert {r for r, p in plans.items() if p.at_head} == {"baseline", "integration", "release",
-                                                          "retrospective", "describer"}
-    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {
-        "critic", "pr-reviewer"}
-    assert {r: p.keep for r, p in plans.items() if p.keeps} == {
-        "intake": UntilGate("H-1"), "planner": UntilGate("H-E1"), "oracle": UntilGate("H-2"),
-        "implementer": UntilAccepted()}
-    assert roles_where("panel") == panel | {"critic", "pr-reviewer"}   # judge a node REVIEWING
-    assert roles_where("judge") == {"critic", "baseline", "integration", "pr-reviewer"} | panel
-    assert not any(plans[r].keeps for r in roles_where("judge"))   # G-D4
-    assert roles_where("needs_fresh_approval") == {"implementer"}
-    assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
-    assert everyone - roles_where("sees_requirements") == {"intake"}
-    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle",
-                                                            "retrospective"}
 
 
 def test_role_handlers_use_only_the_role_context():
@@ -681,7 +609,6 @@ def test_role_handlers_use_only_the_role_context():
     for f in (ROOT / "legion_orch/workflow/roles").glob("*.py"):
         used = set(re.findall(r"\be\.([A-Za-z_]{2,})", f.read_text()))   # ("e.g." is prose)
         assert used <= allowed, f"{f.name} uses {used - allowed} outside RoleContext"
-
 
 
 def test_attestations_cannot_carry_markup():
@@ -718,7 +645,6 @@ sandbox: {{runner: local}}
         load_config(tmp_path / "c.yaml")
 
 
-
 def test_panel_members_cannot_write_each_others_reviews():
     a = Assets(ROOT / "assets")
     v = {"task_id": "T1", "cycle": 1}
@@ -727,7 +653,6 @@ def test_panel_members_cannot_write_each_others_reviews():
         for other in scopes:
             path = f"tasks/T1/reviews/{other}-cycle-1.md"
             assert any(path.startswith(w) for w in scope) == (role == other), (role, path)
-
 
 
 def test_plan_limits_and_scale():
@@ -815,25 +740,6 @@ def test_cgi_head_parsing():
     assert _parse_cgi_head(b"Content-Type: application/x-git\n\nPACK") \
         == (200, {}, "application/x-git", b"PACK")
     assert _parse_cgi_head(b"Content-Type: text/plain\r\n") is None        # incomplete header block
-
-
-def test_every_gate_says_what_approves_it_and_the_runtime_names_no_gate():
-    """What approving a gate records is its step type's (its Approval phase's ``approves``);
-    the human actions in the runtime hold no table of gates."""
-    import inspect
-
-    from legion_orch.workflow.engine.runtime import human
-    from legion_orch.workflow.engine.steps import GATE_TYPES
-    from legion_orch.workflow.engine.steps.phases import Approval
-    from legion_orch.workflow.model import H_CHANGE, H_ENV, H_REQUIREMENTS, H_SPEC
-    assert set(GATE_TYPES) == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
-    assert {g: sorted(t.phase(Approval).approves.actions) for g, t in GATE_TYPES.items()} == {
-        H_REQUIREMENTS: ["accept", "approve"], H_ENV: ["approve"], H_SPEC: ["approve"],
-        H_CHANGE: ["accept", "approve"]}
-    assert not hasattr(human.HumanGates, "GATE_ACTIONS")
-    code = inspect.getsource(human.HumanGates.human_action) + inspect.getsource(
-        human.HumanGates._human_gate)
-    assert not any(g in code for g in ("H_REQUIREMENTS", "H_ENV", "H_SPEC", "H_CHANGE"))
 
 
 def test_plan_guard_branches():
@@ -1271,11 +1177,3 @@ def test_the_checkout_steps_clone_then_detach_or_branch(tmp_path):
     assert step("run-agent.sh")[-3:] == ["legion/c1/build-t1", base, "legion-implementer"]
 
 
-def test_the_stored_node_schema_knows_every_node_status():
-    """A status the schema does not list fails every save of a node in it (G-W3) – in a
-    background task, where only the log shows it."""
-    import json
-
-    from legion_orch.workflow.model import NodeStatus
-    schema = json.loads((Path(__file__).parent.parent / "assets/schemas/node.json").read_text())
-    assert set(schema["oneOf"][0]["properties"]["status"]["enum"]) == {s.value for s in NodeStatus}

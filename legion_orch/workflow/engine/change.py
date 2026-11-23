@@ -70,6 +70,7 @@ class ChangeEngine(ChangeCore):
         self.projections.replay()   # the fields copied from documents (base/projections.py)
         self.st.runs_loaded()       # and the runs, from their documents
         self._flow.load()           # the tickets, checked
+        self.announce_tickets()     # where they stand, for those that keep their own record
 
         self.seed_attention()
 

@@ -62,6 +62,19 @@ class Event:
 
 
 @dataclass(frozen=True)
+class TicketMoved(Event):
+    """A ticket of the change moved to ``status`` (raised as the change saves) – or, ``replay``,
+    is where it stands (every ticket, once, as the change is loaded): what a subscriber keeps
+    its own record of the workflow from, never reading it."""
+    ticket: str
+    type: str
+    role: str                        # root | subtask | criterion
+    parent: str | None
+    status: str
+    replay: bool = False
+
+
+@dataclass(frozen=True)
 class CardsPublished(Event):
     """Cards the workflow opened (a step started; the change started; a replay)."""
     cards: tuple[Any, ...]           # workflow.model.Card

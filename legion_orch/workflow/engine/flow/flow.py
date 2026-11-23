@@ -22,7 +22,7 @@ from typing import Any
 
 from ....git.branches import Branches
 from ....git.remote import is_blank_tree
-from ... import cards, setup
+from ... import setup
 from ...attest import FILE_RE
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ...model import ChangeEnd, ChangeStatus
@@ -64,7 +64,6 @@ class TicketFlow:
         self._executors: Executors | None = None
         self._branches: Branches | None = None
         self.runner: Runner | None = None
-        self._open: set[str] = set()                # agent tickets whose card is published
 
     @property
     def branches(self) -> Branches:
@@ -142,8 +141,6 @@ class TicketFlow:
         """After the state was loaded: the runner over the loaded tickets."""
         if self.c.st.tickets:
             Tickets.over(self.c.st.tickets)             # checked
-            t = self.c.st.tickets
-            self._open = {x.id for x in t.values() if cards.carded(t, x)}
 
     async def recover(self) -> None:
         """After a restart: every ticket under way goes on at the same attempt (R14)."""
@@ -203,16 +200,8 @@ class TicketFlow:
         c.spawn(cleanup.end_of_change(c))
 
     def _saved(self, tickets: Iterable[Ticket]) -> None:
-        """The runner's save (the lock is held): cards follow the agent tickets (published as one
-        starts, withdrawn as it closes or goes back to pending), kept sandboxes of closed tickets
-        go, then the change saves."""
-        t = self.c.tickets.t
-        want = {x.id for x in t.values() if cards.carded(t, x)}
-        for tid in sorted(want - self._open):
-            self.agent_runner.open_ticket(t[tid])
-        for tid in sorted(self._open - want):
-            self.agent_runner.close_ticket(tid)
-        self._open = want
+        """The runner's save (the lock is held): kept sandboxes of closed tickets go, then the
+        change saves (and announces what its tickets did: ``TicketMoved``)."""
         self.lifecycle.release_sandboxes()
         self.c.save()
 

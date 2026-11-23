@@ -10,6 +10,10 @@ agent is doing is its ticket's state and its tasks'. So cards are **published**:
   – a criterion's from its owner's start – until it is closed. A message to an agent not started
   starts it; to a stopped one, resumes its session.
 
+Which cards exist is decided by whoever keeps them (the agent runner) from what the workflow
+announces on the bus (``TicketMoved``) – never by reading the workflow: :func:`carded` is the
+rule, over the subscriber's own record (:class:`Heard`).
+
 They are pushed to the A2A catalog (``server/a2a.py``) as a side effect of the workflow
 (``EngineHost.publish_cards`` / ``remove_cards``) – a view of it, not part of the change's
 record; a catalog that subscribes is given every change's cards again (a restart). The engine
@@ -18,10 +22,10 @@ agent and have no card; nor do the controller's own tickets.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from urllib.parse import quote
 
 from .model import Card
-from .tickets import Ticket
 from .view import ChangeView
 
 ORCHESTRATOR = "orchestrator"
@@ -56,25 +60,31 @@ def identifier(card: str) -> str:
 OPEN = {"working", "subtasks", "checking", "merging", "waiting", "paused", "rejected"}
 
 
-def carded(tickets: dict[str, Ticket], ticket: Ticket) -> bool:
+@dataclass(frozen=True)
+class Heard:
+    """What a subscriber heard of a ticket (``TicketMoved``): no more than a card needs."""
+    ticket: str
+    type: str
+    role: str
+    parent: str | None
+    status: str
+
+
+def carded(heard: dict[str, Heard], t: Heard) -> bool:
     """Whether an agent ticket has a card: while it is open – and, a criterion, from its owner's
     start (an agent not started yet may be asked, and starts to answer)."""
-    if not ticket.type.startswith("agent:"):
+    if not t.type.startswith("agent:"):
         return False
-    if ticket.status in OPEN:
+    if t.status in OPEN:
         return True
-    owner = tickets.get(ticket.parent) if ticket.parent else None
-    return ticket.status == "pending" and ticket.role == "criterion" and owner is not None \
+    owner = heard.get(t.parent) if t.parent else None
+    return t.status == "pending" and t.role == "criterion" and owner is not None \
         and owner.status in OPEN
 
 
-def ticket_cards(ticket: Ticket) -> list[Card]:
-    """An agent ticket's card: its role's agent, while the ticket is open."""
-    if not ticket.type.startswith("agent:"):
-        return []
-    role = ticket.type.partition(":")[2]
-    return [Card(id=card_id(role, ticket.id), ticket=ticket.id, role=role,
-                 title=f"{role} of {ticket.id}: {ticket.goal or ticket.id}")]
+def ticket_card(t: Heard) -> Card:
+    role = t.type.partition(":")[2]
+    return Card(id=card_id(role, t.ticket), ticket=t.ticket, role=role, title=f"{role} of {t.ticket}")
 
 
 def change_cards(change_id: str) -> list[Card]:
@@ -84,27 +94,12 @@ def change_cards(change_id: str) -> list[Card]:
                  title=f"Resolver of change {change_id}: escalations and stuck agents")]
 
 
-def cards(e: ChangeView) -> list[Card]:
-    """The cards the workflow publishes, as it stands now: the change's own while it is
-    active, and each open agent ticket's. What the engine itself goes by; the A2A catalog is
-    built from the same cards as they are pushed."""
-    ch = e.change
-    if ch is None or ch.status != "ACTIVE":
-        return []
-    out = change_cards(ch.id)
-    tickets = e.tickets.t
-    for t in tickets.values():
-        if carded(tickets, t):
-            out += ticket_cards(t)
-    return out
-
-
-def ordered(e: ChangeView, published: list[Card]) -> list[Card]:
-    """``published`` cards in order: the change's own first, then the tickets' in tree order."""
-    order = {tid: i for i, tid in enumerate(e.tickets.t)}
+def ordered(published: list[Card], order: list[str]) -> list[Card]:
+    """``published`` cards in order: the change's own first, then the tickets' in ``order``."""
+    pos = {tid: i for i, tid in enumerate(order)}
     own = {ORCHESTRATOR: -2, RESOLVER: -1}
     return sorted(published,
-                  key=lambda c: (own.get(c.id, order.get(c.ticket or "", len(order))), c.id))
+                  key=lambda c: (own.get(c.id, pos.get(c.ticket or "", len(pos))), c.id))
 
 
 def agent_state(e: ChangeView, card: Card) -> str:
