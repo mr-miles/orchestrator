@@ -477,7 +477,11 @@ class AgentRuns:
         """Create a run record under the lock (guards G-D1, G-D2, G-D4), or say why it cannot
         run (its prompt does not render)."""
         ch = self.c.change
-        judged = tw.judged if plan.checkout == Checkout.CANDIDATE else None
+        git = self.c.assets.roles[role].git
+        # what it works at and attests: a judge, the commit it judges; a role that works at a
+        # commit it does not make (integration, describer), its base
+        judged = tw.judged if plan.checkout == Checkout.CANDIDATE \
+            else tw.base if git == GitMode.HEAD else None
         branch = tw.branch if plan.pushes else None
         asg = self._assignment(ticket, role, tw, judged)
         try:

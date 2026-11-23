@@ -179,6 +179,12 @@ class Provision:
         self.c, self.provisioner, self.dispatch = c, provisioner, Dispatch(dispatcher)
 
     async def provision(self, work: Work) -> str | None:
+        if self.c.cfg.environment is None:          # no environment stage: the default image
+            async with self.c.lock:
+                self.c.event("provision", "no environment stage: every sandbox uses the default "
+                             "image", work.ticket.id)
+                self.c.save()
+            return None
         ticket = self.c.tickets.t[work.ticket.id]
         return await self.provisioner.provision(ticket, work,
                                                 wanted=lambda: live(self.c, work) is not None,

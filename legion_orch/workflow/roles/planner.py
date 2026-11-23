@@ -12,8 +12,10 @@ from ..tickets.plan_doc import depends, parse_plan
 from ..view import RoleContext
 from .base import Report, RoleHandler, output, protected, register, requirement_ids
 
-NO_ENVIRONMENT = ("No sandbox environment stage is configured: your `environment` output is "
-                  "`{}` (an empty object); every sandbox uses the default image.")
+NO_ENVIRONMENT = ("No sandbox environment stage is configured: every sandbox uses the default "
+                  "image. Your `environment` output is still required: write "
+                  "`{\"summary\": \"the default image\", \"profiles\": {\"default\": {\"tools\": []}}, "
+                  "\"roles\": {}, \"rationale\": \"no environment stage\"}`.")
 
 
 @register

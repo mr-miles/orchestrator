@@ -60,20 +60,37 @@ class TicketFlow:
         if c.assets.workflow is None:
             raise WorkflowError("the assets have no workflow.yaml")
         self.spec = c.assets.workflow
-        self.branches = Branches(c.git)
-        hub = c.git
-        remote = Remote(c, publisher) if hub.source and c.svc.github.repo_of(hub.source) else None
-        self.executors = Executors({
-            "agent": AgentExecutor(agents, backoff),
-            "human:signoff": SignoffExecutor(signoffs, backoff),
-            "controller:verify": VerifyExecutor(verify, backoff),
-            "controller:can-merge": CanMergeExecutor(self.branches, backoff),
-            "controller:provision": ProvisionExecutor(provision, backoff),
-            "controller:publish": PublishExecutor(remote=remote, branches=self.branches,
-                                                  base_branch=hub.base_branch,
-                                                  message=self._pr_text, backoff=backoff)})
+        self._ports = (agents, verify, provision, publisher, backoff)
+        self._executors: Executors | None = None
+        self._branches: Branches | None = None
         self.runner: Runner | None = None
         self._open: set[str] = set()                # agent tickets whose card is published
+
+    @property
+    def branches(self) -> Branches:
+        """The change's hub's ticket branches (the change knows its workspace once it exists)."""
+        if self._branches is None:
+            self._branches = Branches(self.c.git)
+        return self._branches
+
+    @property
+    def executors(self) -> Executors:
+        """Each ticket type's executor over its port (built once the change exists)."""
+        if self._executors is None:
+            agents, verify, provision, publisher, backoff = self._ports
+            c, hub = self.c, self.c.git
+            remote = Remote(c, publisher) if hub.source and c.svc.github.repo_of(hub.source) \
+                else None
+            self._executors = Executors({
+                "agent": AgentExecutor(agents, backoff),
+                "human:signoff": SignoffExecutor(self.signoffs, backoff),
+                "controller:verify": VerifyExecutor(verify, backoff),
+                "controller:can-merge": CanMergeExecutor(self.branches, backoff),
+                "controller:provision": ProvisionExecutor(provision, backoff),
+                "controller:publish": PublishExecutor(remote=remote, branches=self.branches,
+                                                      base_branch=hub.base_branch,
+                                                      message=self._pr_text, backoff=backoff)})
+        return self._executors
 
     def _runner(self) -> Runner:
         if self.runner is None:
