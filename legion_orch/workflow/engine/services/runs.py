@@ -6,7 +6,7 @@ import shutil
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from ....sandbox import agentlog
+from ....sandbox import GatewaySandbox, agentlog
 from ....util import now_iso
 from ... import cards
 from ...model import (
@@ -67,6 +67,10 @@ class RunLifecycle:
     def __init__(self, core: ChangeCore, sandboxes: Sandboxes):
         self.c, self.sandboxes = core, sandboxes
         self._ended: set[str] = set()        # released because the change ended (tried once)
+
+    def adopt_sandboxes(self, found: dict[str, GatewaySandbox], complete: bool) -> None:
+        """On start: the runs' sandboxes as the gateway lists them (:meth:`Sandboxes.adopt`)."""
+        self.sandboxes.adopt(found, complete)
 
     def live_runs(self) -> list[Run]:
         return [r for r in self.c.runs.values() if r.status in LIVE_RUN]

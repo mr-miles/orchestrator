@@ -15,11 +15,14 @@ from ...identity import WorkloadBinding
 from ...notify import Notifier
 from ...sandbox import (
     EnvironmentBuilder,
+    Listing,
     Runner,
+    SandboxError,
     human_name,
     make_builder,
     make_runner,
 )
+from ...sandbox.templates import label_value
 from ...store import DocStore
 from ...store.journal import Journal
 from ...store.state_tables import StateTables
@@ -216,10 +219,36 @@ class Controller:
         shutil.rmtree(self.svc.tmp, ignore_errors=True)   # stale payloads may contain old tokens
         self.svc.tmp.mkdir(parents=True)
         self.load()
+        await self.adopt_sandboxes()
         async with self.svc.lock:
             for ce in self.changes.values():
                 ce.recover()
         self._loop_task = asyncio.create_task(self._remind())
+
+    async def adopt_sandboxes(self) -> None:
+        """After :meth:`load`: each change's sandboxes as the gateway lists them – which exist,
+        which are stopped (not recorded: the gateway's word)."""
+        listing = await self._listing()
+        if listing is None:
+            return
+        async with self.svc.lock:
+            for ce in self.changes.values():
+                label = label_value(ce.cid)
+                ce.adopt_sandboxes({s.name: s for s in listing.sandboxes if s.change == label},
+                                   listing.complete)
+
+    async def _listing(self) -> Listing | None:
+        """The gateway's sandboxes – which of each change's exist, and which are stopped (none:
+        the gateway did not answer; the changes keep what their records say)."""
+        try:
+            listing = await self.svc.runner.list()
+        except (SandboxError, ValueError, OSError) as e:
+            log.warning("listing the gateway's sandboxes failed: %s", e)
+            return None
+        if not listing.complete:
+            log.warning("the gateway listed more sandboxes than one page: missing ones are not "
+                        "taken to be gone")
+        return listing
 
     STOP_WAIT_S = 10
 

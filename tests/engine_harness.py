@@ -84,6 +84,8 @@ class FakeRunner(Runner):
         self.fail_create: str | None = None              # role whose sandbox creation fails
         self.fail_delete = False
         self.clash = 0             # the next N creates find the name taken on the gateway
+        self.phase: dict[str, str] = {}                  # the gateway's sandboxes: name -> phase
+        self.list_complete = True                        # False: list() returns a partial page
 
     async def create(self, spec):
         if self.clash:
@@ -99,6 +101,7 @@ class FakeRunner(Runner):
                                     for f in Path(spec.payload_dir).rglob("*") if f.is_file()}
         self.specs[spec.name] = spec
         self.policies[spec.name] = yaml.safe_load(Path(spec.policy_file).read_text())
+        self.phase[spec.name] = "Ready"
         return spec.name
 
     async def upload(self, name, payload_dir):
@@ -117,9 +120,13 @@ class FakeRunner(Runner):
         if self.fail_stop:
             raise SandboxError("openshell sandbox stop is not supported")
         self.stopped.append(name)
+        if name in self.phase:
+            self.phase[name] = "Stopped"
 
     async def start(self, name):
         self.restarted.append(name)
+        if name in self.phase:
+            self.phase[name] = "Ready"
 
     async def exec(self, name, argv, *, workdir=None, timeout=600):
         self.execs.append((name, list(argv)))
@@ -148,6 +155,18 @@ class FakeRunner(Runner):
         if self.fail_delete:
             raise SandboxError("openshell sandbox delete failed")
         self.deleted.append(name)
+        self.phase.pop(name, None)
+
+    async def list(self):
+        """The gateway's listing: every sandbox created and not deleted, labelled as created."""
+        from legion_orch.sandbox import GatewaySandbox, Listing
+        from legion_orch.sandbox.templates import label_value
+        return Listing(tuple(
+            GatewaySandbox(name=n, id=n, phase=ph, labels={k: label_value(v) for k, v in (
+                ("legion.change", s.change), ("legion.task", s.task), ("legion.role", s.role),
+                ("legion.run", s.run)) if v}, annotations={"legion.task": s.task})
+            for n, ph in self.phase.items() if (s := self.specs.get(n)) is not None),
+            complete=self.list_complete)
 
 
 class FakeBuilder(EnvironmentBuilder):
