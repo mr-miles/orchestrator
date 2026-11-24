@@ -56,7 +56,7 @@ describe('TicketTree expansion', () => {
   test('an active leaf and its ancestors are open; others follow their status', () => {
     const m = mount(tree('working'))
     expect(m.ids()).toEqual(['root', 'A', 'A1', 'B'])
-    expect(screen.getByRole('button', { name: 'Collapse A1' }).getAttribute('aria-expanded')).toBe(
+    expect(screen.getByRole('button', { name: 'Collapse A' }).getAttribute('aria-expanded')).toBe(
       'true',
     )
   })
@@ -83,20 +83,51 @@ describe('TicketTree expansion', () => {
     expect(m.opened).toEqual(['A'])
   })
 
-  test('the goal shows only on open rows', async () => {
+  test('every row shows its goal, collapsed or expanded', async () => {
     const m = mount(tree('working'))
-    expect(m.row('B').querySelector('[data-part="goal"]')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse B' }))
-    expect(m.row('B').querySelector('[data-part="goal"]')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse A' }))
+    expect(m.row('A').getAttribute('data-expanded')).toBe('false')
+    expect(m.row('A').querySelector('[data-part="goal"]')?.textContent).toBe('goal of A')
+    expect(m.row('root').querySelector('[data-part="goal"]')?.textContent).toBe('goal of root')
+    expect(m.row('B').querySelector('[data-part="goal"]')?.textContent).toBe('goal of B')
   })
 
-  test('a completed leaf collapses when its status changes; a manual choice then holds', async () => {
+  test('leaf rows have no toggle, aria-expanded or data-expanded; parents do', () => {
+    const m = mount(tree('working'))
+    for (const id of ['A1', 'B']) {
+      expect(screen.queryByRole('button', { name: `Collapse ${id}` })).toBeNull()
+      expect(screen.queryByRole('button', { name: `Expand ${id}` })).toBeNull()
+      expect(m.row(id).querySelector('[aria-expanded]')).toBeNull()
+      expect(m.row(id).hasAttribute('data-expanded')).toBe(false)
+    }
+    for (const id of ['root', 'A']) {
+      expect(m.row(id).querySelector('button[aria-expanded]')).toBeTruthy()
+      expect(m.row(id).hasAttribute('data-expanded')).toBe(true)
+    }
+  })
+
+  test('a completed leaf never hides anything or shows a count', () => {
     const m = mount(tree('working'))
     m.update(tree('passed'))
-    expect(m.row('A1').getAttribute('data-expanded')).toBe('false')
-    await userEvent.click(screen.getByRole('button', { name: 'Expand A1' }))
-    m.update(tree('passed', 'passed')) // B changes, A1 does not
-    expect(m.row('A1').getAttribute('data-expanded')).toBe('true')
+    expect(m.ids()).toEqual(['root', 'A', 'A1', 'B'])
+    expect(m.row('A1').hasAttribute('data-expanded')).toBe(false)
+    expect(m.row('A1').querySelector('[data-part="hidden-count"]')).toBeNull()
+  })
+
+  test('the highlight is on the li only, and the slots are size-5 on every row', () => {
+    const m = mount(tree('working'), { selected: 'B' })
+    for (const id of m.ids() as string[]) {
+      const li = m.row(id)
+      expect(li.className).toContain('hover:bg-muted')
+      for (const el of li.querySelectorAll('*'))
+        expect(el.getAttribute('class') ?? '').not.toContain('hover:bg-')
+      for (const part of ['toggle-slot', 'status-slot']) {
+        const slots = li.querySelectorAll(`[data-part="${part}"]`)
+        expect(slots.length).toBe(1)
+        expect(slots[0]!.className).toContain('size-5')
+      }
+    }
+    expect(m.row('B').className).toContain('bg-muted')
   })
 
   test('a leaf that becomes active opens itself and its ancestors', async () => {
