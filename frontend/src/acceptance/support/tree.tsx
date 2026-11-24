@@ -14,6 +14,7 @@ export interface Spec {
   goal?: string
   type?: string
   attempt?: number
+  role?: string
 }
 
 /** A ticket for the tree (a leaf unless it has ``subtasks`` / ``criteria``). */
@@ -27,6 +28,7 @@ export function tk(id: string, s: Spec = {}): Ticket {
     criteria: s.criteria ?? [],
     goal: s.goal ?? `goal of ${id}`,
     attempt: s.attempt ?? 0,
+    ...(s.role ? { role: s.role as Ticket['role'] } : {}),
   })
 }
 
@@ -109,5 +111,8 @@ export function mount(tickets: Ticket[], o: Opts = {}) {
 
 export type Mounted = ReturnType<typeof mount>
 export const expanded = (m: Mounted, id: string) => m.row(id)?.getAttribute('data-expanded')
+/** The class tokens of an element. */
+export const classes = (e: Element | null | undefined): string[] =>
+  (e?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean)
 export const hasGoal = (m: Mounted, id: string) =>
   m.row(id)?.querySelector('[data-part="goal"]') != null
