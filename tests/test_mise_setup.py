@@ -131,6 +131,11 @@ async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provisi
         assert ch.setup_pin.source == "H-E1" and ch.setup_pin.blob == setup.blob_sha(SETUP)
         assert f.status("provision") == "passed"
         assert any("setup ran in the verifier" in e["message"] for e in f.ce.timeline_events())
+        # the setup was checked at the commit that has the approved mise.toml – not at the
+        # provision ticket's base, the base branch's mise.toml, which the pin does not match
+        checked = [argv[2] for sb, argv in f.runner.execs
+                   if sb.startswith("lgv-") and argv[1].endswith("checkout.sh")]
+        assert checked == [head], (checked, head, before)
     finally:
         await f.stop()
 

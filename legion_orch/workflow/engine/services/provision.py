@@ -137,11 +137,13 @@ class Provisioner:
             plan = await self._plan()
             if isinstance(plan, str):
                 return plan
+            at = tw.base or c.change.base_sha     # where the setup is checked: what follows uses
             if plan.mise is not None:          # the approved mise.toml: committed, pinned (§5.3c)
                 head = await Branches(c.git).commit_file(
                     integration_branch(c.cid), setup.MISE_TOML, plan.mise,
                     f"legion {c.cid}: the approved mise.toml")
                 c.change.setup_pin = setup.pin_for(plan.mise, "H-E1")
+                at = head                          # the commit with the approved mise.toml
                 c.event("provision", f"committed the approved mise.toml at {head[:12]}",
                         ticket.id)
         log: list[str] = []
@@ -195,15 +197,16 @@ class Provisioner:
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                         ticket.id)
                 return None
-        return await self._check_setup(ticket, tw, sorted(roles), wanted)
+        return await self._check_setup(ticket, at, sorted(roles), wanted)
 
-    async def _check_setup(self, ticket: Ticket, tw: TicketWork, roles: list[str],
+    async def _check_setup(self, ticket: Ticket, at: str | None, roles: list[str],
                            wanted) -> str | None:
-        """G-PV3: the approved mise.toml's setup task succeeds at the ticket's base in a fresh
-        verifier sandbox from this build – before any sandbox relies on it."""
+        """G-PV3: the approved mise.toml's setup task succeeds at ``at`` – the commit that has
+        it (provisioning's own commit of an approved mise.toml; else the ticket's base) – in a
+        fresh verifier sandbox from this build, before any sandbox relies on it."""
         c = self.c
         work = self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
-                                            tw.base or c.change.base_sha, (), in_new_build=True)
+                                            at or c.change.base_sha, (), in_new_build=True)
         outcome = await self.dispatcher.run(work)
         async with c.lock:
             if not wanted():
