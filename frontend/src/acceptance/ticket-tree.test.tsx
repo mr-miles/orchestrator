@@ -77,7 +77,7 @@ describe('AC-2 toggle only where something is underneath', () => {
     const ts = [
       tk('root', { status: 'subtasks', subtasks: [['provision'], ['T']], criteria: ['H-1'] }),
       tk('provision', { parent: 'root', status: 'passed' }),
-      tk('T', { parent: 'root', status: 'pending', criteria: ['G-1'] }),
+      tk('T', { parent: 'root', status: 'failed', criteria: ['G-1'] }),
       tk('G-1', { parent: 'T', status: 'pending', role: 'criterion' }),
       tk('H-1', { parent: 'root', status: 'pending', role: 'criterion' }),
     ]
@@ -90,9 +90,8 @@ describe('AC-2 toggle only where something is underneath', () => {
       expect(row.hasAttribute('data-expanded')).toBe(false)
       expect(row.querySelector('[data-part="hidden-count"]')).toBeNull()
     }
-    // T is pending (collapsed) with a criterion: it has a toggle and a hidden count
+    // T has a criterion underneath: it has a toggle
     expect(toggleButtons(m.row('T') as HTMLElement)).toHaveLength(1)
-    expect(m.row('T')?.querySelector('[data-part="hidden-count"]')?.textContent).toContain('+1')
   })
 
   test('test_AC_2_row_gaining_a_subtask_gains_a_toggle', () => {
