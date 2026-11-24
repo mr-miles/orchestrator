@@ -29,7 +29,8 @@ from typing import Any
 
 from ....git.branches import Branches
 from ....git.remote import WorkspaceUnsynced, is_blank_tree
-from ... import setup
+from ....util import now_iso
+from ... import metrics, setup
 from ...attest import FILE_RE
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ...model import ChangeEnd, ChangeStatus
@@ -261,10 +262,30 @@ class TicketFlow:
                 await c.next_save()
             finally:
                 self.awaiting_reflections = False
+        self.write_metrics()
         role = t.type.removeprefix("agent:")
         end = await self._agents.run(role, Work(t, t.attempt, tuple(t.findings), change=c.cid,
                                                 base=c.change.base_sha))
         await self._concluded(t, end)
+
+    def write_metrics(self) -> None:
+        """The change's metrics as they stand (``control/metrics.json``, :mod:`..metrics`):
+        from its journal, its runs and their digests. Written before each retrospective round,
+        which reads them."""
+        c = self.c
+        digests: dict[str, Any] = {}
+        for r in c.st.runs.values():
+            rel = f"control/digests/{r.id}.json"
+            if c.latest(rel):
+                try:
+                    digests[r.id] = json.loads(c.doc(rel).content)
+                except ValueError:
+                    pass
+        c.write_record("control/metrics.json", metrics.compute(
+            c.change.model_dump(mode="json"),
+            (entries for _, entries in c.st.journal.lines(c.cid)),
+            [r.model_dump(mode="json", exclude={"assignment"}) for r in c.st.runs.values()],
+            digests, now_iso()))
 
     async def _concluded(self, t: Ticket, end: AgentEnd) -> None:
         c = self.c

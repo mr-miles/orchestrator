@@ -195,6 +195,7 @@ published; a finished change is published as `<publish_prefix><change-id>` (defa
 | `changes/<id>/control/ended.json` | who abandoned the change, where it was and why (§5.13) |
 | `changes/<id>/control/proposals/<ticket>-<n>.json` | the resolver's proposals (§5.16) |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
+| `changes/<id>/control/metrics.json` | the change's metrics, computed by the controller before each retrospective round (§5.13) |
 | `changes/<id>/control/reflections/<run>.md` | the agent's own account of what cost it time and where its guidance failed (§5.13) |
 | `changes/<id>/control/timeline/<n>.jsonl` | the controller's events (dispatch, sandbox, verification, rework, human actions), written in chunks |
 | `changes/<id>/control/assets/<sha>.json` | the hash of each asset file of an asset set the change's runs used |
@@ -947,6 +948,15 @@ timeline. The retrospective then runs on whatever the change has produced so far
 * **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and ticket
   records, the change's documents, the current assets and a prompt check per run (agents cannot
   read run logs through MCP). Its context lists earlier changes' retrospectives.
+* **Metrics:** `control/metrics.json` (`retro/metrics.json`), computed by the controller
+  (`workflow/metrics.py`) before each round from the change's journal, its runs and their
+  digests, so the numbers are counted, not estimated:
+  * the first-pass rate of the tickets with work: passed on the first attempt, never rejected by
+    a criterion, no wait on a human;
+  * every rework, by the criterion type that caused it and by ticket;
+  * the waits on a human, by reason and length;
+  * the sign-offs decided and rejected, and how long they waited for a decision;
+  * per role and per ticket: runs, how they ended, rejected reports, wall time, cost and tokens.
 * **Judgement ledger:** `retro/findings.json`, built by the controller from the ticket and run
   records: per ticket with criteria each commit judged (verification, verdicts) and each finding
   with the attempt it was first raised, the attempts it came back in and the earlier commits the
