@@ -86,6 +86,19 @@ notify:                          # what needs a decision, sent to people (WORKFL
   # - kind: command              # JSON on stdin: mail, chat, anything else
   #   argv: [/usr/local/bin/legion-notify]
   #   items: [gate, escalation, paused, question, change_ended, retrospective]
+models:                          # model and effort per role (--model, --effort); omitted: the CLI's
+  # default. A run takes default, then its role's, then its soul's. Judges on another model than
+  # the work they judge catch what its blind spots let through. Every run records the model it
+  # asked for and the one that served it (a mismatch is on the timeline).
+  # default: {model: sonnet, effort: medium}
+  # roles:
+  #   planner: {model: opus, effort: high}
+  #   critic: {model: opus, effort: high}
+  #   oracle: {model: opus, effort: high}
+  #   reviewer: {model: opus}           # not the implementers' model
+  #   integration: {model: opus}
+  # souls:
+  #   frontend-engineer: {model: sonnet}
 telemetry:                       # opt-in OpenTelemetry spans over OTLP/HTTP; optional
   # enabled: true forces telemetry on, false forces it off; omitted = on only when
   # OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set.

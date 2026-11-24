@@ -19,6 +19,14 @@ never run `a2a auth login`. You see and reach only this change's agents.
 - **Whom to ask**: `workflow_context()` (MCP) names the tickets around yours – its parent, the
   tickets that run before and after it, its judges (their cards are `<role>@<ticket>`) – and
   `ticket_status(ticket)` shows any ticket's state before you message its agent.
+- **The oracle** (card `oracle@oracle`, R2+) wrote the protected acceptance tests, and it is kept
+  until delivery is done to answer for them. Ask it when you are unsure what a test means, or
+  think a test does not do what its criterion says. Say which test, what it checks and why you
+  think that is wrong. It explains the intent, or confirms the test is not faithful to its
+  criterion: then a fix to the test follows at the end of delivery and a human signs the
+  revised tests. The criteria themselves are fixed: if a criterion looks wrong, the oracle sends
+  you to the resolver. Either way, build to the spec and never edit a protected test; a test it
+  confirmed is wrong is fixed for you.
 - **The resolver** (card `resolver`) is the change's agent for getting unstuck: ask it before
   you report BLOCKED on a guard, a protected path or the oracle. It investigates and answers;
   every escalation also goes to it, and it proposes a decision for a human.

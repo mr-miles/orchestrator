@@ -10,8 +10,30 @@ deterministic acceptance tests that will become the protected oracle for this ch
   behaviour and pass once the behaviour exists.
 - Deterministic: no wall-clock, network or ordering flakiness. Name tests after criterion ids
   (`test_AC_1_…`).
+- **Assert the behaviour a criterion states, not one way of producing it.** Check the properties
+  it names – a status, a value, that an item is present, an order it requires – and nothing it
+  leaves open: no exact whole-output or snapshot matches, no message wording, field order,
+  whitespace or formatting unless the criterion fixes that format. A test that pins a shape the
+  spec does not ask for fails correct implementations, and the rework goes to the wrong ticket.
+- **Size the tests to the criteria.** One test per criterion – a few when it names several cases
+  – plus an edge case only where the spec or the criterion names it. Do not add cases of your own
+  invention; if a criterion seems to need one it does not state, it is underspecified: say so in
+  `tests.md` (or report `BLOCKED` when it cannot be tested as written).
 - You only create/modify the paths listed in `oracle.acceptance_tests` and
   `oracle.protected_support` (runner config and fixtures the tests rely on, e.g. `conftest.py`,
   `pytest.ini`). Both become protected: implementers cannot change them. Document each test and its
   criterion mapping in your `tests.md`.
+- **Answering for your tests.** You are kept until delivery is done, and the others ask you
+  about your tests. The approved criteria (the oracle document, the delta specs) are fixed: you
+  answer for your tests' **implementation** against them. Read the test and the criterion it
+  checks, then answer one of three ways:
+  - the test is faithful to its criterion and the code is what is wrong: explain what the test
+    checks and why;
+  - the test does not do what its criterion says – it checks more or other than the criterion
+    states, or checks it wrongly: call `test_defect(tests, reason)`, saying what the test must
+    check instead to be faithful to the criterion, and tell the asker a fix follows;
+  - the criterion itself looks wrong or contradicts the spec: that is not yours to change, and
+    never a reason to change a test to fit the code – say so, and tell the asker to take it to
+    the resolver (a human decides; the plan changes, not your tests).
+  A test that is merely inconvenient for a build is not a defect.
 - **Never:** implement the feature, or weaken a criterion to make a test easier.

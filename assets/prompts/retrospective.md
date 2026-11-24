@@ -13,8 +13,10 @@ Focus asked for by the operator (may be empty):
 
 ## Method
 
-1. Read every reflection in `retro/reflections/`, then `tickets.json` (each ticket's attempts,
-   findings and what it waited for) and the digests. List candidate problems: reworks (attempts)
+1. Read `retro/metrics.json` – the controller's numbers: use them as they are rather than
+   counting yourself, and quote them in your report – and every reflection in
+   `retro/reflections/`, then `tickets.json` (each ticket's attempts, findings and what it waited
+   for) and the digests. List candidate problems: reworks (attempts)
    and what caused them, review findings, rejected reports, failures and escalations, time sinks, tool errors,
    repeated commands, slow tool calls, long model waits, cost.
 2. For each candidate, look in the logs (grep/`jq`; do not read whole logs) for what happened and

@@ -121,6 +121,10 @@ def cmd_check(cfg: Config, args) -> int:
     from .workflow.assets import Assets
     a = Assets(cfg.assets_dir)
     print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
+    if wrong := cfg.models.unknown(a.roles, a.souls()):
+        for w in wrong:
+            print(f"error: {w}")
+        return 1
     if a.workflow is not None:
         print(f"workflow: tiers={sorted(a.workflow.tiers)} "
               f"skeleton={[g[0].id for g in a.workflow.skeleton.subtasks]}")

@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -301,6 +302,39 @@ class TelemetryConfig(Section):
         return v
 
 
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
+class ModelChoice(Section):
+    """A model and an effort for the agent CLI (``--model``, ``--effort``); unset: the CLI's
+    default. Model names are passed as given – an alias (``opus``, ``sonnet``) or a full name."""
+    model: str | None = None
+    effort: Effort | None = None
+
+
+class ModelsConfig(Section):
+    """Which model and effort each role's runs use (WORKFLOW.md §2.3). Operational, so here and
+    not in the assets. A run's choice is ``default``, then its role's, then its soul's – each
+    setting only what it names. Every run records what it asked for and what served it. A judge
+    on another model than the work it judges catches what that model's blind spots let through,
+    so set the judging roles (reviewer, integration, critic) apart from the implementers'."""
+    default: ModelChoice = Field(default_factory=ModelChoice)
+    roles: dict[str, ModelChoice] = Field(default_factory=dict)
+    souls: dict[str, ModelChoice] = Field(default_factory=dict)
+
+    def resolve(self, role: str, soul: str | None = None) -> ModelChoice:
+        out = self.default.model_dump()
+        for layer in (self.roles.get(role), self.souls.get(soul or "")):
+            if layer is not None:
+                out |= {k: v for k, v in layer.model_dump().items() if v is not None}
+        return ModelChoice(**out)
+
+    def unknown(self, roles: Iterable[str], souls: Iterable[str]) -> list[str]:
+        """What the section names that the assets do not have (a typo would be ignored)."""
+        return [f"models.roles: no role {r!r}" for r in self.roles if r not in set(roles)] + \
+            [f"models.souls: no soul {s!r}" for s in self.souls if s not in set(souls)]
+
+
 class Config(Section):
     project: str
     workspaces: list[WorkspaceConfig] = Field(min_length=1)
@@ -318,6 +352,12 @@ class Config(Section):
     resolver: ResolverConfig = Field(default_factory=ResolverConfig)
     notify: NotifyConfig = Field(default_factory=NotifyConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _empty_models(cls, v: Any) -> Any:
+        return {} if v is None else v      # a `models:` with only comments under it
     protected_paths: list[str] = Field(default_factory=list)
     base_dir: Path = Field(default_factory=Path.cwd)
 
@@ -368,9 +408,11 @@ def agent_command(sc: SandboxConfig, *, tools: bool = True) -> str:
     $LEGION_PAYLOAD is the payload directory and $LEGION_MCP_CONFIG its mcp.json, under every
     runner; $LEGION_RESUME_SESSION, when set, is the agent session to continue. ``tools=False``
     (a reflection) gives the agent only the Skill tool: it answers from the session, its prompt
-    and its skills instead of reading files (the session's own transcript included)."""
+    and its skills instead of reading files (the session's own transcript included).
+    $LEGION_MODEL and $LEGION_EFFORT, when set, are the run's model and effort (``models``)."""
     return (f'{shlex.quote(sc.agent_bin)} -p '
             '${LEGION_RESUME_SESSION:+--resume "$LEGION_RESUME_SESSION"} '
+            '${LEGION_MODEL:+--model "$LEGION_MODEL"} ${LEGION_EFFORT:+--effort "$LEGION_EFFORT"} '
             + ('' if tools else '--tools Skill ') +
             '--mcp-config "$LEGION_MCP_CONFIG" --strict-mcp-config '
             '--append-system-prompt "$(cat "$LEGION_PAYLOAD/soul.md")" '

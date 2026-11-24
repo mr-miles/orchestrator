@@ -12,7 +12,7 @@ Write, in `tickets/{{ticket_id}}/`, following the plan format skill and the work
 * `spec.md` – the overview, and one delta spec `specs/<REQ-id>.md` per accepted requirement;
 * `oracle.json` – the acceptance tests, commands, criteria (and at R2+ verification surfaces);
 * `environment.json` – the sandboxes (sandbox environment skill);
-* `tickets.json` – your plan as tickets: the builds under `delivery`, each with the criteria the
+* `tickets.json` – your plan as tickets: the builds `into: builds` (inside `delivery`), each with the criteria the
   tier requires (the integration is `delivery`'s own criterion, already there); and your
   decision about the skeleton's `scaffold` – its work, or cancelled.
 

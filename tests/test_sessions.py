@@ -73,7 +73,7 @@ async def test_intake_keeps_its_session_until_h1_passes(f: Flow):
 
 
 @scenario()
-async def test_the_oracle_keeps_its_sandbox_until_h2(f: Flow):
+async def test_the_oracle_keeps_its_sandbox_past_h2_for_questions(f: Flow):
     from engine_harness import signals
     await f.intake(signals(scope_breadth=2, novelty_uncertainty=2, verification_quality=2))
     await f.signoff("H-1")
@@ -85,7 +85,8 @@ async def test_the_oracle_keeps_its_sandbox_until_h2(f: Flow):
     assert oracle.sandbox in f.runner.stopped and oracle.sandbox not in f.runner.deleted
     assert f.ticket("oracle").sandbox == oracle.sandbox
     await f.signoff("H-2")
-    assert oracle.sandbox in f.runner.deleted
+    assert f.status("oracle") == "passed"
+    assert oracle.sandbox not in f.runner.deleted          # kept until delivery is done (keep)
 
 
 @scenario()

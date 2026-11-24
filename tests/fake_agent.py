@@ -152,7 +152,7 @@ def main():
                  "can-merge": "controller:can-merge"}
 
         def build(tid, title, soul, reqs, files, verification, group, join=False):
-            return {"into": "delivery", "group": group, "join": join, "ticket": {
+            return {"into": "builds", "group": group, "join": join, "ticket": {
                 "id": tid, "type": "agent:implementer", "goal": title, "inputs": ["spec", "specs"],
                 "work": {"soul": soul, "requirements": reqs, "files_modified": files,
                          "instructions": title, "acceptance": [title], "verification": verification},

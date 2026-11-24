@@ -21,14 +21,17 @@ change
 ├─ workspace       sync (the change's base)
 ├─ requirements    intake ✓H-1
 ├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold ✓verify ✓review ✓can-merge
-│                  → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
-├─ delivery        the planner's builds (each ✓verify ✓review… ✓can-merge)   ✓verify ✓integration
+├─ delivery        [oracle ✓preflight ✓H-2 → baseline ✓H-2b] → builds: the planner's (each
+│                  ✓verify ✓review… ✓can-merge)                         ✓verify ✓integration
 ├─ evaluate        describe                                        ✓H-3
 └─ release         publish
 ```
 
 `✓` marks a criterion, `→` the order of subtask groups, `[…]` R2+ (the baseline R3). The planner
-gives `scaffold` its work or cancels it (§5.3d). The
+gives `scaffold` its work or cancels it (§5.3d), and puts its builds `into: builds`. The oracle
+is delivery's first ticket: its agent is kept – stopped, its session intact – until delivery is
+done (`keep`), so implementers, the integration verifier and the resolver can ask it what a test
+means (§5.4). The
 contract is the one of [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended): **the
 controller refuses to call a change done until the evidence its risk tier demands exists** – here,
 until every ticket its tier's policy requires has passed every criterion, the human sign-offs
@@ -167,6 +170,7 @@ included. A criterion with nothing behind it does not pass.
 | `progress(message, percent?)` | heartbeat shown live in the UI |
 | `report(status, summary, attestations, outputs, data?, blocked_reason?, missing_decision?, dry_run?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations. `dry_run`: every guard, but no attempt is counted (G-R6) and nothing is recorded or applied; returns `would_accept` and the violations (timeline event `report_checked`) |
 | `ticket_status(ticket?)` / `workflow_context()` | where work stands (§5.15) |
+| `test_defect(tests, reason)` | the oracle only, answering a message: some of its tests are wrong – a fix follows (§5.4) |
 | `verification_request(sha?)` / `verification_status(id?)` / `verification_evidence(id)` | the verification service (§5.7) |
 | `inbox()` / `a2a_reply(task_id, text, state?)` | the agent's A2A inbox (§5.15) |
 
@@ -195,6 +199,7 @@ published; a finished change is published as `<publish_prefix><change-id>` (defa
 | `changes/<id>/control/ended.json` | who abandoned the change, where it was and why (§5.13) |
 | `changes/<id>/control/proposals/<ticket>-<n>.json` | the resolver's proposals (§5.16) |
 | `changes/<id>/control/digests/<run>.json` | per run: tool calls and errors, repeated commands and reads, slowest tool calls, longest model waits, turns and cost |
+| `changes/<id>/control/metrics.json` | the change's metrics, computed by the controller before each retrospective round (§5.13) |
 | `changes/<id>/control/reflections/<run>.md` | the agent's own account of what cost it time and where its guidance failed (§5.13) |
 | `changes/<id>/control/timeline/<n>.jsonl` | the controller's events (dispatch, sandbox, verification, rework, human actions), written in chunks |
 | `changes/<id>/control/assets/<sha>.json` | the hash of each asset file of an asset set the change's runs used |
@@ -260,6 +265,25 @@ model call, and lists everything that needs you in full.
 
 ---
 
+### 2.3 Models
+
+Which model and effort each role's runs use is operational, so it is set in `orchestrator.yaml`
+(`models:`), not in the assets: the asset set's hash stays about the text agents are given.
+
+* **Resolution:** a run takes `default`, then its role's setting, then its soul's (an
+  implementer's soul is chosen per build), each overriding only what it names. Nothing set: the
+  agent CLI's own default. Names the assets do not have are refused at start and by `check`.
+* **To the CLI:** the run's environment carries `LEGION_MODEL` and `LEGION_EFFORT`, and the agent
+  command passes them as `--model` and `--effort` only when they are set. A turn that resumes a
+  session (a consult, a reflection) keeps that session's choice.
+* **On the record:** each run records the model and effort it asked for and the model that served
+  it (its log's init event). A different one is a timeline event – an alias such as `opus`
+  matches the full name it stands for – and the UI marks it. The metrics (§5.13) count the
+  served models per role.
+* **Why it matters:** a judge on another model than the work it judges catches what that
+  model's blind spots let through. Set the judging roles (reviewer, integration, critic) apart
+  from the implementers'.
+
 ## 3. Risk tiers and their policies
 
 Intake scores twelve risk signals 0–3 (`security, authorization, data_migration,
@@ -270,7 +294,7 @@ scope_breadth, novelty_uncertainty, verification_quality`).
 * Hard floors: any signal at 3 ⇒ `R3`; a score of 2 on any signal other than
   `novelty_uncertainty` / `verification_quality` ⇒ at least `R2`.
 * Tier = max(threshold, floors), computed from the `risk` output H-1 signs; signing it fixes the
-  tier and **applies** it: the skeleton tickets only that tier has (`acceptance` at R2+, its
+  tier and **applies** it: the skeleton tickets only that tier has (the `oracle` at R2+, the
   `baseline` at R3) are linked into the tree, and the tier's attempt limits set on the tickets not
   yet started.
 
@@ -697,7 +721,7 @@ every choice the acceptance tests depend on, and verification commands that pass
 Until it has passed no agent's sandbox runs the repository's setup (what it needs does not exist
 yet); its own verification does, at its commit.
 
-### 5.4 `oracle` (R2+) – protected acceptance tests (`plan` ▸ `acceptance` ▸ `oracle`)
+### 5.4 `oracle` (R2+) – protected acceptance tests (`delivery` ▸ `oracle`)
 
 * **Soul:** `test-engineer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
 * **Inputs:** `spec`, `specs`, `oracle`  **Outputs:** `tests` (`tests.md`), git `commit` on its branch
@@ -706,7 +730,7 @@ yet); its own verification does, at its commit.
 | --- | --- |
 | G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`. |
 | G-O2 | Every acceptance test path exists at the commit. |
-| H-2 | After preflight, a decision owner signs the oracle's `tests`; the pass merges its commit into the integration branch before any build. A rejection reworks the oracle. |
+| H-2 | After preflight, a decision owner signs the oracle's `tests`; the pass merges its commit into delivery's branch before any build. A rejection reworks the oracle. |
 
 From the merge on these paths are **protected**: any later diff touching them fails G-B3 and
 G-INT2.
@@ -726,7 +750,44 @@ configuration they depend on is listed in `oracle.protected_support` and protect
 (G-P7, G-O1, G-INT2). The test-engineer soul requires this, the critic checks it, and humans
 sign it at H-2. Per-build verification commands are a faster, weaker check backed by review.
 
-### 5.5 `controller:baseline` (R3) – independent baseline (`plan` ▸ `acceptance` ▸ `baseline`)
+The tests check what the criteria state and nothing more: a test per criterion (a few when it
+names several cases), asserting the properties it names – not an exact output, snapshot, message
+wording or format the criterion leaves open – and an edge case only where the spec names one.
+A test that pins a shape the spec does not ask for fails correct builds, and the rework lands on
+the implementer when the defect is the test's. So the planner writes criteria as observable
+behaviour, fixing a format only where the requirement needs it, and the critic flags criteria
+that pin one by accident.
+
+**Kept for questions** (`keep`). The oracle's ticket passes at H-2 – the builds start from its
+merge – but its agent stays, its sandbox stopped and its session intact, until `delivery` is
+done: its card stays in the catalog, and a message to it resumes the session to answer. Whoever
+is unsure what a test means, or thinks one is wrong, asks it (`oracle@oracle`). When delivery
+closes its sandbox goes, like any closed ticket's.
+
+**A test that is wrong.** The approved criteria (the oracle document and the delta specs,
+signed at H-E1) are fixed; what can be wrong is a test's **implementation** – it checks more or
+other than its criterion states, or checks it wrongly. Only the oracle decides that, against the
+criteria: whoever suspects a test – an implementer, the integration verifier, the resolver – asks
+it, and it answers one of three ways: the test is faithful and the code is wrong (it explains);
+the test is not faithful to its criterion (it calls `test_defect(tests, reason)`, its protected
+tests only); or the criterion itself looks wrong – not the oracle's to change, and never a reason
+to fit a test to the code: it sends the asker to the resolver, and a human decides (a replan of
+the design, not of the tests). On a confirmed defect the controller plans the fix:
+
+* the oracle's next instance (`oracle.2`: the same work, fresh copies of its criteria, H-2
+  included) at the end of `delivery`, told the reason as its findings, in the oracle's own
+  sandbox and session;
+* applied as every replan is, once nothing is active: the workflow pauses meanwhile (`replan`),
+  so work under way drains and nothing new starts;
+* a further defect confirmed before the fix starts is added to its findings; one while it works
+  is told to it over A2A.
+
+The fix's revised tests are signed off again (its H-2), its commit becomes the protected tests'
+reference (G-INT2, the integration's `oracle_sha`), and delivery's criteria judge the head again
+after it. Builds are never held up by a wrong test meanwhile: their own criteria run their
+tasks' verification, not the acceptance tests.
+
+### 5.5 `controller:baseline` (R3) – independent baseline (`delivery` ▸ `baseline`)
 
 What is true of the code before any build: which acceptance tests fail (as they should, until the
 change is built) and which failures were already there. It is deterministic, so the controller
@@ -939,6 +1000,15 @@ timeline. The retrospective then runs on whatever the change has produced so far
 * **Material:** `<payload>/retro/` – reflections, digests, whole logs, timeline, run and ticket
   records, the change's documents, the current assets and a prompt check per run (agents cannot
   read run logs through MCP). Its context lists earlier changes' retrospectives.
+* **Metrics:** `control/metrics.json` (`retro/metrics.json`), computed by the controller
+  (`workflow/metrics.py`) before each round from the change's journal, its runs and their
+  digests, so the numbers are counted, not estimated:
+  * the first-pass rate of the tickets with work: passed on the first attempt, never rejected by
+    a criterion, no wait on a human;
+  * every rework, by the criterion type that caused it and by ticket;
+  * the waits on a human, by reason and length;
+  * the sign-offs decided and rejected, and how long they waited for a decision;
+  * per role and per ticket: runs, how they ended, rejected reports, wall time, cost and tokens.
 * **Judgement ledger:** `retro/findings.json`, built by the controller from the ticket and run
   records: per ticket with criteria each commit judged (verification, verdicts) and each finding
   with the attempt it was first raised, the attempts it came back in and the earlier commits the

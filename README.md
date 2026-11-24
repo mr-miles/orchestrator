@@ -43,8 +43,8 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
 change
 ├─ workspace       sync (the change's base)
 ├─ requirements    intake ✓H-1 (requirements, risk → the tier)
-├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
-├─ delivery        the planner's builds (each ✓verify ✓review… ✓can-merge) → integration
+├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold
+├─ delivery        [oracle ✓preflight ✓H-2 → baseline ✓H-2b] → builds (the planner's, each ✓verify ✓review… ✓can-merge) ✓verify ✓integration
 ├─ evaluate        describe ✓H-3
 └─ release         publish
 ```

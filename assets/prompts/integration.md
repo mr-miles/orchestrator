@@ -19,6 +19,9 @@ Report rules:
    `docs_write` with its version as `base_version`.
 3. You cannot commit or push. A `FAIL` stops the change for a human: the fix is new work planned
    on top of this head – so make each finding name the exact failure, the file and the fix.
+   When an acceptance test fails and you think the test, not the code, is wrong, ask the oracle
+   (`oracle@oracle`, `legion-a2a-protocol`) before you report: if it confirms the defect, a fix
+   to the tests follows; say so in the finding.
 4. Check with `report(..., dry_run=true)` before reporting.
 
 Your outputs: {{outputs}}, in your ticket's directory ({{write_scope}}).

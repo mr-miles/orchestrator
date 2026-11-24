@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge'
 import { parseFileAttestation } from '@/lib/api'
-import { humanize, shortSha, SOURCE_TEXT, STAGE_TEXT, statusColor } from '@/lib/status'
+import { humanize, modelOf, shortSha, SOURCE_TEXT, STAGE_TEXT, statusColor } from '@/lib/status'
 import type { FailureSource, RunFailure, RunStage } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useNav } from './change/nav'
@@ -94,6 +94,21 @@ export function Attestations({ atts }: { atts?: string[] }) {
         <AttestationLink key={a} att={a} />
       ))}
     </div>
+  )
+}
+
+/** A run's model (what served it, its effort), marked when another model served it than it
+ * asked for. Nothing when neither is known. */
+export function ModelNote({ run }: { run: Parameters<typeof modelOf>[0] }) {
+  const m = modelOf(run)
+  if (!m) return null
+  return (
+    <span
+      className={cn(m.mismatch && 'font-medium text-destructive')}
+      title={m.mismatch ? 'served by another model than it asked for' : 'model'}
+    >
+      · {m.text}{' '}
+    </span>
   )
 }
 

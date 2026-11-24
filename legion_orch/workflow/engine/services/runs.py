@@ -55,6 +55,13 @@ def split_lines(text: str, limit: int) -> list[str]:
     return parts or [""]
 
 
+def model_matches(asked: str, served: str) -> bool:
+    """Whether the model that served a run is the one it asked for: the same name, or an alias
+    of it (``opus`` is served as ``claude-opus-…``)."""
+    asked, served = (m.lower().split("[")[0] for m in (asked, served))   # opus[1m]: opus
+    return asked == served or asked in served.split("-") or served.startswith(asked)
+
+
 class RunLifecycle:
     """What happens to runs after dispatch: failure (which escalates – no automatic retries),
     timeouts, the agent log, sandbox deletion once work is accepted."""
@@ -122,7 +129,7 @@ class RunLifecycle:
             if t.role == "criterion" and t.status not in CLOSED:
                 changed |= self._release_judges(t, live | in_turn)
                 continue
-            if held(t):
+            if held(t, self.c.tickets.t):
                 continue
             mine = {self.c.runs[r].sandbox for r in t.runs if r in self.c.runs} | (
                 {t.sandbox} if t.sandbox else set())
@@ -130,7 +137,8 @@ class RunLifecycle:
                 t.sandbox, changed = None, True
             for sb in mine - live - self.sandboxes.retiring - self._ended - {None}:
                 if any(r.sandbox == sb and not r.sandbox_deleted for r in self.c.runs.values()) \
-                        and not any(held(x) and x.sandbox == sb for x in self.c.tickets.t.values()):
+                        and not any(held(x, self.c.tickets.t) and x.sandbox == sb
+                                    for x in self.c.tickets.t.values()):
                     self.c.event("sandbox", f"releasing {sb}: {t.id} is closed", t.id)
                     self._ended.add(sb)
                     self.sandboxes.delete_later(sb, self._stopped(sb))
@@ -223,7 +231,14 @@ class RunLifecycle:
             self.c.event("agent", f"run {run.id} was to continue session {run.resumed_session} "
                                   f"but ran in {run.session_id}: it started without that "
                                   "session's history", run.ticket, run.id)
-        self.c.write_record(f"control/digests/{run.id}.json", agentlog.digest(text))
+        digest = agentlog.digest(text)
+        self.c.write_record(f"control/digests/{run.id}.json", digest)
+        served = (digest.get("agent") or {}).get("model")
+        if served:
+            run.model_served = served
+            if run.model and not model_matches(run.model, served):
+                self.c.event("agent", f"run {run.id} asked for model {run.model} but was served "
+                                      f"by {served}", run.ticket, run.id)
 
     def store_log(self, log_id: str) -> str | None:
         """Move a live log (an agent's, a verification's) into the store, as :meth:`archive_log`

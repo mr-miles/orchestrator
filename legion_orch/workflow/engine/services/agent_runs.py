@@ -45,6 +45,7 @@ from ..base.common import (
     AgentBusy,
     NoAgent,
     WorkflowError,
+    model_env,
     write_skills,
 )
 from ..base.core import ChangeCore
@@ -127,7 +128,8 @@ change – sent you this message while you were not running:
 Answer it from what you know of your work in this session: reply with
 `a2a_reply(task_id="{task}", text=...)` (or end with your answer as your final message). Your
 tools in this turn are the Skill tool and your legion MCP tools (read the documents, your
-inbox): nothing is to change – no files, no reports. If you cannot answer, say so and why.
+inbox): nothing is to change – no files, no reports (the oracle alone may confirm that a test of
+its is wrong, with `test_defect`). If you cannot answer, say so and why.
 """
 
 RESOLVER_PROMPT = """# A message for the resolver
@@ -241,7 +243,7 @@ class AgentRuns:
             "LEGION_RUN_ID": run.id, "LEGION_ROLE": run.role,
             "LEGION_GIT_URL": self.c.git_url, "LEGION_MCP_URL": self.c.mcp_url,
             "LEGION_AGENT_COMMAND": agent_command(self.c.cfg.sandbox, tools=tools),
-        }
+        } | model_env(run)
         # A2A (server/a2a.py): run-agent.sh registers the change's AI Catalog with the a2a CLI;
         # its default agent is the change's orchestrator
         a2a = self.c.cfg.server.a2a_url
@@ -335,7 +337,8 @@ class AgentRuns:
                   prompt_pin=rendered.pin, assets_sha=self.c.assets.sha,
                   assignment=asg.for_agent(), context_refs=asg.context, consult=True,
                   sandbox=kept.sandbox if kept else self.c.host.new_sandbox_name(AGENT_PREFIX),
-                  sandbox_ref=kept.sandbox_ref if kept else None)
+                  sandbox_ref=kept.sandbox_ref if kept else None,
+                  **self._model(role, self._soul(ticket, role), kept))
         self.c.runs[run.id] = run
         template = RESOLVER_PROMPT if role == cards.RESOLVER else ANSWER_PROMPT
         prompt = template.format(role=role, node=ticket_id, change=ch.id, sender=sender,
@@ -353,6 +356,14 @@ class AgentRuns:
         if ticket_id == cards.RESOLVER:
             return Ticket(id=cards.RESOLVER, type=f"agent:{cards.RESOLVER}", goal="Resolver")
         raise WorkflowError(f"unknown ticket {ticket_id}")
+
+    def _model(self, role: str, soul: str, kept: Run | None = None) -> dict[str, str | None]:
+        """The model and effort a run asks for: its role's and soul's (config ``models``) – a
+        turn in a kept session, its session's, which a model change would not continue."""
+        if kept is not None and kept.role == role:
+            return {"model": kept.model, "effort": kept.effort}
+        m = self.c.cfg.models.resolve(role, soul)
+        return {"model": m.model, "effort": m.effort}
 
     def _soul(self, ticket: Ticket, role: str) -> str:
         """The role's soul – an implementer's, its work's (chosen by the planner)."""
@@ -442,8 +453,9 @@ class AgentRuns:
         return list(dict.fromkeys(refs))
 
     def _oracle_sha(self) -> str:
-        """The protected acceptance tests' commit: the oracle's, once it has passed (H-2)."""
-        return next((t.sha for t in self.c.tickets.t.values()
+        """The protected acceptance tests' commit: the latest oracle instance's to pass (H-2) –
+        a fix's, once there is one."""
+        return next((t.sha for t in reversed(list(self.c.tickets.t.values()))
                      if t.type == "agent:oracle" and t.status == Status.PASSED and t.sha), "")
 
     @staticmethod
@@ -473,7 +485,8 @@ class AgentRuns:
                   prompt_pin=rendered.pin, assets_sha=self.c.assets.sha,
                   template_vars={k: str(v) for k, v in asg.variables.items()},
                   write_scope=asg.write_scope, outputs=asg.outputs,
-                  context_refs=asg.context, assignment=asg.for_agent())
+                  context_refs=asg.context, assignment=asg.for_agent(),
+                  **self._model(role, self._soul(ticket, role)))
         self._record_assets()
         owner = self.c.tickets.t.get(ticket.parent) if ticket.role == "criterion" else None
         self.placement.place(run, ticket, plan, judged=owner)

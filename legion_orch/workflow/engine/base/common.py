@@ -39,3 +39,9 @@ def _slug(node_id: str) -> str:
 
 def _parse_ts(ts: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+
+
+def model_env(run) -> dict[str, str]:
+    """The run's model and effort for the agent command ($LEGION_MODEL, $LEGION_EFFORT): only
+    what it asks for – nothing set, the agent CLI's default."""
+    return {k: v for k, v in (("LEGION_MODEL", run.model), ("LEGION_EFFORT", run.effort)) if v}

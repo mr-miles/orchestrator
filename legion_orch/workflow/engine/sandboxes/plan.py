@@ -9,6 +9,7 @@ The plan follows from the ticket, never from a role's name (:func:`plan_for`):
   closed: on its own branch if the role commits (it pushes), else detached at its base."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -49,9 +50,13 @@ def plan_for(ticket: Ticket, git: GitMode) -> SandboxPlan:
     return SandboxPlan(Checkout.BRANCH if git == GitMode.COMMIT else Checkout.BASE, keeps=True)
 
 
-def held(ticket: Ticket) -> bool:
-    """Whether a ticket still keeps its sandbox for another round: until it is closed."""
-    return ticket.status not in CLOSED
+def held(ticket: Ticket, tickets: Mapping[str, Ticket] | None = None) -> bool:
+    """Whether a ticket still keeps its sandbox: for another round, until it is closed – and, a
+    ticket that ``keep``s it, until its parent is closed too (its agent is consulted meanwhile)."""
+    if ticket.status not in CLOSED:
+        return True
+    parent = (tickets or {}).get(ticket.parent or "") if ticket.keep else None
+    return parent is not None and parent.status not in CLOSED
 
 
 class Environments(Protocol):

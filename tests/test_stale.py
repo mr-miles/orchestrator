@@ -83,7 +83,7 @@ async def test_a_revised_environment_is_signed_off_and_provisioned_again(f: Flow
     # a replan (a decision owner's, at the change level) adds a revised design after T1
     await f.change_action("pause")
     await f.implement("T1")                               # it drains to its conclusion point
-    await f.change_action("replan", plan={"add": [{"into": "delivery", "group": 9, "ticket": {
+    await f.change_action("replan", plan={"add": [{"into": "builds", "group": 9, "ticket": {
         "id": "redesign", "type": "agent:planner", "goal": "the environment, revised",
         "inputs": ["requirements", "risk"]}}]})
     await f.change_action("resume")
@@ -100,8 +100,8 @@ async def test_a_revised_environment_is_signed_off_and_provisioned_again(f: Flow
     await f.signoff("H-E1.2")
     assert f.ce.tickets.root.pointers["environment"] != first
     p2 = f.ticket("provision.2")                          # renewed, right after the redesign
-    assert p2.parent == "delivery" and p2.status in ("working", "passed"), f.status()
+    assert p2.parent == "builds" and p2.status in ("working", "passed"), f.status()
     await f.settle()
     assert f.status("provision.2") == "passed" and f.status("provision") == "passed"
     assert "T1.2" not in f.ce.st.tickets                  # the build stands
-    assert f.ticket("T2").parent == "delivery"            # the revised plan applied
+    assert f.ticket("T2").parent == "builds"            # the revised plan applied

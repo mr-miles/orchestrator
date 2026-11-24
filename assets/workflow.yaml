@@ -66,30 +66,32 @@ skeleton:
             - {id: "verify:scaffold", type: "controller:verify"}
             - {id: "review:scaffold", type: "agent:reviewer"}
             - {id: "can-merge:scaffold", type: "controller:can-merge"}
-        - id: acceptance
-          tiers: [R2, R3]
-          subtasks:
-            - id: oracle
-              type: "agent:oracle"
-              goal: "the acceptance tests, failing before any build"
-              inputs: [spec, specs, oracle]
-              criteria:             # on the oracle: a rejection reworks it
-                - {id: preflight, type: "controller:preflight"}   # its commands run
-                - id: H-2
-                  type: "human:signoff"
-                  signs: [tests]
-            - id: baseline
-              type: "controller:baseline"   # the oracle's commands before any build: what
-              tiers: [R3]                   # fails, as it should, and what already did
-              goal: "the baseline: what passes and fails before any build"
-              criteria:             # its sign-off: a rejection escalates (nothing to rework)
-                - id: H-2b
-                  type: "human:signoff"
-                  severity: escalate
-                  signs: [baseline]
     - id: delivery
-      # the planner's builds; its criteria judge them together, at its head (its own branch:
-      # it merges into the change's once they pass – a failure escalates: fixes are a replan)
+      # the tests, then the planner's builds; its criteria judge them together, at its head (its
+      # own branch: it merges into the change's once they pass – a failure escalates: fixes are
+      # a replan)
+      subtasks:
+        - id: oracle
+          type: "agent:oracle"
+          tiers: [R2, R3]
+          goal: "the acceptance tests, failing before any build"
+          inputs: [spec, specs, oracle]
+          keep: true                # its agent stays until delivery is done: it answers what its
+          criteria:                 # tests mean, and confirms when one of them is wrong
+            - {id: preflight, type: "controller:preflight"}   # its commands run
+            - id: H-2
+              type: "human:signoff"
+              signs: [tests]
+        - id: baseline
+          type: "controller:baseline"   # the oracle's commands before any build: what fails, as
+          tiers: [R3]                   # it should, and what already did
+          goal: "the baseline: what passes and fails before any build"
+          criteria:                 # its sign-off: a rejection escalates (nothing to rework)
+            - id: H-2b
+              type: "human:signoff"
+              severity: escalate
+              signs: [baseline]
+        - id: builds                # the planner's tickets (`into: builds`)
       criteria:
         - {id: "verify:delivery", type: "controller:verify"}    # the oracle's commands, at its head
         - id: integration

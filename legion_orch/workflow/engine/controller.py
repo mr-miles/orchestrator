@@ -66,6 +66,8 @@ class Controller:
         unhandled = set(assets.roles) - set(ROLE_HANDLERS)
         if unhandled:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
+        if wrong := cfg.models.unknown(assets.roles, assets.souls()):
+            raise RuntimeError("; ".join(wrong))
         self.changes: dict[str, ChangeEngine] = {}
         self.bus = Bus(self.spawn)          # notifications between components (bus.py)
         self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of)

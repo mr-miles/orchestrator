@@ -54,6 +54,7 @@ class TicketSpec(_Strict):
     signs: list[str] = []
     applies: str | None = None
     tiers: list[str] | None = None              # linked only at these tiers
+    keep: bool = False                          # (an agent's) its sandbox stays until its parent closes
 
     @field_validator("subtasks", mode="before")
     @classmethod
@@ -240,7 +241,7 @@ class WorkflowSpec(_Strict):
             return None
         x = Ticket(id=s.id, parent=parent.id if parent else None, type=s.type, goal=s.goal,
                    role=role, labels=s.labels, inputs=s.inputs,  # type: ignore[arg-type]
-                   signs=s.signs, applies=s.applies)
+                   signs=s.signs, applies=s.applies, keep=s.keep)
         if role == "criterion":            # a grouping ticket's criteria escalate (R4)
             x.severity = s.severity or (Severity.ESCALATE if parent and parent.type == GROUPING
                                         else Severity.REWORK)

@@ -13,6 +13,7 @@ from ....config import agent_command
 from ....sandbox.scripts import write_payload
 from ....util import stop_process
 from ...model import Run
+from ..base.common import model_env
 from ..base.core import ChangeCore
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ async def resumed_turn(c: ChangeCore, sandboxes: Sandboxes, sandbox: str, run: R
     payload = write_payload(d / "payload", {
         "LEGION_RUN_ID": turn_id, "LEGION_ROLE": run.role, "LEGION_NEEDS_REPO": "0",
         "LEGION_AGENT_COMMAND": agent_command(c.cfg.sandbox, tools=False),
-        "LEGION_RESUME_SESSION": run.session_id, "LEGION_REQUIRE_SESSION": "1"},
+        "LEGION_RESUME_SESSION": run.session_id, "LEGION_REQUIRE_SESSION": "1"} | model_env(run),
         prompt=prompt, soul=c.assets.soul_text(run.soul), mcp=json.dumps({"mcpServers": {}}))
     proc = None
     try:

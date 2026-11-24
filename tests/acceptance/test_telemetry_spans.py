@@ -196,9 +196,11 @@ def test_AC_3_ticket_spans_nest_as_the_tree(runs):
         parent = parent_of(r, s)
         assert parent is not None and attr(parent, "legion.ticket.type"), s["name"]
         assert s["name"] == f"{attr(s, 'legion.ticket.type')} {attr(s, 'legion.ticket.id')}"
-    # a build under the delivery, its criteria under it
+    # a build under the delivery's builds, its criteria under it
     [t1] = of_ticket(r, "T1")
-    assert attr(parent_of(r, t1), "legion.ticket.id") == "delivery"
+    builds = parent_of(r, t1)
+    assert attr(builds, "legion.ticket.id") == "builds"
+    assert attr(parent_of(r, builds), "legion.ticket.id") == "delivery"
     [review] = of_ticket(r, "review:T1")
     assert parent_of(r, review) is t1
 

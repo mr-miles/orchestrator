@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/table'
 import { isLive, STAGE_TEXT } from '@/lib/status'
 import type { A2ACard, Run } from '@/lib/types'
-import { StageBadge, StatusBadge } from '../status'
+import { ModelNote, StageBadge, StatusBadge } from '../status'
 import { AgentCards } from './a2a'
 import { useNav } from './nav'
 
@@ -38,8 +38,9 @@ function LiveRun({ run }: { run: Run }) {
           <Button variant="link" className="h-auto p-0" onClick={() => nav.openTicket(run.ticket)}>
             {run.ticket}
           </Button>{' '}
-          · soul {run.soul} · sandbox <code className="font-mono">{run.sandbox}</code> · reports{' '}
-          {run.attempts} · attempt {run.attempt}
+          · soul {run.soul} <ModelNote run={run} />· sandbox{' '}
+          <code className="font-mono">{run.sandbox}</code> · reports {run.attempts} · attempt{' '}
+          {run.attempt}
           {(run.turns?.length ?? 0) > 1 && <> · turn {run.turns?.at(-1)?.n}</>}
         </CardDescription>
         <CardAction>

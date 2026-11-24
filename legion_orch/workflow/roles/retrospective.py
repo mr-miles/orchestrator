@@ -19,14 +19,18 @@ from .base import RoleHandler, register
 
 ROOT = "retro"
 HIDDEN = ("control/timeline/", "control/digests/", "control/reflections/", "control/runs/",
-          "control/assets/")
+          "control/assets/", "control/metrics.json")
 
 README = """# Material for the retrospective of change {cid}
 
 Everything here is a copy; nothing you change here has any effect.
 
-- `reflections/<run>.md` – **start here**: what each agent said, at the end of its work, cost it
-  time and where its guidance failed.
+- `metrics.json` – **start here**, with the reflections: the numbers, computed by the controller
+  (trust them over counting by hand): first-pass rate, every rework by the criterion type that
+  caused it, waits on humans by reason and length, the sign-offs' decision waits, and runs,
+  failures, rejected reports, wall time, cost and tokens per role and per ticket.
+- `reflections/<run>.md` – what each agent said, at the end of its work, cost it time and where
+  its guidance failed.
 - `change.json`, `tickets.json`, `runs.json` – the change; its tickets (the tree, attempts,
   findings, outputs, what each waited for); every run (role, soul, attempt, timings, failure,
   rejected reports, resumed sessions).
@@ -72,6 +76,8 @@ def bundle(e: RoleContext) -> dict[str, str]:
                                   manifests.get(r.assets_sha))
     out["prompt-check.json"] = dump(checks)
     out["findings.json"] = dump(review_ledger(e))
+    if e.latest("control/metrics.json"):
+        out["metrics.json"] = e.doc("control/metrics.json").content
     for r in runs:
         if text := e.stored_log(r.id):
             out[f"logs/{r.id}.log"] = text

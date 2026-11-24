@@ -6,7 +6,9 @@ Working copy `{{workdir}}` on branch `{{branch}}` (base `{{base_sha}}`). Your sa
 {{sandbox_tools}}.
 
 Create exactly the files listed in the oracle's `acceptance_tests` (and its
-`protected_support`), one or more tests per criterion. Commit and push them, document the
+`protected_support`): a test per criterion (a few when it names several cases), each asserting
+what the criterion states and nothing it leaves open – no exact-output or snapshot matches unless
+the criterion fixes the format. Commit and push them, document the
 mapping in `tickets/{{ticket_id}}/tests.md`, and report `DONE` with `outputs: {"tests": …}`,
 attesting the commit `git:{{repo_name}}@<sha>` and the document.
 

@@ -66,7 +66,7 @@ def build(tid: str, *criteria: str, **kw) -> tuple[Ticket, list[Ticket]]:
 def planned(*builds: tuple[Ticket, list[Ticket]]) -> Replan:
     """The planner's tickets: the builds in parallel under delivery (whose criteria – the
     oracle's commands, the integration – are the skeleton's)."""
-    return Replan(add=[Add(x, "delivery", 0, new_group=i == 0, tree=crit)
+    return Replan(add=[Add(x, "builds", 0, new_group=i == 0, tree=crit)
                        for i, (x, crit) in enumerate(builds)])
 
 
@@ -288,7 +288,8 @@ def test_the_policy_and_the_skeleton_at_each_tier():
         t.t["H-1"].status = Status.WORKING
         t.pause()                                          # as its start does
         t.verdict("H-1", True, apply=SPEC.tier_additions(tier, t.t))
-        assert ("acceptance" in t.t) == (tier in ("R2", "R3"))
+        assert ("oracle" in t.t) == (tier in ("R2", "R3"))
+        assert t.t["builds"].parent == "delivery"
         assert ("baseline" in t.t) == (tier == "R3")
         assert ("H-2b" in t.t and t.t["H-2b"].parent == "baseline") == (tier == "R3")
         v = check_policy(SPEC, tier, t.t)
@@ -475,8 +476,8 @@ async def test_a_replan_chosen_while_work_runs_applies_once_it_has_drained(tmp_p
     for x in [t1b, *crit]:
         SPEC.prepare(x, "R0")
     with pytest.raises(TicketError, match="fails it .replaced. or adds to it"):
-        await r.decide_replan("T1", Replan(add=[Add(t1b, "delivery", 1, tree=crit)]))
-    plan = Replan(fail=["T1"], add=[Add(t1b, "delivery", 1, tree=crit)])
+        await r.decide_replan("T1", Replan(add=[Add(t1b, "builds", 1, tree=crit)]))
+    plan = Replan(fail=["T1"], add=[Add(t1b, "builds", 1, tree=crit)])
     await r.decide_replan("T1", plan)
     assert r.t.t["T1"].status == Status.WAITING and "T1b" not in r.t.t      # T2 still works
     gate.set()

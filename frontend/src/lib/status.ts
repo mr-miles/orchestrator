@@ -81,3 +81,30 @@ export const CHANGE_DOT: Record<ChangeSummary['status'], string> = {
 }
 
 export const CHANGE_STATUSES: ChangeSummary['status'][] = ['ACTIVE', 'READY', 'ABANDONED']
+
+/** Whether the model that served a run is the one it asked for: the same name or an alias of
+ * it (``opus`` is served as ``claude-opus-…``) – as the controller judges it (runs.py). */
+export function modelMatches(asked: string, served: string): boolean {
+  const bare = (m: string) => m.toLowerCase().split('[')[0] ?? ''
+  const [a, s] = [bare(asked), bare(served)]
+  return a === s || s.split('-').includes(a) || s.startsWith(a)
+}
+
+/** A run's model, as shown: what served it (else what it asked for), its effort, and whether
+ * it was served by another model than it asked for. Null: neither is known. */
+export function modelOf(run: {
+  model?: string | null
+  effort?: string | null
+  model_served?: string | null
+}): { text: string; mismatch: boolean } | null {
+  const shown = run.model_served ?? run.model
+  if (!shown) return null
+  const mismatch = Boolean(
+    run.model && run.model_served && !modelMatches(run.model, run.model_served),
+  )
+  const effort = run.effort ? ` (${run.effort})` : ''
+  return {
+    text: mismatch ? `${run.model_served}, asked for ${run.model}${effort}` : `${shown}${effort}`,
+    mismatch,
+  }
+}
