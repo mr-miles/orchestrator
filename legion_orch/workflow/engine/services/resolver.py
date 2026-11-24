@@ -17,7 +17,7 @@ import re
 
 from ... import cards
 from ...model import ResolverProposal
-from ...tickets import REMEDIES, Remedy, Status, Ticket
+from ...tickets import Remedy, Status, Ticket, allowed_remedies
 from ...tickets.plan_doc import parse_plan
 from ..base.common import NoAgent, WorkflowError, _slug
 from ..base.core import ChangeCore
@@ -45,7 +45,7 @@ def parse_proposal(answer: str) -> tuple[dict | None, str]:
 def remedies(c: ChangeCore, ticket: Ticket) -> list[str]:
     """What a human may do about a waiting ticket: its reason's remedies, and – a rejected,
     waivable criterion – waiving it."""
-    out = sorted(str(r) for r in REMEDIES.get(ticket.waiting, set()) if r != Remedy.WAIVE)
+    out = sorted(str(r) for r in allowed_remedies(ticket) if r != Remedy.WAIVE)
     out += [f"waive:{cid}" for cid in ticket.criteria
             if (x := c.tickets.t.get(cid)) and x.status == Status.REJECTED and x.waivable]
     return out
