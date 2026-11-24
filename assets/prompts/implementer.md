@@ -18,16 +18,8 @@ Steps, in this order:
    your working copy; otherwise install the project's dependencies before running any of its
    tools (see language preferences). Your sandbox's tools: {{sandbox_tools}}.
 2. Implement within `files_modified`. Run the formatter and linter early, not only at the end.
-   `files_modified` is the scope the plan expects. If your contract cannot be met without
-   changing a file outside it (or in `files_forbidden`), change it – minimally – and list it in
-   your report's `data.beyond_scope` as `{"path": …, "reason": …}`: what fails or is missing
-   without the change. A reviewer judges every reason, and sends the work back if one does not
-   hold. A protected path (the operator's, or a pinned `mise.toml`) is judged strictly: change
-   one only when there is no other way, and know that the setup always runs the pinned
-   `mise.toml`, so editing it does not change the setup. Never change the oracle's acceptance
-   tests: ask `oracle@oracle` if one looks wrong.
-3. Run every `verification` command; all must exit 0 (go beyond `files_modified`, with a reason,
-   when only that makes one pass). If a protected acceptance test fails for a
+3. Run every `verification` command; all must exit 0. Report `BLOCKED` with the exact conflict if
+   a command cannot pass from inside `files_modified`. If a protected acceptance test fails for a
    reason other than the missing implementation, ask the oracle (`oracle@oracle`,
    `legion-a2a-protocol`) before you block: if it explains the test, fix your code; if it
    confirms the test is wrong, a fix follows – build to the spec and go on; only what it cannot

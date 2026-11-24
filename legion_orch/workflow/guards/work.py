@@ -6,49 +6,19 @@ import re
 from ...git import path_matches
 from ..report_data import ResultsData
 
-SCOPE, FORBIDDEN, GUARDED = "outside files_modified", "forbidden", "protected"
-
-
-def beyond_scope(changed: list[str], allowed: list[str], forbidden: list[str],
-                 guarded: list[str] = ()) -> dict[str, str]:
-    """The changed paths that need a reason, and why each does: a guarded (protected) path,
-    one in ``forbidden``, one outside ``allowed``."""
-    out: dict[str, str] = {}
-    for p in changed:
-        if any(path_matches(p, g) for g in guarded):
-            out[p] = GUARDED
-        elif any(path_matches(p, f) for f in forbidden):
-            out[p] = FORBIDDEN
-        elif not any(path_matches(p, a) for a in allowed):
-            out[p] = SCOPE
-    return out
-
 
 def scoped_diff(changed: list[str], allowed: list[str], forbidden: list[str],
-                protected: list[str], gid: str, reasons: dict[str, str] | None = None,
-                guarded: list[str] = (), why_protected: str = "") -> list[str]:
-    """G-B3: the commit changes something; never a ``protected`` path (the oracle's tests: only
-    the oracle changes them); and every path outside ``allowed``, in ``forbidden`` or
-    ``guarded`` comes with a reason – ``reasons``, path -> why – which a reviewer judges (a
-    guarded one strictly). ``reasons`` None: nothing may be beyond (a role without them)."""
+                protected: list[str], gid: str) -> list[str]:
     v = []
     if not changed:
         v.append(f"{gid}: commit changes no files")
-    out = beyond_scope(changed, allowed, forbidden, guarded)
     for p in changed:
-        if any(path_matches(p, f) for f in protected):
-            v.append(f"{gid}: {p} is a protected path" + (f": {why_protected}" if why_protected
-                                                            else ""))
-        elif p in out and reasons is None:
+        if not any(path_matches(p, a) for a in allowed):
             v.append(f"{gid}: {p} is outside the allowed paths")
-        elif p in out and not (reasons or {}).get(p, "").strip():
-            v.append(f"{gid}: {p} is {out[p] if out[p] != SCOPE else 'outside your files_modified'}"
-                     ": revert it, or list it in data.beyond_scope with the reason your contract "
-                     "needs it (a reviewer judges the reason"
-                     + (", strictly: a protected path)" if out[p] == GUARDED else ")"))
-    for p in sorted(set(reasons or {}) - set(out)):
-        v.append(f"{gid}: data.beyond_scope lists {p}, which "
-                 + ("the commit does not change" if p not in changed else "is inside your scope"))
+        if any(path_matches(p, f) for f in forbidden):
+            v.append(f"{gid}: {p} is forbidden for this task")
+        if any(path_matches(p, f) for f in protected):
+            v.append(f"{gid}: {p} is a protected path")
     return v
 
 

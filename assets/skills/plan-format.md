@@ -114,9 +114,9 @@ them together.
 Prefixes overlap more easily than exact paths: builds in one group must still be disjoint (G-P6),
 so give parallel builds separate directories, and put a shared file in exactly one of them (or
 the builds in sequence). Do not use a broad prefix (`src/`) to avoid thinking about scope – it
-defeats G-P6 and tells the reviewer nothing. A build may still go beyond its scope with a reason
-its reviewer judges, but each such change costs a review and a possible rework: scope builds so
-they rarely need to.
+defeats G-P6. A build that needs a file outside its scope asks for it (`request_scope`), and a
+decision owner approves or denies it while the build waits: scope builds so they rarely need
+to.
 
 **Verification surfaces** (R2+, G-P10) declare what the integration commands really reach and the
 files that make that true (compose files, schemas, fixtures) – pin what defines the real

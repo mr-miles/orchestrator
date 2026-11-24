@@ -258,7 +258,7 @@ def test_review_and_report_guards():
     assert guards.report_shape("PARTIAL", None, None)[0].startswith("G-R1")
     assert guards.report_shape("BLOCKED", "x", "")[0].startswith("G-R2")
     assert guards.scoped_diff(["src/a.py", "tests/acc/t.py"], ["src/"], [], ["tests/acc/"], "G-B3") \
-        == ["G-B3: tests/acc/t.py is a protected path"]
+        == ["G-B3: tests/acc/t.py is outside the allowed paths", "G-B3: tests/acc/t.py is a protected path"]
     assert guards.intake("- REQ-1: x\n", _signals(), "- [ ] Q1: which db?", "DONE")[0].startswith("G-I3")
 
 
@@ -789,31 +789,7 @@ def test_report_and_work_guard_branches(tmp_path):
     assert "not valid JSON" in guards.load_json(docs, parse(v1.attestation)[0], "G-X")[1][0]
     assert guards.scoped_diff([], ["src/"], [], [], "G-B3") == ["G-B3: commit changes no files"]
     assert guards.scoped_diff(["src/k.pem"], ["src/"], ["*.pem"], [], "G-B3") == \
-        ["G-B3: src/k.pem is outside the allowed paths"]                   # a role without reasons
-
-
-def test_a_build_may_go_beyond_its_scope_with_a_reason():
-    from legion_orch.workflow.guards.work import beyond_scope
-    changed = ["src/a.py", "src/util.py", "src/k.pem", "mise.toml", "tests/acc/t.py"]
-    kinds = beyond_scope(changed, ["src/a.py"], ["*.pem"], ["mise.toml"])
-    assert kinds == {"src/util.py": "outside files_modified", "src/k.pem": "forbidden",
-                     "mise.toml": "protected", "tests/acc/t.py": "outside files_modified"}
-    v = guards.scoped_diff(changed[:4], ["src/a.py"], ["*.pem"], [], "G-B3", reasons={},
-                           guarded=["mise.toml"])
-    assert [x.split(":")[1].strip().split(" ")[0] for x in v] == ["src/util.py", "src/k.pem",
-                                                                  "mise.toml"]
-    assert "strictly" in v[2] and "revert it, or list it in data.beyond_scope" in v[0]
-    ok = {"src/util.py": "a shared helper needs the new type", "src/k.pem": "rotated test key",
-          "mise.toml": "the new task the build's verification runs"}
-    assert guards.scoped_diff(changed[:4], ["src/a.py"], ["*.pem"], [], "G-B3", reasons=ok,
-                              guarded=["mise.toml"]) == []
-    assert guards.scoped_diff(["src/a.py"], ["src/a.py"], [], [], "G-B3",
-                              reasons={"src/b.py": "x"}) == [
-        "G-B3: data.beyond_scope lists src/b.py, which the commit does not change"]
-    hard = guards.scoped_diff(["tests/acc/t.py"], ["src/"], [], ["tests/acc/"], "G-B3",
-                              reasons={"tests/acc/t.py": "the test is wrong"},
-                              why_protected="only the oracle changes it")
-    assert hard == ["G-B3: tests/acc/t.py is a protected path: only the oracle changes it"]
+        ["G-B3: src/k.pem is forbidden for this task"]
     assert len(guards.release_docs("# plan\n", "revert", SHA)) == 3      # + no strategy line
     ok_plan = "## Health criteria\n## Rollback criteria\n"
     assert guards.release_docs(ok_plan, f"Strategy: rollback\ngit revert to {SHA}", SHA) == []

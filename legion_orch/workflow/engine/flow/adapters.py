@@ -17,8 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ....util import now_iso
-from ...model import R_REPORTED, FailureSource, Verdict, Verification
-from ...roles.base import beyond_scope_of_owner
+from ...model import R_REPORTED, FailureSource, Verification
 from ...tickets import Status, Ticket
 from ...tickets.executors import AgentEnd, Decision, Work
 from ...tickets.executors.verify import EXIT_NOT_FOUND
@@ -56,10 +55,6 @@ class Agents:
             plan = plan_for(ticket, c.assets.roles[role].git)
             if (done := self._reported(ticket, role, work.attempt)) is not None:
                 return await self._conclude(done, ticket, plan)   # a restart: its turn ended
-            if ticket.scope_only and not beyond_scope_of_owner(c, ticket):
-                c.event("agent", f"{ticket.id}: its work changed nothing beyond its scope – "
-                        "nothing to judge", ticket.id)
-                return AgentEnd(True, verdict=Verdict.PASS)
         outcome, prepared = await self.runner.publish_work(
             ticket, role, work, plan, wanted=lambda: live(c, work) is not None,
             started=lambda run: None)

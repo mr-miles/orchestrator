@@ -4,10 +4,9 @@ description: "When and how to report BLOCKED instead of guessing. Load when some
 
 ## Skill: BLOCKED protocol
 
-Report `BLOCKED` (never guess) when: required files are missing, instructions conflict, a
-forbidden operation is needed, a high-impact decision is unresolved, or success cannot be
-verified. Needing to change a file outside `files_modified` is not a reason to block: change it
-and give the reason in `data.beyond_scope` – a reviewer judges it.
+Report `BLOCKED` (never guess) when: required files are missing, instructions conflict, the scope
+must expand beyond `files_modified`, a forbidden operation is needed, a high-impact decision is
+unresolved, or success cannot be verified.
 
 `report(status="BLOCKED", summary=…, attestations=[…evidence…], blocked_reason="<what stops you>",
 missing_decision="<the single narrow question a human must answer>")`

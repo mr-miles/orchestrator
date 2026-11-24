@@ -304,10 +304,9 @@ async def test_a_command_not_found_waits_without_spending_an_attempt(f: Flow):
 
 
 @scenario()
-async def test_at_r0_a_build_inside_its_files_merges_without_a_reviewer_run(f: Flow):
+async def test_at_r0_a_passing_verification_merges_without_a_review(f: Flow):
     await f.to_end(risk=signals(verification_quality=0, scope_breadth=0, novelty_uncertainty=0))
-    assert f.ce.change.tier == "R0" and f.ticket("review:T1").scope_only
-    assert f.status("review:T1") == "passed" and not f.runs("review:T1")
+    assert f.ce.change.tier == "R0" and "review:T1" not in f.ce.st.tickets
     assert f.ce.change.status == ChangeStatus.READY
 
 
@@ -320,8 +319,7 @@ async def test_implementer_guards(f: Flow):
     # G-B3: a file outside the task's scope
     sha = f.commit(r, {"src/greet.txt": "hello\n", "README.md": "hacked\n"})
     out = await f.report(r, [f"git:{REPO}@{sha}", ev], outputs={"evidence": ev})
-    assert any("README.md is outside your files_modified: revert it, or list it" in v
-               for v in out.violations)
+    assert any("README.md is outside the allowed paths" in v for v in out.violations)
     # G-B2: the commit is not the tip of the run's branch
     sha = f.commit(r, {"src/greet.txt": "hello\n"}, push=False)
     out = await f.report(r, [f"git:{REPO}@{sha}", ev], outputs={"evidence": ev})

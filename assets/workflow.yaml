@@ -120,16 +120,12 @@ tiers:                              # rules by ticket type – never by id (ids 
     order:                          # where the planner may put builds (the skeleton orders the rest)
       - {each: "agent:implementer", after: "controller:provision"}
       - {each: "agent:implementer", before: "agent:integration"}
-    every:                          # the reviewer judges only what a build changes beyond its
-      - type: "agent:implementer"   # files (with its reasons), and passes at once otherwise
-        criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
-      - type: "agent:scaffolder"
-        criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
-    scope_only: ["agent:reviewer"]
+    every:
+      - {type: "agent:implementer", criteria: ["controller:verify", "controller:can-merge"]}
+      - {type: "agent:scaffolder", criteria: ["controller:verify", "controller:can-merge"]}
     limits: {"agent:implementer": 3, "agent:planner": 3, "agent:scaffolder": 3}
   R1:
     extends: R0
-    scope_only: []                  # a full review of every build
     every:
       - type: "agent:implementer"
         criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]

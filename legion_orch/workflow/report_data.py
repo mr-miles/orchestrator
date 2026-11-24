@@ -15,20 +15,6 @@ class NoData(Record):
     """Roles whose report carries no structured data."""
 
 
-class BeyondScope(Record):
-    """A path a build changed outside its ``files_modified`` (or in ``files_forbidden``), and why."""
-    path: str
-    reason: str
-
-
-class BuildData(Record):
-    """A build's report (implementer, scaffolder): what it changed beyond its scope, and why."""
-    beyond_scope: list[BeyondScope] = []
-
-    def reasons(self) -> dict[str, str]:
-        return {b.path: b.reason for b in self.beyond_scope}
-
-
 class ResultsData(Record):
     """Commands the agent ran, with their exit codes (the integration verifier)."""
     results: list[CommandResult]
@@ -61,7 +47,6 @@ class IntegrationData(ReviewData, ResultsData):
 
 MODEL_FOR_SCHEMA: dict[str, type[Record]] = {
     "report-none": NoData,
-    "report-build": BuildData,
     "report-review": ReviewData,
     "report-critique": CritiqueData,
     "report-integration": IntegrationData,
