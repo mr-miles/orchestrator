@@ -54,6 +54,14 @@ async def test_a_defect_the_oracle_confirms_is_fixed_in_its_session_and_signed_o
         await f.review("T1")
     run = f.run("oracle.2", "oracle")                          # the oracle's own session
     assert run.sandbox == oracle.sandbox and run.resumed_session == "session-of-the-oracle"
+    # its sandbox's token still names the ticket it was made for: bound to the sandbox, the fix's
+    # requests (MCP, git, A2A) are its own run's
+    b = f.ctl.auth.sandbox_binding(run.sandbox_ref)
+    assert b is not None and b.task == "oracle"
+    bearer = f.ctl.auth.identity.tokens.issue(b, "spiffe://t/" + b.sandbox)
+    assert f.ctl.auth.live_run(bearer) == (f.ce.cid, run)
+    assert f.ctl.auth.git_grant(bearer) is not None
+    assert f.ctl.a2a_caller(bearer)[1].task == "oracle.2"
     await f.oracle(tid="oracle.2", files={TEST: "grep -qi hello src/greet.txt\n"})
     await f.signoff("H-2.2")                                   # the revised tests, signed
     await f.settle()

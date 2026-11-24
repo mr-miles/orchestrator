@@ -13,7 +13,7 @@ Verifier sandboxes have no run record; the engine registers them for their lifet
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 
@@ -74,9 +74,12 @@ class WorkloadAuth:
 
     # ---- bindings
     def sandbox_binding(self, ref: str) -> WorkloadBinding | None:
-        """The one task (and role) a live, managed sandbox serves – None if unknown or deleted.
-        A sandbox serves exactly one task for its whole life (an implementer sandbox is reused
-        across that task's rework cycles; judges and verifiers always get their own)."""
+        """The task (and role) a live, managed sandbox was made for – None if unknown or deleted.
+        A sandbox serves one role in one change for its whole life, but not always one ticket:
+        an implementer sandbox is reused across its ticket's rework cycles, and the oracle's
+        fixes (``oracle.N``) run in the oracle's sandbox. Requests are therefore bound to the
+        sandbox (:meth:`live_run`, :meth:`a2a_caller`), not to the ticket named here. Judges and
+        verifiers always get their own."""
         if ref in self._verifiers:
             v = self._verifiers[ref]
             return WorkloadBinding(sandbox=ref, change=v.change, task=v.task, role="verifier")
@@ -86,14 +89,15 @@ class WorkloadAuth:
         return None
 
     def live_run(self, token: str | None) -> tuple[str, Run] | None:
-        """Bind a gateway-injected, task-scoped token to the sandbox's live run, per request.
-        The run must match the token's change, task and role exactly."""
+        """Bind a gateway-injected token to the sandbox's live run, per request. The run must
+        match the token's sandbox, change and role; the ticket is the run's (a sandbox may serve
+        a later ticket than the one its token names – the oracle's fixes)."""
         b = self.identity.tokens.verify(token) if token else None
         if b is None:
             return None
         for cid, r in self._runs():
             if r.sandbox_ref == b.sandbox and in_turn(r):
-                if (cid, r.ticket, r.role) == (b.change, b.task, b.role):
+                if (cid, r.role) == (b.change, b.role):
                     return cid, r
                 log.warning("token for %s does not match live run %s", b, r.id)
                 return None
@@ -106,11 +110,12 @@ class WorkloadAuth:
         b = self.identity.tokens.verify(token) if token else None
         if b is None or b.role == "verifier":
             return None
+        latest = None              # the ticket the sandbox serves now: its latest run's
         for cid, r in self._runs():
             if r.sandbox_ref == b.sandbox and not r.sandbox_deleted \
-                    and (cid, r.ticket, r.role) == (b.change, b.task, b.role):
-                return b
-        return None
+                    and (cid, r.role) == (b.change, b.role):
+                latest = r
+        return None if latest is None else replace(b, task=latest.ticket)
 
     def git_grant(self, token: str | None) -> GitGrant | None:
         b = self.identity.tokens.verify(token) if token else None
