@@ -12,8 +12,10 @@ unresolved, or success cannot be verified.
 missing_decision="<the single narrow question a human must answer>")`
 
 Once it is accepted – that ends your task, asking back – end your turn. Before you block, ask the agent whose
-work the question is about, or the change's `resolver` when a guard, a protected path or the
-oracle stops you (`legion-a2a-protocol`) – its answer may be all you need. Its advice satisfies
+work the question is about: the oracle (`oracle@oracle`) when a protected acceptance test stops
+you – it explains the test, or confirms it is wrong and a fix follows, and you go on – or the
+change's `resolver` when a guard or a protected path does (`legion-a2a-protocol`). Its answer
+may be all you need. Its advice satisfies
 no guard: only a human's decision does.
 
 A human answers in the UI; you (or a successor run) will receive the answer as attested feedback.
