@@ -80,9 +80,12 @@ def items(e: ChangeView) -> list[AttentionItem]:
                                  reason=_clip(", ".join(held)), since=root.since, blocking=True))
     for q in ch.questions.values():
         if q.open:
-            out.append(AttentionItem(change=ch.id, goal=goal, ticket=q.ticket, kind=QUESTION,
-                                     detail=q.id, title=f"{q.ticket} asks", reason=_clip(q.question),
-                                     since=q.asked_at, blocking=True))
+            scope = q.kind == "scope"
+            out.append(AttentionItem(
+                change=ch.id, goal=goal, ticket=q.ticket, kind=QUESTION, detail=q.id,
+                title=f"{q.ticket} asks for more files" if scope else f"{q.ticket} asks",
+                reason=_clip(f"{', '.join(q.paths)}: {q.question}" if scope else q.question),
+                since=q.asked_at, blocking=True))
     if ch.status != ChangeStatus.ACTIVE:
         verb = {ChangeStatus.READY: "was published", ChangeStatus.ABANDONED: "was abandoned"}[ch.status]
         out.append(AttentionItem(change=ch.id, goal=goal, ticket=None, kind=CHANGE_ENDED,

@@ -6,7 +6,7 @@ Every record is persisted as a versioned document in the store (see engine/state
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -374,7 +374,12 @@ class AgentQuestion(Record):
     ticket: str                        # the asking agent's ticket
     role: str
     run: str | None = None
-    question: str
+    question: str                      # (scope) its reason
+    kind: Literal["question", "scope"] = "question"   # scope: a build asks for more files (A2A
+    paths: list[str] = []              # request_scope) – these, its files_modified ``before``;
+    before: list[str] = []             # a decision owner approves (they are added) or denies
+    warnings: list[str] = []           # what the decision owner should know (protected, …)
+    approved: bool | None = None
     asked_at: str = Field(default_factory=now_iso)
     answer: str | None = None
     answered_by: str | None = None

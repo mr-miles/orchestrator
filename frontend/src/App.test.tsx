@@ -231,6 +231,51 @@ describe('the operator UI', () => {
     )
   })
 
+  test("a build's request for more files shows its files before and after, then is decided", async () => {
+    localStorage.setItem('approver', 'miles')
+    calls = fakeFetch({
+      '/api/changes/c1/questions/t-2/answer': { id: 't-2', approved: true },
+      '/api/changes': CHANGES,
+    })
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    const q = {
+      id: 't-2',
+      ticket: 'T1',
+      role: 'implementer',
+      run: 'r0007',
+      question: 'the new endpoint must be registered in the route table',
+      kind: 'scope',
+      paths: ['src/api/routes.py'],
+      before: ['src/api/users/'],
+      warnings: ['T2 (working) also owns src/api/routes.py'],
+      approved: null,
+      asked_at: '2026-11-22T10:00:00.000000Z',
+      answer: null,
+      answered_by: null,
+      answered_at: null,
+      withdrawn: null,
+    }
+    await act(async () => {
+      es.open()
+      es.emit('state', { ...stateAtH1(), a2a: { cards: [], questions: [q] } })
+    })
+    const diff = await screen.findByLabelText('files_modified before and after')
+    expect(within(diff).getAllByText('src/api/users/', { exact: false })).toHaveLength(2)
+    expect(within(diff).getByText('src/api/routes.py', { exact: false }).textContent).toContain('+')
+    expect(screen.getByText('T2 (working) also owns src/api/routes.py')).toBeTruthy()
+    const deny = screen.getByRole('button', { name: 'Deny' }) as HTMLButtonElement
+    expect(deny.disabled).toBe(true) // a denial needs a reason
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/questions/t-2/answer')?.body).toEqual({
+        answer: '',
+        approver: 'miles',
+        decision: 'approve',
+      }),
+    )
+  })
+
   test("the resolver's proposal on a waiting ticket is applied as the approver", async () => {
     localStorage.setItem('approver', 'miles')
     calls = fakeFetch({

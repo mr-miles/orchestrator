@@ -18,8 +18,15 @@ Steps, in this order:
    your working copy; otherwise install the project's dependencies before running any of its
    tools (see language preferences). Your sandbox's tools: {{sandbox_tools}}.
 2. Implement within `files_modified`. Run the formatter and linter early, not only at the end.
+   If your contract cannot be met without changing a file outside `files_modified` (or in
+   `files_forbidden`, or a protected path), do not change it: ask for it –
+   `a2a send --async "/request_scope <paths>: <what fails or is missing without them>"` to the
+   orchestrator (`legion-a2a-protocol`) – and go on with the rest while a decision owner decides.
+   Approved, the paths are in your `files_modified`; denied, work within your scope or report
+   `BLOCKED`. The oracle's acceptance tests are never granted: ask `oracle@oracle` about them.
 3. Run every `verification` command; all must exit 0. Report `BLOCKED` with the exact conflict if
-   a command cannot pass from inside `files_modified`. If a protected acceptance test fails for a
+   a command cannot pass from inside your scope and your request for more was denied. If a
+   protected acceptance test fails for a
    reason other than the missing implementation, ask the oracle (`oracle@oracle`,
    `legion-a2a-protocol`) before you block: if it explains the test, fix your code; if it
    confirms the test is wrong, a fix follows – build to the spec and go on; only what it cannot

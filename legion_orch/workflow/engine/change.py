@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from ...sandbox import GatewaySandbox
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
-from .. import context
+from .. import context, scope
 from ..model import (
     LIVE_RUN,
     V_FINAL,
@@ -246,7 +246,33 @@ class ChangeEngine(ChangeCore):
         self.save()
         return q
 
-    async def answer_question(self, qid: str, answer: str, approver: str) -> AgentQuestion:
+    def request_scope(self, qid: str, ticket_id: str, role: str, run: str | None,
+                      paths: list[str], reason: str) -> AgentQuestion | None:
+        """A build asks for files outside its scope (the caller holds the lock): a decision
+        owner approves or denies it (workflow/scope.py). None: they are in its scope already.
+        WorkflowError: the request cannot be made (the oracle's tests, a closed ticket …)."""
+        t = self.tickets.t.get(ticket_id)
+        if t is None:
+            raise WorkflowError(f"unknown ticket {ticket_id}")
+        try:
+            new, warnings = scope.request(self, t, paths, reason)
+        except ValueError as e:
+            raise WorkflowError(str(e)) from None
+        if not new:
+            return None
+        q = AgentQuestion(id=qid, ticket=ticket_id, role=role, run=run, question=reason.strip(),
+                          kind="scope", paths=new, before=list(t.work.get("files_modified", [])),
+                          warnings=warnings)
+        self.change.questions[qid] = q
+        self.event("scope", f"{ticket_id} asks to change {', '.join(new)}: {reason[:200]}",
+                   ticket_id, run)
+        self.save()
+        return q
+
+    async def answer_question(self, qid: str, answer: str, approver: str,
+                              decision: str | None = None) -> AgentQuestion:
+        """A decision owner's answer: to a question, its text; to a scope request (``kind``
+        scope), ``approve`` – its paths join the build's files – or ``deny``, with the reason."""
         async with self.lock:
             if approver not in self.cfg.decision_owners:
                 raise WorkflowError(f"approver {approver!r} is not a decision owner "
@@ -257,6 +283,29 @@ class ChangeEngine(ChangeCore):
             if not q.open:
                 raise WorkflowError(f"question {qid} was already "
                                     + ("answered" if q.answer is not None else "withdrawn"))
+            if q.kind == "scope":
+                if decision not in ("approve", "deny"):
+                    raise WorkflowError("a scope request is approved or denied (decision)")
+                if decision == "deny" and not answer.strip():
+                    raise WorkflowError("a denial needs a reason")
+                t = self.tickets.t.get(q.ticket)
+                if decision == "approve":
+                    if t is None or t.status in scope.CLOSED:
+                        raise WorkflowError(f"{q.ticket} has finished: its scope is settled")
+                    scope.approve(t, q.paths)
+                    text = (f"approved by {approver}: you may change {', '.join(q.paths)} – they "
+                            "are in your files_modified now"
+                            + (f". {answer.strip()}" if answer.strip() else ""))
+                else:
+                    text = (f"denied by {approver}: {answer.strip()} – work within your scope, or "
+                            "report BLOCKED if your contract cannot be met in it")
+                q.approved = decision == "approve"
+                q.answer, q.answered_by, q.answered_at = text, approver, now_iso()
+                self.event("scope", f"{approver} {decision}d {q.ticket}'s request for "
+                           f"{', '.join(q.paths)}" + (f": {answer.strip()[:200]}"
+                                                      if answer.strip() else ""), q.ticket, q.run)
+                self.save()
+                return q
             if not answer.strip():
                 raise WorkflowError("answer is required")
             q.answer, q.answered_by, q.answered_at = answer.strip(), approver, now_iso()

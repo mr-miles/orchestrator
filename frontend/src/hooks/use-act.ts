@@ -33,5 +33,10 @@ export function useAct(cid: string) {
       run(() => changeAction(cid, action, payload, who), done),
     answer: (qid: string, answer: string) =>
       run(async () => (await answerQuestion(cid, qid, answer, who), {}), 'Answer sent'),
+    decideScope: (qid: string, decision: 'approve' | 'deny', reason: string) =>
+      run(
+        async () => (await answerQuestion(cid, qid, reason, who, decision), {}),
+        decision === 'approve' ? 'Approved' : 'Denied',
+      ),
   }
 }

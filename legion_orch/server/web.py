@@ -467,11 +467,11 @@ def build_app(ctl: Controller) -> Starlette:
     @api(write=True)
     async def answer_question(request: Request, body: dict):
         ce = ctl.get(request.path_params["cid"])
-        answer = body.get("answer")
-        if not isinstance(answer, str):
-            raise BadRequest("answer (text) is required")
+        answer, decision = body.get("answer", ""), body.get("decision")
+        if not isinstance(answer, str) or decision not in (None, "approve", "deny"):
+            raise BadRequest("answer is text; decision (a scope request's) approve or deny")
         return await ce.answer_question(request.path_params["qid"], answer,
-                                        body.get("approver", ""))
+                                        body.get("approver", ""), decision)
 
     @api(write=True)
     async def change_action(request: Request, body: dict):

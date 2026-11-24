@@ -15,7 +15,9 @@ from the agent CLI's result events). What it says:
   a decision;
 * ``roles`` – per role: runs, how they ended, the models that served them, reports rejected,
   wall time, cost and tokens;
-* ``tickets`` – the same per ticket with work, for finding the outliers.
+* ``tickets`` – the same per ticket with work, for finding the outliers – with the files each
+  build asked for beyond its plan's scope, approved and denied: many say the plan scoped its
+  builds too tightly.
 """
 from __future__ import annotations
 
@@ -195,10 +197,17 @@ def compute(change: Mapping[str, Any], history: Iterable[list[tuple[str, dict[st
         work["first_pass"] += first
         work["reworked"] += attempts > 1
         work["rework_rounds"] += max(attempts - 1, 0)
+        asked = [q for q in (change.get("questions") or {}).values()
+                 if q.get("ticket") == tid and q.get("kind") == "scope"]
         row: dict[str, Any] = {"id": tid, "type": x.get("type"), "status": x.get("status"),
                                "attempts": attempts, "first_pass": first,
                                "rejections": rejections,
-                               "runs": sum(1 for r in runs if r.get("ticket") == tid)}
+                               "runs": sum(1 for r in runs if r.get("ticket") == tid),
+                               "scope_requests": {
+                                   "approved": [p for q in asked if q.get("approved")
+                                                for p in q.get("paths", [])],
+                                   "denied": [p for q in asked if q.get("approved") is False
+                                              for p in q.get("paths", [])]}}
         for r in runs:
             if r.get("ticket") == tid or r.get("ticket") in (x.get("criteria") or []):
                 _add(row, *per_run[r["id"]])
