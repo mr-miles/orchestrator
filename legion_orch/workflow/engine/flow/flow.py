@@ -147,9 +147,11 @@ class TicketFlow:
             return f"workspace {c.change.workspace}: {e}"
         blank = is_blank_tree(await c.git.tree_paths(base))
         pin = None if blank else await setup.pin_at_base(c.git, base)
+        tools = {} if blank else setup.tools_at(await setup.read_at(c.git, base))
         async with c.lock:
             ch = c.change
             ch.base_sha, ch.blank_repo, ch.setup_pin = base, blank, pin
+            ch.base_tools = tools
             await c.git.init_integration(c.cid, base)
             c.write_record("control/workspace.json", {
                 "workspace": ch.workspace, "source": c.git.source,

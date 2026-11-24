@@ -16,12 +16,33 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ....git.branches import Branches, integration_branch
-from ....sandbox import VERIFIER_PREFIX, BuildError, ImageRecipe, driver_config, policy_entry
+from ....sandbox import (
+    VERIFIER_PREFIX,
+    BuildError,
+    ImageRecipe,
+    Tool,
+    driver_config,
+    lookup_recipe,
+    policy_entry,
+)
+from ....sandbox.images import merged_env
+from ....util import now_iso
 from ... import guards, setup
 from ...assets import GitMode
 from ...attest import FILE_RE
-from ...environment import VERIFIER, EnvironmentSpec, Library, LibraryError
-from ...model import LIVE_RUN, EnvironmentBuild, RoleEnvironment
+from ...environment import (
+    LATEST,
+    VERIFIER,
+    EnvironmentSpec,
+    Library,
+    LibraryError,
+    ToolVersion,
+    all_tools,
+    planned_versions,
+    versions_toml,
+    with_versions,
+)
+from ...model import LIVE_RUN, EnvironmentBuild, RoleEnvironment, ToolVersionRecord
 from ...tickets import Ticket
 from ...tickets.executors import Work as TicketWork
 from ..base.core import ChangeCore
@@ -32,13 +53,18 @@ from .runs import RunLifecycle
 
 PROVISION = "controller:provision"
 PROVISION_LOG = "control/environment/provision.log"
+MISE_DOC = "control/environment/mise.toml"      # the change's tool versions (every image's)
 
 
 @dataclass
 class ProvisionPlan:
-    """What the approved spec needs: per role its recipe, network policies and resources."""
+    """What the approved spec needs: every tool (the same in every image) at the change's
+    versions, and per role its base image, network policies and resources."""
     spec: str                                                    # attestation
     mise: str | None = None                       # the mise.toml it proposes (§5.3c), if any
+    tools: list[Tool] = field(default_factory=list)              # every profile's, once
+    versions: dict[str, ToolVersion] = field(default_factory=dict)   # mise tool -> its version
+    bases: dict[str, str] = field(default_factory=dict)          # role -> the image built FROM
     recipes: dict[str, ImageRecipe] = field(default_factory=dict)        # role -> image recipe
     roles: dict[str, RoleEnvironment] = field(default_factory=dict)      # role -> (image unset)
 
@@ -76,15 +102,23 @@ class Provisioner:
         if v:
             return self._fail("the approved spec no longer resolves against the library: "
                               + "; ".join(v))
-        env, sc = c.cfg.environment, c.cfg.sandbox
+        sc = c.cfg.sandbox
         plan = ProvisionPlan(spec=f"file:{path}@{version}",
                              mise=spec.mise.content if spec.mise else None)
+        # one tool set for every image, at one version each: the mise.toml that runs (the
+        # proposed one, else the repository's), else this change's earlier versions, else latest
+        plan.tools = all_tools(profiles)
+        _, conflicts = merged_env(plan.tools)
+        if conflicts:
+            return self._fail("the profiles' tools set conflicting environment variables, and "
+                              "every image has every tool: " + "; ".join(conflicts))
+        running = setup.tools_at(plan.mise) if plan.mise is not None else \
+            (c.change.base_tools or setup.tools_at(repo))
+        kept = setup.tools_at(c.doc(MISE_DOC).content) if c.latest(MISE_DOC) else {}
+        plan.versions = planned_versions(plan.tools, running, kept)
         for role, pname in spec.roles.items():
             prof = profiles[pname]
-            base = (sc.verifier_image or sc.image) if role == VERIFIER else sc.image
-            plan.recipes[role] = ImageRecipe.make(base or "", prof.tools, mise_version=env.mise_version,
-                                                  user=sc.run_as_user, registry=env.registry,
-                                                  change=c.cid)
+            plan.bases[role] = ((sc.verifier_image or sc.image) if role == VERIFIER else sc.image) or ""
             plan.roles[role] = RoleEnvironment(
                 profile=pname, network=dict(policy_entry(p) for p in prof.policies),
                 cpu=prof.resources.cpu, memory=prof.resources.memory,
@@ -103,7 +137,6 @@ class Provisioner:
             plan = await self._plan()
             if isinstance(plan, str):
                 return plan
-            recipes = {r.tag: r for r in plan.recipes.values()}
             if plan.mise is not None:          # the approved mise.toml: committed, pinned (§5.3c)
                 head = await Branches(c.git).commit_file(
                     integration_branch(c.cid), setup.MISE_TOML, plan.mise,
@@ -111,8 +144,22 @@ class Provisioner:
                 c.change.setup_pin = setup.pin_for(plan.mise, "H-E1")
                 c.event("provision", f"committed the approved mise.toml at {head[:12]}",
                         ticket.id)
-            c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}", ticket.id)
         log: list[str] = []
+        versions = await self._versions(plan, log, ticket.id)
+        if isinstance(versions, str):
+            return versions
+        env, sc = c.cfg.environment, c.cfg.sandbox
+        tools = with_versions(plan.tools, versions)
+        for role, base in plan.bases.items():
+            plan.recipes[role] = ImageRecipe.make(base, tools, mise_version=env.mise_version,
+                                                  user=sc.run_as_user, registry=env.registry,
+                                                  change=c.cid)
+        recipes = {r.tag: r for r in plan.recipes.values()}
+        async with c.lock:
+            mise_doc = c.write_record(MISE_DOC, versions_toml(versions)).attestation
+            c.event("provision", f"building {len(recipes)} image(s) for {plan.spec}, every one "
+                    f"with {', '.join(f'{k} {v}' for k, v in sorted(versions.items())) or 'no tools'}",
+                    ticket.id)
         for role, env in sorted(plan.roles.items()):
             for key, entry in env.network.items():
                 log.append(f"## {role}: network policy {key} (sandbox policy): "
@@ -128,9 +175,11 @@ class Provisioner:
                 return None
             roles = {role: env.model_copy(update={"image": images[plan.recipes[role].tag]})
                      for role, env in plan.roles.items()}
-            build = EnvironmentBuild(spec=plan.spec, roles=roles,
-                                     log=c.write_record(PROVISION_LOG,
-                                                        "\n\n".join(log)).attestation)
+            build = EnvironmentBuild(spec=plan.spec, roles=roles, mise=mise_doc, tools={
+                k: ToolVersionRecord(version=versions[k], source=v.source,
+                                     resolved_at=self._resolved_at if v.source == LATEST else None)
+                for k, v in plan.versions.items()},
+                log=c.write_record(PROVISION_LOG, "\n\n".join(log)).attestation)
             c.write_record("control/environment/build.json", build)   # projected: change.environment
             # A kept sandbox of a role this build maps was created from an earlier build or the
             # default image: release it (after its agent reflects), so its ticket's next round
@@ -171,6 +220,28 @@ class Provisioner:
             c.event("provision", "environment ready; the repository's setup ran in the "
                     f"verifier ({', '.join(roles) or 'no roles'})", ticket.id)
             return None
+
+    async def _versions(self, plan: ProvisionPlan, log: list[str], tid: str
+                        ) -> dict[str, str] | str:
+        """Every tool's version: those still to decide looked up once, ``mise latest`` in the
+        environment images' own mise (outside the lock: it reaches the network)."""
+        out = {k: v.version for k, v in plan.versions.items() if v.version}
+        todo = sorted(k for k, v in plan.versions.items() if not v.version)
+        self._resolved_at = now_iso()
+        if not todo:
+            return out
+        env = self.c.cfg.environment
+        base = next(iter(plan.bases.values()), "") or self.c.cfg.sandbox.image or ""
+        lookup = lookup_recipe(base, env.mise_version, self.c.cid, env.registry)
+        try:
+            found, text = await self.c.svc.builder.latest_versions(todo, lookup)
+        except (BuildError, OSError) as e:
+            return self._fail(f"looking up the latest versions of {', '.join(todo)}: {e}",
+                              "\n".join(log))
+        log.append(f"## latest versions of {', '.join(todo)}\n\n{text}")
+        async with self.c.lock:
+            self.c.event("provision", "latest: " + ", ".join(f"{k} {found[k]}" for k in todo), tid)
+        return out | {k: found[k] for k in todo}
 
     async def build_images(self, recipes: dict[str, ImageRecipe],
                            log: list[str]) -> dict[str, str | None] | str:

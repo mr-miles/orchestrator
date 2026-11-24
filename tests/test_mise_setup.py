@@ -149,24 +149,44 @@ async def test_a_setup_that_fails_at_provision_makes_it_wait(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_a_plan_keeping_the_repositorys_mise_toml_must_install_its_pinned_tools(tmp_path):
-    """The planner proposes no mise.toml, so the repository's runs; it pins uv 0.13 and the
-    environment's unpinned uv is the library's 0.9: the plan is refused (G-E8) until it pins
-    uv@0.13 – before, the setup tried to download 0.13 in a sandbox that reaches no host."""
-    make_source_repo(tmp_path / "src-repo", {"mise.toml": '[tools]\npython = "3.12"\nuv = "0.13"\n'})
+async def test_tool_versions_come_from_the_repositorys_mise_toml_else_the_latest(tmp_path):
+    """The planner names tools, never versions. The repository's mise.toml pins uv 0.13 and
+    python 3.12: every image installs those; ruff, which it does not name, at its latest –
+    looked up once, in the images' own mise. One map for the whole change, recorded."""
+    make_source_repo(tmp_path / "src-repo",
+                     {"mise.toml": '[tools]\npython = "3.12"\nuv = "0.13"\n'})
     f = await Flow.create(tmp_path, environment={})
     try:
+        assert f.ce.change.base_tools == {"python": "3.12", "uv": "0.13"}
         await f.intake()
         await f.signoff("H-1")
-        out = await f.plan(environment=ENVIRONMENT)
-        assert not out.accepted
-        assert any("the repository's mise.toml pins uv 0.13" in v and "`uv@0.13`" in v
-                   for v in out.violations), out.violations
         pinned = copy.deepcopy(ENVIRONMENT)
-        for prof in pinned["profiles"].values():
-            prof["tools"] = ["uv@0.13" if t == "uv" else t for t in prof["tools"]]
+        pinned["profiles"]["dev"]["tools"] = ["python", "uv@0.9", "ruff"]
         out = await f.plan(environment=pinned)
+        assert not out.accepted
+        assert any("tool 'uv@0.9': the spec names tools, not versions" in v
+                   for v in out.violations), out.violations
+        out = await f.plan(environment=ENVIRONMENT)
         assert out.accepted, out.violations
+        from legion_orch.server.views import environment_spec
+        shown = {v["tool"]: (v["version"], v["source"]) for v in environment_spec(f.ce)["versions"]}
+        assert shown == {"python": ("3.12", "mise.toml"), "uv": ("0.13", "mise.toml"),
+                         "ruff": (None, "latest")}           # at H-E1: what provisioning will do
+        await f.critique()
+        await f.signoff("H-E1")
+        await f.settle()
+        build = f.ce.change.environment
+        assert {k: (v.version, v.source) for k, v in build.tools.items()} == {
+            "python": ("3.12", "mise.toml"), "uv": ("0.13", "mise.toml"),
+            "ruff": ("0.15.0", "latest")}
+        assert f.builder.looked_up == [["ruff"]]                  # only what mise.toml lacks
+        tomls = {r.files["mise.toml"].split("[tools]")[1] for r in f.builder.recipes.values()
+                 if "mise.toml" in r.files}
+        assert tomls == {'\n"python" = "3.12"\n"ruff" = "0.15.0"\n"uv" = "0.13"\n'}  # identical
+        shown = {v["tool"]: v["version"] for v in environment_spec(f.ce)["versions"]}
+        assert shown["ruff"] == "0.15.0"                          # after the build: what it is
+        doc = f.ce.doc("control/environment/mise.toml").content
+        assert '"uv" = "0.13"' in doc and '"ruff" = "0.15.0"' in doc
     finally:
         await f.stop()
 
@@ -192,9 +212,10 @@ def g_e8(lib, raw: dict, repo_mise: str | None = None) -> list[str]:
 def test_g_e8_checks_tools_versions_and_setup_network(lib):
     assert g_e8(lib, env_spec()) == []
     v = g_e8(lib, env_spec(mise={"content": '[tools]\nbun = "1.4"\n'}))
-    assert v and all("the proposed mise.toml uses tool 'bun', which profile" in x for x in v)
-    v = g_e8(lib, env_spec(mise={"content": '[tools]\npython = "3.11"\n'}))
-    assert v and "pins python 3.11" in v[0] and "`python@3.11`" in v[0]
+    assert v == ["G-E8: the proposed mise.toml uses tool 'bun', which none of the spec's tools "
+                 "provides: add the library tool that does (or propose one)"]
+    # a version mise.toml pins is what the images install: nothing to compare any more
+    assert g_e8(lib, env_spec(mise={"content": '[tools]\npython = "3.11"\n'})) == []
     offline = env_spec()
     offline["profiles"]["check"]["offline"] = True
     [v] = g_e8(lib, offline)
@@ -204,17 +225,24 @@ def test_g_e8_checks_tools_versions_and_setup_network(lib):
 
 
 def test_g_e8_checks_the_repositorys_mise_toml_when_the_spec_proposes_none(lib):
-    """The spec keeps the repository's mise.toml, which pins uv 0.13; an unpinned uv tool is the
-    library's 0.9: the setup would try to download 0.13 in a sandbox that reaches no host."""
-    pinned = '[tools]\npython = "3.12"\nuv = "0.13"\n'
-    v = g_e8(lib, env_spec(mise=None), repo_mise=pinned)
-    assert v and all("the repository's mise.toml pins uv 0.13" in x and "installs 0.9" in x
-                     and "`uv@0.13`" in x for x in v), v
-    fixed = env_spec(mise=None)
-    for prof in fixed["profiles"].values():
-        prof["tools"] = [("uv@0.13" if t == "uv" else t) for t in prof["tools"]]
-    assert g_e8(lib, fixed, repo_mise=pinned) == []
+    """The spec keeps the repository's mise.toml: its tools must all be provided."""
+    assert g_e8(lib, env_spec(mise=None), repo_mise='[tools]\npython = "3.12"\nuv = "0.13"\n') == []
+    v = g_e8(lib, env_spec(mise=None), repo_mise='[tools]\nbun = "1.4"\n')
+    assert v and "the repository's mise.toml uses tool 'bun'" in v[0]
     assert g_e8(lib, env_spec(mise=None), repo_mise=None) == []       # no mise.toml at all
+
+
+def test_one_version_per_tool_for_the_change():
+    from legion_orch.sandbox import Tool
+    from legion_orch.workflow.environment import planned_versions, versions_toml
+    tools = [Tool(name="python", description="", mise={"python": "3.11"}),   # library: unused
+             Tool(name="uv", description="", mise={"uv": "0.9"}),
+             Tool(name="ruff", description="", mise={"ruff": "0.1"})]
+    v = planned_versions(tools, {"python": "3.12", "uv": "latest"}, kept={"ruff": "0.14"})
+    assert {k: (x.version, x.source) for k, x in v.items()} == {
+        "python": ("3.12", "mise.toml"), "uv": (None, "latest"), "ruff": ("0.14", "kept")}
+    assert versions_toml({"uv": "0.13", "python": "3.12"}).splitlines()[-2:] == [
+        '"python" = "3.12"', '"uv" = "0.13"']
 
 
 def test_mise_toml_helpers():
