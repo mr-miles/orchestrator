@@ -87,6 +87,8 @@ class Ticket(BaseModel):
     applies: str | None = None             # (sign-offs) what its pass applies: the output it signs
                                            # that is a replan (``tickets``), or ``tier``
     limit: int = 3                         # attempts allowed (its own work's reruns)
+    scope_only: bool = False               # (criteria) it judges only what its owner changed
+                                           # beyond its scope; nothing there: it passes at once
     keep: bool = False                     # (an agent's) its sandbox stays, stopped, after it closes
                                            # until its parent does: others consult its agent
     # state

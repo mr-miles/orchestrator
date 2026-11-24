@@ -123,17 +123,36 @@ def outputs_of_owner(e: RoleContext, ticket: Ticket) -> list[str]:
     return out
 
 
+def beyond_scope_of_owner(e: RoleContext, ticket: Ticket) -> list[dict[str, str]]:
+    """What the work a criterion judges changed beyond its scope, with its reasons: its
+    latest accepted report's ``beyond_scope`` (a build's; others have none)."""
+    owner = e.tickets.t.get(ticket.parent) if ticket.parent else None
+    for rid in reversed(owner.runs if owner else []):
+        r = e.runs.get(rid)
+        if r is not None and not r.consult and r.report is not None and r.status == "ACCEPTED":
+            return list((r.report.data or {}).get("beyond_scope") or [])
+    return []
+
+
 MISE_TOML = "mise.toml"
 
 
-def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:
-    """Paths no build may touch: the approved oracle's tests and support files, the operator's
-    protected paths, and ``mise.toml`` while the environment pins a setup (§5.3c)."""
+def oracle_paths(e: RoleContext, oracle: dict | None = None) -> list[str]:
+    """The approved oracle's tests and support files: only the oracle changes them (§5.4)."""
     orc = oracle if oracle is not None else _json(pointer(e, "oracle"))
+    return [*orc.get("acceptance_tests", []), *orc.get("protected_support", [])]
+
+
+def guarded(e: RoleContext) -> list[str]:
+    """The operator's protected paths, and ``mise.toml`` while the environment pins a setup
+    (§5.3c): a build changes one only with a reason that survives a strict review (G-B3)."""
     env = _json(pointer(e, "environment"))
-    return [*orc.get("acceptance_tests", []), *orc.get("protected_support", []),
-            *e.cfg.protected_paths,
-            *([MISE_TOML] if env.get("mise") or e.change.setup_pin else [])]
+    return [*e.cfg.protected_paths, *([MISE_TOML] if env.get("mise") or e.change.setup_pin else [])]
+
+
+def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:
+    """Paths no plan puts in a build's files (G-P7): the oracle's, and the guarded ones."""
+    return [*oracle_paths(e, oracle), *guarded(e)]
 
 
 async def protected_unchanged(e: RoleContext, head: str | None) -> list[str]:

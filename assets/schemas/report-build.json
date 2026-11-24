@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A build's (implementer, scaffolder) report data: every path its commit changes outside its files_modified – or in its files_forbidden – with the reason it had to (G-B3). A reviewer judges each reason; none: nothing to list.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "beyond_scope": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "reason"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1, "description": "why the build's contract needs this change: what fails or is missing without it"}
+        }
+      }
+    }
+  }
+}

@@ -209,8 +209,8 @@ async def test_a_plan_that_breaks_the_tier_policy_fails_its_signoff(tmp_path):
 
 async def test_a_conflict_at_merge_is_a_rework_onto_the_new_head(tmp_path):
     # T1 and T2 change the same file: whichever merges second reworks, rebased
-    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge"),
-                                  build("T2", "verify", "can-merge")), tier="R0")
+    ch = Change(tmp_path, planned(build("T1", "verify", "review", "can-merge"),
+                                  build("T2", "verify", "review", "can-merge")), tier="R0")
     r = await ch.runner()
 
     def same_file(work):
@@ -228,7 +228,7 @@ async def test_a_conflict_at_merge_is_a_rework_onto_the_new_head(tmp_path):
 async def test_a_restart_resumes_whatever_was_under_way_at_the_same_attempt(tmp_path):
     for stuck in ("provision", "T1"):                       # a controller's work, an agent's
         (tmp_path / stuck).mkdir()
-        ch = Change(tmp_path / stuck, planned(build("T1", "verify", "can-merge")), tier="R0")
+        ch = Change(tmp_path / stuck, planned(build("T1", "verify", "review", "can-merge")), tier="R0")
         r = await ch.runner()
         gate = ch.script.gates[stuck] = asyncio.Event()
         await r.start()
@@ -244,8 +244,8 @@ async def test_a_restart_resumes_whatever_was_under_way_at_the_same_attempt(tmp_
 
 
 async def test_an_operators_pause_drains_the_work_and_a_resume_goes_on(tmp_path):
-    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge"),
-                                  build("T2", "verify", "can-merge")), tier="R0")
+    ch = Change(tmp_path, planned(build("T1", "verify", "review", "can-merge"),
+                                  build("T2", "verify", "review", "can-merge")), tier="R0")
     r = await ch.runner()
     gates = {t: ch.script.gates.setdefault(t, asyncio.Event()) for t in ("T1", "T2")}
     await r.start()
@@ -263,8 +263,8 @@ async def test_an_operators_pause_drains_the_work_and_a_resume_goes_on(tmp_path)
 
 
 async def test_failures_escalate_and_abandon_stops_running_work(tmp_path):
-    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge"),
-                                  build("T2", "verify", "can-merge")), tier="R0")
+    ch = Change(tmp_path, planned(build("T1", "verify", "review", "can-merge"),
+                                  build("T2", "verify", "review", "can-merge")), tier="R0")
     r = await ch.runner()
     rounds = itertools.count(1)                            # a new failure each round
     ch.script.outcomes["verify:T1"] = lambda w: Judged(False, (f"BLOCKER: {next(rounds)}",))
@@ -465,14 +465,14 @@ async def test_a_plan_whose_work_does_not_fit_its_role_fails_its_signoff(tmp_pat
 async def test_a_replan_chosen_while_work_runs_applies_once_it_has_drained(tmp_path):
     """The remedy and its plan in one decision: checked at once, applied when nothing is active
     – T2 still works when T1's replacement is chosen, so the plan waits for it."""
-    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge"),
-                                  build("T2", "verify", "can-merge")), tier="R0")
+    ch = Change(tmp_path, planned(build("T1", "verify", "review", "can-merge"),
+                                  build("T2", "verify", "review", "can-merge")), tier="R0")
     r = await ch.runner()
     ch.script.outcomes["T1"] = lambda work: Fault("the build cannot run here", transient=False)
     gate = ch.script.gates["T2"] = asyncio.Event()
     await r.start()
     await ch.hooks.escalation("T1")
-    t1b, crit = build("T1b", "verify", "can-merge")
+    t1b, crit = build("T1b", "verify", "review", "can-merge")
     for x in [t1b, *crit]:
         SPEC.prepare(x, "R0")
     with pytest.raises(TicketError, match="fails it .replaced. or adds to it"):

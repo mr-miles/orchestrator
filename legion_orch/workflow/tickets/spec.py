@@ -99,6 +99,9 @@ class TierPolicy(_Strict):
     every: list[EveryRule] = []
     labels: dict[str, list[str]] = {}           # risk label -> criteria its code tickets have
     limits: dict[str, int] = {}                 # ticket type -> attempts
+    # criterion types that, at this tier, judge only what their owner changed beyond its scope
+    # (they pass at once when it changed nothing there); None: as the tier it extends
+    scope_only: list[str] | None = None
 
 
 class CriterionType(_Strict):
@@ -199,6 +202,8 @@ class WorkflowSpec(_Strict):
                 out.labels[k] = list(dict.fromkeys(out.labels.get(k, []) + v))
             out.every = [r for r in out.every if r.type not in {x.type for x in p.every}] + p.every
             out.limits |= p.limits
+            if p.scope_only is not None:
+                out.scope_only = list(p.scope_only)
         return out
 
     # ------------------------------------------------------------------ building
@@ -261,6 +266,8 @@ class WorkflowSpec(_Strict):
             x.waivable = self.criteria[x.type].waivable
         if tier is not None and (limit := self.policy(tier).limits.get(x.type)):
             x.limit = limit
+        if tier is not None and x.role == "criterion":
+            x.scope_only = x.type in (self.policy(tier).scope_only or [])
         return x
 
 
@@ -378,4 +385,6 @@ def render(spec: WorkflowSpec) -> str:
         lines += [f"- tickets labelled `{k}` have criteria {', '.join(f'`{x}`' for x in v)}"
                   for k, v in p.labels.items()]
         lines += [f"- `{k}` tickets have {v} attempts" for k, v in p.limits.items()]
+        lines += [f"- `{k}` judges only what a build changes beyond its `files_modified` (and passes "
+                  "at once when it changes nothing there)" for k in p.scope_only or []]
     return "\n".join(lines) + "\n"

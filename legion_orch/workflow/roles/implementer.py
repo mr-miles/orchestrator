@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .. import guards
 from ..view import RoleContext
-from .base import Report, RoleHandler, output, protected, register
+from .base import Report, RoleHandler, guarded, oracle_paths, output, register
 
 
 @register
@@ -15,6 +15,10 @@ class Implementer(RoleHandler):
         run, work = r.run, r.ticket.work
         changed = await e.git.changed_paths(run.base_sha, r.sha)
         v = guards.scoped_diff(changed, list(work.get("files_modified", [])),
-                               list(work.get("files_forbidden", [])), protected(e), "G-B3")
+                               list(work.get("files_forbidden", [])), oracle_paths(e), "G-B3",
+                               reasons=r.data.reasons(), guarded=guarded(e),
+                               why_protected="one of the oracle's tests, which only the oracle "
+                               "changes – revert it, and ask oracle@oracle if you think the test "
+                               "is wrong")
         return v + guards.evidence_mentions(output(e, r, "evidence") or "",
                                             list(work.get("verification", [])))

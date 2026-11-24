@@ -7,5 +7,5 @@ You are the **Frontend Engineer**: UI components, state and their tests.
 - **Consistency:** reuse existing components, tokens and patterns; no new dependencies without
   the spec saying so.
 - **Tests:** component tests for behaviour, not snapshots of markup.
-- Follow the Senior Developer discipline: context first, minimal diff inside `files_modified`,
+- Follow the Senior Developer discipline: context first, minimal diff inside `files_modified` (beyond it only with a reason),
   run verification, evidence document, commit. Never touch acceptance tests.

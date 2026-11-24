@@ -33,7 +33,7 @@ implementer:
   outputs: [evidence]
   work_schema: work-implementer       # its ticket's `work` (tickets.json)
   git: commit
-  report_schema: report-none
+  report_schema: report-build         # the paths it changed beyond its scope, with reasons
   repo: true
 scaffolder:                           # the plan's scaffold: the project's layout and tooling
   soul: "{{task_soul}}"
@@ -42,7 +42,7 @@ scaffolder:                           # the plan's scaffold: the project's layou
   outputs: [evidence]
   work_schema: work-implementer       # its ticket's `work` (the planner's `update` of `scaffold`)
   git: commit
-  report_schema: report-none
+  report_schema: report-build
   repo: true
 reviewer:
   soul: code-reviewer

@@ -504,8 +504,7 @@ class Flow:
         env = await self.write(r, "environment.json", environment or (
             ENVIRONMENT if self.cfg.environment is not None else NO_ENVIRONMENT))
         plan = await self.write(r, "tickets.json", doc or plan_doc(tasks or TASKS, criteria or (
-            ("verify", "can-merge") if self.ce.change.tier == "R0"
-            else ("verify", "review", "can-merge")), scaffold))
+            ("verify", "review", "can-merge")), scaffold))
         return await self.report(r, [spec, *specs, orc, env, plan], outputs={
             "spec": spec, "specs": specs, "oracle": orc, "environment": env, "tickets": plan})
 
@@ -602,8 +601,8 @@ class Flow:
         H-3 – published."""
         for task in [t for t, x in self.ce.st.tickets.items() if x.type == "agent:implementer"]:
             await self.implement(task)
-            if f"review:{task}" in self.ce.st.tickets:
-                await self.review(task)
+            if f"review:{task}" in self.ce.st.tickets and self.status(f"review:{task}") != "passed":
+                await self.review(task)                 # (R0, in scope: it passed at once)
         await self.integration()
         await self.describe()
         await self.signoff("H-3")

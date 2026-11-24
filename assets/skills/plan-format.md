@@ -101,6 +101,11 @@ lets any correct implementation pass, and one that pins a shape by accident fail
 the change, contracts, and the acceptance criteria that prove it. `spec.md` is the overview tying
 them together.
 
+**`files_modified`** is the scope you expect a build to need – every file it creates or edits,
+its tests and wiring included. A build may go beyond it with a reason its reviewer judges, but
+each such change costs a review and a possible rework, and a file one build reaches into may be
+another's in the same group: scope builds so they rarely need to.
+
 **Verification surfaces** (R2+, G-P10) declare what the integration commands really reach and the
 files that make that true (compose files, schemas, fixtures) – pin what defines the real
 interface, not files the builds will change.

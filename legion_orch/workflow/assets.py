@@ -45,7 +45,7 @@ TEMPLATE_VARS = {
     # where it works
     "workdir", "branch", "base_sha", "head_sha", "judged_sha", "sandbox_tools",
     # role-specific (their handlers bind them)
-    "environment", "scaffold",
+    "environment", "scaffold", "beyond_scope", "review_scope",
 }
 ROLE_KEYS = {"soul", "skills", "git", "repo", "souls_allowed", "report_schema",
              "outputs", "work_schema"}

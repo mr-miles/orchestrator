@@ -306,7 +306,7 @@ tier may `extend` another:
 | --- | --- | --- | --- | --- | --- |
 | `exists` | the tree contains a ticket of each type | intake, planner, provision, integration, publish | as R0 | + oracle | + baseline |
 | `order` | each ticket of a type finishes before (`after`) / starts after (`before`) one of another | builds after provision and before the integration (the skeleton orders everything else) | as R0 | + builds after the oracle | + builds after the baseline |
-| `every` | the criteria every ticket of a type has | build, scaffold: verify, can-merge | build, scaffold: verify, reviewer, can-merge | + oracle: preflight, sign-off | + baseline: sign-off |
+| `every` | the criteria every ticket of a type has | build, scaffold: verify, reviewer (scope only), can-merge | build, scaffold: verify, reviewer, can-merge | + oracle: preflight, sign-off | + baseline: sign-off |
 | `labels` | the criteria a ticket labelled so (labels are inherited) has | – | `security`: security reviewer | as R1 | as R1 |
 | `limits` | attempts per type (default 3) | implementer, scaffolder, planner 3 | as R0 | as R0 | as R0 |
 
@@ -805,14 +805,25 @@ record is its output `baseline`; the integration verifier is given it.
 
 * **Soul:** the build's `soul` (`senior-developer`, `backend-engineer`, `frontend-engineer`)
 * **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
-* **Outputs:** `evidence`, git `commit` on its branch
+* **Outputs:** `evidence`, git `commit` on its branch; report data `beyond_scope` (`report-build`)
 * **Sandbox:** created on its first round and **kept across its attempts** (the agent keeps its
   working copy and session); deleted when the ticket is closed.
+
+**Beyond its files.** `files_modified` is the scope the plan expects, not a wall: a build whose
+contract cannot be met without changing another file changes it – minimally – and gives the
+reason in its report (`data.beyond_scope: [{path, reason}]`). Its reviewer judges each reason
+(§5.8): needed by the contract, the smallest change that does, not another build's work. A
+protected path – the operator's `protected_paths`, a pinned `mise.toml` – is judged against a much
+higher bar (no other way, minimal; and the setup always runs the pinned `mise.toml`, so an edit
+never changes it). The oracle's tests stay out of reach: a build that thinks one is wrong asks the
+oracle (§5.4). The planner still uses `files_modified` to keep parallel builds apart (G-P6); the
+reviewer is told the files the builds alongside own. The metrics list each build's paths beyond
+its scope: many say the plan scoped its builds too tightly.
 
 | ID | Rule |
 | --- | --- |
 | G-B2 | The attested commit is the current tip of the ticket's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
-| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected. |
+| G-B3 | No changed path is one of the oracle's tests or support files (only the oracle changes them). Every changed path outside `files_modified`, in `files_forbidden`, or protected (`protected_paths`, a pinned `mise.toml`) is listed in the report's `data.beyond_scope` with a reason; nothing else is listed. |
 | G-B4 | The evidence document names every `verification` command of the build with its exit code. |
 
 Its criteria, in order, by the tier's policy: `controller:verify` (§5.7), the review panel's
@@ -854,7 +865,9 @@ is not part of the key's meaning.)
 ### 5.8 The review panel (criteria)
 
 The tier's policy gives every build its judges, each a criterion with its own fresh sandbox at
-the commit it judges: R1+ `reviewer`; a ticket labelled `security` also a `security` reviewer. The
+the commit it judges: `reviewer` (at R0 it judges only what a build changed beyond its files, with
+its reasons – `scope_only` – and passes at once when there is nothing; at R1+ the whole build,
+those changes included); a ticket labelled `security` also a `security` reviewer. The
 planner may add an `architecture` reviewer (skill `architecture-checklist`) or more. A judge may
 read its predecessor's review from the earlier attempt.
 
@@ -1288,6 +1301,7 @@ guards, because a per-file schema cannot express them.
 * [`report-critique`](assets/schemas/report-critique.json)
 * [`report-integration`](assets/schemas/report-integration.json)
 * [`report-none`](assets/schemas/report-none.json)
+* [`report-build`](assets/schemas/report-build.json)
 * [`report-review`](assets/schemas/report-review.json)
 * [`requirements`](assets/schemas/requirements.json)
 * [`risk`](assets/schemas/risk.json)

@@ -19,8 +19,10 @@ You follow `read-before-write -> evidence-before-action -> minimal diff -> verif
 - Do not invent architecture, paths, APIs, helpers, tests or verification commands that the
   assignment and its context do not establish. If a high-impact decision is missing, stop and
   report `BLOCKED` with the exact missing decision (see blocked-protocol).
-- Keep changes strictly inside your scope. Never edit files outside `files_modified`, never touch
-  protected paths, never write documents outside your write scope.
+- Keep changes inside your scope: `files_modified`. A change your contract needs beyond it (or in
+  `files_forbidden`, or a protected path) comes with its reason in `data.beyond_scope`, and a
+  reviewer judges it – a protected path strictly. Never touch the oracle's acceptance tests;
+  never write documents outside your write scope.
 - Verification is part of the work. Run the commands you were given and record their exit codes
   before you report. The controller also verifies every tip you push (`verification_status`
   over MCP): a failure there is what review will start from, so fix it first.
