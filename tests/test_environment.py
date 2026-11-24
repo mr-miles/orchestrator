@@ -118,12 +118,21 @@ async def test_environment_is_specified_critiqued_approved_provisioned_and_attac
     assert f.ce.latest("control/environment/provision.log")
     recipe = f.builder.recipes[impl.image]
     assert "COPY mise.toml /etc/mise/config.toml" in recipe.files["Dockerfile"]
-    assert '"python" = "3.12"' in recipe.files["mise.toml"]
+    # no mise.toml in the repository: every tool at its latest, looked up once, in every image
+    assert '"python" = "3.13.1"' in recipe.files["mise.toml"]
+    assert recipe.files["mise.toml"].split("[tools]")[1] == \
+        f.builder.recipes[ver.image].files["mise.toml"].split("[tools]")[1]
+    assert f.builder.looked_up == [["python", "ruff", "uv"]]
+    build = f.ce.change.environment
+    assert {k: (v.version, v.source) for k, v in build.tools.items()} == {
+        "python": ("3.13.1", "latest"), "ruff": ("0.15.0", "latest"), "uv": ("0.13.2", "latest")}
+    assert '"uv" = "0.13.2"' in f.ce.doc("control/environment/mise.toml").content
+    assert build.mise and build.mise.startswith("file:")
     assert {e["host"] for e in impl.network["env_pypi"]["endpoints"]} >= {"pypi.org"}
 
     name = f.run("T1", "implementer").sandbox
     tools = f.run("T1", "implementer").template_vars["sandbox_tools"]
-    assert tools.startswith("profile `dev`: python@3.12, uv, ruff. Build, test and verify only")
+    assert tools.startswith("profile `dev`: python 3.13.1, ruff 0.15.0, uv 0.13.2. Build, test")
     sp = f.runner.specs[name]
     assert sp.env == SandboxEnv(image=impl.image, network=impl.network, cpu="2", memory="4096Mi")
     # a credentialless policy is a rule in the sandbox's own policy; controller access is not
@@ -515,7 +524,11 @@ def test_image_recipe_rendering_is_content_addressed():
     df = dockerfile("registry/agent:1", [py, uv], "v2026.11.0", "sandbox")
     lines = df.splitlines()
     assert lines[0].startswith("# Generated") and "FROM registry/agent:1" in lines
-    assert "ca-certificates curl libpq-dev" in df and "MISE_VERSION=v2026.11.0" in df
+    assert "--no-install-recommends ca-certificates curl " in df and "MISE_VERSION=v2026.11.0" in df
+    assert df.index("MISE_VERSION=") < df.index("install -y --no-install-recommends libpq-dev")
+    from legion_orch.sandbox.images import lookup_recipe
+    lookup = lookup_recipe("registry/agent:1", "v2026.11.0", "c1").files["Dockerfile"]
+    assert lookup.split("FROM", 1)[1] in df.split("FROM", 1)[1]      # the images' first layers
     install = next(i for i, x in enumerate(lines) if x.startswith("RUN mise install"))
     env = [i for i, x in enumerate(lines) if x.startswith("ENV UV_")]
     assert [lines[i] for i in env] == ['ENV UV_PYTHON_DOWNLOADS="never"',

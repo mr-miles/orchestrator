@@ -188,6 +188,13 @@ class FakeBuilder(EnvironmentBuilder):
         self.removed.append(change)
         return f"removed the images of {change}"
 
+    LATEST = {"python": "3.13.1", "uv": "0.13.2", "ruff": "0.15.0", "node": "24.1.0"}
+
+    async def latest_versions(self, tools, lookup):
+        """``mise latest``, as the lookup image would answer (``looked_up``: what was asked)."""
+        self.looked_up = getattr(self, "looked_up", []) + [list(tools)]
+        return {t: self.LATEST.get(t, "1.0.0") for t in tools}, "looked up"
+
     async def ensure_image(self, recipe):
         if self.hold is not None:
             await self.hold.wait()
@@ -271,9 +278,9 @@ ORACLE = {
 ENVIRONMENT = {
     "summary": "python project tested with uv",
     "profiles": {
-        "dev": {"tools": ["python@3.12", "uv", "ruff"],          # uv brings pypi
+        "dev": {"tools": ["python", "uv", "ruff"],          # uv brings pypi
                 "resources": {"memory_mib": 4096, "vcpus": 2}},
-        "check": {"tools": ["python@3.12", "uv", "ruff"], "offline": True},
+        "check": {"tools": ["python", "uv", "ruff"], "offline": True},
     },
     "roles": {"implementer": "dev", "oracle": "dev", "verifier": "check", "reviewer": "check"},
     "rationale": "pyproject pins 3.12; implementers add dependencies from pypi",

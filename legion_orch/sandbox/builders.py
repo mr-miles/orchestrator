@@ -29,10 +29,18 @@ class EnvironmentBuilder:
         stay. Never raises: what could not be removed is in the returned log."""
         return ""
 
+    async def latest_versions(self, tools: list[str], lookup: ImageRecipe) -> tuple[dict[str, str], str]:
+        """The latest version of each mise tool – ``mise latest`` in the ``lookup`` image (the
+        environment images' own mise) – and a log; BuildError when one cannot be looked up."""
+        raise NotImplementedError
+
 
 class NoBuilder(EnvironmentBuilder):
     async def ensure_image(self, recipe):
         return None, f"local runner: {recipe.tag} not built (default image)\n"
+
+    async def latest_versions(self, tools, lookup):
+        return dict.fromkeys(tools, "latest"), ""   # nothing is built: no version to pin
 
 
 
@@ -71,6 +79,21 @@ class PodmanBuilder(EnvironmentBuilder):
             await self._step(log, [pod, "push", recipe.tag], timeout=self.env.build_timeout_s)
         return recipe.tag, "\n".join(log)
 
+
+    async def latest_versions(self, tools, lookup):
+        image, log = await self.ensure_image(lookup)
+        lines = [log]
+        out: dict[str, str] = {}
+        for t in tools:
+            argv = [self.env.podman_bin, "run", "--rm", image or lookup.tag, "mise", "latest", t]
+            rc, text = await _run(argv, 300)
+            lines.append("$ " + " ".join(argv) + "\n" + text.rstrip()[-2000:])
+            version = text.strip().splitlines()[-1].strip() if rc == 0 and text.strip() else ""
+            if not version:
+                raise BuildError(f"`mise latest {t}` found no version ({rc}): "
+                                 f"{text.strip()[-500:]}\n" + "\n".join(lines)[-3000:])
+            out[t] = version
+        return out, "\n".join(lines)
 
     async def remove_change_images(self, change):
         """Local images only: a registry is shared, so deleting there is the operator's call."""

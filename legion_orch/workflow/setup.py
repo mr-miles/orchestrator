@@ -46,6 +46,16 @@ def tools(text: str) -> dict[str, str]:
     return out
 
 
+def tools_at(text: str | None) -> dict[str, str]:
+    """``[tools]`` of a mise.toml that may be missing or unreadable: none then."""
+    if text is None:
+        return {}
+    try:
+        return tools(text)
+    except MiseError:
+        return {}
+
+
 def blob_sha(text: str) -> str:
     """The git blob sha of ``text`` (what ``git rev-parse HEAD:mise.toml`` prints)."""
     data = text.encode()
