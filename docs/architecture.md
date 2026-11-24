@@ -6,6 +6,9 @@ guards, the tier policies – is specified in [WORKFLOW.md](../WORKFLOW.md) (§4
 model); the plans behind this structure are `~/plans/tickets-design.md` and
 `~/plans/tickets-3b.md`.
 
+For the whole application at four levels of zoom (system context, containers, components, code),
+see [c4.md](c4.md).
+
 ## 1. The layers
 
 Each layer uses only the layers below it. The **ticket rules** at the top are pure (no I/O);
