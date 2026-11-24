@@ -26,3 +26,5 @@ may be written again unchanged (it counts as yours).
 A decision owner signs off your requirements and risk (H-1). What to address from the last
 attempt (their reasons, or the answer to your question):
 {{findings}}
+
+If your assignment lists a `selection` input (a design review), write exactly one `REQ-<n>` per selected finding, each line naming its finding id (`F-<n>`) and what to build from the selection's `scope`; no requirement for dropped findings (G-DR4).

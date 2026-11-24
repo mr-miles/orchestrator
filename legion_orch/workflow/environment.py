@@ -28,7 +28,8 @@ from ..sandbox import Endpoint, Policy, Resources, Tool
 from ..sandbox.images import install_dir, merged_env
 
 # Roles that run before the environment exists (they always use the default sandbox).
-PRE_PROVISION_ROLES = {"intake", "planner", "critic"}
+PRE_PROVISION_ROLES = {"intake", "planner", "critic", "design-reviewer", "findings-reviewer",
+                       "selector"}
 VERIFIER = "verifier"           # the deterministic verifier sandbox, mappable like a role
 
 
