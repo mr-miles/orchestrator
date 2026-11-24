@@ -44,7 +44,7 @@ from legion_orch.workflow.tickets.spec import WorkflowSpec, check_policy
 from legion_orch.workflow.tickets.store import TicketRecords
 
 pytestmark = pytest.mark.anyio
-SPEC = WorkflowSpec.load(Path(__file__).resolve().parent.parent / "assets/workflow.yaml")
+SPEC = WorkflowSpec.load(Path(__file__).resolve().parent.parent / "assets/workflows/default.yaml")
 ASSETS = Assets(Path(__file__).resolve().parent.parent / "assets")
 NOW = Backoff(tries=2, first=0, cap=0)
 
@@ -316,9 +316,9 @@ def test_a_workflow_file_that_cannot_work_is_refused(tmp_path):
     def with_(change) -> Path:
         d = tmp_path / str(len(list(tmp_path.iterdir())))
         shutil.copytree(Path(__file__).resolve().parent.parent / "assets", d)
-        data = yaml.safe_load((d / "workflow.yaml").read_text())
+        data = yaml.safe_load((d / "workflows" / "default.yaml").read_text())
         change(data)
-        (d / "workflow.yaml").write_text(yaml.safe_dump(data))
+        (d / "workflows" / "default.yaml").write_text(yaml.safe_dump(data))
         return d
 
     def loops(d):
@@ -437,9 +437,9 @@ def test_check_refuses_signoffs_nobody_can_satisfy(tmp_path):
              "input 'secret' is no sign-off's output")]):
         d = tmp_path / str(n)
         shutil.copytree(root, d)
-        data = yaml.safe_load((d / "workflow.yaml").read_text())
+        data = yaml.safe_load((d / "workflows" / "default.yaml").read_text())
         change(data)
-        (d / "workflow.yaml").write_text(yaml.safe_dump(data))
+        (d / "workflows" / "default.yaml").write_text(yaml.safe_dump(data))
         with pytest.raises(AssetError, match=says):
             Assets(d)
 
