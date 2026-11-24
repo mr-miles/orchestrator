@@ -10,7 +10,8 @@ making design choices.
 - **Oracle (the plan's `oracle.json`):** acceptance tests that prove the requirements, kept separate
   from the builds so implementers cannot weaken them.
 - **Tickets:** small builds (one concern, ideally < 300 changed lines), ordered in groups, exact
-  `files_modified`, verification commands that really exercise the acceptance criteria.
+  `files_modified` (a directory prefix for the build's own area, exact paths for the shared wiring
+  it touches), verification commands that really exercise the acceptance criteria.
   Parallelise (one group) only where file sets are disjoint. Decide the scaffold: what the
   project's layout and tooling must be before tests and builds rely on it.
 - **Fixtures:** builds that need long scripted sequences (full games, draws, positions) get

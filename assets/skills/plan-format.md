@@ -16,7 +16,7 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
       "work": {
         "soul": "backend-engineer",          // senior-developer | backend-engineer | frontend-engineer
         "requirements": ["REQ-1"],
-        "files_modified": ["src/api/users.py", "tests/unit/test_users.py"],  // exact paths or dir/ prefixes
+        "files_modified": ["src/api/users/", "tests/unit/users/", "src/api/routes.py"],  // its area (dir/), exact shared files
         "files_forbidden": ["src/auth/"],
         "context": ["git:app/src/api/__init__.py@<sha>"],   // only what it needs beyond its inputs
         "instructions": "decision-complete instructions; no choices left to the implementer",
@@ -101,10 +101,22 @@ lets any correct implementation pass, and one that pins a shape by accident fail
 the change, contracts, and the acceptance criteria that prove it. `spec.md` is the overview tying
 them together.
 
-**`files_modified`** is the scope you expect a build to need – every file it creates or edits,
-its tests and wiring included. A build may go beyond it with a reason its reviewer judges, but
-each such change costs a review and a possible rework, and a file one build reaches into may be
-another's in the same group: scope builds so they rarely need to.
+**`files_modified`** is the scope you expect a build to need. Give it as:
+
+* **a directory prefix for the build's own area** (`src/api/users/`, `tests/unit/users/`): the
+  code and tests the build owns, including files it creates that you cannot name exactly yet –
+  a predicted file list misses the helpers, fixtures and small modules a real change grows;
+* **exact paths for shared files** it must also touch – the wiring around its area: route tables,
+  registries, `__init__` or index files, configuration, a lockfile or manifest when it adds a
+  dependency, generated files and snapshots its change regenerates. These are what plans miss
+  most: go through them for every build.
+
+Prefixes overlap more easily than exact paths: builds in one group must still be disjoint (G-P6),
+so give parallel builds separate directories, and put a shared file in exactly one of them (or
+the builds in sequence). Do not use a broad prefix (`src/`) to avoid thinking about scope – it
+defeats G-P6 and tells the reviewer nothing. A build may still go beyond its scope with a reason
+its reviewer judges, but each such change costs a review and a possible rework: scope builds so
+they rarely need to.
 
 **Verification surfaces** (R2+, G-P10) declare what the integration commands really reach and the
 files that make that true (compose files, schemas, fixtures) – pin what defines the real
