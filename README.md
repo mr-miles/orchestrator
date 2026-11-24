@@ -10,6 +10,8 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   each layer may know, as diagrams.
 * **[docs/c4.md](docs/c4.md)** shows the application at four levels of zoom (C4): its system
   context, its containers, the controller's components and the ticket workflow's classes.
+* **[docs/database.md](docs/database.md)** is the database schema as an entity-relationship
+  diagram: the immutable documents and the state tables.
 * **[assets/](assets/)** holds the agent-facing text and document schemas: `workflow.yaml` (every
   change's skeleton, the tier policies, the hooks), `roles.yaml`, `schemas/` (JSON Schemas bound to document paths; the store validates every write and records the schema),
   `souls/<soul>.md`, `skills/<skill>.md` and `prompts/<role>.md`. The controller loads and validates
