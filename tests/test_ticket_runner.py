@@ -21,6 +21,7 @@ from legion_orch.store.state_tables import StateTables
 from legion_orch.workflow.assets import Assets
 from legion_orch.workflow.tickets import (
     Add,
+    Remedy,
     Replan,
     Severity,
     Status,
@@ -88,6 +89,8 @@ class Hooks:
         self.plan, self._tier = plan, tier
         self.escalations: list[tuple[str, Waiting]] = []
         self.endings: list[Status] = []
+        self.discarded: list[Ticket] = []
+        self.fail: Exception | None = None             # what discard raises
         self._escalated: defaultdict[str, asyncio.Event] = defaultdict(asyncio.Event)
 
     async def escalation(self, tid: str, timeout: float = 10) -> None:
@@ -114,6 +117,11 @@ class Hooks:
 
     async def ended(self, status):
         self.endings.append(status)
+
+    async def discard(self, ticket):
+        self.discarded.append(ticket)
+        if self.fail is not None:
+            raise self.fail
 
 
 class Change:
@@ -484,3 +492,39 @@ async def test_a_replan_chosen_while_work_runs_applies_once_it_has_drained(tmp_p
     await r.settle()
     assert r.t.t["T1"].status == Status.FAILED and r.t.t["T1b"].status == Status.PASSED
     assert ch.hooks.endings == [Status.PASSED]
+
+
+async def _escalated_build(tmp_path):
+    ch = Change(tmp_path, planned(build("T1", "verify", "can-merge")), tier="R0")
+    r = await ch.runner()
+    ch.script.outcomes["T1"] = lambda work: Fault("the build cannot run here", transient=False)
+    await r.start()
+    await ch.hooks.escalation("T1")
+    return ch, r
+
+
+async def test_a_restart_discards_first_and_starts_the_ticket_at_attempt_1(tmp_path):
+    ch, r = await _escalated_build(tmp_path)
+    assert r.t.t["T1"].status == Status.WAITING
+    ch.script.outcomes.pop("T1")
+    await r.decide("T1", Remedy.RESTART)
+    [seen] = ch.hooks.discarded
+    assert seen.id == "T1" and seen.status == Status.WAITING          # before the reset
+    await r.settle()
+    assert r.t.t["T1"].attempt == 1 and r.t.t["T1"].status == Status.PASSED
+
+
+async def test_a_restart_whose_discard_fails_keeps_the_ticket_waiting(tmp_path):
+    ch, r = await _escalated_build(tmp_path)
+    before = r.t.t["T1"].model_copy(deep=True)
+    ch.hooks.fail = RuntimeError("no branch for you")
+    with pytest.raises(RuntimeError, match="no branch"):
+        await r.decide("T1", Remedy.RESTART)
+    assert r.t.t["T1"] == before and r.t.t["T1"].status == Status.WAITING
+
+
+async def test_a_refused_restart_does_not_discard(tmp_path):
+    ch, r = await _escalated_build(tmp_path)
+    with pytest.raises(TicketError):
+        await r.decide("delivery", Remedy.RESTART)                     # not waiting
+    assert ch.hooks.discarded == []

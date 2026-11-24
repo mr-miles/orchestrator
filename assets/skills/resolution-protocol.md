@@ -13,6 +13,11 @@ description: "How the resolver diagnoses a waiting ticket and proposes a remedy 
    * `waive:<criterion>` – a rejected, waivable criterion counts as passed; `payload:
      {"reason": "…"}` (required). Verification, preflight, can-merge and sign-offs cannot be
      waived;
+   * `restart` – the build starts afresh: its branch and its runs' sandboxes are deleted, then its
+     attempts, findings and runs are cleared and it starts at attempt 1 (run records and evidence
+     stay). Only for a build ticket with work of its own – never a grouping ticket, a criterion, a
+     ticket with subtasks or one whose merge is owed. Destructive: prefer `retry`, `waive` or
+     `replan` unless its work (branch, sandbox) is unsalvageable;
    * `replan` – the constraints must change; `payload: {"plan": <a replan document>}` (plan
      format skill: `add` after the completed groups, `cancel` or `update` tickets not started,
      `fail` work that cannot be finished). The plan either **replaces** the ticket – it lists it
