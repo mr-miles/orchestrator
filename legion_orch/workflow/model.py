@@ -408,6 +408,7 @@ class Change(Record):
     id: str
     goal: str
     workspace: str                  # the configured workspace (repository) it is made in
+    workflow: str = "default"       # the workflow it runs under, set at creation
     created_at: str = Field(default_factory=now_iso)
     status: ChangeStatus = ChangeStatus.ACTIVE
     base_sha: str | None = None

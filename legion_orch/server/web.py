@@ -41,6 +41,7 @@ from ..identity import make_token_endpoint
 from ..sandbox import agentlog
 from ..store import DocStoreError
 from ..util import bearer
+from ..workflow.assets import DEFAULT_WORKFLOW
 from ..workflow.engine import Controller, WorkflowError
 from ..workflow.model import LIVE_RUN
 from . import browse, views
@@ -243,7 +244,8 @@ def build_app(ctl: Controller) -> Starlette:
         return {"project": ctl.cfg.project, "workspaces": [w.name for w in ctl.cfg.workspaces],
                 "decision_owners": ctl.cfg.decision_owners, "assets_sha": ctl.assets.sha,
                 "version": ctl.version, "live_runs": ctl.live_count(),
-                "max_parallel": ctl.cfg.limits.max_parallel}
+                "max_parallel": ctl.cfg.limits.max_parallel,
+                "workflows": sorted(ctl.assets.workflows), "default_workflow": DEFAULT_WORKFLOW}
 
     @api()
     async def list_changes(_: Request):
@@ -439,7 +441,11 @@ def build_app(ctl: Controller) -> Starlette:
     # ---- writes (human decisions)
     @api(write=True)
     async def start_change(_: Request, body: dict):
-        ce = await ctl.start_change(str(body.get("goal", "")), str(body.get("workspace") or ""))
+        workflow = body.get("workflow")
+        if workflow is not None and not isinstance(workflow, str):
+            raise BadRequest("workflow must be a string")
+        ce = await ctl.start_change(str(body.get("goal", "")), str(body.get("workspace") or ""),
+                                    workflow or None)
         return {"change": ce.cid}
 
     @api(write=True)

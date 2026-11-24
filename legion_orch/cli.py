@@ -36,6 +36,8 @@ def _parser() -> argparse.ArgumentParser:
     st.add_argument("goal")
     st.add_argument("--workspace", "-w", required=True,
                     help="the workspace (repository) to make it in")
+    st.add_argument("--workflow", "-W", default=None, metavar="NAME",
+                    help="the workflow the change runs under (default: the default workflow)")
     sub.add_parser("changes", help="list changes on a running controller")
     sub.add_parser("attention", help="what needs a decision (gates, escalations) and the inbox "
                                      "(ended changes, retrospective reports)")
@@ -103,8 +105,11 @@ class OperatorClient:
     def digest(self, since: str) -> dict:
         return self._call("/api/digest?" + urllib.parse.urlencode({"since": since}))
 
-    def start(self, goal: str, workspace: str) -> dict:
-        return self._call("/api/changes", {"goal": goal, "workspace": workspace})
+    def start(self, goal: str, workspace: str, workflow: str | None = None) -> dict:
+        body = {"goal": goal, "workspace": workspace}
+        if workflow:
+            body["workflow"] = workflow
+        return self._call("/api/changes", body)
 
     def ticket_action(self, change: str, ticket: str, action: str, approver: str,
                       payload: dict) -> dict:
@@ -125,9 +130,9 @@ def cmd_check(cfg: Config, args) -> int:
         for w in wrong:
             print(f"error: {w}")
         return 1
-    if a.workflow is not None:
-        print(f"workflow: tiers={sorted(a.workflow.tiers)} "
-              f"skeleton={[g[0].id for g in a.workflow.skeleton.subtasks]}")
+    for name, spec in sorted(a.workflows.items()):
+        print(f"workflow {name}: tiers={sorted(spec.tiers)} "
+              f"skeleton={[g[0].id for g in spec.skeleton.subtasks]}")
     if cfg.environment is not None:
         from .workflow.environment import Library
         lib = Library.for_config(cfg, a.schemas)
@@ -214,7 +219,7 @@ def cmd_digest(cfg: Config, args) -> int:
 
 
 def cmd_start(cfg: Config, args) -> int:
-    return _show(OperatorClient(cfg).start(args.goal, args.workspace))
+    return _show(OperatorClient(cfg).start(args.goal, args.workspace, args.workflow))
 
 
 def cmd_act(cfg: Config, args) -> int:
