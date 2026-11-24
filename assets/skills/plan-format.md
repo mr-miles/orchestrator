@@ -91,6 +91,10 @@ sends the oracle back; a command the verifier image lacks stops the change for a
 **Criteria** name the acceptance tests and commands that check them (`tests` ⊆
 `acceptance_tests`, `commands` ⊆ `acceptance_commands`, G-P12). Give every criterion at least one
 and cover every accepted requirement with at least one criterion.
+Write each criterion as observable behaviour (`GET /users/{id} returns 404 for unknown ids`), and
+fix an exact format – output text, field order – only where the requirement needs that format: the
+oracle tests what a criterion states and nothing more, so a criterion that leaves a shape open
+lets any correct implementation pass, and one that pins a shape by accident fails them.
 
 **Delta specs:** one document per accepted requirement, `specs/<REQ-id>.md`: current behaviour,
 the change, contracts, and the acceptance criteria that prove it. `spec.md` is the overview tying

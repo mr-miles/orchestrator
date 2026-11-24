@@ -726,6 +726,14 @@ configuration they depend on is listed in `oracle.protected_support` and protect
 (G-P7, G-O1, G-INT2). The test-engineer soul requires this, the critic checks it, and humans
 sign it at H-2. Per-build verification commands are a faster, weaker check backed by review.
 
+The tests check what the criteria state and nothing more: a test per criterion (a few when it
+names several cases), asserting the properties it names – not an exact output, snapshot, message
+wording or format the criterion leaves open – and an edge case only where the spec names one.
+A test that pins a shape the spec does not ask for fails correct builds, and the rework lands on
+the implementer when the defect is the test's. So the planner writes criteria as observable
+behaviour, fixing a format only where the requirement needs it, and the critic flags criteria
+that pin one by accident.
+
 ### 5.5 `controller:baseline` (R3) – independent baseline (`plan` ▸ `acceptance` ▸ `baseline`)
 
 What is true of the code before any build: which acceptance tests fail (as they should, until the
