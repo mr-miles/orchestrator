@@ -5,6 +5,7 @@ modules here (or by the engine), grouped by workflow stage:
 * intake.py – requirements and risk (G-I*),
 * plan.py   – task graph and oracle (G-P*), fix rounds (G-FR*), waves,
 * environment.py – the sandbox environment spec (G-E1..G-E4),
+* design.py – design-review documents across each other (G-DR1..G-DR4),
 * review.py – findings and verdicts (G-C1, G-RV*, G-INT1),
 * work.py   – scoped diffs, evidence, result coverage, release documents,
 * pr.py     – the pull request description and its review (G-PR*).
@@ -13,6 +14,7 @@ Guards are pure functions over documents and data; they return violation strings
 the guard id. Callers use the names re-exported here.
 """
 from .common import load_json
+from .design import findings_problems, requirements_problems, review_problems, selection_problems
 from .environment import environment
 from .intake import intake, requirements_ids
 from .plan import plan, scaffold, waves
@@ -22,8 +24,9 @@ from .review import critique, findings, verdict
 from .work import evidence_mentions, recovery_strategy, release_docs, results_cover, scoped_diff
 
 __all__ = [
-    "PR_DOC", "critique", "environment", "evidence_mentions", "findings",
+    "PR_DOC", "critique", "environment", "evidence_mentions", "findings", "findings_problems",
     "intake", "load_json", "plan", "pr_body", "pr_description", "pr_review", "pr_title",
     "release_docs", "report_limits", "report_shape", "required_git", "required_outputs", "scaffold",
-    "recovery_strategy", "requirements_ids", "results_cover", "scoped_diff", "verdict", "waves",
+    "recovery_strategy", "requirements_ids", "requirements_problems", "results_cover",
+    "review_problems", "scoped_diff", "selection_problems", "verdict", "waves",
 ]
