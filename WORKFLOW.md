@@ -443,11 +443,14 @@ adds produces, say, a new `environment` – says only that; what follows is mech
 
 * the producing ticket gets a sign-off of what it revises – a copy of the passed sign-off that
   approved those outputs, signing just what it produces (`H-E1.2`) – unless the replan gives it
-  one;
+  one. If what it signs includes what the original applies (the planner's `tickets`), approving
+  it applies that too: a revised design's plan adds builds and cancels pending ones, against the
+  tree as it is, under the tier's policy like any replan;
 * when that sign-off passes and moves a pointer to a **different** version, every finished
   ticket that consumed the old one (its `inputs`) and whose type `workflow.yaml`'s `stale` says
   to `redo` – the provisioning, the oracle – gets a new instance (`provision.2`: the same work,
-  fresh criteria) in a new subtask group right after the producer, applied with the sign-off's
+  fresh criteria; a redo type has one ticket per change, so instances are matched by type – the
+  id is only a name) in a new subtask group right after the producer, applied with the sign-off's
   verdict (held, and the workflow paused, until nothing else is active). Every other finished
   ticket stands: builds' code is committed, and the replan itself adds new builds or cancels
   pending ones; the baseline is a snapshot from before any build. A version unchanged by the

@@ -3,11 +3,11 @@ revises is signed off again, and a sign-off that moves an approved output to a n
 renews the finished work of a `redo` type that consumed it – nothing else."""
 from __future__ import annotations
 
-from engine_harness import Flow, scenario
+from engine_harness import TASKS, Flow, plan_doc, scenario
 from test_tickets import T, crit
 
 from legion_orch.workflow.tickets import Add, Replan, Status, Ticket, Tickets
-from legion_orch.workflow.tickets.stale import followups, lineage, next_id, resign
+from legion_orch.workflow.tickets.stale import followups, next_id, resign
 
 OUTPUTS = {"agent:planner": ["spec", "environment", "tickets"]}
 
@@ -18,6 +18,7 @@ def change() -> Tickets:
         T("plan", "c", subtasks=[["design"], ["provision"]]),
         T("design", "plan", type="agent:planner", criteria=["H-E1"]),
         crit("H-E1", "design", type="human:signoff", signs=["spec", "environment", "tickets"],
+             applies="tickets",
              waivable=False),
         T("provision", "plan", type="controller:provision", inputs=["environment"]),
         T("delivery", "c", subtasks=[["T1"]]),
@@ -33,7 +34,6 @@ def change() -> Tickets:
 def test_ids_of_new_instances():
     assert next_id("provision", ["provision"]) == "provision.2"
     assert next_id("provision.2", ["provision", "provision.2"]) == "provision.3"
-    assert lineage("provision.3") == lineage("provision") == "provision"
 
 
 def test_a_replans_revision_of_approved_outputs_is_signed_off_again():
@@ -42,12 +42,16 @@ def test_a_replans_revision_of_approved_outputs_is_signed_off_again():
     assert resign(t.t, plan, OUTPUTS) == ["H-E1.2"]
     [s] = plan.add[0].tree
     assert (s.parent, s.type, s.signs, s.applies) == ("redesign", "human:signoff",
-                                                     ["spec", "environment", "tickets"], None)
+                                                     ["spec", "environment", "tickets"], "tickets")
     assert plan.add[0].ticket.criteria == ["H-E1.2"]
     again = Replan(add=[Add(T("redesign", type="agent:planner", criteria=["mine"]), "delivery", 1,
                             tree=[crit("mine", "redesign", type="human:signoff",
                                        signs=["environment"])])])
     assert resign(t.t, again, OUTPUTS) == []                 # it has its own
+    env = Replan(add=[Add(T("env", type="agent:envplanner"), "delivery", 1)])
+    [e] = resign(t.t, env, {"agent:envplanner": ["environment"]})
+    assert (env.add[0].tree[0].signs, env.add[0].tree[0].applies) == (["environment"], None)
+    assert e == "H-E1.2"                                     # it does not produce the tickets
     build = Replan(add=[Add(T("T2", type="agent:implementer"), "delivery", 1)])
     assert resign(t.t, build, OUTPUTS) == []                 # it produces nothing approved
 
@@ -87,7 +91,9 @@ async def test_a_revised_environment_is_signed_off_and_provisioned_again(f: Flow
         await f.review("T1")
     redesign = f.ticket("redesign")
     assert redesign.criteria == ["H-E1.2"] and f.ticket("H-E1.2").type == "human:signoff"
-    res = await f.plan(tid="redesign", doc={"add": []}, environment={
+    build = plan_doc([{**TASKS[0], "id": "T2", "title": "greet again"}],
+                     ("verify", "review", "can-merge"))["add"]
+    res = await f.plan(tid="redesign", doc={"add": [{**build[0], "group": 99}]}, environment={
         "summary": "the default image, revised", "profiles": {"default": {"tools": []}},
         "roles": {}, "rationale": "a tool was missing"})
     assert res.accepted, res
@@ -98,3 +104,4 @@ async def test_a_revised_environment_is_signed_off_and_provisioned_again(f: Flow
     await f.settle()
     assert f.status("provision.2") == "passed" and f.status("provision") == "passed"
     assert "T1.2" not in f.ce.st.tickets                  # the build stands
+    assert f.ticket("T2").parent == "delivery"            # the revised plan applied
