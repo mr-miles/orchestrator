@@ -764,10 +764,15 @@ done: its card stays in the catalog, and a message to it resumes the session to 
 is unsure what a test means, or thinks one is wrong, asks it (`oracle@oracle`). When delivery
 closes its sandbox goes, like any closed ticket's.
 
-**A test that is wrong.** Only the oracle decides that a failure is its test's fault, not the
-code's: whoever suspects a test – an implementer, the integration verifier, the resolver – asks
-it, and it either explains what the test checks or, answering, calls `test_defect(tests,
-reason)` (its protected tests only). The controller then plans the fix:
+**A test that is wrong.** The approved criteria (the oracle document and the delta specs,
+signed at H-E1) are fixed; what can be wrong is a test's **implementation** – it checks more or
+other than its criterion states, or checks it wrongly. Only the oracle decides that, against the
+criteria: whoever suspects a test – an implementer, the integration verifier, the resolver – asks
+it, and it answers one of three ways: the test is faithful and the code is wrong (it explains);
+the test is not faithful to its criterion (it calls `test_defect(tests, reason)`, its protected
+tests only); or the criterion itself looks wrong – not the oracle's to change, and never a reason
+to fit a test to the code: it sends the asker to the resolver, and a human decides (a replan of
+the design, not of the tests). On a confirmed defect the controller plans the fix:
 
 * the oracle's next instance (`oracle.2`: the same work, fresh copies of its criteria, H-2
   included) at the end of `delivery`, told the reason as its findings, in the oracle's own

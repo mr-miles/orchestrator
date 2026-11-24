@@ -295,7 +295,9 @@ class TicketFlow:
             raise WorkflowError(f"not the oracle's tests: {bad}")
         if self.runner is None:
             raise WorkflowError("the change has no tickets yet")
-        finding = f"BLOCKER: the oracle confirmed these tests are wrong – {', '.join(tests)}: {reason}"
+        finding = (f"BLOCKER: the oracle confirmed these tests are not faithful to their criteria "
+                   f"– {', '.join(tests)}: {reason}. Fix the tests' implementation; the approved "
+                   "criteria are unchanged.")
         async with c.lock:
             t = c.tickets.t
             mine = [x for x in t.values() if x.type == self.ORACLE]

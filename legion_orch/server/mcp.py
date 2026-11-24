@@ -184,12 +184,13 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         return out
 
     @server.tool(description="The oracle only, while answering a message: confirm that some of "
-                             "your protected tests are wrong (not the code). tests: their paths; "
-                             "reason: what is wrong and what the test should check instead. The "
-                             "controller adds a fix – your next round, in your session, at the "
-                             "end of delivery – and a human signs the revised tests. Use it only "
-                             "when the test contradicts the spec or criterion, never to make a "
-                             "build pass.")
+                             "your protected tests are not faithful to their criteria (the test's "
+                             "implementation is wrong, not the code). tests: their paths; "
+                             "reason: what the test does wrong and what it must check instead to "
+                             "be faithful to its criterion. The controller adds a fix – your next "
+                             "round, in your session, at the end of delivery – and a human signs "
+                             "the revised tests. The criteria are fixed: never use it because a "
+                             "criterion looks wrong, or to make a build pass.")
     async def test_defect(ctx: Context, tests: list[str], reason: str) -> dict:
         ce, r = current(ctx)
         try:
