@@ -195,7 +195,8 @@ class RetrospectiveConfig(Section):
     # Judges are skipped: what they missed shows in later outcomes (findings.json), not in
     # their own account, and the panel would otherwise reflect once per member per cycle.
     reflect_skip_roles: list[str] = Field(default_factory=lambda: [
-        "retrospective", "reviewer", "security", "architecture", "critic"])
+        "retrospective", "reviewer", "security", "architecture", "critic",
+        "findings-reviewer"])
 
 
 class EnvironmentConfig(Section):

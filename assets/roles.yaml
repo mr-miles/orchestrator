@@ -107,3 +107,24 @@ resolver:
   git: none
   report_schema: report-none
   repo: true
+design-reviewer:
+  soul: design-reviewer
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, codebase-design, blocked-protocol]
+  outputs: [findings]
+  git: none
+  report_schema: report-none
+  repo: true
+findings-reviewer:
+  soul: findings-reviewer
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, finding-format, blocked-protocol]
+  outputs: [findings-review]
+  git: none
+  report_schema: report-critique
+  repo: true
+selector:
+  soul: design-selector
+  skills: [harness-contract, a2a-protocol, a2a-cli, docstore-protocol, attestation-format, blocked-protocol]
+  outputs: [selection]
+  git: none
+  report_schema: report-none
+  repo: true
