@@ -87,6 +87,8 @@ class Ticket(BaseModel):
     applies: str | None = None             # (sign-offs) what its pass applies: the output it signs
                                            # that is a replan (``tickets``), or ``tier``
     limit: int = 3                         # attempts allowed (its own work's reruns)
+    keep: bool = False                     # (an agent's) its sandbox stays, stopped, after it closes
+                                           # until its parent does: others consult its agent
     # state
     status: Status = Status.PENDING
     attempt: int = 0                       # rounds of its own work so far (0: not started)

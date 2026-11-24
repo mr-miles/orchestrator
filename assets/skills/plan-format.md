@@ -10,7 +10,7 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
 
 ```json
 {"add": [
-   {"into": "delivery", "group": 0, "ticket": {
+   {"into": "builds", "group": 0, "ticket": {
       "id": "T1", "type": "agent:implementer", "goal": "Add the user lookup endpoint",
       "inputs": ["spec", "specs"],
       "work": {
@@ -25,8 +25,8 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
       "criteria": [{"id": "verify:T1", "type": "controller:verify"},
                    {"id": "review:T1", "type": "agent:reviewer"},
                    {"id": "can-merge:T1", "type": "controller:can-merge"}]}},
-   {"into": "delivery", "group": 0, "join": true, "ticket": {"id": "T2", …}},
-   {"into": "delivery", "group": 1, "ticket": {"id": "T3", …}}],
+   {"into": "builds", "group": 0, "join": true, "ticket": {"id": "T2", …}},
+   {"into": "builds", "group": 1, "ticket": {"id": "T3", …}}],
  "update": {"scaffold": {"work": {…}}},     // or "cancel": ["scaffold"]
 }
 ```
@@ -34,9 +34,10 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
 * **Groups are the order.** `group` is the index of a subtask group under `into`; tickets in one
   group run in parallel (the first opens it, the others `"join": true`), and a group starts from
   the head the earlier groups merged into. Put a build in a later group when it needs another's
-  code. Once every build has merged, `delivery`'s own criteria judge them together – the
-  oracle's commands at its head, then the integration verifier: they are the skeleton's, not
-  yours.
+  code. Builds go `into: builds`, the skeleton's group for them inside `delivery` – after the
+  oracle's tests (R2+), so every build starts with the tests there. Once every build has merged,
+  `delivery`'s own criteria judge them together – the oracle's commands at its head, then the
+  integration verifier: they are the skeleton's, not yours.
 * **Ids** are names: builds `T1`, `T2` …, their criteria `<kind>:<build>` (`verify:T1`,
   `review:T1`, `security:T1`, `can-merge:T1`). Unique across the change.
 * **Criteria** run in order after the build, on its commit: `controller:verify` first (its

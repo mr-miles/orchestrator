@@ -614,7 +614,7 @@ NO_ENVIRONMENT = {"summary": "the default image", "profiles": {"default": {"tool
 
 
 def plan_doc(tasks: list[dict], criteria: tuple[str, ...], scaffold: dict | None = None) -> dict:
-    """The planner's tickets for task-like dicts: each a build under ``delivery`` with
+    """The planner's tickets for task-like dicts: each a build under ``builds`` with
     ``criteria`` (``verify``, ``review``, ``security``, ``can-merge``), grouped by its
     ``depends_on`` (a task's group comes after its dependencies'); the skeleton's ``scaffold``
     given its work (``scaffold``), else cancelled. (The integration is ``delivery``'s criterion:
@@ -628,7 +628,7 @@ def plan_doc(tasks: list[dict], criteria: tuple[str, ...], scaffold: dict | None
     for t in sorted(tasks, key=lambda t: level[t["id"]]):
         g = level[t["id"]]
         work = {k: v for k, v in t.items() if k not in ("id", "title", "depends_on")}
-        adds.append({"into": "delivery", "group": g, "join": g in first, "ticket": {
+        adds.append({"into": "builds", "group": g, "join": g in first, "ticket": {
             "id": t["id"], "type": "agent:implementer", "goal": t.get("title", t["id"]),
             "inputs": ["spec", "specs"], "work": work,
             "criteria": [{"id": f"{c}:{t['id']}", "type": types[c]} for c in criteria]}})

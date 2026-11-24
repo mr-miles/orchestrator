@@ -129,7 +129,7 @@ class RunLifecycle:
             if t.role == "criterion" and t.status not in CLOSED:
                 changed |= self._release_judges(t, live | in_turn)
                 continue
-            if held(t):
+            if held(t, self.c.tickets.t):
                 continue
             mine = {self.c.runs[r].sandbox for r in t.runs if r in self.c.runs} | (
                 {t.sandbox} if t.sandbox else set())
@@ -137,7 +137,8 @@ class RunLifecycle:
                 t.sandbox, changed = None, True
             for sb in mine - live - self.sandboxes.retiring - self._ended - {None}:
                 if any(r.sandbox == sb and not r.sandbox_deleted for r in self.c.runs.values()) \
-                        and not any(held(x) and x.sandbox == sb for x in self.c.tickets.t.values()):
+                        and not any(held(x, self.c.tickets.t) and x.sandbox == sb
+                                    for x in self.c.tickets.t.values()):
                     self.c.event("sandbox", f"releasing {sb}: {t.id} is closed", t.id)
                     self._ended.add(sb)
                     self.sandboxes.delete_later(sb, self._stopped(sb))

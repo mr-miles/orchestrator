@@ -4,7 +4,7 @@ signs it passes.
 
 ::
 
-    {"add": [{"into": "delivery", "group": 0, "join": false,
+    {"add": [{"into": "builds", "group": 0, "join": false,
               "ticket": {"id": "T1", "type": "agent:implementer", "goal": "…",
                          "labels": [], "inputs": ["spec"], "work": {…},
                          "criteria": [{"id": "verify:T1", "type": "controller:verify"}, …],

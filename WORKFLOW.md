@@ -21,14 +21,17 @@ change
 ├─ workspace       sync (the change's base)
 ├─ requirements    intake ✓H-1
 ├─ plan            design (planner) ✓critique ✓H-E1 → provision → scaffold ✓verify ✓review ✓can-merge
-│                  → [acceptance: oracle ✓preflight ✓H-2 → baseline ✓H-2b]
-├─ delivery        the planner's builds (each ✓verify ✓review… ✓can-merge)   ✓verify ✓integration
+├─ delivery        [oracle ✓preflight ✓H-2 → baseline ✓H-2b] → builds: the planner's (each
+│                  ✓verify ✓review… ✓can-merge)                         ✓verify ✓integration
 ├─ evaluate        describe                                        ✓H-3
 └─ release         publish
 ```
 
 `✓` marks a criterion, `→` the order of subtask groups, `[…]` R2+ (the baseline R3). The planner
-gives `scaffold` its work or cancels it (§5.3d). The
+gives `scaffold` its work or cancels it (§5.3d), and puts its builds `into: builds`. The oracle
+is delivery's first ticket: its agent is kept – stopped, its session intact – until delivery is
+done (`keep`), so implementers, the integration verifier and the resolver can ask it what a test
+means (§5.4). The
 contract is the one of [legion-ascended](https://github.com/9thLevelSoftware/legion-ascended): **the
 controller refuses to call a change done until the evidence its risk tier demands exists** – here,
 until every ticket its tier's policy requires has passed every criterion, the human sign-offs
@@ -290,7 +293,7 @@ scope_breadth, novelty_uncertainty, verification_quality`).
 * Hard floors: any signal at 3 ⇒ `R3`; a score of 2 on any signal other than
   `novelty_uncertainty` / `verification_quality` ⇒ at least `R2`.
 * Tier = max(threshold, floors), computed from the `risk` output H-1 signs; signing it fixes the
-  tier and **applies** it: the skeleton tickets only that tier has (`acceptance` at R2+, its
+  tier and **applies** it: the skeleton tickets only that tier has (the `oracle` at R2+, the
   `baseline` at R3) are linked into the tree, and the tier's attempt limits set on the tickets not
   yet started.
 
@@ -717,7 +720,7 @@ every choice the acceptance tests depend on, and verification commands that pass
 Until it has passed no agent's sandbox runs the repository's setup (what it needs does not exist
 yet); its own verification does, at its commit.
 
-### 5.4 `oracle` (R2+) – protected acceptance tests (`plan` ▸ `acceptance` ▸ `oracle`)
+### 5.4 `oracle` (R2+) – protected acceptance tests (`delivery` ▸ `oracle`)
 
 * **Soul:** `test-engineer`  **Skills:** `harness-contract`, `docstore-protocol`, `attestation-format`, `git-protocol`, `blocked-protocol`, `language-preferences`
 * **Inputs:** `spec`, `specs`, `oracle`  **Outputs:** `tests` (`tests.md`), git `commit` on its branch
@@ -726,7 +729,7 @@ yet); its own verification does, at its commit.
 | --- | --- |
 | G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`. |
 | G-O2 | Every acceptance test path exists at the commit. |
-| H-2 | After preflight, a decision owner signs the oracle's `tests`; the pass merges its commit into the integration branch before any build. A rejection reworks the oracle. |
+| H-2 | After preflight, a decision owner signs the oracle's `tests`; the pass merges its commit into delivery's branch before any build. A rejection reworks the oracle. |
 
 From the merge on these paths are **protected**: any later diff touching them fails G-B3 and
 G-INT2.
@@ -754,7 +757,13 @@ the implementer when the defect is the test's. So the planner writes criteria as
 behaviour, fixing a format only where the requirement needs it, and the critic flags criteria
 that pin one by accident.
 
-### 5.5 `controller:baseline` (R3) – independent baseline (`plan` ▸ `acceptance` ▸ `baseline`)
+**Kept for questions** (`keep`). The oracle's ticket passes at H-2 – the builds start from its
+merge – but its agent stays, its sandbox stopped and its session intact, until `delivery` is
+done: its card stays in the catalog, and a message to it resumes the session to answer. Whoever
+is unsure what a test means, or thinks one is wrong, asks it (`oracle@oracle`). When delivery
+closes its sandbox goes, like any closed ticket's.
+
+### 5.5 `controller:baseline` (R3) – independent baseline (`delivery` ▸ `baseline`)
 
 What is true of the code before any build: which acceptance tests fail (as they should, until the
 change is built) and which failures were already there. It is deterministic, so the controller

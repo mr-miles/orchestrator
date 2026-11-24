@@ -183,7 +183,7 @@ class Sandboxes:
         Nothing is held once the change is no longer active."""
         if not ticket.sandbox or self.c.change.status != "ACTIVE":
             return False
-        return held(ticket)
+        return held(ticket, self.c.tickets.t)
 
     def held(self) -> set[str]:
         return {t.sandbox for t in self.c.tickets.t.values() if self.holds(t)}

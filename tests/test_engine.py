@@ -908,6 +908,20 @@ R2 = signals(scope_breadth=2, novelty_uncertainty=2, verification_quality=2)   #
 
 
 @scenario()
+async def test_the_oracle_is_kept_for_questions_until_delivery_is_done(f: Flow):
+    await f.to_build(R2)
+    oracle = f.runs("oracle", "oracle")[-1]
+    assert f.status("oracle") == "passed" and oracle.sandbox not in f.runner.deleted
+    assert f.ce._sandboxes.answerer.session_run("oracle", "oracle") is not None   # consultable
+    await f.implement("T1")
+    await f.review("T1")
+    assert oracle.sandbox not in f.runner.deleted                       # still, until delivery
+    await f.integration()
+    await f.settle()
+    assert f.status("delivery") == "passed" and oracle.sandbox in f.runner.deleted
+
+
+@scenario()
 async def test_at_r2_the_oracle_is_signed_off_before_any_build(f: Flow):
     await f.intake(R2)
     await f.signoff("H-1")
@@ -919,9 +933,9 @@ async def test_at_r2_the_oracle_is_signed_off_before_any_build(f: Flow):
     await f.oracle()
     assert f.status("preflight") == "passed"           # the oracle's commands, verified
     await f.signoff("H-2")
-    assert "tests/acceptance/test_greet.sh" in files_at(f, f"legion/{f.ce.cid}/integration")
+    assert "tests/acceptance/test_greet.sh" in files_at(f, f"legion/{f.ce.cid}/t/delivery")
     r = f.run("T1", "implementer")                      # the build starts at the oracle's merge
-    assert r.base_sha == f.ce.tickets.t["change"].sha
+    assert r.base_sha == f.ce.tickets.t["delivery"].sha
 
 
 @scenario()
