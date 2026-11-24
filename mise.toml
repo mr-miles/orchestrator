@@ -15,6 +15,11 @@ _.python.venv = { path = ".venv", create = true }
 [settings]
 python.uv_venv_auto = true
 
+[tasks.setup]
+description = "Fresh clone: the web UI's dependencies (bun.lock) and its generated API types (frontend/src/lib/api.gen.ts)"
+dir = "frontend"
+run = ["bun install --frozen-lockfile", "bun run types"]
+
 [tasks.install]
 description = "Install the package (editable) with test and dev extras into .venv, as uv.lock pins them"
 run = "uv sync -q --locked --extra test --extra dev"
