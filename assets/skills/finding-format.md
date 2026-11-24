@@ -20,5 +20,5 @@ Report findings in `data.findings`, and mirror them in your markdown document:
 - Every attestation a finding cites must **also** be in the report's top-level `attestations`
   (G-RV2, G-C1, G-INT1 reject the report otherwise).
 - `data.verdict` is `PASS` only if there is no HIGH BLOCKER/WARNING. `data.checked` lists what you
-  examined (required for a first-cycle PASS).
-- Review the **output** (the diff at the candidate sha), not the plan.
+  examined (required for a PASS on the first attempt).
+- Review the **output** (the diff at the commit you judge), not the plan.

@@ -1,4 +1,5 @@
-"""Risk signals -> tier -> gates (mirrors legion-ascended DEFAULT_RISK_POLICY)."""
+"""Risk signals -> tier (mirrors legion-ascended DEFAULT_RISK_POLICY's thresholds and floors);
+what a tier requires of the plan is its policy in assets/workflow.yaml."""
 from __future__ import annotations
 
 from .model import RiskAssessment, RiskFloor
@@ -11,25 +12,6 @@ SIGNALS = [
 # Signals whose score of 2 forces at least R2 (all except novelty/verification quality).
 R2_FLOOR_AT_2 = set(SIGNALS) - {"novelty_uncertainty", "verification_quality"}
 TIERS = ["R0", "R1", "R2", "R3"]
-
-GATES_BY_TIER: dict[str, list[str]] = {
-    "R0": ["current_task_contract_or_small_change_record", "deterministic_verification",
-           "evidence_note", "pr_description_verified"],
-    "R1": ["task_contract", "scoped_implementer_run", "deterministic_verification",
-           "evidence_bundle_or_log", "lightweight_independent_review", "pr_description_verified"],
-    "R2": ["approved_delta_spec", "protected_oracle", "task_contract",
-           "deterministic_verification", "task_level_independent_review",
-           "integration_or_real_interface_checks", "whole_change_acceptance_evidence",
-           "pr_description_verified"],
-    "R3": ["independent_baseline", "approved_spec_and_oracle", "protected_oracle",
-           "deterministic_verification", "architecture_or_security_review",
-           "protected_acceptance_tests", "security_or_e2e_evaluator", "explicit_human_approval",
-           "pr_description_verified"],
-}
-# For a workflow that updates a live system (a release step: release/plan.md, rollback.md), in
-# no tier today; a change can still be given them (an add_gate override).
-RELEASE_GATES = ["release_observation_plan", "rollback_or_forward_fix_evidence"]
-
 
 def rank(tier: str) -> int:
     return TIERS.index(tier)

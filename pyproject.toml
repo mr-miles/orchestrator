@@ -77,11 +77,10 @@ dev = [
 root_package = "legion_orch"
 
 [[tool.importlinter.contracts]]
-name = "The engine's layers: runtime > steps > services > sandboxes > base"
+name = "The engine's layers: flow > services > sandboxes > base"
 type = "layers"
 layers = [
-    "legion_orch.workflow.engine.runtime",
-    "legion_orch.workflow.engine.steps",
+    "legion_orch.workflow.engine.flow",
     "legion_orch.workflow.engine.services",
     "legion_orch.workflow.engine.sandboxes",
     "legion_orch.workflow.engine.base",
@@ -94,15 +93,12 @@ source_modules = [
     "legion_orch.server",
     "legion_orch.cli",
     "legion_orch.workflow.roles",
-    "legion_orch.workflow.governance",
     "legion_orch.workflow.guards",
-    "legion_orch.workflow.ship",
     "legion_orch.workflow.attention",
     "legion_orch.workflow.view",
 ]
 forbidden_modules = [
-    "legion_orch.workflow.engine.runtime",
-    "legion_orch.workflow.engine.steps",
+    "legion_orch.workflow.engine.flow",
     "legion_orch.workflow.engine.services",
     "legion_orch.workflow.engine.sandboxes",
     "legion_orch.workflow.engine.base",
@@ -113,17 +109,14 @@ forbidden_modules = [
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
-name = "The facade never sees the step layer: it fronts the runtime"
+name = "The facade never sees the sandbox layer: it fronts the workflow and the services"
 type = "forbidden"
 source_modules = ["legion_orch.workflow.engine.change", "legion_orch.workflow.engine.controller"]
-forbidden_modules = [
-    "legion_orch.workflow.engine.steps",
-    "legion_orch.workflow.engine.sandboxes",
-]
+forbidden_modules = ["legion_orch.workflow.engine.sandboxes"]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
-name = "The workflow core is pure: no engine"
+name = "The tickets know no engine: its services fill the executors' ports"
 type = "forbidden"
-source_modules = ["legion_orch.workflow.flow"]
+source_modules = ["legion_orch.workflow.tickets"]
 forbidden_modules = ["legion_orch.workflow.engine"]

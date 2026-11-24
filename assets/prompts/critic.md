@@ -1,17 +1,17 @@
-# Assignment: critique the plan for change {{change_id}} (cycle {{cycle}})
+# Assignment: critique the plan of change {{change_id}} (attempt {{attempt}})
 
-Plan under review: {{context_refs}}
+The plan under review – the design's outputs – and what it is based on: {{context_refs}}
 
 Repository at `{{workdir}}`, commit `{{base_sha}}` – verify assumptions against it.
 
-Run the pre-mortem skill. Write `{{plan}}/critique/cycle-{{cycle}}.md`. Report with
-`data.verdict` (`PASS`/`REWORK`) and `data.findings`, attesting the **latest** versions of
-`{{plan}}/spec.md`, `{{plan}}/oracle.json`, `{{plan}}/taskgraph.json` (and `{{plan}}/environment.json` when it is
-among your inputs) – G-C1 – and every attestation your findings cite. Check with
+Run the pre-mortem skill against the plan format and the workflow skills. Write
+`tickets/{{ticket_id}}/critique.md` (on a later attempt it exists: `docs_read` it and pass its
+version as `base_version`; your predecessor's critique is its earlier version). Report with
+`data.verdict` (`PASS`/`REWORK`) and `data.findings`, `outputs: {"critique": …}`, attesting the
+**latest** version of every design output (`spec`, each delta spec, `oracle`, `environment`,
+`tickets`) – G-C1 – and every attestation your findings cite. Check with
 `report(..., dry_run=true)` before reporting.
 
 {{scaffold}}
 
-{{fix_round}}
-
-Previous critique cycles: {{feedback}}
+Your outputs: {{outputs}}, in your ticket's directory ({{write_scope}}).

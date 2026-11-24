@@ -26,10 +26,9 @@ server:
   # operator_token: set LEGION_OPERATOR_TOKEN instead of committing it
 limits:
   max_parallel: 4            # sandboxes in use at once: live agent runs and verifiers
-  review_max_cycles: 3
-  critique_max_cycles: 3
-  fix_rounds: 2                 # fix rounds after a late integration failure (WORKFLOW.md §5.10a)
   max_report_attempts: 3
+  system_retries: 4          # a system error is retried by itself, then waits on a human
+  system_retry_s: 2          # the first wait; twice as long each time
   run_timeout_s: 3600
   verify_timeout_s: 1800
   setup_timeout_s: 900           # mise.toml's setup task after each checkout (WORKFLOW.md §5.3c)
@@ -75,7 +74,7 @@ identity:                        # SPIFFE/SPIRE workload identity (see legion_or
   subject_field: id              # field of `openshell sandbox get -o json` used in the SPIFFE ID
 notify:                          # what needs a decision, sent to people (WORKFLOW.md §2.2); optional
   ui_url: http://127.0.0.1:8765/ # links in notifications open the item here
-  items: [gate, escalation, not_ready, question]   # also: change_ended, retrospective (the inbox)
+  items: [gate, escalation, paused, question]   # also: change_ended, retrospective (the inbox)
   remind_after_s: 3600           # send a waiting gate or escalation again (0 = never)
   # resolved: true               # also say when it was decided
   sinks: []
@@ -86,7 +85,7 @@ notify:                          # what needs a decision, sent to people (WORKFL
   #   secret_env: LEGION_WEBHOOK_SECRET
   # - kind: command              # JSON on stdin: mail, chat, anything else
   #   argv: [/usr/local/bin/legion-notify]
-  #   items: [gate, escalation, not_ready, question, change_ended, retrospective]
+  #   items: [gate, escalation, paused, question, change_ended, retrospective]
 telemetry:                       # opt-in OpenTelemetry spans over OTLP/HTTP; optional
   # enabled: true forces telemetry on, false forces it off; omitted = on only when
   # OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is set.

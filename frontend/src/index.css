@@ -128,22 +128,34 @@
     @apply font-sans;
   }
 }
-/* Workflow status colours (graph, badges, progress): Tailwind palette tones that read on both
-   the light and the dark theme. */
+/* Status colours (the ticket tree, badges, progress): Tailwind palette tones that read on both
+   the light and the dark theme. Tickets' statuses are lower case; runs', changes' and run
+   stages' upper case. */
 :root {
-  --status-PENDING: var(--color-zinc-400);
-  --status-READY: var(--color-sky-400);
-  --status-RUNNING: var(--color-blue-500);
-  --status-VERIFYING: var(--color-purple-500);
-  --status-REVIEWING: var(--color-amber-500);
-  --status-MERGING: var(--color-cyan-500);
-  --status-DEFINING: var(--color-teal-500);
-  --status-REWORK: var(--color-orange-500);
+  /* tickets */
+  --status-pending: var(--color-zinc-400);
+  --status-working: var(--color-blue-500);
+  --status-subtasks: var(--color-sky-400);
+  --status-checking: var(--color-amber-500);
+  --status-merging: var(--color-cyan-500);
+  --status-paused: var(--color-zinc-500);
+  --status-waiting: var(--color-pink-500);
+  --status-passed: var(--color-green-500);
+  --status-rejected: var(--color-orange-500);
+  --status-failed: var(--color-red-800);
+  --status-cancelled: var(--color-zinc-300);
+  /* runs */
+  --status-STARTING: var(--color-sky-400);
+  --status-ACTIVE: var(--color-blue-500);
+  --status-REPORTED: var(--color-teal-500);
   --status-ACCEPTED: var(--color-green-500);
-  --status-ESCALATED: var(--color-red-500);
   --status-FAILED: var(--color-red-800);
-  --status-AWAITING_HUMAN: var(--color-pink-500);
+  /* changes */
+  --status-READY: var(--color-green-500);
+  --status-ABANDONED: var(--color-zinc-500);
+  /* run stages */
   --status-PREPARING: var(--color-violet-400);
   --status-LAUNCHING: var(--color-amber-400);
+  --status-RUNNING: var(--color-blue-500);
   --status-EXITED: var(--color-zinc-500);
 }

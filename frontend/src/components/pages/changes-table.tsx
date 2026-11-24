@@ -33,7 +33,7 @@ function Row({ c, ws, showWorkspace }: { c: ChangeSummary; ws: string; showWorks
       </TableCell>
       <TableCell className="text-xs">{c.tier ?? '—'}</TableCell>
       <TableCell className="text-xs">
-        {c.nodes ? `${c.accepted}/${c.nodes} nodes` : '—'}
+        {c.tickets ? `${c.passed}/${c.tickets} tickets` : '—'}
         {c.live_runs > 0 && <span className="text-muted-foreground"> · {c.live_runs} live</span>}
       </TableCell>
       <TableCell className="text-xs">

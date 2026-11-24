@@ -15,7 +15,7 @@ export function StatusDot({ status, className }: { status: string; className?: s
   )
 }
 
-/** A node, run or change status. */
+/** A ticket, run or change status. */
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
   return (
     <Badge variant="outline" className="gap-1.5 font-medium">

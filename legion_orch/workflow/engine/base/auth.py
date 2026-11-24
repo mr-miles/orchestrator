@@ -31,13 +31,10 @@ from ...model import LIVE_RUN, R_REPORTED, Run
 from .common import log
 
 
-def open_task(r: Run) -> bool:
-    """A run reported, its task not ended yet: its agent still replies (a2a_reply) – and is
-    asked again if it does not (services/inbox.py)."""
-    if r.status != R_REPORTED or r.consult or r.concluded or r.report is None:
-        return False
-    wanted = "input-required" if str(r.report.status) == "BLOCKED" else "completed"
-    return r.reply is None or r.reply.state != wanted
+def in_turn(r: Run) -> bool:
+    """The run's agent is still in its turn: live, or reported and not yet concluded – it may
+    still answer what waits in its inbox (its accepted report ended its task)."""
+    return r.status in LIVE_RUN or (r.status == R_REPORTED and not r.concluded)
 
 
 # Every run of every change, as (change id, run).
@@ -85,7 +82,7 @@ class WorkloadAuth:
             return WorkloadBinding(sandbox=ref, change=v.change, task=v.task, role="verifier")
         for cid, r in self._runs():
             if r.sandbox_ref == ref and not r.sandbox_deleted:
-                return WorkloadBinding(sandbox=ref, change=cid, task=r.node_id, role=r.role)
+                return WorkloadBinding(sandbox=ref, change=cid, task=r.ticket, role=r.role)
         return None
 
     def live_run(self, token: str | None) -> tuple[str, Run] | None:
@@ -95,8 +92,8 @@ class WorkloadAuth:
         if b is None:
             return None
         for cid, r in self._runs():
-            if r.sandbox_ref == b.sandbox and (r.status in LIVE_RUN or open_task(r)):
-                if (cid, r.node_id, r.role) == (b.change, b.task, b.role):
+            if r.sandbox_ref == b.sandbox and in_turn(r):
+                if (cid, r.ticket, r.role) == (b.change, b.task, b.role):
                     return cid, r
                 log.warning("token for %s does not match live run %s", b, r.id)
                 return None
@@ -111,7 +108,7 @@ class WorkloadAuth:
             return None
         for cid, r in self._runs():
             if r.sandbox_ref == b.sandbox and not r.sandbox_deleted \
-                    and (cid, r.node_id, r.role) == (b.change, b.task, b.role):
+                    and (cid, r.ticket, r.role) == (b.change, b.task, b.role):
                 return b
         return None
 

@@ -6,21 +6,13 @@ A run is an A2A task: the orchestrator's, on the agent's card, in the agent's on
 
 * Its id is the run's; its first message is the rendered assignment (``Run.instructions``, which
   the prompt pin covers); a rework is a new run, so a new task in the same context (the step).
-* ``report(...)`` **records** – documents, attestations, structured data – and no longer ends
-  anything. The agent ends (or pauses) the task with ``a2a_reply(task_id, text, state)``:
-
-  ========================  =====================================  ==============================
-  reply state               needs                                  then
-  ========================  =====================================  ==============================
-  ``completed``             an accepted ``DONE`` report            the run concludes: its step goes on
-  ``input-required``        an accepted ``BLOCKED`` report         the run concludes: its step escalates
-  ``failed``/``rejected``   –                                      the run fails (the agent gave up)
-  ========================  =====================================  ==============================
-
-* The reply is always taken. When it does not match the run's record, the orchestrator **asks
-  again** – the next message on the task says what is missing – and so it does when the agent's
-  turn ends with the task still open (its session is resumed for another turn of the same run).
-  Each ask-again uses one report attempt (G-R6): when none is left the run fails.
+* An accepted ``report(...)`` records the work – documents, attestations, structured data – and
+  **ends the task** with it: ``completed`` for DONE, ``input-required`` for BLOCKED (its ticket
+  waits on a human). The agent may still answer what waits in its inbox until its turn ends,
+  and gives up with ``a2a_reply(task_id, text, "failed")`` (the run fails: an attempt).
+* A turn that ends with no accepted report is followed by another: the orchestrator **asks
+  again** – the next message on the task says what is missing. Each ask-again uses one report
+  attempt (G-R6): when none is left the run fails.
 """
 from __future__ import annotations
 
@@ -60,42 +52,22 @@ class RunTasks:
         return "working"
 
     # ------------------------------------------------------------------ the agent replies
-    def reply(self, run: Run, state: str, text: str,
-              unanswered: list[tuple[str, str]] = ()) -> dict:
-        """Under the lock: the agent's ``a2a_reply`` on its run's task. Always taken; a reply
-        the record does not support is answered with what is missing (an ask-again). Ending it
-        with messages still in its inbox (``unanswered``: (task id, sender)) is answered with how
-        many wait – but only when one arrived it was not told of yet, so it cannot loop; what is
-        left when it ends is answered in a turn of its own after the run."""
+    def reply(self, run: Run, state: str, text: str) -> dict:
+        """Under the lock: the agent's ``a2a_reply`` on its run's task. ``failed`` (or
+        ``rejected``) gives up: the run fails. Any other is answered: the task was ended by its
+        accepted report already, or – none yet – with what is missing (an ask-again)."""
         if state not in STATES:
             return {"ok": False, "error": f"state must be one of {', '.join(STATES)}"}
         if self.ended(run):
             return {"ok": True, "state": self.state(run), "note": "the task was ended already"}
-        new = [(tid, who) for tid, who in unanswered if tid not in run.inbox_reminded]
-        if new and state in ("completed", "input-required") and state == self.wanted(run):
-            run.inbox_reminded += [tid for tid, _ in new]
-            n = len(unanswered)
-            msg = (f"{n} task{'s' if n != 1 else ''} in your inbox (listed in `inbox`) – answer "
-                   "with a2a_reply, then end your task again.")
-            run.asked.append(msg)
-            self.c.event("agent", f"asked to answer {len(new)} message(s) first",
-                         run.node_id, run.id)
-            self.c.save()
-            return {"ok": False, "state": "working", "message": msg}
         if state in ("failed", "rejected"):
             run.reply = TaskReply(state=state, text=text.strip())
             self.c.event("agent", f"the agent ended its task {state}: {text.strip()[:300]}",
-                         run.node_id, run.id)
+                         run.ticket, run.id)
             self.lifecycle.fail_run(run, f"the agent gave up ({state}): {text.strip()[:500]}",
                                     FailureSource.AGENT)
             self.c.save()
             return {"ok": True, "state": "failed"}
-        if state == self.wanted(run):                # only a reply the record supports ends it
-            run.reply = TaskReply(state=state, text=text.strip())
-            self.c.event("agent", f"task {state}", run.node_id, run.id)
-            self.c.save()
-            return {"ok": True, "state": state,
-                    "next": "end your turn: your work goes back to the workflow"}
         msg = self.ask_again(run, f"You replied {state}, but")
         self.c.save()
         return {"ok": False, "state": self.state(run), "message": msg}
@@ -113,7 +85,7 @@ class RunTasks:
         run.attempts += 1
         run.asked.append(msg)
         self.c.event("agent", f"asked again ({run.attempts}/{limit}): {msg[:200]}",
-                     run.node_id, run.id)
+                     run.ticket, run.id)
         return msg
 
     def _missing(self, run: Run, opening: str | None) -> str:
@@ -125,20 +97,18 @@ class RunTasks:
                     "report(...) (status DONE, or BLOCKED with blocked_reason and "
                     "missing_decision)" + (f" – your last report was rejected: {last[:800]}"
                                            if last else "") +
-                    ", then end the task with a2a_reply(task_id, text, state).")
-        return (said + f"your accepted report is {run.report.status}: end the task with "
-                f"a2a_reply(task_id=\"{run.id}\", text=..., state=\"{wanted}\").")
+                    "; accepted, it ends the task.")
+        return (said + f"your accepted report is {run.report.status}: it ended the task.")
 
     # ------------------------------------------------------------------ the agent's view
     def view(self, run: Run) -> dict:
         """The task as the agent's inbox shows it."""
         return {"task_id": run.id, "from": "orchestrator", "kind": "work",
-                "state": self.state(run), "cycle": run.cycle,
+                "state": self.state(run), "attempt": run.attempt,
                 "messages": [{"from": "orchestrator", "text": run.instructions}]
                 + [{"from": "orchestrator", "text": m} for m in run.asked]
                 + ([{"from": "you", "text": run.reply.text, "state": run.reply.state}]
                    if run.reply else []),
-                "how_to_end": "report(...) records your results; then a2a_reply(task_id, text, "
-                              "state): completed after an accepted DONE report, "
-                              "input-required after an accepted BLOCKED one, failed to give up",
+                "how_to_end": "report(...) records your results – accepted, it ends this task –; "
+                              "then end your turn. a2a_reply(task_id, text, 'failed') gives up",
                 "at": run.created_at, "now": now_iso()}

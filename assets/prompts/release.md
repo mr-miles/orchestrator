@@ -1,19 +1,23 @@
-# Assignment: release observation and rollback plan for change {{change_id}}
+# Assignment: release observation and rollback plan for change {{change_id}} (attempt {{attempt}})
 
-Integration head `{{head_sha}}`; base `{{base_sha}}`. Inputs: {{context_refs}}
+The change's head `{{head_sha}}`; the change's base `{{change_base_sha}}`. Inputs: {{context_refs}}
 
-Write `release/plan.md` (with `## Health criteria` and `## Rollback criteria`) and
-`release/rollback.md` (naming revert target `{{base_sha}}`). Report `DONE` attesting both.
+Write `tickets/{{ticket_id}}/release-plan.md` (with `## Health criteria` and
+`## Rollback criteria`) and `tickets/{{ticket_id}}/rollback.md` (naming the revert target
+`{{change_base_sha}}`). Report `DONE` with your outputs named, attesting both.
 
-`release/rollback.md` starts with your recommendation for recovering if the release goes wrong,
-each on its own line:
+`rollback.md` starts with your recommendation for recovering if the release goes wrong, each on
+its own line:
 
     Strategy: rollback        (or: Strategy: forward-fix)
     Rationale: <one sentence: why this one – e.g. data changes that cannot be reverted>
 
-A human confirms it at H-3 by attesting the plan, so make the procedure for the recommended
-strategy concrete: for rollback, the steps and what happens to data written since; for a forward
-fix, how a fix is shipped fast (flag, kill switch, pipeline) and what limits the damage meanwhile.
+Make the procedure for the recommended strategy concrete: for rollback, the steps and what
+happens to data written since; for a forward fix, how a fix is shipped fast (flag, kill switch,
+pipeline) and what limits the damage meanwhile.
 
-Human answers on earlier attempts (take them into account):
-{{feedback}}
+Your outputs: {{outputs}}, in your ticket's directory ({{write_scope}}). On a later attempt they
+exist: `docs_read` each and pass its version as `base_version`.
+
+What to address from the last attempt:
+{{findings}}

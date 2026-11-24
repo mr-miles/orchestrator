@@ -1,12 +1,12 @@
 ---
-description: "How to write the plan's environment.json: profiles, tools, network policies, resources, role mapping, library proposals. Load when you write or critique a sandbox environment."
+description: "How to write the plan's environment output (environment.json): profiles, tools, network policies, resources, role mapping, library proposals. Load when you write or critique a sandbox environment."
 ---
 
 ## Skill: Sandbox environment spec
 
-When your assignment asks for it, `{{plan}}/environment.json` declares the sandboxes that run or work
+Your `environment` output (`environment.json` in your ticket's directory) declares the sandboxes that run or work
 with the code; it is part of the plan, so the commands you plan decide what it needs. It is
-critiqued with the plan, approved by a human (gate H-E1), then built by the controller: one
+critiqued with the plan, signed off by a human (H-E1), then built by the controller: one
 container image per profile (the base agent or verifier image plus your tools, installed with
 **mise**), the network policies as rules of each sandbox's policy, and the resources (`--cpu`,
 `--memory`; disk as driver config). On a rework, leave it as it is (attest its latest version)
@@ -76,11 +76,11 @@ task needs in `"setup_network"` (e.g. `["npm-registry"]` for `bun install`). Rul
 `[tools]` entry is a mise tool some library tool in the profile installs (`bun`, `python`, `uv`,
 `node` …) at a compatible version, in every profile of a role that runs the setup and the
 verifier's; every such profile has the `setup_network` policies – so neither the verifier's nor a
-reviewer's profile is `offline` when setup installs dependencies (reviewers run it too). In a **blank repository** the setup does what the scaffold task makes
+reviewer's profile is `offline` when setup installs dependencies (reviewers run it too). In a **blank repository** the setup does what the scaffold makes
 possible (e.g. `bun install` once the scaffold adds `package.json`): it first runs in the
 scaffold's verification, at the scaffold's commit, and in every sandbox after that – the
-scaffold's own sandbox starts without it. After H-E1 the controller commits the approved
-file and checks the setup task runs in the verifier (G-PV3); tasks may not change it afterwards.
+scaffold's own sandbox starts without it. After H-E1 the controller commits the signed-off
+file and checks the setup task runs in the verifier (G-PV3); builds may not change it afterwards.
 
 ```toml
 [tools]
@@ -95,7 +95,7 @@ run = "bun install --frozen-lockfile"
 **Select from the library first; propose only what is missing.** A library tool already brings
 its binaries, settings and network – choosing `uv` is all it takes to use uv with PyPI. Propose
 an entry only when the library has no tool or policy that does the job, never a variant of an
-existing one (names must not clash with the library). Each proposal is reviewed at H-E1 and may
+existing one (names must not clash with the library). Each proposal is signed off at H-E1 and may
 be promoted into the library for every change, so keep it minimal and general.
 
 * tool: `{"description": "...", "mise": {"<mise tool id>": "<version>"}, "apt": ["<debian

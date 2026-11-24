@@ -161,7 +161,7 @@ class Controller:
         ce = self.changes.get(item.change)
         if ce is not None:
             ce.event("notified", f"{event} via {sink}: " + (f"failed: {error}" if error else "sent")
-                     + f" ({item.title})", item.node)
+                     + f" ({item.title})", item.ticket)
 
     def attention_items(self) -> list[AttentionItem]:
         """Every change's attention items (§2.2): blocking first, oldest first."""
@@ -185,7 +185,7 @@ class Controller:
             for w in waits:
                 w.cancel()
 
-    def spawn(self, coro, on_error=None) -> None:
+    def spawn(self, coro, on_error=None) -> asyncio.Task:
         async def wrapper():
             try:
                 await coro
@@ -196,6 +196,7 @@ class Controller:
         t = asyncio.create_task(wrapper())
         self._tasks.add(t)
         t.add_done_callback(self._tasks.discard)
+        return t
 
     # ------------------------------------------------------------------ lifecycle
     def load(self) -> None:
@@ -321,8 +322,7 @@ class Controller:
         names = set(self._reserved_names)
         for ce in self.changes.values():
             names.update(r.sandbox for r in ce.runs.values() if r.sandbox)
-            for node in ce.nodes.values():
-                names.update(v.sandbox for v in node.verification.values() if v.sandbox)
+            names.update(v.sandbox for v in ce.change.verifications.values() if v.sandbox)
         return names
 
     def new_sandbox_name(self, prefix: str) -> str:
@@ -347,10 +347,9 @@ class Controller:
         for ce in self.changes.values():
             if log_id in ce.verifying.values():
                 return ce, None
-            for node in ce.nodes.values():
-                for v in node.verification.values():
-                    if v.log == log_id:
-                        return ce, v
+            for v in ce.change.verifications.values():
+                if v.sandbox == log_id or (v.result and v.result.log == log_id):
+                    return ce, v.result
         raise WorkflowError(f"unknown run {log_id}")
 
     def _runs_by_change(self):

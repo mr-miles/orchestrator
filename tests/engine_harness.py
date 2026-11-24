@@ -1,11 +1,11 @@
-"""Deterministic in-process harness for the workflow state machine.
+"""Deterministic in-process harness for the workflow: a change's tickets.
 
 A real Controller, document store and git remote, but a fake sandbox runner whose agents never
 run on their own: the test plays each agent by calling the engine's agent API (``agent_write``,
 ``handle_report``) exactly as the MCP server would, and decides when the agent process exits.
-``Flow.settle()`` waits until every background task (verification, merge, ship, sandbox
-deletion) has finished or legitimately waits – on an agent's process, a step's waits, or a slot
-– so each step ends in a stable, assertable state.
+``Flow.settle()`` waits until every background task (verification, merges, provisioning,
+publishing, sandbox deletion) has finished or legitimately waits – on an agent's process, a
+decision owner, or a slot – so each step ends in a stable, assertable state.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import functools
 import inspect
 import json
 import os
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -26,6 +27,7 @@ from legion_orch.sandbox import BuildError, EnvironmentBuilder, Runner, SandboxE
 from legion_orch.workflow.engine import ChangeEngine, Controller
 from legion_orch.workflow.model import LIVE_RUN, Run
 from legion_orch.workflow.risk import SIGNALS
+from legion_orch.workflow.tickets import Ticket
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = "app"
@@ -220,7 +222,7 @@ def make_source_repo(path: Path, files: dict[str, str] | None = None) -> None:
 
 def make_config(tmp_path: Path, *, blank_repo: bool = False, environment: dict | None = None,
                 **limits):
-    lim = {"max_parallel": 4, "review_max_cycles": 3, "critique_max_cycles": 2,
+    lim = {"max_parallel": 4, "system_retries": 2, "system_retry_s": 0.01,
            "run_timeout_s": 120} | limits
     cfg_path = tmp_path / "orchestrator.yaml"
     source = "" if blank_repo else f", source: {tmp_path / 'src-repo'}"
@@ -279,7 +281,12 @@ ENVIRONMENT = {
 
 
 class Flow:
-    """One change driven step by step. ``await Flow.create(tmp_path)`` to start."""
+    """One change driven ticket by ticket. ``await Flow.create(tmp_path)`` to start.
+
+    The test plays each agent through the engine's agent API (``agent_write``, ``handle_report``
+    with the outputs its role names), and each decision owner through ``human_action``; the
+    controller's own tickets (verification, can-merge, provisioning, publishing) run by
+    themselves against the fake runner and the real hub."""
 
     def __init__(self, tmp_path: Path, *, blank_repo: bool = False,
                  repo_files: dict[str, str] | None = None, **limits):
@@ -293,7 +300,13 @@ class Flow:
         self.runner = FakeRunner()
         self.builder = FakeBuilder()
         self.ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
+        self.ctls = [self.ctl]         # every controller started (restarts too): stopped at the end
         self.ce: ChangeEngine = None   # type: ignore[assignment]
+
+    async def stop(self) -> None:
+        """Stop every controller this flow started, as a controller stops (in order)."""
+        for ctl in self.ctls:
+            await asyncio.wait_for(ctl.stop(), 10)
 
     @classmethod
     async def create(cls, tmp_path: Path, goal: str = "Say hello", *, blank_repo: bool = False,
@@ -309,8 +322,9 @@ class Flow:
     async def restart(self, *, recover: bool = False) -> tuple[Controller, ChangeEngine]:
         """The controller started again on this one's state – its tables, documents and the
         gateway's sandboxes, as :meth:`Controller.start` loads them (without its loops);
-        ``recover``: and what start() does next (live runs failed, steps taken up again)."""
+        ``recover``: and what start() does next (live runs ended, tickets taken up again)."""
         ctl = Controller(self.cfg, runner=self.runner, builder=self.builder)
+        self.ctls.append(ctl)
         ctl.load()
         await ctl.adopt_sandboxes()
         ce = ctl.changes[self.ce.cid]
@@ -321,12 +335,8 @@ class Flow:
 
     async def settle(self, timeout: float = 20) -> None:
         """Wait until nothing changes and every pending task waits legitimately: on an agent
-        process that has not exited, on its step's waits, or for a slot.
-
-        Event-driven: it looks again as soon as a task finishes or the controller's version
-        moves (each save), and otherwise every ``POLL`` s (work in threads and subprocesses
-        shows as a pending task, so a quiet engine is one whose tasks all wait). Settled: the
-        same quiet state twice, a few loop turns apart."""
+        process that has not exited, on a decision owner (a sign-off), for a slot, or on an
+        A2A message's reply. Settled: the same quiet state twice, a few loop turns apart."""
         loop = asyncio.get_running_loop()
         deadline, last = loop.time() + timeout, None
         while loop.time() < deadline:
@@ -346,24 +356,26 @@ class Flow:
                                    return_when=asyncio.FIRST_COMPLETED)
             finally:
                 bumped.cancel()
-        raise AssertionError(f"engine did not settle; nodes={self.status()}")
+        raise AssertionError(f"engine did not settle; tickets={self.status()}")
 
     POLL = 0.02     # the longest it waits for a sign of progress before looking again
     TURNS = 10      # event-loop turns between two looks at a quiet engine
 
     def waiting(self) -> int:
-        """Tasks that wait legitimately (across the controller's changes)."""
+        """Tasks that wait legitimately (across the controller's changes): each live agent's,
+        each sign-off's, each waiting for a slot, each A2A message awaiting its reply, each
+        on-complete process waiting for reflections."""
         procs = sum(1 for p in self.ctl.svc.procs.values() if p.returncode is None)
-        steps = sum(ce._runner.waiting for ce in self.ctl.changes.values())
-        # a message awaiting its reply in the A2A inbox (its sender's task waits on it)
+        signoffs = sum(len(ce._signoffs.waiting) for ce in self.ctl.changes.values())
         inbox = self.ctl.a2a.inbox if self.ctl.a2a is not None else None
         messages = sum(1 for (cid, card) in (inbox._messages if inbox else {})
                        for i in inbox.pending(cid, card) if not i.reply.done())
-        return procs + steps + self.ctl.svc.dispatcher.waiting + messages
+        reflecting = sum(ce._flow.awaiting_reflections for ce in self.ctl.changes.values())
+        return procs + signoffs + self.ctl.svc.dispatcher.waiting + messages + reflecting
 
     def _fingerprint(self):
         ch = self.ce.change
-        return (ch.status, tuple((k, n.status, n.cycle) for k, n in self.ce.nodes.items()),
+        return (ch.status, tuple((k, t.status, t.attempt) for k, t in self.ce.st.tickets.items()),
                 tuple((k, r.status, r.sandbox_deleted) for k, r in self.ce.runs.items()))
 
     @property
@@ -371,24 +383,28 @@ class Flow:
         """The test workspace's hub."""
         return self.ctl.hub(REPO)
 
-    def nid(self, node: str) -> str:
-        """A base id (``plan``, ``H-2``) means the current fix round's node; ``plan.2`` is
-        that round's."""
-        cur = self.ce.current(node) if "." not in node else None
-        return cur.id if cur else node
+    def ticket(self, tid: str) -> Ticket:
+        """A ticket of the tree, or of a side process (the retrospective)."""
+        t = self.ce.ticket(tid)
+        assert t is not None, f"no ticket {tid}; tickets={self.status()}"
+        return t
 
-    def status(self, node: str | None = None):
-        if node:
-            return self.ce.nodes[self.nid(node)].status
-        return {k: n.status for k, n in self.ce.nodes.items()}
+    def status(self, tid: str | None = None):
+        if tid:
+            return self.ce.ticket(tid).status
+        return {k: t.status for k, t in self.ce.st.tickets.items()}
 
-    def run(self, node: str, role: str | None = None) -> Run:
-        """The live run of ``node`` (for ``role``)."""
-        node = self.nid(node)
-        live = [r for r in self.ce.runs.values() if r.node_id == node and r.status in LIVE_RUN
-                and (role is None or r.role == role)]
-        assert len(live) == 1, f"expected one live run of {node}/{role}; got {live}"
+    def run(self, tid: str, role: str | None = None) -> Run:
+        """The live run of ticket ``tid`` (of ``role``)."""
+        live = [r for r in self.ce.runs.values() if r.ticket == tid and r.status in LIVE_RUN
+                and not r.consult and (role is None or r.role == role)]
+        assert len(live) == 1, f"expected one live run of {tid}/{role}; got {live}; " \
+                               f"tickets={self.status()}"
         return live[0]
+
+    def runs(self, tid: str, role: str | None = None) -> list[Run]:
+        return [r for r in self.ce.runs.values() if r.ticket == tid
+                and (role is None or r.role == role)]
 
     def steps(self, run: Run) -> list[list[str]]:
         """The preparation steps run in the run's sandbox: script name and arguments."""
@@ -396,19 +412,22 @@ class Flow:
                 if sb == run.sandbox and a[0] == "bash" and a[1].endswith(".sh")
                 and "/payload/" in a[1]]
 
-    def runs(self, node: str, role: str | None = None) -> list[Run]:
-        node = self.nid(node)
-        return [r for r in self.ce.runs.values() if r.node_id == node
-                and (role is None or r.role == role)]
-
     async def exit_agent(self, run: Run, rc: int = 0) -> None:
         self.ctl.svc.procs[run.id].exit(rc)
         await self.settle()
 
-    async def human(self, node: str, action: str, approver: str = "miles", **payload):
-        res = await self.ce.human_action(self.nid(node), action, approver, payload)
+    async def human(self, tid: str, action: str, approver: str = "miles", **payload):
+        res = await self.ce.human_action(tid, action, approver, payload)
         await self.settle()
         return res
+
+    async def signoff(self, tid: str, approve: bool = True, reason: str = "",
+                      approver: str = "miles"):
+        """A decision owner's decision on the sign-off ``tid`` (waiting for them)."""
+        assert tid in self.ce.signoffs_waiting(), \
+            f"{tid} is not waiting for a sign-off; tickets={self.status()}"
+        return await self.human(tid, "approve" if approve else "reject", approver,
+                                **({"reason": reason} if reason else {}))
 
     async def change_action(self, action: str, approver: str = "miles", **payload):
         res = await self.ce.change_action(action, approver, payload)
@@ -417,15 +436,18 @@ class Flow:
 
     # ------------------------------------------------------------------ playing an agent
     async def write(self, run: Run, rel: str, content: str | dict) -> str:
+        """Write ``rel`` in the run's ticket's directory (``tickets/<id>/<rel>``)."""
         if not isinstance(content, str):
             content = json.dumps(content)
-        v = await self.ce.agent_write(run, rel, content, self.ce.latest(rel))
+        path = f"tickets/{run.ticket}/{rel}"
+        v = await self.ce.agent_write(run, path, content, self.ce.latest(path))
         return v.attestation
 
-    async def report(self, run: Run, atts=(), data=None, status="DONE", *, exit_agent=True,
-                     blocked_reason=None, missing_decision=None, summary="done"):
+    async def report(self, run: Run, atts=(), data=None, status="DONE", *, outputs=None,
+                     exit_agent=True, blocked_reason=None, missing_decision=None,
+                     summary="done"):
         out = await self.ce.handle_report(run.id, status, summary, list(atts), data,
-                                          blocked_reason, missing_decision)
+                                          blocked_reason, missing_decision, False, outputs or {})
         if out.accepted and exit_agent:               # report records; the reply ends the task
             await self.reply(run, "input-required" if status == "BLOCKED" else "completed")
             self.ctl.svc.procs[run.id].exit(0)
@@ -462,137 +484,158 @@ class Flow:
     # ------------------------------------------------------------------ role scripts
     async def intake(self, risk: dict | None = None, reqs: str = "- REQ-1: greet.txt says hello\n"):
         r = self.run("intake")
-        atts = [await self.write(r, "intake/requirements.md", f"# Requirements\n\n{reqs}"),
-                await self.write(r, "intake/risk.json", risk or signals())]
-        return await self.report(r, atts)
+        req = await self.write(r, "requirements.md", f"# Requirements\n\n{reqs}")
+        rsk = await self.write(r, "risk.json", risk or signals())
+        return await self.report(r, [req, rsk], outputs={"requirements": req, "risk": rsk})
 
     async def plan(self, tasks=None, oracle=None, environment: dict | None = None,
-                   keep_environment: bool = False):
-        """With the environment stage the plan includes its ``environment.json``
-        (``environment``, default ENVIRONMENT), or attests the existing one (``keep_environment``).
-        The documents are in the plan step's directory (``plan``, a fix round's ``plan.2``)."""
-        r = self.run("plan")
-        d = r.node_id
-        atts = [await self.write(r, f"{d}/spec.md", f"# Spec (cycle {r.cycle})\n"),
-                await self.write(r, f"{d}/oracle.json", oracle or ORACLE),
-                await self.write(r, f"{d}/taskgraph.json", {"tasks": tasks or TASKS})]
-        for req in self.ce.change.requirements:
-            spec = (f"# {req} delta (cycle {r.cycle})\n\n## Current behaviour\nmissing\n\n"
-                    "## Change\nadd it\n\n## Acceptance criteria\n- works\n")
-            atts.append(await self.write(r, f"{d}/specs/{req}.md", spec))
-        if self.cfg.environment is not None:
-            atts.append(self.ce.latest_att(f"{d}/environment.json") if keep_environment else
-                        await self.write(r, f"{d}/environment.json", environment or ENVIRONMENT))
-        return await self.report(r, atts)
+                   criteria: tuple[str, ...] | None = None, doc: dict | None = None,
+                   scaffold: dict | None = None, tid: str = "design"):
+        """The planner's outputs: the spec and its delta specs, the oracle, the environment,
+        and the tickets (``doc``; else built from task-like dicts, ``tasks``, with the tier's
+        criteria – ``criteria`` to say otherwise)."""
+        r = self.run(tid)
+        reqs = re.findall(r"REQ-[0-9]+", self.ce.doc("tickets/intake/requirements.md").content)
+        spec = await self.write(r, "spec.md", f"# Spec (attempt {r.attempt})\n")
+        specs = [await self.write(r, f"specs/{q}.md", (
+            f"# {q} delta (attempt {r.attempt})\n\n## Current behaviour\nmissing\n\n"
+            "## Change\nadd it\n\n## Acceptance criteria\n- works\n")) for q in dict.fromkeys(reqs)]
+        orc = await self.write(r, "oracle.json", oracle or ORACLE)
+        env = await self.write(r, "environment.json", environment or (
+            ENVIRONMENT if self.cfg.environment is not None else NO_ENVIRONMENT))
+        plan = await self.write(r, "tickets.json", doc or plan_doc(tasks or TASKS, criteria or (
+            ("verify", "can-merge") if self.ce.change.tier == "R0"
+            else ("verify", "review", "can-merge")), scaffold))
+        return await self.report(r, [spec, *specs, orc, env, plan], outputs={
+            "spec": spec, "specs": specs, "oracle": orc, "environment": env, "tickets": plan})
 
     async def critique(self, verdict: str = "PASS"):
-        r = self.run("plan", "critic")
-        d = r.node_id                                  # the plan it judges
-        docs = (f"{d}/spec.md", f"{d}/oracle.json", f"{d}/taskgraph.json") + (
-            (f"{d}/environment.json",) if self.cfg.environment is not None else ())
-        plan = [self.ce.latest_att(p) for p in docs]
+        r = self.run("critique")
+        design = self.ticket("design")
+        judged = [x for v in design.outputs.values() for x in (v if isinstance(v, list) else [v])]
         findings = [] if verdict == "PASS" else [{
             "severity": "WARNING", "confidence": "HIGH", "title": "spec too thin",
-            "fix": "expand the spec", "attestations": [plan[0]]}]
-        doc = await self.write(r, f"{d}/critique/cycle-{r.cycle}.md", f"critique {verdict}")
-        return await self.report(r, plan + [doc], {"verdict": verdict, "findings": findings,
-                                                   "checked": ["traceability"]})
+            "fix": "expand the spec", "attestations": [design.outputs["spec"]]}]
+        doc = await self.write(r, "critique.md", f"critique {verdict}")
+        return await self.report(r, [*judged, doc], {"verdict": verdict, "findings": findings,
+                                                     "checked": ["traceability"]},
+                                 outputs={"critique": doc})
 
-    async def implement(self, task: str = "T1", files: dict | None = None, evidence: str | None = None,
-                        **kw):
-        node = f"build:{task}"
-        r = self.run(node, "implementer")
-        t = self.ce.nodes[node].task
-        sha = self.commit(r, files or {p: f"hello from {task} cycle {r.cycle}\n"
-                                       for p in t.files_modified})
-        ev = await self.write(r, f"tasks/{task}/evidence/cycle-{r.cycle}.md",
-                              evidence if evidence is not None
-                              else "\n".join(f"- `{c}` -> exit 0" for c in t.verification))
-        return await self.report(r, [f"git:{REPO}@{sha}", ev], **kw)
+    async def oracle(self, files: dict | None = None):
+        r = self.run("oracle")
+        sha = self.commit(r, files or {"tests/acceptance/test_greet.sh": "grep -q hello src/greet.txt\n"})
+        doc = await self.write(r, "tests.md", "AC-1 -> tests/acceptance/test_greet.sh")
+        return await self.report(r, [f"git:{REPO}@{sha}", doc], outputs={"tests": doc})
+
+    async def implement(self, task: str = "T1", files: dict | None = None,
+                        evidence: str | None = None, **kw):
+        r = self.run(task, self.ticket(task).type.partition(":")[2])   # implementer, scaffolder
+        work = self.ticket(task).work
+        sha = self.commit(r, files or {p: f"hello from {task} attempt {r.attempt}\n"
+                                       for p in work["files_modified"]})
+        ev = await self.write(r, "evidence.md", evidence if evidence is not None
+                              else "\n".join(f"- `{c}` -> exit 0" for c in work["verification"]))
+        return await self.report(r, [f"git:{REPO}@{sha}", ev], outputs={"evidence": ev}, **kw)
 
     async def review(self, task: str = "T1", verdict: str = "PASS", role: str = "reviewer",
-                     title: str = "missing newline handling", *, describe: bool = True):
-        node = f"build:{task}"
-        r = self.run(node, role)
+                     title: str = "missing newline handling"):
+        tid = f"{'review' if role == 'reviewer' else role}:{task}"
+        r = self.run(tid, role)
         cand = f"git:{REPO}@{r.judged_sha}"
         findings = [] if verdict == "PASS" else [{
             "severity": "BLOCKER", "confidence": "HIGH", "dimension": "correctness",
             "title": title, "observation": "x", "impact": "y", "fix": "rewrite it",
             "attestations": [cand]}]
-        doc = await self.write(r, f"tasks/{task}/reviews/{role}-cycle-{r.cycle}.md", verdict)
-        out = await self.report(r, [cand, doc], {"verdict": verdict, "findings": findings,
-                                                 "checked": ["diff"]})
-        return await self.described(out) if describe else out
+        doc = await self.write(r, "review.md", verdict)
+        return await self.report(r, [cand, doc], {"verdict": verdict, "findings": findings,
+                                                  "checked": ["diff"]}, outputs={"review": doc})
 
-    async def oracle(self, files: dict | None = None):
-        r = self.run("oracle")
-        sha = self.commit(r, files or {"tests/acceptance/test_greet.sh": "grep -q hello src/greet.txt\n"})
-        doc = await self.write(r, f"{r.node_id}/tests.md", "AC-1 -> tests/acceptance/test_greet.sh")
-        return await self.report(r, [f"git:{REPO}@{sha}", doc])
-
-    async def integration(self, verdict: str = "PASS", *, describe: bool = True):
+    async def integration(self, verdict: str = "PASS"):
         r = self.run("integration")
         cmds = self.ce.oracle_commands()
-        doc = await self.write(r, f"{r.node_id}/report.md", "results")
-        out = await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc], {
-            "verdict": verdict, "findings": [],
-            "results": [{"command": c, "exit_code": 0} for c in cmds]})
-        return await self.described(out) if describe else out
-
-    async def described(self, out):
-        """The last work before the PR description done: if its describe step started, it is
-        described and reviewed (PASS), so the change goes on to H-3. ``out``: the report."""
-        node = next((n for n in self.ce.nodes.values() if n.kind == "describe"), None)
-        live = node is not None and any(r.node_id == node.id and r.role == "describer"
-                                        and r.status in LIVE_RUN for r in self.ce.runs.values())
-        if live:
-            await self.describe()
-        return out
+        doc = await self.write(r, "report.md", "results")
+        head = f"git:{REPO}@{r.judged_sha or r.base_sha}"      # a judge: delivery's head
+        findings = [] if verdict == "PASS" else [{
+            "severity": "BLOCKER", "confidence": "HIGH", "dimension": "correctness",
+            "title": "the greeting is never printed", "observation": "x", "impact": "y",
+            "fix": "print it", "attestations": [head]}]
+        return await self.report(r, [head, doc], {
+            "verdict": verdict, "findings": findings,
+            "results": [{"command": c, "exit_code": 0} for c in cmds]}, outputs={"report": doc})
 
     PR = ("# Greet the user\n\n## Motivation\n\nREQ-1: greet.txt says hello.\n\n"
           "## Changes\n\n- src/greet.txt\n\n## Verification\n\n- the acceptance tests\n")
 
-    async def describe(self, text: str | None = None, *, review: str | None = "PASS"):
-        """The describer writes the PR description at the integration head; then (``review``)
-        the PR reviewer judges it."""
+    async def describe(self, text: str | None = None):
         r = self.run("describe", "describer")
-        doc = await self.write(r, "delivery/pr.md", text if text is not None else self.PR)
-        out = await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc])
-        if review is not None and out.accepted:
-            return await self.pr_review(review)
-        return out
+        doc = await self.write(r, "pr.md", text if text is not None else self.PR)
+        return await self.report(r, [f"git:{REPO}@{r.judged_sha}", doc], outputs={"pr": doc})
 
-    async def pr_review(self, verdict: str = "PASS", title: str = "the motivation is not REQ-1"):
-        r = self.run("describe", "pr-reviewer")
-        head, pr = f"git:{REPO}@{r.judged_sha}", self.ce.latest_att("delivery/pr.md")
-        findings = [] if verdict == "PASS" else [{
-            "severity": "BLOCKER", "confidence": "HIGH", "title": title, "fix": "say why",
-            "attestations": [pr]}]
-        doc = await self.write(r, f"delivery/reviews/pr-reviewer-cycle-{r.cycle}.md", verdict)
-        return await self.report(r, [head, pr, doc], {"verdict": verdict, "findings": findings,
-                                                      "checked": ["the diff"]})
-
-    # ------------------------------------------------------------------ whole stages
-    async def to_h2(self, tier: str | None = None, **plan_kw) -> None:
-        """Intake, H-1 (optionally at ``tier``), plan, a passing critique, H-E1 (approve the plan;
-        provisioning follows) and, R2+, the oracle."""
-        await self.intake()
-        await self.human("H-1", "accept", **({"tier": tier} if tier else {}))
+    # ------------------------------------------------------------------ whole stretches
+    async def to_build(self, risk: dict | None = None, **plan_kw) -> None:
+        """Intake (``risk``: its signals, so its tier), H-1, the plan, a passing critique, H-E1
+        (provisioning follows) and – R2+ – the oracle, its preflight and H-2 (R3: the
+        baseline and H-2b): the builds start."""
+        await self.intake(risk)
+        await self.signoff("H-1")
         await self.plan(**plan_kw)
         await self.critique("PASS")
-        await self.human("H-E1", "approve")
-        assert self.status("H-E1") == "ACCEPTED", self.status()
-        if "provision" in self.ce.nodes:
-            assert self.status("provision") == "ACCEPTED", self.status()
-        if "oracle" in self.ce.nodes:
+        await self.signoff("H-E1")
+        assert self.status("provision") == "passed", self.status()
+        if self.status("scaffold") != "cancelled":
+            await self.implement("scaffold")
+            await self.review("scaffold")
+        if "oracle" in self.ce.st.tickets:
             await self.oracle()
+            await self.signoff("H-2")
+        if "baseline" in self.ce.st.tickets:            # the controller's: then signed off
+            await self.signoff("H-2b")
 
-    async def to_build(self, tier: str | None = None, **plan_kw) -> None:
-        """To the build: H-2 (approve the oracle) where there is one."""
-        await self.to_h2(tier, **plan_kw)
-        if "H-2" in self.ce.nodes:
-            await self.human("H-2", "approve")
-            assert self.status("H-2") == "ACCEPTED", self.status()
+    async def to_end(self, **kw) -> None:
+        """A whole change: to the builds, each build and its review, the integration, the
+        description and H-3 – published."""
+        await self.to_build(**kw)
+        await self.to_end_from_build()
+
+    async def to_end_from_build(self) -> None:
+        """From the builds on: each build and its review, the integration, the description and
+        H-3 – published."""
+        for task in [t for t, x in self.ce.st.tickets.items() if x.type == "agent:implementer"]:
+            await self.implement(task)
+            if f"review:{task}" in self.ce.st.tickets:
+                await self.review(task)
+        await self.integration()
+        await self.describe()
+        await self.signoff("H-3")
+
+
+NO_ENVIRONMENT = {"summary": "the default image", "profiles": {"default": {"tools": []}},
+                  "roles": {}, "rationale": "no environment stage"}
+
+
+def plan_doc(tasks: list[dict], criteria: tuple[str, ...], scaffold: dict | None = None) -> dict:
+    """The planner's tickets for task-like dicts: each a build under ``delivery`` with
+    ``criteria`` (``verify``, ``review``, ``security``, ``can-merge``), grouped by its
+    ``depends_on`` (a task's group comes after its dependencies'); the skeleton's ``scaffold``
+    given its work (``scaffold``), else cancelled. (The integration is ``delivery``'s criterion:
+    the skeleton's.)"""
+    types = {"verify": "controller:verify", "review": "agent:reviewer",
+             "security": "agent:security", "can-merge": "controller:can-merge"}
+    level: dict[str, int] = {}
+    for t in tasks:
+        level[t["id"]] = 1 + max((level[d] for d in t.get("depends_on", [])), default=-1)
+    adds, first = [], set()
+    for t in sorted(tasks, key=lambda t: level[t["id"]]):
+        g = level[t["id"]]
+        work = {k: v for k, v in t.items() if k not in ("id", "title", "depends_on")}
+        adds.append({"into": "delivery", "group": g, "join": g in first, "ticket": {
+            "id": t["id"], "type": "agent:implementer", "goal": t.get("title", t["id"]),
+            "inputs": ["spec", "specs"], "work": work,
+            "criteria": [{"id": f"{c}:{t['id']}", "type": types[c]} for c in criteria]}})
+        first.add(g)
+    if scaffold is not None:
+        return {"add": adds, "update": {"scaffold": {"work": scaffold}}}
+    return {"add": adds, "cancel": ["scaffold"]}
 
 
 def scenario(**limits):
@@ -601,7 +644,11 @@ def scenario(**limits):
         @functools.wraps(fn)
         def test(tmp_path):
             async def go():
-                await fn(await Flow.create(tmp_path, **limits))
+                f = await Flow.create(tmp_path, **limits)
+                try:
+                    await fn(f)
+                finally:
+                    await f.stop()
             asyncio.run(go())
         test.__signature__ = inspect.Signature(
             [inspect.Parameter("tmp_path", inspect.Parameter.POSITIONAL_OR_KEYWORD)])

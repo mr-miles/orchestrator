@@ -1,7 +1,9 @@
-"""The traced engine end to end, in process: the spans of stages, steps, phases, rework, waits,
-an abandon at an escalation, a restart, a failing exporter, and what never reaches a span."""
+"""The traced engine end to end, in process: a span per ticket round under its parent ticket's,
+a span per agent run under its ticket's, waits and reworks as events, ends, restarts and
+privacy (tests/engine_harness.py drives the change)."""
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -18,9 +20,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode  # noqa: E402
 
 
-async def traced(tmp_path, exporter=None, goal="Say hello") -> Flow:
+async def traced(tmp_path, exporter=None, goal="Say hello", *, batch=False) -> Flow:
     f = Flow(tmp_path)
-    f.ctl.svc.telemetry = Telemetry.for_exporter(exporter or InMemorySpanExporter())
+    if exporter is not None:
+        f.ctl.svc.telemetry = Telemetry.for_exporter(exporter, batch=batch)
     await f.git.ensure()
     f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
     f.ce = await f.ctl.start_change(goal, REPO)
@@ -28,17 +31,20 @@ async def traced(tmp_path, exporter=None, goal="Say hello") -> Flow:
     return f
 
 
-async def r1(f: Flow, after_intake=None, **intake) -> None:
-    await f.intake(**intake)
-    if after_intake:
-        await f.settle()
-        after_intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    await f.implement()
-    await f.review(verdict="PASS")
+def traced_test(fn):
+    """Run ``fn(tmp_path, exp)`` with an in-memory exporter; every controller stopped after."""
+    def test(tmp_path):
+        async def go():
+            exp = InMemorySpanExporter()
+            flows: list[Flow] = []
+            try:
+                await fn(tmp_path, exp, flows)
+            finally:
+                for f in flows:
+                    await f.stop()
+        asyncio.run(go())
+    test.__name__ = fn.__name__
+    return pytest.mark.scenario(test)
 
 
 def named(spans, name: str) -> list:
@@ -55,49 +61,62 @@ def attr(span, key: str):
     return span.attributes.get(key)
 
 
-@pytest.mark.anyio
-async def test_r1_route_tree(tmp_path):
-    exp = InMemorySpanExporter()
-    f = await traced(tmp_path, exp)
+def parent_of(spans, span):
+    return next((s for s in spans if span.parent and s.context.span_id == span.parent.span_id),
+                None)
 
-    def h1_open():                       # a gate's step is open until the human acts
-        assert not named(exp.get_finished_spans(), "step H-1")
-    await r1(f, after_intake=h1_open)
-    await f.settle()
+
+@traced_test
+async def test_a_whole_change_is_one_trace_of_ticket_spans(tmp_path, exp, flows):
+    f = await traced(tmp_path, exp)
+    flows.append(f)
+    await f.to_end()
     assert f.ce.change.status == ChangeStatus.READY
     spans = exp.get_finished_spans()
     assert {s.context.trace_id for s in spans} == {trace_id_for(f.ce.cid)}
-    by_id = {s.context.span_id: s for s in spans}
     root = one(spans, f"change {f.ce.cid}")
-    assert root.parent is None and attr(root, "legion.outcome") == "completed"
-    flow = f.ce.workflow.flow
-    for s in spans:
-        if s.name.startswith("stage "):
-            p = by_id[s.parent.span_id]
-            assert p is root or p.name.startswith("stage ")
-            assert attr(s, "legion.outcome") == "accepted"
-        elif s.name.startswith("step "):
-            nid = s.name[len("step "):]
-            p = by_id[s.parent.span_id].attributes
-            assert p.get("legion.stage.id", p.get("legion.group.id")) == flow.parent[nid].id
-            assert attr(s, "legion.node.kind") == str(f.ce.nodes[nid].kind)
-            assert attr(s, "legion.outcome") == "accepted"
-            assert s.status.status_code != StatusCode.ERROR
-        elif s.name.startswith("phase "):
-            assert by_id[s.parent.span_id].name.startswith("step ")
-            assert attr(s, "legion.result") in ("ok", "escalate")
-        elif s.name.startswith("agent "):
-            assert by_id[s.parent.span_id].name.startswith("step ")
-            assert s.status.status_code != StatusCode.ERROR
-    assert {"step intake", "step H-1", "step plan", "step H-E1", "step build:T1"} <= {
-        s.name for s in spans}
+    assert (attr(root, "legion.outcome"), root.parent) == ("completed", None)
+    for tid, t in f.ce.st.tickets.items():         # every ticket a span, under its parent's
+        if t.status == "cancelled":                # never started (the scaffold): no span
+            continue
+        s = one(spans, f"{t.type} {tid}")
+        assert (attr(s, "legion.ticket.id"), attr(s, "legion.outcome")) == (tid, "passed")
+        want = one(spans, f"{f.ce.st.tickets[t.parent].type} {t.parent}") if t.parent else root
+        assert parent_of(spans, s) is want, tid
+    run = one(spans, "agent planner")
+    assert parent_of(spans, run).name == "agent:planner design"
+    assert attr(run, "legion.outcome") == "reported"
+    assert f.ce.trace._open == {}
 
 
-@pytest.mark.anyio
-async def test_off_by_default(tmp_path):
-    f = await Flow.create(tmp_path)
+@traced_test
+async def test_a_sign_off_wait_and_a_rework_are_events(tmp_path, exp, flows):
+    f = await traced(tmp_path, exp)
+    flows.append(f)
+    await f.to_build()
+    await f.implement("T1")
+    await f.review("T1", "FAIL", title="greet.txt lacks a newline")
+    await f.implement("T1")
+    await f.review("T1")
+    await f.ctl.stop()
+    spans = exp.get_finished_spans()
+    h1 = one(spans, "human:signoff H-1")
+    assert attr(h1, "legion.outcome") == "passed"
+    t1 = one(spans, "agent:implementer T1")         # one span: the rework is in it
+    events = [(e.name, e.attributes.get("legion.attempt")) for e in t1.events]
+    assert [e for e in events if e[1] == 2][0] == ("working", 2), events   # straight back
+    assert len(named(spans, "agent implementer")) == 2
+    review = one(spans, "agent:reviewer review:T1")      # a criterion: its rounds in one span
+    assert attr(review, "legion.outcome") == "passed"
+    assert len(named(spans, "agent reviewer")) == 2
+
+
+@traced_test
+async def test_off_by_default(tmp_path, exp, flows):
+    f = await traced(tmp_path)
+    flows.append(f)
     assert f.ctl.svc.telemetry.enabled is False and isinstance(f.ce.trace, NullTrace)
-    await r1(f)
+    await f.to_end()
     assert f.ce.change.status == ChangeStatus.READY
 
 
@@ -107,160 +126,92 @@ def test_controller_stores_telemetry(tmp_path):
     assert Controller(f.cfg, runner=f.runner, builder=f.builder, telemetry=tel).svc.telemetry is tel
 
 
-@pytest.mark.anyio
-async def test_stop_interrupts_open_spans(tmp_path):
-    exp = InMemorySpanExporter()
+@traced_test
+async def test_stop_interrupts_open_spans(tmp_path, exp, flows):
     f = await traced(tmp_path, exp)
+    flows.append(f)
     assert not named(exp.get_finished_spans(), f"change {f.ce.cid}")
     await f.ctl.stop()
-    assert attr(one(exp.get_finished_spans(), f"change {f.ce.cid}"), "legion.outcome") == "interrupted"
-
-
-@pytest.mark.anyio
-async def test_rework_phases(tmp_path):
-    exp = InMemorySpanExporter()
-    f = await traced(tmp_path, exp)
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    await f.implement()
-    await f.review(verdict="FAIL")
-    await f.implement()
-    await f.review(verdict="PASS")
-    await f.settle()
-    assert f.ce.change.status == ChangeStatus.READY
     spans = exp.get_finished_spans()
-    steps = named(spans, "step build:T1")
-    step = steps[-1]
-    phases = sorted((s for s in spans if s.name.startswith("phase ")
-                     and s.parent.span_id == step.context.span_id),
-                    key=lambda s: s.start_time)
-    assert [s.name[len("phase "):] for s in phases] == [
-        "Produce", "Verify", "Panel", "Produce", "Verify", "Panel", "Merge"]
-    assert [attr(s, "legion.result") for s in phases] == [
-        "ok", "ok", "rework", "ok", "ok", "ok", "ok"]
-    assert len({s.context.span_id for s in phases}) == len(phases)
+    assert attr(one(spans, f"change {f.ce.cid}"), "legion.outcome") == "interrupted"
+    assert attr(one(spans, "agent intake"), "legion.outcome") == "interrupted"
+    assert attr(one(spans, "agent:intake intake"), "legion.outcome") == "interrupted"
 
 
-@pytest.mark.anyio
-async def test_gate_wait_events(tmp_path):
-    exp = InMemorySpanExporter()
+@traced_test
+async def test_abandoning_at_an_escalation_fails_the_waiting_ticket(tmp_path, exp, flows):
     f = await traced(tmp_path, exp)
-    await f.intake()
-    assert not named(exp.get_finished_spans(), "step H-1")
-    await f.human("H-1", "accept")
-    gate = one(exp.get_finished_spans(), "step H-1")
-    events = {e.name: e for e in gate.events}
-    assert {"awaiting_human", "resumed"} <= set(events)
-    assert events["awaiting_human"].attributes["legion.expected"] is True
-
-
-@pytest.mark.anyio
-async def test_send_back_ends_the_gate_and_stages_with_rework(tmp_path):
-    exp = InMemorySpanExporter()
-    f = await traced(tmp_path, exp)
-    await f.intake()
-    await f.human("H-1", "accept")
-    await f.plan()
-    await f.critique("PASS")
-    await f.human("H-E1", "send_back", stage="plan", feedback="again")
-    await f.settle()
-    plans = named(exp.get_finished_spans(), "step plan")
-    assert len(plans) == 1
-    # the earlier step was accepted; the gate step and the containing stages carry the rework
-    assert attr(plans[0], "legion.outcome") == "accepted"
-    gate = one(exp.get_finished_spans(), "step H-E1")
-    assert attr(gate, "legion.outcome") == "rework"
-    for stage in ("stage Plan", "stage Design"):
-        assert attr(one(exp.get_finished_spans(), stage), "legion.outcome") == "rework"
-    await f.ctl.stop()
-    plans = named(exp.get_finished_spans(), "step plan")
-    assert len(plans) == 2
-    assert plans[1].start_time >= plans[0].end_time
-    assert attr(plans[1], "legion.outcome") == "interrupted"
-
-
-@pytest.mark.anyio
-async def test_failed_agent_run(tmp_path):
-    exp = InMemorySpanExporter()
-    f = await traced(tmp_path, exp)
-    await f.exit_agent(f.run("intake"), 1)
-    await f.ctl.stop()
-    agent = one(exp.get_finished_spans(), "agent intake")
-    assert agent.status.status_code == StatusCode.ERROR
-    assert attr(agent, "legion.outcome") == "failed"
-
-
-@pytest.mark.anyio
-async def test_abandon_at_an_escalation(tmp_path):
-    exp = InMemorySpanExporter()
-    f = await traced(tmp_path, exp)
+    flows.append(f)
     r = f.run("intake")
-    await f.report(r, status="BLOCKED", blocked_reason="x", missing_decision="y")
-    await f.human("intake", "abandon")
+    await f.report(r, status="BLOCKED", blocked_reason="which greeting?",
+                   missing_decision="the greeting")
+    assert f.status("intake") == "waiting"
+    await f.change_action("abandon", reason="not needed any more")
     await f.settle()
     assert f.ce.change.status == ChangeStatus.ABANDONED
     spans = exp.get_finished_spans()
-    # what is still open is the retrospective that follows the end, not the change itself
-    assert set(f.ce.trace._open) <= {"phase:retrospective", "run:r0002"}
-    step = one(spans, "step intake")
-    assert attr(step, "legion.outcome") == "failed"
-    assert step.status.status_code == StatusCode.ERROR
-    produce = one(spans, "phase Produce")
-    assert attr(produce, "legion.result") == "escalate"
-    assert produce.status.status_code != StatusCode.ERROR or attr(
-        produce, "legion.escalation.kind") is None
+    intake = one(spans, "agent:intake intake")
+    assert ("waiting", "blocked") in [(e.name, e.attributes.get("legion.waiting"))
+                                      for e in intake.events]
     root = one(spans, f"change {f.ce.cid}")
     assert attr(root, "legion.outcome") == "abandoned"
     assert root.status.status_code == StatusCode.ERROR
-    assert not [s for s in spans if attr(s, "legion.result") == "failed"]
-    assert not [s for s in spans if s.name.startswith("step ")
-                and attr(s, "legion.outcome") == "accepted" and s.end_time > step.end_time]
-    await f.ctl.stop()
     assert f.ce.trace._open == {}
-    assert not [s for s in exp.get_finished_spans() if attr(s, "legion.result") == "failed"]
 
 
-@pytest.mark.anyio
-async def test_restart_adopts_and_finishes(tmp_path):
-    exp1 = InMemorySpanExporter()
-    f = await traced(tmp_path, exp1)
+@traced_test
+async def test_a_failed_agent_run_is_an_error_span(tmp_path, exp, flows):
+    f = await traced(tmp_path, exp)
+    flows.append(f)
+    await f.exit_agent(f.run("intake"), rc=1)       # it exits without a report
+    await f.settle()
+    run = named(exp.get_finished_spans(), "agent intake")[0]
+    assert attr(run, "legion.outcome") == "failed"
+    assert run.status.status_code == StatusCode.ERROR
+
+
+@traced_test
+async def test_a_restart_resumes_the_trace_and_finishes(tmp_path, exp, flows):
+    f = await traced(tmp_path, exp)
+    flows.append(f)
     cid = f.ce.cid
     await f.intake()
     await f.ctl.stop()
-    first = exp1.get_finished_spans()
+    first = exp.get_finished_spans()
     assert {s.context.trace_id for s in first} == {trace_id_for(cid)}
-    for s in first:
-        if s.name == f"change {cid}" or s.name == "step H-1":
-            assert attr(s, "legion.outcome") == "interrupted", s.name
-        if s.name.startswith("phase "):
-            assert attr(s, "legion.result") in ("ok", "interrupted", "escalate")
     assert attr(one(first, f"change {cid}"), "legion.outcome") == "interrupted"
+    assert attr(one(first, "agent:intake intake"), "legion.outcome") == "interrupted"  # checking
+    assert attr(one(first, "agent intake"), "legion.outcome") == "reported"
     exp2 = InMemorySpanExporter()
-    ctl2 = Controller(f.cfg, runner=f.runner, builder=f.builder,
-                      telemetry=Telemetry.for_exporter(exp2))
-    ctl2.load()
-    async with ctl2.svc.lock:
-        for ce in ctl2.changes.values():
+    ctl = Controller(f.cfg, runner=f.runner, builder=f.builder,
+                     telemetry=Telemetry.for_exporter(exp2))
+    f.ctls.append(ctl)
+    ctl.load()
+    await ctl.adopt_sandboxes()
+    async with ctl.svc.lock:
+        for ce in ctl.changes.values():
             ce.recover()
-    f.ctl, f.ce = ctl2, ctl2.changes[cid]
+    f.ctl, f.ce = ctl, ctl.changes[cid]
     await f.settle()
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     await f.plan()
     await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    await f.implement()
-    await f.review(verdict="PASS")
-    await f.settle()
+    await f.signoff("H-E1")
+    for task in [t for t, x in f.ce.st.tickets.items() if x.type == "agent:implementer"]:
+        await f.implement(task)
+        if f"review:{task}" in f.ce.st.tickets:
+            await f.review(task)
+    await f.integration()
+    await f.describe()
+    await f.signoff("H-3")
     assert f.ce.change.status == ChangeStatus.READY
     spans = exp2.get_finished_spans()
     assert {s.context.trace_id for s in spans} == {trace_id_for(cid)}
     root = one(spans, f"change {cid}")
-    assert attr(root, "legion.resumed") is True
-    assert attr(root, "legion.outcome") == "completed"
-    assert attr(one(spans, "step H-1"), "legion.resumed") is True
+    assert (attr(root, "legion.resumed"), attr(root, "legion.outcome")) == (True, "completed")
+    assert attr(one(spans, "human:signoff H-1"), "legion.resumed") is True
+    assert attr(one(spans, "agent:intake intake"), "legion.resumed") is True
+    assert not named(spans, "agent intake")         # its run was over before the restart
     assert f.ce.trace._open == {}
 
 
@@ -276,49 +227,43 @@ class Sleeping(SpanExporter):
 
 
 def snapshot(f: Flow):
-    return (f.ce.change.status, f.status(), sorted(str(r.status) for r in f.ce.runs.values()))
+    return (f.ce.change.status, sorted((t, str(x.status)) for t, x in f.ce.st.tickets.items()),
+            sorted(str(r.status) for r in f.ce.runs.values()))
 
 
-@pytest.mark.anyio
 @pytest.mark.parametrize("exporter", [Raising, Sleeping])
-async def test_broken_exporter_changes_nothing(tmp_path, exporter):
-    plain = Flow(tmp_path / "plain") if (tmp_path / "plain").mkdir() is None else None
-    await plain.git.ensure()
-    plain.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-    plain.ce = await plain.ctl.start_change("Say hello", REPO)
-    await plain.settle()
-    await r1(plain)
-    (tmp_path / "traced").mkdir()
-    f = Flow(tmp_path / "traced")
-    f.ctl.svc.telemetry = Telemetry.for_exporter(exporter(), batch=True)
-    await f.git.ensure()
-    f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
-    f.ce = await f.ctl.start_change("Say hello", REPO)
-    await f.settle()
-    await r1(f)
-    assert f.ce.change.status == ChangeStatus.READY
-    assert snapshot(f) == snapshot(plain)
+def test_broken_exporter_changes_nothing(tmp_path, exporter):
+    async def go():
+        (tmp_path / "plain").mkdir()
+        (tmp_path / "traced").mkdir()
+        plain = await traced(tmp_path / "plain")
+        f = await traced(tmp_path / "traced", exporter(), batch=True)
+        try:
+            await plain.to_end()
+            await f.to_end()
+            assert f.ce.change.status == ChangeStatus.READY
+            assert snapshot(f) == snapshot(plain)
+        finally:
+            await plain.stop()
+            await f.stop()
+    asyncio.run(go())
 
 
-@pytest.mark.anyio
-async def test_privacy(tmp_path):
-    exp = InMemorySpanExporter()
+@traced_test
+async def test_privacy(tmp_path, exp, flows):
     f = await traced(tmp_path, exp, goal="SECRET-GOAL-TEXT")
+    flows.append(f)
     r = f.run("intake")
     await f.report(r, status="BLOCKED", blocked_reason="SECRET-REASON",
                    missing_decision="SECRET-DECISION")
     await f.human("intake", "retry")
     await f.intake(reqs="- REQ-1: SECRET-DOC-TEXT\n")
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     await f.plan()
-    await f.critique("PASS")
-    await f.human("H-E1", "approve")
-    await f.implement()
-    await f.review(verdict="PASS")
     await f.ctl.stop()
     spans = exp.get_finished_spans()
     assert spans
-    secrets = ("SECRET-GOAL-TEXT", "SECRET-DOC-TEXT", "SECRET-REASON")
+    secrets = ("SECRET-GOAL-TEXT", "SECRET-DOC-TEXT", "SECRET-REASON", "SECRET-DECISION")
     for s in spans:
         blobs = [s.name, str(s.status.description), *s.resource.attributes.keys(),
                  *map(str, s.resource.attributes.values())]

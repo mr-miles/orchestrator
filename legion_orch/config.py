@@ -114,10 +114,12 @@ class ServerConfig(Section):
 
 class LimitsConfig(Section):
     max_parallel: int = 4         # sandboxes in use at once (agent runs and verifiers), every change
-    review_max_cycles: int = 3
-    critique_max_cycles: int = 3   # a real BLOCKER in cycle 1 often needs two more to settle
-    fix_rounds: int = 2           # fix rounds a change may plan after integration fails (§5.10a)
     max_report_attempts: int = 3
+    # a system error (the sandbox, the gateway, GitHub, the builder) is retried by itself:
+    # ``system_retries`` tries in all, waiting ``system_retry_s`` after the first failure and
+    # twice as long each time; then its ticket waits on a human (attempts are workflow.yaml's)
+    system_retries: int = 4
+    system_retry_s: float = 2.0
     run_timeout_s: int = 3600
     setup_timeout_s: int = 900    # mise run setup after a checkout (§5.3c)
     verify_timeout_s: int = 1800
@@ -226,10 +228,12 @@ class IdentityConfig(Section):
     dev_spire: bool | None = None        # in-process SPIRE stand-in; defaults to runner == local
 
 
-# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking gates, escalations and
-# agents' questions (A2A ask_human), and the inbox's ended changes and retrospective reports.
-ATTENTION_KINDS = ("gate", "escalation", "not_ready", "question", "change_ended", "retrospective")
-AttentionKind = Literal["gate", "escalation", "not_ready", "question", "change_ended",
+# Attention item kinds (legion_orch.workflow.attention.KINDS): blocking sign-offs, escalations,
+# a paused workflow and agents' questions (A2A ask_human), and the
+# inbox's ended changes and retrospective reports.
+ATTENTION_KINDS = ("gate", "escalation", "paused", "question", "change_ended",
+                   "retrospective")
+AttentionKind = Literal["gate", "escalation", "paused", "question", "change_ended",
                         "retrospective"]
 
 
@@ -265,7 +269,7 @@ class NotifyConfig(Section):
     # Base URL of the operator UI, for links to the item (e.g. https://legion.example/).
     ui_url: str | None = None
     # Item kinds to notify: gate and escalation (blocking), change_ended, retrospective (inbox).
-    items: list[AttentionKind] = ["gate", "escalation", "not_ready", "question"]
+    items: list[AttentionKind] = ["gate", "escalation", "paused", "question"]
     # Repeat a blocking item while it is still waiting (seconds; 0 = never). Inbox items are
     # sent once.
     remind_after_s: int = 3600

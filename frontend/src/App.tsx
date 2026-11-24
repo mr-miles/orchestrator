@@ -37,7 +37,7 @@ export default function App() {
     getMeta().then(setMeta, () => undefined)
     getWorkspaces().then(setWorkspaces, () => undefined)
     getChanges().then(setInitial, () => setInitial([]))
-    // dropping a node from the address (below) is not a new page
+    // dropping a ticket from the address (below) is not a new page
     const onHash = () =>
       setRoute((prev) => {
         const r = parseHash(location.hash)
@@ -66,21 +66,21 @@ export default function App() {
     [route, defaultWs, wsOf],
   )
 
-  // the address shows the page (a node opens once; an old-style link becomes the new form)
+  // the address shows the page (a ticket opens once; an old-style link becomes the new form)
   useEffect(() => {
     if (resolved.page === 'change' && !resolved.ws) return
     const h = formatHash(resolved)
     if (location.hash !== h) history.replaceState(null, '', h)
   }, [resolved])
 
-  const go = useCallback((r: Route, node?: string | null) => {
-    location.hash = formatHash(r) + (node ? `/${encodeURIComponent(node)}` : '')
+  const go = useCallback((r: Route, ticket?: string | null) => {
+    location.hash = formatHash(r) + (ticket ? `/${encodeURIComponent(ticket)}` : '')
   }, [])
   const openItem = useCallback(
     (i: AttentionItem) =>
       go(
         { page: 'change', ws: wsOf(i.change), cid: i.change, tab: 'overview', focus: null },
-        i.node,
+        i.ticket,
       ),
     [go, wsOf],
   )

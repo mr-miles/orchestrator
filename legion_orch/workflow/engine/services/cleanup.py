@@ -1,26 +1,25 @@
 """Cleaning up after a change (WORKFLOW.md §5.14).
 
-* A run branch goes when its node is accepted: the merge made its commit part of the integration
-  history, and the evidence ref (``refs/legion/evidence/<run>``) keeps every candidate reviewed.
-* Restart plan removes the change's run branches: a restarted task of the same name must not
-  continue the abandoned plan's commits.
-* When the change has ended and its retrospective is done, the run branches left (tasks that
-  never merged) and the environment images built for it on this host are removed – once.
+* A ticket's branch goes when its commit is merged: it is part of its target's history now, and
+  the evidence ref (``refs/legion/evidence/<run>``) keeps every commit judged.
+* When the change has ended and its retrospective is done, the branches left (tickets that never
+  merged) and the environment images built for it on this host are removed – once.
 * ``prune`` (a human, after taking the integration branch) removes the integration branch and the
   change's evidence refs: the change's records stay, its ``git:`` attestations stop resolving.
 """
 from __future__ import annotations
 
 from ....util import now_iso
-from ...model import ACCEPTED, FAILED, LIVE_RUN, RETRO, ChangeStatus
+from ...model import LIVE_RUN, ChangeStatus
 from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 
 
-async def delete_run_branch(c: ChangeCore, branch: str | None, node_id: str) -> None:
-    """The accepted run's branch: its commit is in the integration history now."""
+async def delete_run_branch(c: ChangeCore, branch: str | None, ticket_id: str) -> None:
+    """A merged ticket's branch: its commit is in its target's history now."""
     if branch and await c.git.delete_ref(f"refs/heads/{branch}"):
-        c.event("cleanup", f"deleted branch {branch} (merged)", node_id)
+        async with c.lock:
+            c.event("cleanup", f"deleted branch {branch} (merged)", ticket_id)
 
 
 async def delete_run_branches(c: ChangeCore, why: str) -> list[str]:
@@ -34,15 +33,11 @@ async def delete_run_branches(c: ChangeCore, why: str) -> list[str]:
 
 
 def due(c: ChangeCore) -> bool:
-    """The change has ended, nothing of it is running, and its retrospective (if any) is done."""
+    """The change has ended, nothing of it is running, and its on-complete process (the
+    retrospective) is done."""
     ch = c.change
-    if ch is None or ch.status == ChangeStatus.ACTIVE or ch.cleaned_at:
+    if ch is None or ch.status == ChangeStatus.ACTIVE or ch.cleaned_at or not ch.completed:
         return False
-    retro = c.nodes.get(RETRO)
-    if retro is not None and retro.status not in (ACCEPTED, FAILED):
-        return False
-    if c.cfg.retrospective.auto and retro is None:
-        return False                   # it is about to be queued
     return not any(r.status in LIVE_RUN for r in c.runs.values())
 
 

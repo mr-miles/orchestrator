@@ -1,10 +1,11 @@
 """The resolver (WORKFLOW.md §5.16): every escalation goes to the change's resolver agent, which
-diagnoses it and proposes one of the step's human actions; a human applies, edits or ignores it.
+diagnoses it and proposes one of the remedies a human may choose; a human applies, edits or
+ignores it.
 
-When a step escalates (a failure – not a gate's due decision; ``ChangeCore`` notices it as the
-change saves) the resolver is sent a message through the inboxes – the escalation, the step's
-state, the actions a human may take – and its answer's proposal, a fenced JSON block, is
-recorded on the escalation (and at ``control/proposals/<node>-<n>.json``). The message goes
+When a ticket starts waiting on a human (``ChangeCore`` notices it as the change saves) the
+resolver is sent a message through the inboxes – why it waits, its findings, its last run, the
+remedies – and its answer's proposal, a fenced JSON block, is recorded for the escalation
+(``Change.proposals``, and ``control/proposals/<ticket>-<n>.json``). The message goes
 through the A2A layer's inbox (``EngineHost.deliver``), as any other. A proposal naming an
 action not offered is returned with the reason (:data:`TRIES`); one for an escalation decided
 first is stale.
@@ -13,10 +14,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 
-from ... import cards, context
-from ...model import ESCALATED, ResolverProposal
+from ... import cards
+from ...model import ResolverProposal
+from ...tickets import REMEDIES, Remedy, Status, Ticket
+from ...tickets.plan_doc import parse_plan
 from ..base.common import NoAgent, WorkflowError, _slug
 from ..base.core import ChangeCore
 
@@ -40,92 +42,113 @@ def parse_proposal(answer: str) -> tuple[dict | None, str]:
     return None, "no proposal block in its answer: " + answer.strip()[:300]
 
 
+def remedies(c: ChangeCore, ticket: Ticket) -> list[str]:
+    """What a human may do about a waiting ticket: its reason's remedies, and – a rejected,
+    waivable criterion – waiving it."""
+    out = sorted(str(r) for r in REMEDIES.get(ticket.waiting, set()) if r != Remedy.WAIVE)
+    out += [f"waive:{cid}" for cid in ticket.criteria
+            if (x := c.tickets.t.get(cid)) and x.status == Status.REJECTED and x.waivable]
+    return out
+
+
+def escalation_key(ticket: Ticket) -> str:
+    """Which escalation a proposal is about: the reason and the round it waits in."""
+    return f"{ticket.waiting}@{ticket.attempt}"
+
+
 class Resolver:
-    def __init__(self, core: ChangeCore, actions: Callable[[str], list[str]]):
-        self.c, self.actions = core, actions
+    def __init__(self, core: ChangeCore):
+        self.c = core
 
     def escalated(self, event):
-        """The bus: a step escalated – asked unless the resolver is off (``resolver.enabled``)."""
-        return self.resolve(event.node) if self.c.cfg.resolver.enabled else None
+        """The bus: a ticket escalated – asked unless the resolver is off (``resolver.enabled``)."""
+        return self.resolve(event.ticket) if self.c.cfg.resolver.enabled else None
 
-    def brief(self, node_id: str) -> dict | None:
-        """What the resolver is told of an escalation (None: the step is not escalated)."""
-        node = self.c.nodes.get(node_id)
-        if node is None or node.status != ESCALATED or node.escalation is None:
+    def brief(self, ticket_id: str) -> dict | None:
+        """What the resolver is told of an escalation (None: the ticket is not waiting)."""
+        t = self.c.tickets.t.get(ticket_id) if self.c.st.tickets else None
+        if t is None or t.status != Status.WAITING:
             return None
-        esc = node.escalation
-        return {"node": node.id, "title": node.title, "escalation": {
-                    "kind": esc.kind, "reason": esc.reason, "at": esc.at, "run": esc.run,
-                    "missing_decision": esc.missing_decision,
-                    "log_tail": (esc.log_tail or "")[-4000:],
-                    "source": str(esc.source) if esc.source else None},
-                "actions": self.actions(node_id),
-                "step": context.step_status(self.c, node_id)}
+        last = next((self.c.runs[r] for r in reversed(t.runs) if r in self.c.runs), None)
+        return {"ticket": t.id, "type": t.type, "goal": t.goal, "waiting": str(t.waiting),
+                "attempt": t.attempt, "limit": t.limit, "findings": t.findings[:30],
+                "key": escalation_key(t),
+                "last_run": None if last is None else {
+                    "id": last.id, "role": last.role, "status": last.status,
+                    "failure": last.failure.model_dump(mode="json") if last.failure else None},
+                "criteria": [{"id": cid, "status": x.status, "findings": x.findings[:10]}
+                             for cid in t.criteria if (x := self.c.tickets.t.get(cid))],
+                "actions": remedies(self.c, t)}
 
-    async def resolve(self, node_id: str) -> None:
-        """Ask the resolver about the escalation of ``node_id``; record its proposal."""
+    async def resolve(self, ticket_id: str) -> None:
+        """Ask the resolver about the escalation of ``ticket_id``; record its proposal."""
         async with self.c.lock:
-            brief = self.brief(node_id)
-        card = next((x for x in self.c.a2a_cards() if x.id == cards.RESOLVER), None)
-        if brief is None or card is None:
+            brief = self.brief(ticket_id)
+        if brief is None or self.c.change.status != "ACTIVE":
             return
-        at = brief["escalation"]["at"]
-        text = (f"Step `{node_id}` escalated. Diagnose it and propose one of its `actions`:\n\n"
-                f"```json\n{json.dumps(brief, indent=1)}\n```")
+        key = brief["key"]
+        text = (f"Ticket `{ticket_id}` is waiting on a human. Diagnose it and propose one of its "
+                f"`actions`:\n\n```json\n{json.dumps(brief, indent=1)}\n```")
         for attempt in range(1, TRIES + 1):
             try:
-                _, answer = await self.c.host.deliver(self.c.cid, card.id, cards.ORCHESTRATOR,
+                _, answer = await self.c.host.deliver(self.c.cid, cards.RESOLVER, cards.ORCHESTRATOR,
                                                       cards.ORCHESTRATOR, text,
-                                                      f"esc-{node_id}-{at}-{attempt}")
+                                                      f"esc-{ticket_id}-{key}-{attempt}")
             except (NoAgent, WorkflowError) as e:
                 async with self.c.lock:
-                    self.c.event("resolver", f"could not ask the resolver about {node_id}: {e}",
-                                 node_id)
+                    self.c.event("resolver", f"could not ask the resolver about {ticket_id}: {e}",
+                                 ticket_id)
                     self.c.save()
                 return
             proposal, why = parse_proposal(answer)
             if proposal is None:
                 async with self.c.lock:
-                    self.c.event("resolver", f"no proposal for {node_id}: {why}", node_id)
+                    self.c.event("resolver", f"no proposal for {ticket_id}: {why}", ticket_id)
                     self.c.save()
                 return
-            err = await self.propose(node_id, at, proposal)
+            err = await self.propose(ticket_id, key, proposal)
             if err is None or err == "stale":
                 return
-            text = (f"Your proposal for `{node_id}` was not taken: {err}. Send it again as the "
+            text = (f"Your proposal for `{ticket_id}` was not taken: {err}. Send it again as the "
                     "fenced JSON block your instructions describe.")
 
-    async def propose(self, node_id: str, escalation_at: str, proposal: dict,
+    async def propose(self, ticket_id: str, key: str, proposal: dict,
                       run: str | None = None) -> str | None:
-        """Record the proposal on the escalation raised at ``escalation_at``. Returns why it
-        was not taken – None when it was; "stale" when the escalation was decided first."""
+        """Record the proposal for the escalation ``key``. Returns why it was not taken – None
+        when it was; "stale" when the escalation was decided first."""
         c = self.c
         async with c.lock:
-            node = c.nodes.get(node_id)
-            esc = node.escalation if node else None
-            if esc is None or node.status != ESCALATED or esc.at != escalation_at:
-                c.event("resolver", f"proposal for {node_id} is stale: its escalation was "
-                                    "decided first", node_id)
+            t = c.tickets.t.get(ticket_id)
+            if t is None or t.status != Status.WAITING or escalation_key(t) != key:
+                c.event("resolver", f"proposal for {ticket_id} is stale: its escalation was "
+                                    "decided first", ticket_id)
                 c.save()
                 return "stale"
-            actions = self.actions(node_id)
+            actions = remedies(c, t)
             action = proposal.get("action")
             if action not in actions:
                 return f"action must be one of {', '.join(actions)} (got {action!r})"
             payload = proposal.get("payload") or {}
             if not isinstance(payload, dict):
                 return "payload must be a JSON object"
+            if action == "replan":                 # its plan, checked as applying it would
+                plan, v = parse_plan(payload.get("plan"))
+                if v or not payload.get("plan"):
+                    return "a replan's payload is {\"plan\": <a replan document>}: " + (
+                        "; ".join(v) or "no plan")
+                if ticket_id not in plan.fail and not any(a.into == ticket_id for a in plan.add):
+                    return (f"the plan must fail {ticket_id} (replaced) or add to it "
+                            "(repaired)")
             atts = [a for a in proposal.get("attestations") or [] if isinstance(a, str)]
-            n = len(c.docs.list(c.p(f"control/proposals/{_slug(node_id)}-"))) + 1
+            n = len(c.docs.list(c.p(f"control/proposals/{_slug(ticket_id)}-"))) + 1
             p = ResolverProposal(action=action, payload=payload,
                                  rationale=str(proposal.get("rationale") or "")[:4000],
                                  attestations=atts, run=run)
-            rec = c.write_record(f"control/proposals/{_slug(node_id)}-{n}.json",
-                                 p.model_dump(mode="json") | {"node": node_id,
-                                                              "escalation_at": esc.at})
+            rec = c.write_record(f"control/proposals/{_slug(ticket_id)}-{n}.json",
+                                 p.model_dump(mode="json") | {"ticket": ticket_id, "key": key})
             p.record = rec.attestation
-            esc.proposal = p
-            c.event("resolver", f"proposes {action} for {node_id}: {p.rationale[:200]}",
-                    node_id, run)
+            c.change.proposals[ticket_id] = p
+            c.event("resolver", f"proposes {action} for {ticket_id}: {p.rationale[:200]}",
+                    ticket_id, run)
             c.save()
             return None

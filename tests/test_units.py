@@ -22,7 +22,6 @@ DOC = (ROOT / "WORKFLOW.md").read_text()
 GUARD_ID_RE = re.compile(r"\|\s*((?:G|H)-[A-Z]+[0-9]+|H-[0-9]+)\s*\|")
 
 
-
 class StubHost:
     """An EngineHost that does nothing: for a ChangeCore on its own."""
 
@@ -34,8 +33,6 @@ class StubHost:
     def touch(self): ...
 
     def attention(self, item, raised): ...
-
-
 
 
     def next_run_id(self):
@@ -92,10 +89,11 @@ def test_assets_render_and_pin(tmp_path):
 
     import yaml
     a = Assets(ROOT / "assets")
-    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
-                              "branch", "task_id", "task_title", "task_json", "cycle", "role",
-                              "context_refs", "feedback", "candidate_sha", "write_scope",
-                              "required_docs", "workdir", "sandbox_tools", "plan", "step")}
+    vars_ = {k: "x" for k in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
+                              "oracle_sha", "change_base_sha", "branch", "ticket_id",
+                              "ticket_goal", "work_json", "attempt", "role", "context_refs",
+                              "findings", "judged_sha", "write_scope", "outputs", "workdir",
+                              "sandbox_tools", "task_soul", "environment", "scaffold")}
     vars_["task_soul"] = "backend-engineer"
     r = a.render_role("implementer", vars_)
     assert "Backend Engineer" in r.soul and r.pin.startswith("sha256:")
@@ -143,7 +141,6 @@ def test_docstore_versions_are_immutable():
         d.conn.execute("DELETE FROM documents")
     with pytest.raises(DocStoreError):
         d.write("../etc/passwd", "x", author="r", role="r")
-
 
 
 def test_an_unchanged_write_creates_no_version():
@@ -202,6 +199,15 @@ def check(tasks, reqs=("REQ-1",), tier="R2", oracle=ORACLE):
                        SchemaRegistry(ROOT / "assets/schemas"))
 
 
+def work_problems(task: dict) -> list[str]:
+    """What the implementer's work schema says of a task-like dict."""
+    from legion_orch.workflow.assets import Assets
+    from legion_orch.workflow.tickets import Ticket
+    work = {k: v for k, v in task.items() if k not in ("id", "title", "depends_on")}
+    return Assets(ROOT / "assets").work_problems(Ticket(id=task["id"], type="agent:implementer",
+                                                         work=work))
+
+
 def test_plan_guards():
     assert check([_task("T1", ["src/a.py"]), _task("T2", ["src/b.py"], ["T1"])]) == []
     ids = lambda v: {x.split(":")[0] for x in v}
@@ -211,7 +217,7 @@ def test_plan_guards():
     assert check([_task("T1", ["src/"]), _task("T2", ["src/b.py"], ["T1"])]) == []    # ordered: fine
     assert "G-P7" in ids(check([_task("T1", ["tests/acc/test_a.py"])]))
     assert "G-P7" in ids(check([_task("T1", [".github/workflows/ci.yml"])]))
-    assert "G-P1" in ids(check([_task("T1", ["../x"])]))   # path shape is in the schema
+    assert work_problems(_task("T1", ["../x"]))            # path shape: the work schema's
     empty_oracle = {"acceptance_tests": [], "acceptance_commands": [], "integration_commands": [],
                     "criteria": []}
     assert "G-P8" in ids(check([_task("T1", ["a"])], oracle=empty_oracle))
@@ -263,8 +269,8 @@ def test_namespacing_and_agent_read_restrictions():
     assert qualify("changes/c2/plan/spec.md", "c1") == "changes/c2/plan/spec.md"
     assert normalize("file:plan/spec.md@2", "c1") == "file:changes/c1/plan/spec.md@2"
     assert normalize(f"git:app@{SHA}", "c1") == f"git:app@{SHA}"
-    assert _hidden("changes/c1/control/logs/r0001.log")
-    assert not _hidden("changes/c1/control/approvals/spec.json")
+    assert _hidden("changes/c1/control/runs/r0001/log")
+    assert not _hidden("changes/c1/tickets/design/spec.md")
 
 
 def test_agents_cannot_write_other_changes_or_control(tmp_path):
@@ -282,33 +288,31 @@ def test_agents_cannot_write_other_changes_or_control(tmp_path):
                                 journal=Journal(tmp_path / "journal"),
                                 tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = Reports(ChangeCore(svc, StubHost(), "c1"), lifecycle=None, roles=None)  # writes need neither
-    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1,
-              write_scope=["changes/c1/plan/"])
-    assert ce.docs_write(run, "plan/spec.md", "x", None).path == "changes/c1/plan/spec.md"
-    run.write_scope = ["changes/c1/plan/", "changes/c1/tasks/T1/"]   # even a broad scope can't
-    for bad in ("changes/c2/plan/spec.md", "control/approvals/x.json", "intake/requirements.md",
-                "tasks/T1/verification/cycle-1.json", "tasks/T1/panel/cycle-1.json",
-                "tasks/T1/reports/reviewer-cycle-1.json", "control/steps/plan/reports/critic-cycle-1.json",
-                "tasks/T1/runs/r0001/assignment.json", "tasks/T1/runs/r0001/outcome.json",
-                "tasks/T1/feedback/1.md", "tasks/T1/decisions/1.md"):
+    run = Run(id="r0001", ticket="design", role="planner", soul="s", attempt=1,
+              write_scope=["changes/c1/tickets/design/"])
+    assert ce.docs_write(run, "tickets/design/spec.md", "x", None).path == \
+        "changes/c1/tickets/design/spec.md"
+    run.write_scope = ["changes/c1/tickets/design/", "changes/c1/"]   # even a broad scope can't
+    for bad in ("changes/c2/tickets/design/spec.md", "control/x.json",
+                "control/runs/r0001/assignment.json", "control/verifications/v1/record.json"):
         with pytest.raises(WorkflowError, match="G-W1"):
             ce.docs_write(run, bad, "x", None)
     # G-W4: per-run quota (limits: 3 versions, 10 bytes in this test)
     with pytest.raises(WorkflowError, match="G-W4.*bytes"):
-        ce.docs_write(run, "plan/big.md", "x" * 10, None)
-    ce.docs_write(run, "plan/a.md", "y", None)
-    ce.docs_write(run, "plan/b.md", "z", None)
+        ce.docs_write(run, "tickets/design/big.md", "x" * 10, None)
+    ce.docs_write(run, "tickets/design/a.md", "y", None)
+    ce.docs_write(run, "tickets/design/b.md", "z", None)
     assert (run.docs_written, run.doc_bytes) == (3, 3)
     with pytest.raises(WorkflowError, match="G-W4.*versions"):
-        ce.docs_write(run, "plan/c.md", "w", None)
+        ce.docs_write(run, "tickets/design/c.md", "w", None)
     # a dry run makes the same checks, and writes and counts nothing
     with pytest.raises(WorkflowError, match="G-W4.*versions"):
-        ce.docs_write(run, "plan/c.md", "w", None, dry_run=True)
+        ce.docs_write(run, "tickets/design/c.md", "w", None, dry_run=True)
     run.docs_written = 0
     with pytest.raises(WorkflowError, match="G-W1"):
         ce.docs_write(run, "control/x.json", "{}", None, dry_run=True)
-    c = ce.docs_write(run, "plan/c.md", "w", None, dry_run=True)
-    assert c.attestation == "file:changes/c1/plan/c.md@1" and docs.latest_version(c.path) is None
+    c = ce.docs_write(run, "tickets/design/c.md", "w", None, dry_run=True)
+    assert c.attestation == "file:changes/c1/tickets/design/c.md@1" and docs.latest_version(c.path) is None
     assert (run.docs_written, run.doc_bytes) == (0, 3)
 
 
@@ -318,39 +322,25 @@ def test_review_panels():
     assert risk.review_panel("R2", {}) == ["reviewer"]
 
 
-def test_protected_path_approval_timing_and_coverage():
-    import types
-
-    from legion_orch.workflow import governance
-    from legion_orch.workflow.model import ProtectedPathApproval
-    e = types.SimpleNamespace(change=types.SimpleNamespace(protected_approvals=[
-        ProtectedPathApproval(task="T1", paths=["tests/acc/test_a.py"], approver="miles",
-                              reason="r", at="2026-01-02T00:00:00.000Z")]))
-    assert governance.approved_protected_for(e, "T1", "2026-01-03T00:00:00.000Z") == ["tests/acc/test_a.py"]
-    # a run that predates the approval may not touch the path
-    assert governance.approved_protected_for(e, "T1", "2026-01-01T00:00:00.000Z") == []
-    assert governance.approved_protected_for(e, "T2", "2026-01-03T00:00:00.000Z") == []   # other task
-    assert governance.coverage_ok(types.SimpleNamespace(covers=None), {"T1", "T2"})
-    assert not governance.coverage_ok(types.SimpleNamespace(covers=["T1"]), {"T1", "T2"})
-
-
 def test_docstore_check_makes_every_write_check_and_writes_nothing():
     from legion_orch.store import SchemaViolation
     d = _store()
-    c = d.check("changes/c1/plan/spec.md", "one")
-    assert (c.attestation, c.unchanged, c.schema) == ("file:changes/c1/plan/spec.md@1", False, "markdown")
-    assert d.latest_version("changes/c1/plan/spec.md") is None          # nothing written
-    v1 = d.write("changes/c1/plan/spec.md", "one", author="r1", role="planner")
+    spec = "changes/c1/tickets/design/spec.md"
+    c = d.check(spec, "one")
+    assert (c.attestation, c.unchanged, c.schema) == (f"file:{spec}@1", False, "markdown")
+    assert d.latest_version(spec) is None          # nothing written
+    v1 = d.write(spec, "one", author="r1", role="planner")
     assert c.sha256 == v1.sha256
-    assert d.check("changes/c1/plan/spec.md", "one", base_version=1).unchanged
-    assert d.check("changes/c1/plan/spec.md", "two", base_version=1).version == 2
+    assert d.check(spec, "one", base_version=1).unchanged
+    assert d.check(spec, "two", base_version=1).version == 2
     with pytest.raises(VersionConflict, match="G-W2"):
-        d.check("changes/c1/plan/spec.md", "two")                       # base missing
+        d.check(spec, "two")                       # base missing
     with pytest.raises(SchemaViolation, match="G-W3.*missing heading 'Change'"):
-        d.check("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n")
+        d.check("changes/c1/tickets/design/specs/REQ-1.md",
+                "# x\n## Current behaviour\n## Acceptance criteria\n")
     with pytest.raises(DocStoreError, match="invalid document path"):
         d.check("../x.md", "x")
-    assert d.latest_version("changes/c1/plan/spec.md") == 1
+    assert d.latest_version(spec) == 1
 
 
 def test_store_enforces_bound_schemas():
@@ -358,26 +348,26 @@ def test_store_enforces_bound_schemas():
 
     from legion_orch.store import SchemaViolation
     d = _store()
-    good = {"tasks": [_task("T1", ["src/a.py"])]}
-    v = d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner")
-    assert (v.schema, v.schema_sha.startswith("sha256:")) == ("taskgraph", True)
-    assert d.read("changes/c1/plan/taskgraph.json").schema == "taskgraph"
-    bad = {"tasks": [dict(_task("T1", ["/abs"]), extra=1)]}
-    with pytest.raises(SchemaViolation, match="G-W3.*taskgraph"):
-        d.write("changes/c1/plan/taskgraph.json", _j.dumps(bad), author="r1", role="planner", base_version=1)
-    with pytest.raises(SchemaViolation, match="bound to schema 'taskgraph', not 'json'"):
-        d.write("changes/c1/plan/taskgraph.json", _j.dumps(good), author="r1", role="planner",
-                base_version=1, schema="json")
+    path = "changes/c1/tickets/design/oracle.json"
+    v = d.write(path, _j.dumps(ORACLE), author="r1", role="planner")
+    assert (v.schema, v.schema_sha.startswith("sha256:")) == ("oracle", True)
+    assert d.read(path).schema == "oracle"
+    with pytest.raises(SchemaViolation, match="G-W3.*oracle"):
+        d.write(path, _j.dumps(dict(ORACLE, acceptance_tests="x")), author="r1", role="planner",
+                base_version=1)
+    with pytest.raises(SchemaViolation, match="bound to schema 'oracle', not 'json'"):
+        d.write(path, _j.dumps(ORACLE), author="r1", role="planner", base_version=1, schema="json")
     with pytest.raises(SchemaViolation, match="missing heading 'Change'"):
-        d.write("changes/c1/plan/specs/REQ-1.md", "# x\n## Current behaviour\n## Acceptance criteria\n",
-                author="r1", role="planner")
-    run = {"role": "planner", "soul": "s", "cycle": 1, "created_at": "2026-11-23T00:00:00.000Z"}
-    d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
+        d.write("changes/c1/tickets/design/specs/REQ-1.md",
+                "# x\n## Current behaviour\n## Acceptance criteria\n", author="r1", role="planner")
+    run = {"ticket": "T1", "role": "planner", "soul": "s", "attempt": 1,
+           "created_at": "2026-11-23T00:00:00.000Z"}
+    d.write("changes/c1/control/runs/r0001/assignment.json", _j.dumps(run), author="controller",
             role="controller")                                  # a valid assignment
     run["token"] = "x"
     with pytest.raises(SchemaViolation, match="run-assignment.*does not allow"):   # never a token
-        d.write("changes/c1/tasks/T1/runs/r0001/assignment.json", _j.dumps(run), author="controller",
-                role="controller")
+        d.write("changes/c1/control/runs/r0001/assignment.json", _j.dumps(run),
+                author="controller", role="controller")
     assert d.write("changes/c1/notes/anything.txt", "free text", author="r", role="r").schema == "text"
 
 
@@ -390,7 +380,6 @@ def test_report_schemas():
     errs = reg.validate_data("report-review", bad)
     assert any("verdict" in e for e in errs) and any("findings/0" in e for e in errs)
     assert reg.validate_data("report-none", {}) == [] and reg.validate_data("report-none", {"x": 1})
-
 
 
 def test_svid_verification_and_access_tokens():
@@ -436,7 +425,6 @@ def test_svid_verification_and_access_tokens():
     import base64
     assert bearer("Bearer abc") == "abc"
     assert bearer("Basic " + base64.b64encode(b"x:pw").decode()) == "pw"
-
 
 
 def _os_cfg(tmp_path):
@@ -589,88 +577,38 @@ def test_engine_boundaries():
 
 def test_the_engine_keeps_its_layers():
     """The import contracts in pyproject.toml (import-linter): the engine's layers import only
-    downward (runtime > steps > services > sandboxes > base), nothing outside the engine imports
-    more than the engine package's names, the facade never sees the step layer, and the
-    workflow core is pure."""
+    downward (flow > services > sandboxes > base), nothing outside the engine imports more than
+    the engine package's names, the facade never sees the sandbox layer, and the tickets know no
+    engine."""
     from importlinter.cli import EXIT_STATUS_SUCCESS, lint_imports
     assert lint_imports(config_filename=str(ROOT / "pyproject.toml"), no_cache=True,
                         no_logo=True) == EXIT_STATUS_SUCCESS     # its output says which broke
 
 
-def test_the_facade_names_none_of_the_step_layer():
-    """change.py fronts the runtime, decisions, reports and logs; the parts composed for the
-    step layer (compose.py) are never used through it."""
+def test_the_facade_names_none_of_the_services_composed_for_the_workflow():
+    """change.py fronts the workflow, the agents' reports and the run logs; the parts composed
+    for the workflow's adapters (compose.py) are never used through it."""
     src = (ROOT / "legion_orch/workflow/engine/change.py").read_text()
-    used = set(re.findall(r"self\._(runner|phases|agents|provisioner|sandboxes)\b", src))
+    used = set(re.findall(r"self\._(runner|agents|provisioner|sandboxes|publisher)\b", src))
     assert used == set(), used
 
 
-def test_the_runtime_names_no_phase_or_step_type():
-    """The runtime starts, resets, resumes, overrides and retries steps; what a step is made of
-    and where it goes on is the step layer's to say, so nothing in runtime/ names a phase's
-    status or reads a step type."""
-    phases = r"\b(RUNNING|VERIFYING|REVIEWING|MERGING|REWORK)\b"
-    types = r"\b(step_for|STEP_TYPES|GATE_TYPES|StepType)\b"
-    for f in sorted((ROOT / "legion_orch/workflow/engine/runtime").glob("*.py")):
-        src = re.sub(r"(StepStatus|ChangeStatus|NodeStatus)\.\w+", "", f.read_text())
-        assert not re.findall(phases, src), f"{f.name} names a phase"
-        assert not re.findall(types, src), f"{f.name} reads a step type"
-
-
-def test_governance_and_ship_use_only_the_change_view():
-    """They depend on the ChangeView protocol, never on engine internals."""
-    from legion_orch.workflow.view import ChangeView
-    allowed = {n for n in dir(ChangeView) if not n.startswith("__")} | set(ChangeView.__annotations__)
-    wf = ROOT / "legion_orch/workflow"
-    for f in [*sorted((wf / "governance").glob("*.py")), wf / "ship.py"]:
-        used = set(re.findall(r"\b(?:self\.)?e\.([A-Za-z_]+)", f.read_text()))
-        assert used <= allowed, f"{f.name} uses {used - allowed} outside ChangeView"
-        assert "engine" not in f.read_text(), f"{f.name} imports the engine"
-
-
-def test_every_gate_has_exactly_one_check():
-    from legion_orch.workflow import risk
-    from legion_orch.workflow.ship import GATE_CHECKS, GateEvaluator
-    all_gates = {g for gates in risk.GATES_BY_TIER.values() for g in gates}
-    assert set(GATE_CHECKS) == all_gates | set(risk.RELEASE_GATES)     # those: addable only
-    assert all(callable(getattr(GateEvaluator, m)) for m in GATE_CHECKS.values())
+def test_the_ticket_rules_are_pure():
+    """The rules decide and the runner carries out: tickets/rules.py and its records do no I/O –
+    no asyncio, files, processes or git, nothing of the controller but the ticket model – so the
+    same events give the same tickets and effects (the property tests rely on it)."""
+    pure = {"__future__", "contextlib", "collections.abc", "dataclasses", "enum", "typing",
+            "pydantic", ".model"}
+    for name in ("rules.py", "model.py"):
+        src = (ROOT / "legion_orch/workflow/tickets" / name).read_text()
+        mods = set(re.findall(r"^(?:from|import) (\S+)", src, re.M))
+        assert mods <= pure, f"{name} imports {mods - pure}"
 
 
 def test_every_role_has_exactly_one_handler():
     from legion_orch.workflow.roles import REGISTRY
     roles = set(Assets(ROOT / "assets").roles)
     assert set(REGISTRY) == roles, (set(REGISTRY) ^ roles)
-
-
-def test_role_dispatch_policy():
-    """The dispatch policy each handler declares, and where each role's agent works (its step's
-    sandbox plan; judges get a fresh one) – formerly hard-coded role sets in the engine."""
-    from legion_orch.workflow.engine.sandboxes.plan import Checkout, UntilAccepted, UntilGate
-    from legion_orch.workflow.engine.steps.step_types import sandbox_plan
-    from legion_orch.workflow.roles import roles_where
-    panel = {"reviewer", "security", "architecture"}
-    everyone = set(Assets(ROOT / "assets").roles)
-    plans = {r: sandbox_plan(r) for r in everyone}
-    assert {r for r, p in plans.items() if p.pushes} == {"implementer", "oracle"}
-    # the oracle's branch starts from the head at every run, a build task's only at its first
-    assert plans["oracle"].base_at_head(True) and plans["oracle"].base_at_head(False)
-    assert plans["implementer"].base_at_head(False) and not plans["implementer"].base_at_head(True)
-    assert not plans["reviewer"].base_at_head(False)              # judges check out detached
-    assert {r for r, p in plans.items() if p.at_head} == {"baseline", "integration", "release",
-                                                          "retrospective", "describer"}
-    assert {r for r, p in plans.items() if p.checkout == Checkout.CANDIDATE} == panel | {
-        "critic", "pr-reviewer"}
-    assert {r: p.keep for r, p in plans.items() if p.keeps} == {
-        "intake": UntilGate("H-1"), "planner": UntilGate("H-E1"), "oracle": UntilGate("H-2"),
-        "implementer": UntilAccepted()}
-    assert roles_where("panel") == panel | {"critic", "pr-reviewer"}   # judge a node REVIEWING
-    assert roles_where("judge") == {"critic", "baseline", "integration", "pr-reviewer"} | panel
-    assert not any(plans[r].keeps for r in roles_where("judge"))   # G-D4
-    assert roles_where("needs_fresh_approval") == {"implementer"}
-    assert roles_where("sees_draft_plan") == {"critic", "oracle", "baseline"}
-    assert everyone - roles_where("sees_requirements") == {"intake"}
-    assert everyone - roles_where("sees_oracle_commit") == {"intake", "planner", "critic", "oracle",
-                                                            "retrospective"}
 
 
 def test_role_handlers_use_only_the_role_context():
@@ -681,7 +619,6 @@ def test_role_handlers_use_only_the_role_context():
     for f in (ROOT / "legion_orch/workflow/roles").glob("*.py"):
         used = set(re.findall(r"\be\.([A-Za-z_]{2,})", f.read_text()))   # ("e.g." is prose)
         assert used <= allowed, f"{f.name} uses {used - allowed} outside RoleContext"
-
 
 
 def test_attestations_cannot_carry_markup():
@@ -718,25 +655,9 @@ sandbox: {{runner: local}}
         load_config(tmp_path / "c.yaml")
 
 
-
-def test_panel_members_cannot_write_each_others_reviews():
-    a = Assets(ROOT / "assets")
-    v = {"task_id": "T1", "cycle": 1}
-    scopes = {r: a.role_paths(r, v)[0] for r in ("reviewer", "security", "architecture")}
-    for role, scope in scopes.items():
-        for other in scopes:
-            path = f"tasks/T1/reviews/{other}-cycle-1.md"
-            assert any(path.startswith(w) for w in scope) == (role == other), (role, path)
-
-
-
 def test_plan_limits_and_scale():
     import time
 
-    from legion_orch.store import SchemaRegistry
-    reg = SchemaRegistry(ROOT / "assets/schemas")
-    too_many = {"tasks": [_task(f"T{i}", [f"src/{i}.py"]) for i in range(1, 102)]}
-    assert any("tasks" in e for e in reg.validate_data("taskgraph", too_many))
     # a 100-long dependency chain: waves are iterative (no recursion limit)
     chain = [_task(f"T{i}", [f"src/{i}.py"], [f"T{i - 1}"] if i > 1 else []) for i in range(1, 101)]
     assert guards.waves(chain)["T100"] == 100
@@ -771,25 +692,26 @@ def test_transition_rollback_keeps_identity(tmp_path):
     import types
 
     from legion_orch.workflow.engine.base.core import ChangeCore
-    from legion_orch.workflow.model import Change, Node, Run
+    from legion_orch.workflow.model import Change, Run
+    from legion_orch.workflow.tickets import Ticket
     svc = types.SimpleNamespace(cfg=None, docs=_store(), hubs={}, assets=None, runner=None,
                                 lock=None, procs={}, telemetry=Telemetry.off(),
                                 journal=Journal(tmp_path / "journal"),
                                 tables=StateTables(sqlite3.connect(":memory:"), threading.RLock()))
     ce = ChangeCore(svc, StubHost(), "c1")
     ce.st.change = Change(id="c1", goal="g", workspace="app", base_sha="a" * 40)
-    node = Node(id="plan", kind="plan", title="Plan")
-    run = Run(id="r0001", node_id="plan", role="planner", soul="s", cycle=1, status="ACTIVE")
-    ce.st.nodes["plan"], ce.st.runs["r0001"] = node, run
+    t = Ticket(id="design", type="agent:planner")
+    run = Run(id="r0001", ticket="design", role="planner", soul="s", attempt=1, status="ACTIVE")
+    ce.st.tickets["design"], ce.st.runs["r0001"] = t, run
     with pytest.raises(RuntimeError), ce.st.transaction():
-        run.status, node.status, node.feedback = "REPORTED", "ACCEPTED", [{"x": 1}]
+        run.status, t.status, t.findings = "REPORTED", "passed", ["x"]
         ce.st.change.tier = "R3"
-        ce.st.nodes["build:T1"] = Node(id="build:T1", kind="build", title="T1")  # e.g. new builds
-        del ce.st.nodes["plan"]
+        ce.st.tickets["T1"] = Ticket(id="T1", type="agent:implementer")   # e.g. new builds
+        del ce.st.tickets["design"]
         raise RuntimeError("transition failed")
-    assert ce.nodes["plan"] is node and ce.runs["r0001"] is run       # same objects
-    assert (run.status, node.status, node.feedback) == ("ACTIVE", "PENDING", [])
-    assert ce.change.tier is None and "build:T1" not in ce.nodes
+    assert ce.st.tickets["design"] is t and ce.runs["r0001"] is run       # same objects
+    assert (run.status, t.status, t.findings) == ("ACTIVE", "pending", [])
+    assert ce.change.tier is None and "T1" not in ce.st.tickets
 
 
 def test_protected_support_files_are_protected():
@@ -799,13 +721,11 @@ def test_protected_support_files_are_protected():
     assert check([_task("T1", ["src/a.py"])], oracle=support) == []
     import types
 
-    from legion_orch.workflow import governance
-    from legion_orch.workflow.model import Oracle
-    e = types.SimpleNamespace(change=types.SimpleNamespace(oracle=Oracle.model_validate(support),
-                                                           setup_pin=None, plan_node="plan"),
+    from legion_orch.workflow.roles.base import protected
+    e = types.SimpleNamespace(change=types.SimpleNamespace(setup_pin=None),
                               cfg=types.SimpleNamespace(protected_paths=[".github/"]),
-                              latest=lambda _rel: None, current=lambda _base: None)
-    assert governance.protected_paths(e) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
+                              tickets=types.SimpleNamespace(root=types.SimpleNamespace(pointers={})))
+    assert protected(e, support) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]
 
 
 def test_cgi_head_parsing():
@@ -815,25 +735,6 @@ def test_cgi_head_parsing():
     assert _parse_cgi_head(b"Content-Type: application/x-git\n\nPACK") \
         == (200, {}, "application/x-git", b"PACK")
     assert _parse_cgi_head(b"Content-Type: text/plain\r\n") is None        # incomplete header block
-
-
-def test_every_gate_says_what_approves_it_and_the_runtime_names_no_gate():
-    """What approving a gate records is its step type's (its Approval phase's ``approves``);
-    the human actions in the runtime hold no table of gates."""
-    import inspect
-
-    from legion_orch.workflow.engine.runtime import human
-    from legion_orch.workflow.engine.steps import GATE_TYPES
-    from legion_orch.workflow.engine.steps.phases import Approval
-    from legion_orch.workflow.model import H_CHANGE, H_ENV, H_REQUIREMENTS, H_SPEC
-    assert set(GATE_TYPES) == {H_REQUIREMENTS, H_ENV, H_SPEC, H_CHANGE}
-    assert {g: sorted(t.phase(Approval).approves.actions) for g, t in GATE_TYPES.items()} == {
-        H_REQUIREMENTS: ["accept", "approve"], H_ENV: ["approve"], H_SPEC: ["approve"],
-        H_CHANGE: ["accept", "approve"]}
-    assert not hasattr(human.HumanGates, "GATE_ACTIONS")
-    code = inspect.getsource(human.HumanGates.human_action) + inspect.getsource(
-        human.HumanGates._human_gate)
-    assert not any(g in code for g in ("H_REQUIREMENTS", "H_ENV", "H_SPEC", "H_CHANGE"))
 
 
 def test_plan_guard_branches():
@@ -846,8 +747,8 @@ def test_plan_guard_branches():
     assert "cites unknown requirement REQ-9" in msgs(check([t("T1", ["a"], reqs=("REQ-1", "REQ-9"))]))
     blank = t("T1", ["a"]) | {"verification": ["  "]}       # schema-valid, but no real command
     assert {"G-P4"} == ids(check([blank]))
-    # path shape is the schema's (G-P1), checked before any other guard
-    assert {"G-P1"} == ids(check([t("T1", []) | {"files_forbidden": ["/etc/passwd", "a/../b"]}]))
+    # path shape is the work schema's (checked when the plan's tickets are applied)
+    assert work_problems(t("T1", ["a"]) | {"files_forbidden": ["/etc/passwd", "a/../b"]})
     crit = dict(ORACLE, criteria=[{"id": "AC-1", "requirement": "REQ-7", "text": "t"}])
     assert "must reference an accepted requirement" in msgs(check([t("T1", ["a"])], oracle=crit))
     # parallel overlap: exact/exact, pattern/exact, exact/pattern, glob/glob
@@ -864,13 +765,20 @@ def test_report_and_work_guard_branches(tmp_path):
     from legion_orch.workflow import attest
     from legion_orch.workflow.assets import GitMode
     docs = _store()
-    v1 = docs.write("changes/c1/plan/a.md", "one", author="r0001", role="planner")
-    docs.write("changes/c1/plan/a.md", "two", author="r0001", role="planner", base_version=1)
-    docs.write("changes/c1/plan/b.md", "x", author="r0002", role="planner")
+    v1 = docs.write("changes/c1/tickets/design/a.md", "one", author="r0001", role="planner")
+    docs.write("changes/c1/tickets/design/a.md", "two", author="r0001", role="planner",
+               base_version=1)
+    docs.write("changes/c1/tickets/design/b.md", "x", author="r0002", role="planner")
+    docs.write("changes/c1/tickets/other/c.md", "x", author="r0001", role="planner")
     parse = lambda *refs: [attest.parse(r, ["app"]) for r in refs]
-    _, v = guards.required_docs("r0001", ["changes/c1/plan/a.md", "changes/c1/plan/b.md"],
-                                parse(v1.attestation, "file:changes/c1/plan/b.md@1"), docs)
-    assert "is not the latest version (latest 2)" in v[0] and "was not written by this run" in v[1]
+    pinned, v = guards.required_outputs(
+        "r0001", ["spec", "specs*", "oracle"],
+        {"spec": v1.attestation, "specs": ["file:changes/c1/tickets/design/b.md@1"],
+         "oracle": "file:changes/c1/tickets/other/c.md@1", "extra": "x"},
+        ["changes/c1/tickets/design/"], docs, "c1")
+    assert pinned == {} and len(v) == 4, v
+    assert "are not this role's" in v[0] and "is not the latest version (latest 2)" in v[1]
+    assert "was not written by this run" in v[2] and "outside your write scope" in v[3]
     sha, v = guards.required_git(GitMode.COMMIT, parse(f"git:app@{SHA}", f"git:app@{'b' * 40}"), "app", None)
     assert sha is None and v[0].startswith("G-R5: attest exactly one commit")
     sha, v = guards.required_git(GitMode.CANDIDATE, parse(f"git:app@{'b' * 40}"), "app", SHA)
@@ -1271,11 +1179,3 @@ def test_the_checkout_steps_clone_then_detach_or_branch(tmp_path):
     assert step("run-agent.sh")[-3:] == ["legion/c1/build-t1", base, "legion-implementer"]
 
 
-def test_the_stored_node_schema_knows_every_node_status():
-    """A status the schema does not list fails every save of a node in it (G-W3) – in a
-    background task, where only the log shows it."""
-    import json
-
-    from legion_orch.workflow.model import NodeStatus
-    schema = json.loads((Path(__file__).parent.parent / "assets/schemas/node.json").read_text())
-    assert set(schema["oneOf"][0]["properties"]["status"]["enum"]) == {s.value for s in NodeStatus}

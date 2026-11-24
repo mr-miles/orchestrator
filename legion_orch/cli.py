@@ -42,16 +42,13 @@ def _parser() -> argparse.ArgumentParser:
     dg = sub.add_parser("digest", help="what happened on a running controller since a time")
     dg.add_argument("--since", default="8h",
                     help="ISO timestamp or a duration back from now: 30m, 8h, 2d (default 8h)")
-    tr = sub.add_parser("trace", help="a change's traceability matrix: requirements, tasks, "
-                        "acceptance criteria and their results")
-    tr.add_argument("change")
-    tr.add_argument("--format", choices=["md", "json"], default="md")
     act = sub.add_parser("act", help="perform a human action on a running controller")
     act.add_argument("change")
-    act.add_argument("node")
+    act.add_argument("ticket")
     act.add_argument("action")
-    gov = sub.add_parser("govern", help="change-level governance: attest | override | "
-                                        "approve_protected_paths | approve_surface")
+    gov = sub.add_parser("govern", help="a change-level action: pause | resume | abandon | "
+                                        "replan (payload: {\"plan\": …}) | retrospective | "
+                                        "promote_proposal")
     gov.add_argument("change")
     gov.add_argument("action")
     pn = sub.add_parser("prune", help="an ended change, once its integration branch is taken: "
@@ -106,14 +103,12 @@ class OperatorClient:
     def digest(self, since: str) -> dict:
         return self._call("/api/digest?" + urllib.parse.urlencode({"since": since}))
 
-    def trace(self, change: str) -> dict:
-        return self._call(f"/api/changes/{urllib.parse.quote(change)}/trace")
-
     def start(self, goal: str, workspace: str) -> dict:
         return self._call("/api/changes", {"goal": goal, "workspace": workspace})
 
-    def node_action(self, change: str, node: str, action: str, approver: str, payload: dict) -> dict:
-        return self._call(f"/api/changes/{change}/nodes/{node}/action",
+    def ticket_action(self, change: str, ticket: str, action: str, approver: str,
+                      payload: dict) -> dict:
+        return self._call(f"/api/changes/{change}/tickets/{ticket}/action",
                           {"action": action, "approver": approver, "payload": payload})
 
     def change_action(self, change: str, action: str, approver: str, payload: dict) -> dict:
@@ -126,6 +121,9 @@ def cmd_check(cfg: Config, args) -> int:
     from .workflow.assets import Assets
     a = Assets(cfg.assets_dir)
     print(f"assets {cfg.assets_dir} {a.sha}: roles={sorted(a.roles)} souls={a.souls()}")
+    if a.workflow is not None:
+        print(f"workflow: tiers={sorted(a.workflow.tiers)} "
+              f"skeleton={[g[0].id for g in a.workflow.skeleton.subtasks]}")
     if cfg.environment is not None:
         from .workflow.environment import Library
         lib = Library.for_config(cfg, a.schemas)
@@ -171,15 +169,15 @@ def cmd_setup_openshell(cfg: Config, args) -> int:
 def cmd_changes(cfg: Config, args) -> int:
     for c in OperatorClient(cfg).changes():
         print(f"{c['id']}  {c['status']:<9} {c['tier'] or '--'}  "
-              f"{c['accepted']}/{c['nodes']} accepted  {c['goal'][:60]}")
+              f"{c['passed']}/{c['tickets']} passed  {c['goal'][:60]}")
     return 0
 
 
 def _print_items(title: str, items: list[dict], ui_url: str | None) -> None:
     print(f"{title} ({len(items)})")
     for i in items:
-        link = f"  {ui_url.rstrip('/')}/#{i['change']}/overview/{i['node']}" \
-            if ui_url and i.get("node") else ""
+        link = f"  {ui_url.rstrip('/')}/#{i['change']}/overview/{i['ticket']}" \
+            if ui_url and i.get("ticket") else ""
         print(f"  {i['since'][:16]}  {i['change']}  {i['title']}{link}")
         if i.get("reason"):
             print(f"      {i['reason']}")
@@ -211,21 +209,12 @@ def cmd_digest(cfg: Config, args) -> int:
     return 0
 
 
-def cmd_trace(cfg: Config, args) -> int:
-    t = OperatorClient(cfg).trace(args.change)
-    if args.format == "json":
-        return _show(t)
-    from .workflow.traceability import to_markdown
-    print(to_markdown(t, args.change), end="")
-    return 0
-
-
 def cmd_start(cfg: Config, args) -> int:
     return _show(OperatorClient(cfg).start(args.goal, args.workspace))
 
 
 def cmd_act(cfg: Config, args) -> int:
-    return _show(OperatorClient(cfg).node_action(args.change, args.node, args.action,
+    return _show(OperatorClient(cfg).ticket_action(args.change, args.ticket, args.action,
                                                  args.approver, args.payload))
 
 
@@ -258,7 +247,7 @@ def _show(result: Any) -> int:
 
 COMMANDS = {"check": cmd_check, "serve": cmd_serve, "setup-openshell": cmd_setup_openshell,
             "changes": cmd_changes, "attention": cmd_attention, "digest": cmd_digest,
-            "trace": cmd_trace, "prune": cmd_prune, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
+            "prune": cmd_prune, "start": cmd_start, "act": cmd_act, "govern": cmd_govern,
             "library": cmd_library}
 
 

@@ -1,270 +1,236 @@
 # Architecture: layers and encapsulation
 
 How the controller is put together: which layer decides what, which objects each layer is made
-of, and what each object may know about the others. The workflow itself – stages, gates, guards
-– is specified in [WORKFLOW.md](../WORKFLOW.md); the plan behind this structure is
-"stages and steps" (WORKFLOW.md §4.1).
+of, and what each object may know about the others. The workflow itself – the tickets, their
+guards, the tier policies – is specified in [WORKFLOW.md](../WORKFLOW.md) (§4 for the ticket
+model); the plans behind this structure are `~/plans/tickets-design.md` and
+`~/plans/tickets-3b.md`.
+
+For the whole application at four levels of zoom (system context, containers, components, code),
+see [c4.md](c4.md).
 
 ## 1. The layers
 
-Each layer uses only the layers below it. The **workflow core** at the top of the engine is pure
-(no I/O); everything that touches a sandbox, git or the store is below it.
+Each layer uses only the layers below it. The **ticket rules** at the top are pure (no I/O);
+everything that touches a sandbox, git or the store is below them, reached through the
+executors' ports.
 
 ```mermaid
 flowchart TB
     subgraph entry["Entry points"]
         web["Web API + UI<br/>server/web.py, views.py"]
         mcp["MCP server (agents)<br/>server/mcp.py"]
+        a2a["A2A listener<br/>server/a2a.py, inbox.py"]
         cli["CLI<br/>legion-orch"]
+    end
+
+    subgraph tickets["The tickets – no engine (workflow/tickets/)"]
+        direction TB
+        rules["Ticket rules – pure<br/>rules.py, model.py<br/><i>events in, effects out: start, stop,<br/>merge, escalate, end; pause, replans</i>"]
+        spec["The workflow spec<br/>spec.py ← assets/workflow.yaml<br/><i>skeleton, tier policies, hooks</i>"]
+        runner["Runner<br/>runner.py<br/><i>applies events under the lock,<br/>carries effects out</i>"]
+        execs["Executors<br/>executors/*.py<br/><i>one per type: agent, sign-off, verify,<br/>can-merge, provision, publish – and the merge</i>"]
     end
 
     subgraph engine["ChangeEngine – one change (engine/change.py)"]
         direction TB
-        subgraph wf["Workflow: the stage rules"]
-            core["Workflow core – pure<br/>flow/core.py, states.py<br/><i>stages, gates, send-back, rounds</i>"]
-            tree["Stage tree per tier<br/>runtime/workflow_tree.py"]
-            rt["FlowRuntime<br/>runtime/flow_runtime.py<br/><i>events in, effects out, persistence,<br/>housekeeping on saves</i>"]
+        flow["TicketFlow + adapters<br/>engine/flow/<br/><i>the runner's hooks; the ports filled<br/>by the services; human actions</i>"]
+        subgraph svc["Services (engine/services/)"]
+            agents["AgentRunner, AgentRuns<br/><i>placement, cards, turns, consults;<br/>a run's record, payload, commands</i>"]
+            reports["Reports<br/><i>agent writes and reports, guards,<br/>concluding a run</i>"]
+            life["RunLifecycle<br/><i>failure, timers, logs, releasing sandboxes</i>"]
+            verif["Verification<br/><i>once per key, on push</i>"]
+            prov["Provisioner, Publisher, Resolver, cleanup"]
         end
-        subgraph steps["Steps: what each kind of node is made of"]
-            runner["StepRunner, ActiveStep<br/>steps/runner.py, steps/active.py<br/><i>each node's step as it runs: moves it through<br/>its phases, owns its state and its reservation</i>"]
-            types["STEP_TYPES, GATE_TYPES<br/>steps/step_types.py<br/><i>the only per-kind table</i>"]
-        end
-        subgraph layers["The three layers of a step"]
-            agent["Agent layer<br/>roles/*.py – RoleHandler<br/><i>prompt, guards, judging a report</i>"]
-            phases["Orchestrator layer<br/>steps/phases.py – Produce, Verify,<br/>Panel, Merge, BuildImages, Approval (gates)"]
-            sbx["Sandbox layer<br/>sandboxes/plan.py – SandboxPlan<br/>sandboxes/sandboxes.py – Sandboxes, sessions"]
-        end
-        subgraph svc["Services the phases call (services/), HumanGates (runtime/human.py)"]
-            agents["AgentRuns<br/><i>an agent's Work: run record, payload,<br/>commands; what the run did</i>"]
-            reports["Reports<br/><i>agent writes and reports, shared guards</i>"]
-            prov["Provisioner<br/><i>environment images, is it quiet,<br/>who waits for it</i>"]
-            pub["Publisher<br/><i>the accepted change on GitHub:<br/>branch, pull request, labels</i>"]
-            life["RunLifecycle<br/><i>failure, timers, logs, retiring</i>"]
-            gates["HumanGates<br/><i>decisions in: gates, escalations,<br/>change governance</i>"]
-        end
-        state["ChangeCore + StateStore<br/>base/core.py, base/state.py<br/><i>change, nodes, runs, events;<br/>the 'saved' signal</i>"]
+        sbx["Sandbox layer (engine/sandboxes/)<br/><i>sessions, plans, reflections, consult turns</i>"]
+        state["ChangeCore + StateStore (engine/base/)<br/><i>change, tickets, hooks, runs, events;<br/>the 'saved' signal</i>"]
     end
 
-    disp["Dispatcher – shared by every change<br/>base/dispatch.py<br/><i>runs Work within limits.max_parallel;<br/>step reservations</i>"]
-    work["Work<br/>base/work.py<br/><i>a sandbox session + its commands,<br/>executed in order</i>"]
+    disp["Dispatcher – shared by every change<br/>base/dispatch.py<br/><i>runs Work within limits.max_parallel</i>"]
+    work["Work<br/>base/work.py<br/><i>a sandbox session + its commands</i>"]
 
-    subgraph gov["Rules read by everyone (ChangeView only)"]
-        governance["governance/*<br/>approvals, attestations, overrides"]
-        ship["ship.py<br/>the ship gates"]
+    subgraph rolesg["Read by everyone (RoleContext / ChangeView only)"]
+        roles["roles/*.py – RoleHandler<br/><i>guards, context, what a report says</i>"]
         guards["guards/*"]
     end
 
     subgraph infra["Infrastructure"]
         runnerx["Runner<br/>OpenShell / local"]
-        git["GitRemote – one hub per workspace<br/><i>a change uses its workspace's</i>"]
-        store["DocStore<br/><i>the only durable state</i>"]
+        git["GitRemote, Branches – one hub per workspace"]
+        store["DocStore + state tables<br/><i>the only durable state</i>"]
         builder["EnvironmentBuilder<br/>podman"]
     end
 
     web --> engine
     cli --> web
     mcp --> reports
-    rt <--> core
-    rt --> tree
-    rt --> runner
-    gates --> rt
-    runner --> types
-    types --> agent & phases & sbx
-    phases --> agents & prov & sbx
-    phases -- "Work" --> disp
+    a2a -. bus .- agents
+    flow --> runner
+    runner <--> rules
+    runner --> spec
+    runner --> execs
+    execs -- "ports" --> flow
+    flow --> agents & verif & prov & reports & life
+    agents --> sbx
+    agents -- "Work" --> disp
+    verif -- "Work" --> disp
     disp -- "can_start(), execute()" --> work
     work --> sbx
-    agents --> reports
-    agent --> reports
+    reports --> roles
     life --> sbx
-    engine --> gov
     sbx --> runnerx
-    phases & gates --> git
+    execs --> git
     state --> store
     prov --> builder
 ```
 
 | Layer | Decides | Knows nothing about |
 | --- | --- | --- |
-| **Workflow core** (`flow/`) | Between steps: what starts when (a stage's gate is its last step), send-backs and their rework policies, fix rounds, the end | Agents, sandboxes, git, the store, node kinds, what a gate checks or who approves it |
-| **FlowRuntime** | How the core's effects become node changes; what the nodes' changes mean to the core; persisting the core's state (snapshot and restore) | What a step does inside |
-| **Steps** (`steps/`) | What each kind of node is made of | How a phase does its work |
-| **Phases** | Their own work and its result: ok, rework or escalate | Which kind of node they serve (policies are passed in) |
-| **Agent layer** (role handlers) | A role's guards, context, prompt variables, what its report records | Sandboxes, the next phase |
-| **Dispatcher** | When work runs: a slot within the limit, a step's reservation | What the work is |
-| **Sandbox layer** | Sessions (creating or waking, pausing, deleting), the commands that prepare a working copy, holding, suspending and retiring sandboxes | Why a sandbox is needed |
+| **Ticket rules** (`tickets/rules.py`) | What a ticket does next: its work, its subtask groups, its criteria in order; rework or escalate; merges, waiting and remedies; pause; applying a replan; the end | Agents, sandboxes, git, the store, roles, I/O of any kind |
+| **Runner** (`tickets/runner.py`) | Applying each event to the rules under the change's lock and carrying out their effects: a ticket's `Work` (its branch, base, judged commit), its executor's run as a task, merges, sign-offs that apply a replan, recovery | What an executor does; the engine (it is given `Hooks`) |
+| **Executors** (`tickets/executors/`) | One ticket type's own work, ending in one outcome (`Done`, `Judged`, `GaveUp`, `Blocked`, `Fault`, `OverBudget`); retrying faults with backoff | The services behind their ports |
+| **TicketFlow** (`engine/flow/`) | The runner's hooks (the tier, the replan a sign-off applies, a ticket's work checked against its role, escalations, the end, the on-complete process) and the decision owners' actions; the adapters fill the executors' ports with the services | How a service does its work |
+| **Services** (`engine/services/`) | An agent's run (placement, payload, turns, report, conclusion), verifications, provisioning, publishing, the resolver, cleanup | Ticket rules, the next ticket |
+| **Role handlers** (`workflow/roles/`) | A role's guards, context, prompt variables, what its accepted report says (commit, outputs, verdict, findings) | Sandboxes, the ticket's next state |
+| **Dispatcher** | When work runs: a slot within the limit | What the work is |
+| **Sandbox layer** | Sessions (creating or waking, pausing, deleting), the commands that prepare a working copy, holding, suspending and retiring sandboxes, consult turns | Why a sandbox is needed |
 | **Infrastructure** | Running, storing, versioning | The workflow |
 
 In the code each engine layer is a package of `legion_orch/workflow/engine/`, imported only from
-the layers above it (the import contracts in `pyproject.toml`, checked by `lint-imports`):
+the layers above it, and the tickets are a package of their own that imports no engine (the
+import contracts in `pyproject.toml`, checked by `lint-imports`):
 
 | Package | Holds |
 | --- | --- |
-| `runtime/` | `FlowRuntime`, the stage tree, `HumanGates` (decisions in) |
-| `steps/` | `StepRunner` and `StepEvents`, `ActiveStep`, the step and gate types, the phases, the node states |
-| `services/` | `AgentRunner` (the workflow's one counterpart for agents: cards, work, A2A turns, placement; `services/agents/`), `AgentRuns`, `Reports`, `RunLifecycle`, `Provisioner`, the resolver, the end-of-change cleanup |
-| `sandboxes/` | `Sandboxes` and their sessions, sandbox plans (given as `Plans`), reflections |
-| `base/` | `ChangeCore`, `StateStore` (the change's records: live in the state tables, `store/state_tables.py`; history in an append-only JSON Lines journal, `store/journal.py`), `Services`, node ids, the `Dispatcher` and `Work` |
+| `workflow/tickets/` | the ticket model and rules, the spec (`workflow.yaml`), named outputs and their resolution, the replan document, what a revision calls for (`stale.py`: a new sign-off, renewed provisioning and oracle), the runner, the executors and their ports, the tickets' persistence (`store.py`) |
+| `engine/flow/` | `TicketFlow` (the change's workflow: start, recover, hooks, human actions, housekeeping) and the adapters (`Agents`, `Signoffs`, `Verify`, `Provision`, `Remote`) |
+| `engine/services/` | `AgentRunner` (the workflow's one counterpart for agents: cards, work, A2A turns, placement; `services/agents/`), `AgentRuns`, `Reports`, `RunLifecycle`, the verification service, `Provisioner`, `Publisher`, the resolver, the end-of-change cleanup |
+| `engine/sandboxes/` | `Sandboxes` and their sessions, sandbox plans (`plan_for(ticket)`), reflections, consult turns |
+| `engine/base/` | `ChangeCore`, `StateStore` (the change's records: live in the state tables, `store/state_tables.py`; history in an append-only JSON Lines journal, `store/journal.py`), `Services`, projections, auth, the `Dispatcher` and `Work` |
 
 `compose.py` builds a change's layers; `change.py` (the `ChangeEngine` facade) and
-`controller.py` sit on top. The step layer tells the runtime what happened through a protocol it
-defines (`StepEvents`), and the sandbox layer learns which plan applies, and whether a role's
-environment is being built, through ones it defines (`Plans`, `Environments`): neither imports
-the layer above.
+`controller.py` sit on top. The facade fronts the workflow (`TicketFlow`), the agents' reports and
+the run logs, and never sees the sandbox layer. The sandbox layer learns whether a role's
+environment is being built through a protocol it defines (`Environments`): it imports no layer
+above.
 
 ## 2. Who decides what: control cascades through the layers
 
-Control passes only between neighbouring layers, left to right in the diagrams below – workflow
-core · runtime · step runner · phases · (services and sandboxes) · agent – and each layer keeps
-its own responsibility and state. **Down:** the core's effects go to the runtime, which starts,
-stops, resets and resumes steps through the step runner, which enters and resumes phases, which
-start their work. **Up:** a phase's result (from an agent's report, a verification, a merge, a
-failed run) goes to the step runner, which applies it to its node and – when the node crosses
-its step's states (done, escalated, resumed, an earlier step redone) – tells the runtime, which
-tells the core.
+Control passes only between neighbouring layers – rules · runner · executor · adapter · service
+(and sandboxes) · agent – and each keeps its own responsibility and state. **Down:** the rules'
+effects go to the runner, which starts an executor's run for a ticket's `Work`, which calls its
+port, which the adapter answers with a service, which starts its work in a dispatcher slot.
+**Up:** the work's result (an agent's concluded report, a verification, a merge, a failed run)
+returns through the service to the adapter, which hands its executor what it means (an
+`AgentEnd`, a `Verification`); the executor ends in one outcome; the runner turns it into the
+rules' event (`apply`) under the change's lock; the rules return the next effects.
 
-**There is no clock.** A phase's work is a task that awaits what it needs: its step's waits
-(checked again at each save of the change – `ChangeCore.next_save`), then a slot from the
-dispatcher, then the work itself; then it hands its result up. An agent's run ends when its
+**There is no clock.** An executor's run is a task that awaits what it needs: a slot from the
+dispatcher, then the work itself; then it hands its outcome up. An agent's run ends when its
 agent ends its turn (its process exits); two timers stop an agent that does not: the run
 timeout while it is live, and a grace period after its report was accepted. What follows from
-the change's state is done on each save (housekeeping): an ended change's retrospective queued
-and its cleanup started, kept sandboxes whose hold ended released, a released step's sandboxes
-suspended once idle. The controller's only timer sends
-the attention reminders.
+the change's state is done on each save (`TicketFlow.housekeeping`): closed tickets' sandboxes
+released (after their agents reflect), merged ticket branches deleted, idle sandboxes suspended,
+an ended change's cleanup. The controller's only timer sends the attention reminders.
 
-The participants, left to right:
-
-| Participant | Layer (§1) | Code | Responsible for (and owns) |
-| --- | --- | --- | --- |
-| **Workflow core** | Workflow: the stage rules | `flow/core.py`, `flow/states.py` | Deciding, without any I/O, which step starts when, what a send-back or a redo resets, what a human may do at an escalated step. Knows only steps – a gate is the step that ends its stage. Owns the steps' and stages' states. |
-| **FlowRuntime** | Workflow: the stage rules | `engine/runtime/flow_runtime.py` | Calling the core with what happened (step events, human decisions) and carrying out the effects it returns; housekeeping on each save. Owns the core's record (`workflow`, in the state tables), the nodes' existence and order and the retrospective's node. Sees no difference between a gate and any other step. |
-| **StepRunner**, **ActiveStep** | Steps | `engine/steps/` (`runner.py`, `active.py`, `node_states.py`, `step_types.py`) | The runner takes the runtime's calls and does what spans steps (a send-back's undoing, retries after a restart, housekeeping); each node's step as it runs is an `ActiveStep`: moving the node through its step type's phases, applying their results (rework within the budget, escalations) and telling the runtime at a step's boundaries; starting each phase's work as a task, and its step's waits. Owns the step nodes' states, as a declared machine nested in the core's (§2.1), and each running step's reservation with the dispatcher (§2.2). |
-| **Phases** | Orchestrator layer of a step | `engine/steps/phases.py` (their services, `engine/services/`: `AgentRuns`, `Provisioner`, `RunLifecycle`, `Sandboxes`; their work goes to the `Dispatcher`) | The controller's work around the agent's – producing (an agent's work), verifying, the judges' panel, merging, provisioning – each building its `Work`, dispatching it through its step's dispatcher and ending in a result (ok, rework, escalate, redo) handed to the step runner. |
-| **Dispatcher** | Dispatcher (one for every change) | `engine/base/dispatch.py` (the work it runs: `engine/base/work.py`) | Running work – a sandbox session and its commands – when a slot within `limits.max_parallel` is free, first come, first served, and returning its result; it calls only `Work.can_start()` and `Work.execute()` and knows no agents, steps or nodes. Owns the slots and the steps' reservations (a slot kept while a step's work follows straight on, given back while it waits, released when it is over, §2.2). |
-| **AgentRunner** | Services | `engine/services/agents/` (`runner.py`, `placement.py`, `tasks.py`) | The workflow's one counterpart for agents: publishing and withdrawing a step's cards (bus events the A2A layer's catalog follows), publishing a phase's work, and – when the inbox reports a message (`ItemAdded`) for an agent that is not running – giving it a turn of its own (`AgentRuns.consult`: started, or resumed in place) in a dispatcher slot; taking a run's turns (`take_turns`: another while its task is open, the orchestrator asking again – each recorded as a `Turn` on the run). Owns the placement policy: which sandbox and session a run continues (G-D4). |
-| **Agent** | outside the controller | its sandbox; reports over MCP (`server/mcp.py` → `engine/services/reports.py`) | Doing the work, filing one report (checked at once) and ending its turn – which hands control back to its phase. |
-
-A build task, end to end:
+A build, end to end:
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Core as Workflow core
-    participant RT as FlowRuntime
-    participant SR as StepRunner
-    participant Ph as Phases
+    participant Rules as Ticket rules
+    participant R as Runner
+    participant X as Executors
+    participant A as Adapters + services
     participant D as Dispatcher
     actor Agent
 
-    RT->>Core: act(H-2, approve)
-    Core-->>RT: effects: StartStep(build:T1)
-    RT->>SR: start(build:T1)
-    SR->>Ph: Produce.enter → its work starts (READY)
-    Note over Ph: awaits its step's waits (at each save): no file overlap, the environment
-    Ph->>D: the agent's Work, under the step's reservation
-    D->>Agent: a slot: the run prepared (RUNNING), its sandbox session, checkout, setup, its turn
-    Agent->>Ph: report over MCP: checked, recorded – reply: end your turn
+    Note over Rules: H-2 passed: delivery's first group starts
+    Rules-->>R: effects: StartWork(T1)
+    R->>X: agent executor: Work(T1, attempt 1, branch legion/c/t/T1, base)
+    X->>A: AgentPort.run(implementer, work)
+    A->>D: the agent's Work (its sandbox plan: kept, on its branch)
+    D->>Agent: a slot: the run prepared, its sandbox session, checkout, setup, its turn
+    Agent->>A: report over MCP: checked, recorded – reply: end your turn
     Agent-->>D: turn ends (process exits): the Work returns
-    D-->>Ph: what the work did → the implementer's handler judges the report
-    Ph->>SR: result Ok
-    SR->>Ph: advance → Verify (VERIFYING)
-    Ph->>D: the verifier's Work: slots straight into the step's reserved slot
-    D-->>Ph: the commands' results → Verify judges them
-    Ph->>SR: result Ok
-    SR->>Ph: advance → Panel (REVIEWING): one judge's Work each, in parallel
-    D-->>Ph: each judge's turn ends – the panel waits for every one, then decides
-    Ph->>SR: result Ok
-    SR->>Ph: advance → Merge (MERGING): G-A1, G-H1, G-A2
-    Ph->>SR: result Ok: the last phase passed
-    SR->>D: the step's reservation released
-    SR->>RT: completed(build:T1) – its node ACCEPTED, its runs accepted
-    RT->>Core: on(Completed(build:T1))
-    Core-->>RT: effects: StartStep(next) … at the end StartStep(H-3), the last gate step
+    A-->>X: Reports.conclude → AgentEnd(accepted, sha, outputs)
+    X-->>R: Done(sha)
+    R->>Rules: work_done(T1, sha)
+    Rules-->>R: effects: StartWork(verify:T1)
+    R->>X: verify executor at sha → VerifyPort → the verification service
+    X-->>R: Judged(pass)
+    R->>Rules: verdict(verify:T1, pass) → StartWork(review:T1) … StartWork(can-merge:T1)
+    Note over Rules,R: every criterion passed
+    Rules-->>R: effects: Merge(T1 → integration)
+    R->>X: the merger: checked and merged under the branch's lock
+    R->>Rules: merged(T1, head) → T1 passed; the next group or the integration starts
 ```
 
-An escalation goes up the same way – the core only records it – and, when a human decides,
-the decision comes down through every layer:
+An escalation goes up the same way, and a human's remedy comes down as an event:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Human
-    participant HG as HumanGates
-    participant Core as Workflow core
-    participant RT as FlowRuntime
-    participant SR as StepRunner
-    participant Ph as Phases
+    participant F as TicketFlow
+    participant R as Runner
+    participant Rules as Ticket rules
+    participant X as Executors
     actor Agent
 
-    Agent-->>Ph: turn ends without an accepted report: the Work returns the failure
-    Ph->>SR: result Escalate(run_failed)
-    SR->>SR: releases the step's reservation (its sandboxes are stopped once idle)
-    SR->>RT: escalated(build:T1) – its node ESCALATED
-    RT->>Core: on(Escalated(build:T1))
-    Note over Core: records it: the step holds its stage, and now offers<br/>answer, retry, override and send_back – the core calls nothing
-    Note over Human,HG: later: the attention list shows the escalation, and a decision owner acts
-    Human->>HG: answer: "use the v2 API"
-    HG->>HG: records the decision (question and answer)
-    HG->>RT: decide(build:T1, answer)
-    RT->>Core: act(build:T1, answer)
-    Core-->>RT: effects: ResumeStep(build:T1)
-    RT->>SR: resume(build:T1, answered)
-    SR->>Ph: the phase its escalation named starts its work again (a new reservation)
+    Agent-->>X: turn ends with a BLOCKED report: Blocked(why)
+    X-->>R: the outcome
+    R->>Rules: blocked(T1) → T1 waiting (blocked)
+    Rules-->>R: effects: Escalate(T1)
+    R->>F: hooks.escalated(T1): an event, attention; the save raises Escalated on the bus
+    Note over F: the resolver hears it and proposes a remedy
+    Human->>F: act(T1, retry, answer: "use the v2 API")
+    F->>F: the answer joins T1's findings
+    F->>R: decide(T1, retry)
+    R->>Rules: decide(T1, retry) → T1 working (same attempt)
+    Rules-->>R: effects: StartWork(T1)
+    R->>X: a new round: the agent resumed in its kept sandbox, told the answer
 ```
 
-### 2.1 Two levels of one state
+### 2.1 The tickets are the state
 
-The core's step and the engine's node are two levels of one state: the core's is coarse (is the
-step underway?), the node's says where inside it the work is. A node leaves `PENDING` exactly when
-its step starts in the core. The node's states are a declared machine (`engine/steps/node_states.py`):
-an illegal move raises, only resuming leaves an escalation, and nothing but the step runner
-writes a status. Where a step resumes is fixed when it escalates – by the phase it was in, or (a
-service's escalation) by that phase on its behalf – and must be one of its step's phases; nothing
-above the step layer names a phase: the runtime resumes, overrides (the step's merge) or retries.
+A change's state is its tickets – the tree's definitions and each ticket's state (status,
+attempt, commit, findings, waiting reason, outputs, runs, kept sandbox) – the change record (with
+its pointers), the side processes outside the tree (`hooks`: the retrospective) and the runs,
+kept by `StateStore`: a save updates their rows in the state tables and appends what changed to
+the journal; a load reads the tables. Nothing is snapshotted or replayed: there is no other state
+to restore. Documents an agent wrote and the controller's records (sign-offs, verifications, run
+documents) are projected onto the change as they are written and on load.
 
-| Core step | Engine node |
-| --- | --- |
-| `pending` | `PENDING` |
-| `running` | `READY` (its first work not started yet) · `RUNNING` (its agent works) · `VERIFYING` · `REVIEWING` · `DEFINING` (an accepted plan's tasks defined) · `MERGING` · `REWORK` (its own loop) |
-| `escalated` | `ESCALATED` (something went wrong) · `AWAITING_HUMAN` (a decision is due: a gate) |
-| `done` | `ACCEPTED` |
-
-**A change's state**, then: the core's record (the tree and its steps' and stages' states,
-the record `workflow`), and below it what the engine owns (`ChangeCore`) – the change record,
-each node's detail (its state inside its step, cycle, commits, verification, reviews, feedback,
-escalation, sandbox) and the runs – kept by `StateStore`: a save updates their rows in the state
-tables and appends what changed to the journal; a load reads the tables. Which nodes exist, their order and their
-dependencies are not stored: they come from the tree.
+Only the rules change a ticket's status: the runner applies events to them and the engine reads
+the tickets. The runner saves the rules' state before it carries out their effects, so a crash
+between the two is a recovery, not a loss: after a restart (`Runner.recover`) every working
+ticket's executor runs again at the same attempt – an agent's run whose report was accepted is
+concluded, any other is started again in its kept sandbox, resuming its session – and a merging
+ticket merges again (a merge already made is found made).
 
 An agent run is a call and a return: the report is the agent's result, checked as it is filed
 (so the agent can fix a rejected one), but nothing moves until the agent **ends its turn** – its
-process exits, its work returns, and the run's phase takes what its role handler makes of the
-report. A turn that
-ends without an accepted report fails the run (escalated); a BLOCKED report escalates; an agent
-that keeps going after its report was accepted is stopped after a grace period. The agents are
-told so (`harness-contract`).
+process exits, its work returns, and the ticket's executor takes what its role handler makes of
+the report. A turn that ends without an accepted report fails the run (an attempt, or – the
+system's failure – a fault); a BLOCKED report waits on a human; an agent that keeps going after
+its report was accepted is stopped after a grace period. The agents are told so
+(`harness-contract`).
 
-A rework (`Verify` fails, the panel finds a blocker) stays inside the step: the step runner sends
-the node round its own loop and the core only sees the step still running. An escalation is
-reported to the core, because a human may answer it by sending a stage back. A step found wanting
-by a later one in its stage (preflight's failed setup, for the oracle) is **redone through the
-core**: the step and what follows it start again.
-
-### 2.2 Work, the dispatcher and reservations
+### 2.2 Work and the dispatcher
 
 **Work** (`engine/base/work.py`) is a sandbox session and the commands executed in it, in order.
 An agent's run and a verification differ only in their commands:
 
 | Work | Session | Commands |
 | --- | --- | --- |
-| an agent's run | the run's sandbox: created, or the node's kept one woken and given the new payload; paused after if kept for its session | clone (fresh only), branch or checkout, the repository's setup (a failure is logged, the agent still starts), the agent's turn (with its timers) |
+| an agent's run | the run's sandbox: created, or the ticket's kept one woken and given the new payload; paused after if kept | clone (fresh only), branch or checkout, the repository's setup (a failure is logged, the agent still starts), the agent's turn (with its timers) |
 | a verification | a fresh verifier sandbox with a read-only git grant; deleted after | clone, checkout, the repository's setup (a failure stops it, G-V3), each command (all of them) |
 | the setup check (provisioning, G-PV3) | as a verification | clone, checkout, the setup |
 
 `Work.execute()` returns each command's result (or why it stopped); what they mean is decided
-above it – `Verify` judges a verification's results, `AgentRuns` concludes an agent's report
-through its role handler. An agent's work is prepared in its slot: its run record is made
+above it – the verify executor judges a verification's results, `Reports.conclude` an agent's
+report through its role handler. An agent's work is prepared in its slot: its run record is made
 then (or a guard refuses it), so a run never waits for a slot.
 
 **The dispatcher** (`engine/base/dispatch.py`, one for every change) runs work within
@@ -272,386 +238,102 @@ then (or a guard refuses it), so a run never waits for a slot.
 work **can start** (`can_start()`): an agent's or a verifier's work cannot while its role's
 environment is being built again, so no sandbox starts from the old build. That is decided
 where the work is made – `AgentRuns.work` for its role, `Sandboxes.verifier_work` for the
-verifier – by the sandbox layer, which asks the provisioner through a protocol it defines
-(`Environments`), as it learns which plan applies through `Plans`. Work that cannot
-start keeps its place and holds no slot – a step's idle reserved slot goes back meanwhile – and
-the dispatcher looks again whenever a slot or a reservation changes: provisioning ends with its
-step accepted and its reservation released, so what waited for the new build starts then.
-(Provisioning's own setup check runs in the build it checks: it can always start.) It calls
-only `can_start()` and `execute()`.
+verifier – by the sandbox layer, which asks the provisioner through `Environments`. Work that
+cannot start keeps its place and holds no slot, and the dispatcher looks again whenever a slot
+frees and whenever a change saves (`recheck()`, from `TicketFlow.housekeeping`: a build that is
+done lets its waiting work start). It calls only `can_start()` and `execute()`.
 
-**A reservation** is a step's claim on one slot, held by the step runner and given to the
-step's phases with the dispatcher (a `StepDispatcher`). It binds a slot at the step's first
-work and keeps it while work follows straight on – the agent's run, its verification, its
-judges – so the verification of finished work never queues behind other steps' new work. Work
-dispatched in parallel under it (a panel's judges) takes free unreserved slots or the reserved
-one as the work in it completes. While the step **waits on its conditions** (a rework waiting
-for an overlapping task, say) it gives the slot back, so a waiting step never
-starves the work it waits for; its next work binds one again. The reservation is **released**
-when the step is done, sent back, escalated or ended: work still waiting under it is withdrawn,
-its slot goes back once the work in it completes, and the step's sandboxes are stopped once
-nothing live uses them (a kept one is woken by its next session). A resumed step takes a new
-one.
+Work takes slots as it comes: work already in progress is not served first, so with
+`max_parallel=1` a second build can take the slot before the first build's verification.
+Verifications are further limited by `limits.max_parallel_verifications` (`PriorityCap`: a criterion's
+verification, then pushes, then agents).
 
-## 3. A step is a composition
+## 3. Executors and their ports
 
-A step type is a declaration, not code: an agent (the role of its producer, `Produce(role)`), a sandbox
-plan, an ordered list of phases configured by **policy objects**, the waits it respects and what
-a reset undoes. Adding a kind of node means adding a row to `STEP_TYPES` (a gate: to
-`GATE_TYPES`, which configures each gate's `Approval`: its checks, and what approving it
-records, `approves`).
+A ticket type's executor does its own work and ends in one outcome; `apply()` turns the outcome
+into the rules' event. Each service sits behind a small port the executor defines, so the tickets
+package imports no engine; the engine's adapters fill the ports.
 
-A step type is declared – shared by every node of its kind – and **runs** for one node as an
-`ActiveStep`: the step runner makes it from the node, its step type and the runner's services,
-and it owns the node's reservation. A **phase** is one class per kind – `Produce`, `Panel`,
-`Verify`, `Merge`, `BuildImages`, `Approval`, implementing the abstract `Phase` – holding its
-policies and its work together, declared in the table and shared by every node of its kind. As
-it runs for a node it is an **`ActivePhase`**: one concrete class, made by the active step from
-itself, the phase and – while it works – the step's dispatcher (`ActiveStep.at(phase)`). It is
-a phase's whole view of its node: the declarations it runs (`step`, the step type; `phase`), the
-node, the change, and what a hook may do (`move`, `advance`, `apply`, `run`) – the running step
-itself stays behind it. The
-active step works only with active phases (`enter()`, `start()`, `resume(answered)`,
-`task()`), and each of the phase's hooks is given the active phase as its one argument for the
-node, the change and the step (`perform(active)`, `result(active, done)`) – the phase itself
-holds nothing of any node. Everything that lasts is on the node, so active steps and phases
-are made again after a restart.
-
-A step type holds only declarations and lookups (`phase_in(status)`, `after(phase)`). A phase
-never consults another phase: what it needs from an earlier one is that phase's **evidence**
-on the node and in the store – the merge (G-A1) checks the verification's record and the
-panel's recorded pass (`PanelDecision`: the candidate, the cycle, the judges that sat and their
-reviews' attestations), not which commands or judges those phases have. The policy objects stay
-functions of what they are given (a wait: the active step; a command source: the change and
-the node).
-
-Every phase's work has one shape (`ActivePhase.task`): once it is **ready** (at once, or at a later
-save – the step's slot given back meanwhile) it **begins** (its status, under the lock),
-**performs** its work outside the lock (through the step's dispatcher, or a check), and then,
-under the lock and unless its step or phase ended meanwhile, its **result** says what the work
-means – the one method each phase answers with a `PhaseResult`.
-
-What is the same for every kind is `ActivePhase`'s – the work's shape (`task`), concluding a
-result, whether its work still counts, and whether it may begin (`ready`) – and **every hook of
-`Phase` is abstract**: each kind says, in one place, how it is entered, started, recovered and
-resumed, where it resumes after a service's escalation, and its work's `begin`, `perform` and
-`result` (a kind that leaves one out cannot be made).
-
-**Ready** is the same for every phase, from what each declaration states: in the statuses where
-its work is the step's first (`waits_in`) the step's waits hold (`dispatch_when`: no file
-overlap, a quiet environment, the reflections done). While a phase is not ready the step's
-reservation holds no slot; an agent's work whose slot comes once it is no longer ready is
-skipped, and waits again. Whether its sandbox's environment is built is its work's own (the
-dispatcher starts work only once it can, above) – so a panel's judges each start once their
-own role's environment is.
-
-| Phase | waits_in | perform | result |
+| Type | Executor | Port → adapter → service | Outcome |
 | --- | --- | --- | --- |
-| Produce | READY, REWORK | its agent's work (`agent_work`) | the role handler's, or the failure's escalation |
-| Panel | – | every judge still to review, in parallel | their escalations as one, or its decision from the judges' reviews (a pass recorded) |
-| Critique | – | the critic's work, as a judge's | its escalation, or its review: PASS is ok, REWORK reworks the plan within the critique budget (G-C2) |
-| DefineTasks | – | – | the accepted plan's build tasks defined by the workflow (`StepEvents.define_tasks`), under the lock |
-| Verify | READY (at the head) | the verification (`verification`) | recorded, then interpreted with its policies |
-| Merge | – | – | the guards and the merge, at once under the lock |
-| OpenPullRequest | – | the publisher's push, pull request and labels | published, or failed (an escalation) |
-| SyncWorkspace | – | the hub synced (one at a time per hub), what its base holds | based, kept, or unsynced (an escalation) |
-| BuildImages | READY | the provisioner's build and setup check | the provisioner's |
-| Approval | – | its checks evaluated | approved, still pending, or preconditions unmet |
+| `agent:<role>` | `AgentExecutor` | `AgentPort` → `Agents` → `AgentRunner` (placement, turns), `AgentRuns`, `Reports.conclude` | `Done(sha, outputs)`; a criterion's `Judged(verdict, findings)`; `GaveUp` (the agent's failure); `Blocked`; `Fault` (system, controller); `OverBudget` (timeout) |
+| `human:signoff` | `SignoffExecutor` | `SignoffPort` → `Signoffs` (the subjects resolved and shown; a decision owner's `decide`; `signoff.json`) | `Judged(approved, reason)` |
+| `controller:verify`, `controller:preflight` | `VerifyExecutor` (`expect_failures` for preflight) | `VerifyPort` → `Verify` → the verification service | `Judged`; `Fault` (infrastructure; G-V2 not retried) |
+| `controller:can-merge` | `CanMergeExecutor` | `Branches` (git, no port) | `Judged(clean, finding)`; `Fault` (git) |
+| `controller:sync` | `SyncExecutor` | `SyncPort` → `TicketFlow.sync` (the hub synced, the change's base) | `Done`; `Fault` (an unsynced hub waits at once) |
+| `controller:baseline` | `VerifyExecutor` (`records="baseline"`) | as `controller:verify` | `Done(outputs={baseline: the record})`; `Fault` |
+| `controller:provision` | `ProvisionExecutor` | `ProvisionPort` → `Provision` → `Provisioner` | `Done`; `Fault` |
+| `controller:publish` | `PublishExecutor` | `RemotePort` → `Remote` → `Publisher` (GitHub); none: a merge into the base branch | `Done`; `Fault` |
+| (the merge) | `Merger` | `Branches` | merged (the new head) or a conflict – a failed "can merge" |
+| (hooks: the retrospective, the resolver) | `AgentExecutor` given the role | as `agent:<role>` | as `agent:<role>` |
 
-`enter` is the move into a phase (its first status, then `start`); `start` begins its work for
-the status the node is in – on entering, resuming and after a restart.
+**Faults are retried, never counted.** `attempt()` runs an executor's work and retries a transient
+`Fault` with `Backoff` (`limits.system_retries` tries from `limits.system_retry_s`, doubling); an
+unexpected exception is a fault too, so a bug waits on a human rather than costing an agent an
+attempt. Only `GaveUp` and a failed `rework` criterion are attempts.
 
-```mermaid
-classDiagram
-    direction LR
-    class StepType {
-        phases: Phase[]
-        sandbox: SandboxPlan
-        dispatch_when: Wait[]
-        on_reset: Reset[]
-        stands: Stands
-        rework_resume: Resume
-        runs_after_end: bool
-        role: str
-        judges_head: bool
-        phase(cls) Phase
-        phase_in(status) Phase
-        after(phase) Phase
-    }
-    class StepRunner {
-        of(node) ActiveStep
-        start(node, feedback, rerun) None
-        enter(node) None
-        send_back(nodes) Awaitable
-        reset(node) None
-        resume(node, answered) None
-        override(node) None
-        approve(node, action, approver, payload) Approved
-        retry(node) None
-        end(node) None
-        again(node) None
-        recover(node, failed) None
-        resume_retries() None
-        housekeeping(active) None
-    }
-    class ActiveStep {
-        node: Node
-        type: StepType
-        dispatch: StepDispatcher
-        start(feedback, rerun) None
-        enter() None
-        reset() None
-        resume(answered) None
-        override() None
-        approve(action, approver, payload) Approved
-        retry() None
-        end() None
-        again() None
-        recover(failed) None
-        release() None
-        at(phase) ActivePhase
-        current() ActivePhase
-        run(phase, work) None
-        may_work() bool
-        stale(phase) bool
-        waits_hold() bool
-        wait_until(phase, ready) bool
-        move(status) None
-        advance(phase) None
-        apply(result) None
-        rework(feedback, source) None
-        escalate(kind, reason, resume) None
-        accept() None
-    }
-    class Phase {
-        <<abstract>>
-        statuses: frozenset~NodeStatus~
-        waits_in: frozenset~NodeStatus~
-        enter(active)* None
-        start(active)* None
-        recover(active)* None
-        resume(active, answered)* None
-        resume_after(active, escalation)* Resume
-        begin(active)* bool
-        perform(active)* object
-        result(active, done)* PhaseResult
-    }
-    class ActivePhase {
-        step: StepType
-        phase: Phase
-        dispatch: StepDispatcher
-        node: Node
-        events: StepEvents
-        move(status) None
-        advance() None
-        apply(result) None
-        run(work) None
-        waits_hold() bool
-        enter() None
-        start() None
-        recover() None
-        resume(answered) None
-        resume_after(escalation) Resume
-        ready() bool
-        task() None
-        conclude(result) None
-        stale() bool
-        wait_until(ready) bool
-    }
-    class Produce {
-        role: str
-    }
-    class Verify {
-        commands: CommandSource
-        expect_failures: bool
-        at_head: bool
-        on_rework: EscalateFailures
-        on_setup_failed: SetupFailurePolicy
-        notes: Notes
-    }
-    class Panel {
-        judges: JudgeSource
-    }
-    class Critique {
-        role: str
-        budget: str
-    }
-    class DefineTasks
-    class Merge
-    class SyncWorkspace
-    class OpenPullRequest {
-        labels: tuple~PrLabels~
-    }
-    class BuildImages
-    class Approval {
-        approves: Approves
-        checks: GateChecks
-        automatic: AutomaticBelow
-    }
-    class Approves {
-        <<abstract>>
-        actions: frozenset~str~
-        pending(change) list~str~
-        approve(active, approver, payload) Approved
-    }
-    class RequirementsAccepted
-    class SubjectsApproved {
-        which: str
-        baseline_from: int
-    }
-    class ChangeAccepted
-    class Approved {
-        result: ActionResult
-        answered: bool
-    }
-    class SandboxPlan {
-        checkout: Checkout
-        keep: Keep
-        rebase: bool
-        pushes: bool
-        at_head: bool
-        held(change, node) bool
-    }
-    class Wait {
-        holds(step) bool
-    }
-    class Reset {
-        applies(change, node) bool
-        undo(change, lifecycle, node) None
-    }
+**Where an agent works follows from its ticket** (`engine/sandboxes/plan.py`, `plan_for`): a
+criterion's agent (a judge) gets a fresh sandbox per round, detached at the commit it judges
+(G-D4); a ticket's own agent keeps its sandbox and session across its attempts until the ticket
+is closed – on its own branch if the role commits, else detached at its base. No role name is
+consulted.
 
-    StepRunner *-- ActiveStep : one per node
-    ActiveStep --> StepType : runs
-    ActiveStep *-- ActivePhase : its current phase
-    ActivePhase --> Phase : runs
-    ActivePhase --> StepType : its step
-    StepType *-- Phase
-    StepType *-- SandboxPlan
-    StepType *-- Wait
-    StepType *-- Reset
-    Phase <|-- Produce
-    Phase <|-- Verify
-    Phase <|-- Panel
-    Phase <|-- Critique
-    Phase <|-- DefineTasks
-    Phase <|-- Merge
-    Phase <|-- SyncWorkspace
-    Phase <|-- OpenPullRequest
-    Phase <|-- BuildImages
-    Phase <|-- Approval
-    Approval *-- Approves
-    Approves <|-- RequirementsAccepted
-    Approves <|-- SubjectsApproved
-    Approves <|-- ChangeAccepted
-    Approves ..> Approved : approve returns
-```
+## 4. The ticket rules
 
-The table (`engine/steps/step_types.py`) – each kind is a list of phases:
-
-| Kind | Sandbox plan | Phases |
-| --- | --- | --- |
-| workspace | – | SyncWorkspace (the change's first step) |
-| publish | – | OpenPullRequest(risk label) – after H-3, when the source is on GitHub |
-| intake | base, kept until H-1 | Produce |
-| plan | base, kept until H-E1 | Produce → Critique(critic, G-C2) → DefineTasks |
-| provision | – | BuildImages (waits for a quiet environment) |
-| oracle | branch (re-based each run), kept until H-2 | Produce (merges itself) |
-| preflight | – | Verify(acceptance commands, expect failures, at head, a failed setup → oracle rework) |
-| baseline | head | Produce → Verify(baseline commands, expect failures, G-BL2 notes) |
-| build | branch, kept until accepted | Produce → Verify(task commands) → Panel(tier) → Merge |
-| integration | head | Produce → Verify(oracle commands, a failure escalates) |
-| describe | head | Produce (the describer: `delivery/pr.md`) → Critique(pr-reviewer, G-PR3) |
-| release | head | Produce (kept for a live-system workflow; in no tier's tree) |
-| retrospective | head | Produce (after the change ends, after the last reflections) |
-| gate (H-1, H-E1, H-2, H-3) | – | Approval: its checks (H-3: the ship gates), then a human's approval (H-E1, H-2: each subject); below R2, H-3 passes once its checks hold |
-
-Judges (reviewers, the critic) are not node kinds: they are the judges of a `Panel` or the
-plan's `Critique` (the same judge's work, `judge_work`), and get the `JUDGE` sandbox plan –
-fresh, at the commit they judge (G-D4).
-
-## 4. The workflow core
-
-The change's structure, built once H-1 fixes the tier (R3 shown; lower tiers leave stages out
-and approve H-3 automatically):
-
-```mermaid
-flowchart LR
-    subgraph REQ["Requirements"]
-        intake --> H1{{"◆ H-1"}}
-    end
-    subgraph PLAN["Plan"]
-        subgraph DES["Design"]
-            plan["plan (planner ⇄ critic)"] --> HE1{{"◆ H-E1 approve the plan"}}
-        end
-        subgraph ORC["Oracle"]
-            provision --> scaffold["[scaffold]"] --> oracle --> preflight --> baseline --> H2{{"◆ H-2 approve the oracle"}}
-        end
-        HE1 --> provision
-    end
-    subgraph DEL["Delivery"]
-        tasks["tasks (DAG)"] --> integration --> release --> H3{{"◆ H-3 · checks: ship gates"}}
-    end
-    H1 --> plan
-    H2 --> tasks
-```
-
-A **gate** (◆) is the step that ends its stage – the core knows nothing more of it. Its work
-(the `Approval` phase) checks what the gate needs and then waits for a human: an expected
-escalation (`awaiting_approval`, shown `AWAITING_HUMAN`). Approving it records what the gate's
-`approves` says (`steps/approvals.py`: H-1 the tier and panel, H-E1 and H-2 each subject, H-3
-the acceptance and the attestations given with it) – `HumanGates` only hands the decision to
-`StepRunner.approve` – and once nothing is still to approve it is the *answer* to that
-escalation, after which it checks again and passes; unmet checks
-escalate again (`preconditions_unmet`) and a re-check is a *retry*. Stages without a human
-decision at the tier have no gate: Plan's own, a round's, the oracle's below R2.
-
-**Send back** is offered on an escalated step – a waiting gate included – for every stage its
-work was built on. Requirements, Plan, Design and Oracle **start over**; Delivery **appends a round** – a
-Round stage (its own Design, Oracle and tasks, ids `@n`) inserted before integration.
-
-**Run again in place** (`rerun:<step>`) is offered on an escalated step for each earlier, done
-step declared `rerunnable` – provisioning only: the approved spec built again. That step starts a
-new attempt (done → running) while what was built on it stands – nothing is reset, no stage
-reopens – and the escalated step is retried; steps that need the environment wait for it.
-
-Every node is one of two small state machines; each status change is a named transition that
-declares its source statuses (`flow/states.py`):
+`Tickets` (`tickets/rules.py`) holds a change's tickets and applies events – work done, a
+verdict, a fault, an exceeded budget, a blocked agent, a merge, a human's remedy, pause and
+resume, an accepted replan, abandon – returning effects (`StartWork`, `StopWork`, `Merge`,
+`Escalate`, `Ended`). An event the rules refuse (the ticket is not where the event says) raises
+`TicketError` and changes nothing.
 
 ```mermaid
 stateDiagram-v2
     direction LR
-    state "Step" as S {
-        [*] --> pending
-        pending --> running : start
-        running --> running : rework
-        running --> escalated : escalate
-        escalated --> running : resume (answer, retry)
-        escalated --> done : override
-        running --> done : complete
-        done --> pending : reset
-        running --> pending : reset
-        escalated --> pending : reset
-        done --> running : rerun (in place)
-    }
+    [*] --> pending
+    pending --> working : start (its own work)
+    pending --> subtasks : start (grouping)
+    working --> subtasks : work done
+    subtasks --> checking : every group passed
+    checking --> working : a rework criterion failed (attempt+1)
+    checking --> merging : every criterion passed (it has a commit)
+    checking --> passed : every criterion passed
+    merging --> passed : merged
+    merging --> working : conflict (rework)
+    working --> waiting : attempts used up, system error, budget, blocked
+    checking --> waiting : escalate criterion failed, same findings again
+    waiting --> working : retry
+    waiting --> checking : waive
+    waiting --> failed : replan
+    working --> paused : paused, at a conclusion point
+    paused --> working : resume
+    pending --> cancelled : replan, abandon
+    working --> cancelled : abandon
 ```
+
+A criterion is a leaf: `pending → working → passed | rejected`. Its parent reads its verdict. A
+ticket whose subtask waits on a human stays in `subtasks` until that is resolved. The
+`tier` and the planner's `tickets` reach the rules as replans (`Replan`: add, cancel, update,
+fail), applied by the runner when the sign-off that applies them passes – checked against the
+tier's policy first (`spec.check_policy`), transactional, and only while the workflow is paused
+and nothing is active.
+
+Which tickets come before which is read off the tree (`rules.precedes`): the tier policy's
+`order` rules, the MCP `workflow_context` and the planner guards' parallel groups all use it.
 
 ## 5. Encapsulation rules
 
 | Boundary | Rule | Checked by |
 | --- | --- | --- |
-| Workflow core | Pure: no I/O, no engine imports; state only through its machines' transitions | `tests/test_flow.py` (invariants after every event, hypothesis), `test_flow_states.py` |
-| FlowRuntime ↔ core | The core's state is stored as it stands (`FlowState.snapshot`) and restored into the rebuilt tree (`FlowState.restore`): the same statuses, actions and effects from then on | `tests/test_workflow_tree.py`, `tests/test_runtime.py` |
-| Engine layers | One package per layer – `runtime/` > `steps/` > `services/` > `sandboxes/` > `base/` – importing only downward; `compose.py` alone builds them; the facade (`change.py`) never sees the step layer; nothing outside the engine imports more than `legion_orch.workflow.engine`'s own names | the import contracts in `pyproject.toml` (`lint-imports`; `test_units.py::test_the_engine_keeps_its_layers`), `test_units.py::test_the_facade_names_none_of_the_step_layer` |
-| Role handlers | See the change only through `RoleContext`; return their phase's result (ok, rework, escalate) and never move the step or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context`, `tests/test_steps.py` |
-| The cascade | Control passes only between neighbouring layers (§2): services return results to their phase, phases to the step runner, the runner tells the runtime (through `StepEvents`, its only view of the layer above), the runtime the core – and back down through the core's effects | `tests/test_runtime.py`, `tests/test_steps.py`, `tests/test_phases.py` |
-| Node states | A declared machine nested in the core's step states; only the step runner changes a status or an escalation, only the runtime the change's status | `tests/test_node_states.py` (scans for any other write) |
-| Governance, ship gates | Read the change only through `ChangeView` | `test_units.py::test_governance_and_ship_use_only_the_change_view` |
-| Per-kind knowledge | Only `STEP_TYPES` and `GATE_TYPES` (what approving each gate records is its `Approval`'s `approves`); no `node.kind` switches elsewhere | `tests/test_steps.py` (the declarations) |
-| Dispatcher | Runs opaque work (`can_start()`, `execute()`) within the limit; knows no agents, steps or nodes | `tests/test_dispatch.py` |
+| Ticket rules | Pure: no I/O, nothing of the controller but the ticket model; a ticket's status changes only through the rules | `test_units.py::test_the_ticket_rules_are_pure`; `tests/test_tickets.py` (each rule's scenarios, and a property test driving random trees through random events with the invariants checked after every step) |
+| Tickets ↔ engine | `workflow/tickets/` imports no engine: the engine fills the executors' ports | the import contract "The tickets know no engine" (`lint-imports`; `test_units.py::test_the_engine_keeps_its_layers`), `tests/test_ticket_executors.py`, `tests/test_ticket_runner.py` (fake ports, real git) |
+| Engine layers | One package per layer – `flow/` > `services/` > `sandboxes/` > `base/` – importing only downward; `compose.py` alone builds them; the facade (`change.py`) never sees the sandbox layer; nothing outside the engine imports more than `legion_orch.workflow.engine`'s own names | the import contracts in `pyproject.toml`, `test_units.py::test_the_facade_names_none_of_the_services_composed_for_the_workflow`, `test_units.py::test_engine_boundaries` |
+| Role handlers | See the change only through `RoleContext`; say what a report means (commit, outputs, verdict, findings) and never move a ticket or touch a sandbox | `test_units.py::test_role_handlers_use_only_the_role_context` |
+| Per-type knowledge | The executors (one per type) and the sandbox plan (from the ticket's place: criterion or own work); no role-name switches in the runner or the rules | the executors' tests; `tests/test_engine.py` |
+| Tier policy | Rules by ticket type and order, never ids; every applied tree checked | `tests/test_tickets.py` (the spec and `check_policy`), `legion-orch check` |
+| Dispatcher | Runs opaque work (`can_start()`, `execute()`) within the limit; knows no agents or tickets | `tests/test_dispatch.py` |
 | Sandboxes | One owner (`Sandboxes`): locks, sessions, the preparation's commands, pause, hold, suspension, retirement | `tests/test_sandboxes.py` |
-| UI | Renders the actions the core offers and the stages it lists; knows no node kinds for actions | `frontend/src/App.test.tsx` |
 | Events | Notifications between components travel on the bus (§5a), never as callbacks set up in `compose`; a change's events are published only after it saves; queries and requests with a reply stay direct calls | `tests/test_bus.py` (after-commit, scoping, failures; every event has a subscriber) |
-| A2A artefacts | The card catalog and the inbox are the A2A layer's (`server/a2a.py`, `server/inbox.py`), in memory; the engine raises events for them and reads them only through `EngineHost`'s inbox calls | `tests/test_a2a.py` (the catalog never drifts from the workflow), the import contracts |
+| A2A artefacts | The card catalog and the inbox are the A2A layer's (`server/a2a.py`, `server/inbox.py`), in memory; the engine raises events for them and reads them only through `EngineHost`'s inbox calls | `tests/test_a2a.py` (the catalog never drifts from the agents), the import contracts |
 
 ## 5a. Events: the bus
 
@@ -661,11 +343,13 @@ know **subscribes**, without either naming the other.
 
 | Event | Published by | Subscribed by |
 | --- | --- | --- |
-| `CardsPublished` / `CardsWithdrawn` | the agent runner, as the change and its steps open and close (and a replay when a catalog subscribes) | the A2A catalog |
+| `CardsPublished` / `CardsWithdrawn` | the agent runner, as the change opens and closes (and a replay when a catalog subscribes) | the A2A catalog |
+| `AgentStarted` / `SandboxDeleted` | a run prepared for a ticket's agent (its card appears) / the sandbox layer (its card goes once its sandboxes are gone) | the A2A catalog |
 | `ItemAdded` | the A2A inbox: something waits on an agent (also when a run ends with messages left) | the agent runner: a turn, in a dispatcher slot, if the agent is not running |
 | `TurnEnded` | an agent's run, when its turns are over | the A2A inbox: anything left is announced again (`ItemAdded`) |
-| `Escalated` | a change, as it saves a step turning `ESCALATED` | the resolver (unless `resolver.enabled` is off) |
+| `Escalated` | a change, as it saves a ticket turning `waiting` | the resolver (unless `resolver.enabled` is off) |
 | `Pushed` | the git remote, after a run pushed its branch | the change's verification service: verify the tip |
+| `DocWritten` | the store, after a new version of a change's document | the change's projections |
 
 Rules:
 - **After the commit.** An event a change raises under its lock (`ChangeCore.emit`) is queued and
@@ -683,10 +367,10 @@ Rules:
 
 | Layer | Tested with | Needs |
 | --- | --- | --- |
-| Workflow core | `ScriptedRuntime`: scripted step outcomes, invariants after every event, property tests | nothing |
-| Stage tree | the core driven over each tier's tree (`test_workflow_tree.py`) | nothing |
-| Phases, step types | scripted runner, builder and judge results (`test_phases.py`, `test_steps.py`) | fake runner |
+| Ticket rules | scenarios per rule and a property test over random trees and events (`test_tickets.py`, `tests/ticket_harness.py`) | nothing |
+| Spec and tier policy | `workflow.yaml` loaded and checked; skeletons and trees against each tier (`test_tickets.py`) | nothing |
+| Executors | fake ports (`test_ticket_executors.py`) | nothing |
+| Runner | fake ports, real git branches (`test_ticket_runner.py`) | git |
 | Dispatcher | scripted work (`test_dispatch.py`) | nothing |
 | Sandboxes | the fake runner (`test_sandboxes.py`) | fake runner |
-| FlowRuntime | the engine harness (`test_runtime.py`) | fake runner, real git and store |
-| Whole workflow | the engine harness, scripted agents (`test_engine.py` …) and end to end with fake agents over MCP (`test_e2e.py`) | fake runner / local runner |
+| Whole workflow | the engine harness (`tests/engine_harness.py`), scripted agents (`test_engine.py` …) and end to end with fake agents over MCP (`test_e2e.py`); the traced engine (`test_telemetry_engine.py`) and out of process (`tests/acceptance/`) | fake runner / local runner, real git and store |

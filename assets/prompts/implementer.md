@@ -1,12 +1,12 @@
-# Assignment: implement {{task_id}} – {{task_title}} (cycle {{cycle}})
+# Assignment: build {{ticket_id}} – {{ticket_goal}} (attempt {{attempt}})
 
 Change {{change_id}}, tier {{tier}}. Working copy `{{workdir}}` on branch `{{branch}}`,
 base `{{base_sha}}`.
 
-Task contract (authoritative):
+Your contract (authoritative):
 
 ```json
-{{task_json}}
+{{work_json}}
 ```
 
 Context to read before editing: {{context_refs}}
@@ -22,11 +22,15 @@ Steps, in this order:
    a command cannot pass from inside `files_modified`, or if protected acceptance tests fail for a
    reason other than the missing implementation (for example a harness or configuration error).
 4. Commit and push (git protocol). The evidence is a document, never a file in the repository.
-5. Write `tasks/{{task_id}}/evidence/cycle-{{cycle}}.md` with `docs_write`: one line per
-   verification command, the command verbatim in backticks followed by `exit <code>` (lowercase
-   `exit`), then any relevant output. Not a table.
-6. Check with `report(..., dry_run=true)`, then report `DONE` attesting
-   `git:{{repo_name}}@<pushed HEAD sha>` and the evidence document.
+5. Write `tickets/{{ticket_id}}/evidence.md` with `docs_write` (on a later attempt it exists:
+   `docs_read` it and pass its version as `base_version`): one line per verification command,
+   the command verbatim in backticks followed by `exit <code>` (lowercase `exit`), then any
+   relevant output. Not a table.
+6. Check with `report(..., dry_run=true)`, then report `DONE` with `outputs: {"evidence": …}`,
+   attesting `git:{{repo_name}}@<pushed HEAD sha>` and the evidence document.
 
-Findings / feedback you must address this cycle:
-{{feedback}}
+Your outputs: {{outputs}}, in your ticket's directory ({{write_scope}}).
+
+After you report, the controller verifies your commit, your judges review it and it is merged –
+in that order. Findings you must address on this attempt:
+{{findings}}

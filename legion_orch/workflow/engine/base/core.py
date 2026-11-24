@@ -16,20 +16,13 @@ from pydantic import BaseModel
 from ....bus import Escalated, Event
 from ....store import DocVersion
 from ....util import now_iso
-from ... import attention, attest, cards, governance
+from ... import attention, attest
 from ...attention import AttentionItem
-from ...model import (
-    ACCEPTED,
-    BUILD,
-    ESCALATED,
-    Card,
-    Change,
-    Node,
-    Oracle,
-    Run,
-)
+from ...attest import FILE_RE
+from ...model import Change, Oracle, Run
+from ...tickets import Status, Ticket, Tickets
+from ...tickets.executors import Work as TicketWork
 from .common import log
-from .ids import base_id
 from .projections import Projections
 from .shared import EngineHost, Services
 from .state import StateStore
@@ -62,9 +55,10 @@ class ChangeCore:
         self.projections = Projections(self)           # its records copied from documents
         self.trace = svc.telemetry.change(cid)
         self._timeline: list[str] = []                 # events not yet written to the store
-        self.verifying: dict[str, str] = {}            # node -> its live verification's log
+        self.verifying: dict[str, str] = {}            # ticket -> its live verification's log
+        self._tickets: Tickets | None = None
         self._timeline_at = time.monotonic()
-        self._statuses: dict[str, str] = {}            # node statuses as of the last save
+        self._statuses: dict[str, str] = {}            # ticket statuses as of the last save
         self._attention: dict[str, AttentionItem] = {}  # attention items as of the last save
         self._outbox: list[Event] = []                 # events to publish once saved (bus.py)
         self._saved = asyncio.Event()                  # set (and replaced) on every save
@@ -75,38 +69,52 @@ class ChangeCore:
         return self.st.change
 
     @property
-    def nodes(self) -> dict[str, Node]:
-        return self.st.nodes
-
-    @property
     def runs(self) -> dict[str, Run]:
         return self.st.runs
 
-    def add_node(self, node: Node) -> None:
-        self.nodes[node.id] = node
+    @property
+    def tickets(self) -> Tickets:
+        """The change's tickets: the rules' records (their dict is the state store's)."""
+        if self._tickets is None or self._tickets.t is not self.st.tickets:
+            self._tickets = Tickets.over(self.st.tickets)
+        return self._tickets
 
-    def current(self, base: str) -> Node | None:
-        """The node ``base`` (``oracle``, ``H-2`` …) of the current fix round, or of the latest
-        round that has one (a round re-makes only some of the plan's steps)."""
-        found = [n for nid, n in self.nodes.items() if base_id(nid) == base]
-        return max(found, key=lambda n: (n.round <= self.change.round, n.round), default=None) \
-            if self.change else None
+    @property
+    def hooks(self) -> dict[str, Ticket]:
+        return self.st.hooks
 
-    def build_nodes(self) -> list[Node]:
-        return [n for n in self.nodes.values() if n.kind == BUILD]
+    def ticket(self, tid: str) -> Ticket | None:
+        """A ticket of the tree, or of a side process outside it (the retrospective)."""
+        return self.st.tickets.get(tid) or self.st.hooks.get(tid)
 
     def setup_waits_for_scaffold(self) -> bool:
-        """A blank repository (§5.3b, §5.3c): until the scaffold is accepted, what the setup task
-        needs does not exist – no sandbox runs it, and provisioning does not check it; the
-        scaffold's own verification runs it, at its candidate."""
+        """A blank repository (§5.3d, §5.3c): until the plan's scaffold has passed, what the
+        setup task needs does not exist – no agent's sandbox runs it; the scaffold's own
+        verification runs it, at its commit."""
         if not self.change.blank_repo:
             return False
-        s = self.scaffold_node()
-        return s is None or s.status != ACCEPTED
+        return not any(t.type == "agent:scaffolder" and t.status == Status.PASSED
+                       for t in self.st.tickets.values())
 
-    def scaffold_node(self) -> Node | None:
-        """The blank repository's scaffold build node (§5.3b), if the plan has one."""
-        return next((n for n in self.build_nodes() if n.task and n.task.scaffold), None)
+    def pointer_json(self, name: str) -> Any:
+        """An approved JSON output (the change's pointer ``name``), or None."""
+        ref = self.tickets.root.pointers.get(name) if self.st.tickets else None
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        if m is None:
+            return None
+        try:
+            return json.loads(self.docs.read(m["path"], int(m["version"])).content)
+        except ValueError:
+            return None
+
+    def round_of(self, ticket: Ticket) -> TicketWork:
+        """A ticket's round as it would start now – for an agent asked to answer a message
+        before (or between) its rounds: its attempt, findings and inputs, at its last base."""
+        last = next((self.runs[r] for r in reversed(ticket.runs) if r in self.runs), None)
+        return TicketWork(ticket=ticket, attempt=max(ticket.attempt, 1),
+                          findings=tuple(ticket.findings), change=self.cid,
+                          base=(last.base_sha if last else None) or self.change.base_sha,
+                          inputs={i: self.tickets.root.pointers.get(i) for i in ticket.inputs})
 
     def save(self) -> None:
         """Persist the state (the caller holds the lock) and wake what waits on it and the UI. Every
@@ -115,6 +123,8 @@ class ChangeCore:
         rules) sees what changed (:meth:`sync`)."""
         self.before_save()
         self._stamp_statuses()
+        self.trace.tickets(self.st.tickets.values())
+        self.trace.runs(self.st.runs.values())
         self._update_attention()
         self.st.save()
         outbox, self._outbox = self._outbox, []
@@ -149,75 +159,60 @@ class ChangeCore:
     def seed_attention(self) -> None:
         """After loading from the store: take the current statuses and items as known, so a
         restart neither re-stamps nor re-raises (nobody is notified again for old items)."""
-        self._statuses = {nid: n.status for nid, n in self.nodes.items()}
+        self._statuses = self._statuses_now()
         self._attention = {i.key: i for i in attention.items(self)}
 
+    def _statuses_now(self) -> dict[str, str]:
+        return {tid: t.status for tid, t in self.st.tickets.items()} | {
+            "hook:" + tid: t.status for tid, t in self.st.hooks.items()}
+
     def _stamp_statuses(self) -> None:
+        """A ticket that started waiting on a human is an escalation (the resolver hears)."""
         now = now_iso()
-        for nid, n in self.nodes.items():
-            if self._statuses.get(nid) != n.status:
-                n.status_since = now
-                if n.status == ESCALATED and n.escalation is not None:
-                    self.emit(Escalated(self.cid, nid))
-        self._statuses = {nid: n.status for nid, n in self.nodes.items()}
+        for tid, t in self.st.tickets.items():
+            if self._statuses.get(tid) != t.status:
+                t.since = now
+                if t.status == Status.WAITING:
+                    self.emit(Escalated(self.cid, tid))
+        for tid, t in self.st.hooks.items():
+            if self._statuses.get("hook:" + tid) != t.status:
+                t.since = now
+        self._statuses = self._statuses_now()
 
     def _update_attention(self) -> None:
         cur = {i.key: i for i in attention.items(self)}
         for key in cur.keys() - self._attention.keys():
             item = cur[key]
-            self.event("attention", f"raised: {item.title}", item.node)
+            self.event("attention", f"raised: {item.title}", item.ticket)
             self.host.attention(item, raised=True)
         for key in cur.keys() & self._attention.keys():   # the same item, enriched
             item = cur[key]
             if item.proposal and item.proposal != self._attention[key].proposal:
-                self.event("attention", f"proposal for {item.title}: {item.proposal}", item.node)
+                self.event("attention", f"proposal for {item.title}: {item.proposal}", item.ticket)
                 self.host.attention(item, raised=True)     # notified again, with it
         for key in self._attention.keys() - cur.keys():
             item = self._attention[key]
             waited = _waited(item.since)
             self.event("attention", f"resolved{f' after {waited}' if waited else ''}: {item.title}",
-                       item.node)
+                       item.ticket)
             self.host.attention(item, raised=False)
         self._attention = cur
 
     # ------------------------------------------------------------------ A2A cards
-    def a2a_cards(self) -> list[Card]:
-        """The cards the workflow publishes now (workflow/cards.py), its own first – what the
-        engine goes by; the A2A catalog holds the same, as they were pushed."""
-        return cards.ordered(self, cards.cards(self))
 
-    def head_moved(self, branch_head: str) -> str | None:
-        """G-H1: the integration branch is written only by the controller. If it is not at the
-        head the controller recorded, someone committed outside the workflow: the reason to
-        escalate with (None: it is where it should be)."""
-        rec = self.change.integration_head
-        if branch_head == rec:
-            return None
-        return (f"G-H1: the integration branch {self.git.integration_branch(self.cid)} is at "
-                f"{branch_head[:12]}, but the controller's integration head is {rec[:12]}: "
-                "commits were added outside the workflow. They are not adopted (they bypass "
-                f"verification and review): reset the branch to {rec} and retry. To change "
-                "the code after integration fails, plan a fix round (Plan a fix).")
 
     def oracle_commands(self) -> list[str]:
-        """The commands that verify the integration head (oracle and surfaces)."""
-        orc = self.change.oracle or Oracle()
-        cmds = orc.acceptance_commands + orc.integration_commands \
-            + governance.surface_commands(self)
-        return list(dict.fromkeys(cmds))
-
-    def baseline_commands(self) -> list[str]:
-        """The commands the baseline runs before any build: acceptance and integration."""
-        orc = self.change.oracle or Oracle()
+        """The commands that verify the change as a whole: the approved oracle's."""
+        orc = Oracle.model_validate(self.pointer_json("oracle") or {})
         return list(dict.fromkeys(orc.acceptance_commands + orc.integration_commands))
 
     # ------------------------------------------------------------------ events and tasks
-    def event(self, kind: str, message: str, node: str | None = None,
+    def event(self, kind: str, message: str, ticket: str | None = None,
               run: str | None = None) -> None:
         """Log a notable step, and append it to the change's timeline (a retrospective reads it
         alongside the store's records, which are the history)."""
-        log.info("[%s %s] %s%s", self.cid, kind, f"{node}: " if node else "", message)
-        self._append_timeline({"ts": now_iso(), "kind": kind, "node": node, "run": run,
+        log.info("[%s %s] %s%s", self.cid, kind, f"{ticket}: " if ticket else "", message)
+        self._append_timeline({"ts": now_iso(), "kind": kind, "ticket": ticket, "run": run,
                                "message": message})
         self.host.touch()
 
@@ -260,9 +255,10 @@ class ChangeCore:
                 out.append(ev)
         return out
 
-    def spawn(self, coro) -> None:
-        """Run a background task; the controller logs a failure, the event marks the change."""
-        self.host.spawn(coro, on_error=lambda e: self.event("error", f"internal error: {e}"))
+    def spawn(self, coro) -> asyncio.Task:
+        """Run a background task (tracked: the controller waits for it, cancels it on stop);
+        the controller logs a failure, the event marks the change."""
+        return self.host.spawn(coro, on_error=lambda e: self.event("error", f"internal error: {e}"))
 
     # ------------------------------------------------------------------ documents
     @property

@@ -3,10 +3,10 @@
  *   #/work                                     every change, by workspace or all together
  *   #/inbox                                    what needs you, and the inbox
  *   #/ws/<ws>[/<tab>]                          a workspace: its changes, documents, repository
- *   #/ws/<ws>/c/<change>/<tab>[/<node>]        a change (a node opens its sheet, once)
+ *   #/ws/<ws>/c/<change>/<tab>[/<ticket>]      a change (a ticket opens its sheet, once)
  *   #/config/<group>                           skills, workflows or agents: their definitions
  *
- * ``#<change>/<tab>[/<node>]`` – the address before workspaces (notification links) – opens the
+ * ``#<change>/<tab>[/<ticket>]`` – the address before workspaces (notification links) – opens the
  * change in its workspace. */
 import { TABS, type TabId } from '@/components/change/nav'
 
@@ -15,9 +15,9 @@ export type WorkspaceTab = (typeof WORKSPACE_TABS)[number]
 export const CONFIG_GROUPS = ['skills', 'workflows', 'agents'] as const
 export type ConfigGroup = (typeof CONFIG_GROUPS)[number]
 
-/** A node to open once; ``n`` changes on every request. */
+/** A ticket to open once; ``n`` changes on every request. */
 export interface Focus {
-  node: string
+  ticket: string
   n: number
 }
 
@@ -29,8 +29,8 @@ export type Route =
   | { page: 'config'; group: ConfigGroup }
 
 let focusCount = 0
-export const nextFocus = (node?: string | null): Focus | null =>
-  node ? { node, n: ++focusCount } : null
+export const nextFocus = (ticket?: string | null): Focus | null =>
+  ticket ? { ticket, n: ++focusCount } : null
 
 const tabOf = (t?: string): TabId => TABS.find((x) => x.id === t)?.id ?? 'overview'
 
@@ -39,9 +39,9 @@ export function parseHash(hash: string): Route {
   const raw = hash.replace(/^#/, '')
   const parts = raw.split('/').map((p) => decodeURIComponent(p))
   if (!raw.startsWith('/')) {
-    const [cid, tab, node] = parts
+    const [cid, tab, ticket] = parts
     return cid
-      ? { page: 'change', ws: '', cid, tab: tabOf(tab), focus: nextFocus(node) }
+      ? { page: 'change', ws: '', cid, tab: tabOf(tab), focus: nextFocus(ticket) }
       : { page: 'work' }
   }
   const [, head, a, b, c, d, e] = parts
@@ -58,7 +58,7 @@ export function parseHash(hash: string): Route {
 
 const enc = encodeURIComponent
 
-/** The hash of a route (a change's node is not kept: it opens once). */
+/** The hash of a route (a change's ticket is not kept: it opens once). */
 export function formatHash(r: Route): string {
   switch (r.page) {
     case 'work':
@@ -74,7 +74,7 @@ export function formatHash(r: Route): string {
   }
 }
 
-/** The same page, regardless of the node to open (an old-style change link, whose workspace is
+/** The same page, regardless of the ticket to open (an old-style change link, whose workspace is
  * not known yet, is the same page as that change in any workspace). */
 export function samePage(a: Route, b: Route): boolean {
   if (a.page === 'change' && b.page === 'change' && (!a.ws || !b.ws))

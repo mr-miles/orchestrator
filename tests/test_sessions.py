@@ -28,57 +28,63 @@ def resume_of(env: str) -> str | None:
 
 
 @scenario()
-async def test_planner_keeps_sandbox_and_session_through_critique_until_h_e1(f: Flow):
+async def test_the_planner_keeps_sandbox_and_session_until_its_ticket_passes(f: Flow):
     await f.intake()
-    await f.human("H-1", "accept")
-    first = f.run("plan")
+    await f.signoff("H-1")
+    first = f.run("design")
     assert resume_of(f.runner.run_envs[-1]) is None          # nothing to resume yet
     sid = give_session(f, first)
     await f.plan()
     sb = first.sandbox
     assert sb in f.runner.stopped and sb not in f.runner.deleted
-    assert f.ce.nodes["plan"].sandbox == sb and f.ce.nodes["plan"].sandbox_stopped
+    assert f.ticket("design").sandbox == sb
 
-    critic = f.run("plan", "critic")
+    critic = f.run("critique", "critic")
     assert critic.sandbox != sb                              # judges stay fresh (G-D4)
     await f.critique("REWORK")
-    second = f.run("plan")
+    second = f.run("design")
     assert second.id != first.id and second.sandbox == sb    # same sandbox, started again
     assert sb in f.runner.restarted and f.runner.created.count(sb) == 1
     assert resume_of(f.runner.run_envs[-1]) == sid           # the rework continues the session
-    assert critic.sandbox in f.runner.stopped and critic.sandbox not in f.runner.deleted
+    assert critic.sandbox in f.runner.deleted          # its judgement is in: released
 
     give_session(f, second)
     await f.plan()
-    assert critic.sandbox in f.runner.deleted          # replaced by the next cycle's critic
     await f.critique("PASS")
     assert sb not in f.runner.deleted                      # H-E1 can still send the plan back
-    await f.human("H-E1", "approve")
-    assert sb in f.runner.deleted and f.ce.nodes["plan"].sandbox is None
+    await f.signoff("H-E1")
+    assert sb in f.runner.deleted and f.ticket("design").sandbox is None
 
 
 @scenario()
-async def test_intake_keeps_its_session_until_h1_is_accepted(f: Flow):
+async def test_intake_keeps_its_session_until_h1_passes(f: Flow):
     first = f.run("intake")
     sid = give_session(f, first)
     await f.intake()
     assert first.sandbox in f.runner.stopped
-    await f.human("H-1", "revise", feedback="also say goodbye")
+    await f.signoff("H-1", approve=False, reason="also say goodbye")
     second = f.run("intake")
     assert second.sandbox == first.sandbox and resume_of(f.runner.run_envs[-1]) == sid
+    assert "also say goodbye" in second.assignment["findings"]
     await f.intake()
     assert first.sandbox not in f.runner.deleted
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     assert first.sandbox in f.runner.deleted
 
 
 @scenario()
-async def test_oracle_keeps_its_sandbox_until_h2(f: Flow):
-    await f.to_h2("R2")                                      # R2: the oracle runs before H-2
+async def test_the_oracle_keeps_its_sandbox_until_h2(f: Flow):
+    from engine_harness import signals
+    await f.intake(signals(scope_breadth=2, novelty_uncertainty=2, verification_quality=2))
+    await f.signoff("H-1")
+    await f.plan()
+    await f.critique()
+    await f.signoff("H-E1")
+    await f.oracle()
     oracle = next(r for r in f.ce.runs.values() if r.role == "oracle")
     assert oracle.sandbox in f.runner.stopped and oracle.sandbox not in f.runner.deleted
-    assert f.ce.nodes["oracle"].sandbox == oracle.sandbox
-    await f.human("H-2", "approve")
+    assert f.ticket("oracle").sandbox == oracle.sandbox
+    await f.signoff("H-2")
     assert oracle.sandbox in f.runner.deleted
 
 
@@ -86,12 +92,11 @@ async def test_oracle_keeps_its_sandbox_until_h2(f: Flow):
 async def test_a_sandbox_that_cannot_stop_stays_running_and_is_reused(f: Flow):
     f.runner.fail_stop = True
     await f.intake()
-    await f.human("H-1", "accept")
-    first = f.run("plan")
+    await f.signoff("H-1")
+    first = f.run("design")
     await f.plan()
-    assert not f.ce.nodes["plan"].sandbox_stopped
     await f.critique("REWORK")
-    assert f.run("plan").sandbox == first.sandbox and first.sandbox not in f.runner.restarted
+    assert f.run("design").sandbox == first.sandbox and first.sandbox not in f.runner.restarted
 
 
 def test_session_id_comes_from_the_agent_cli_events():

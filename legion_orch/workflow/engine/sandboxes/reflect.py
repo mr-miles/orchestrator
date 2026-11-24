@@ -63,21 +63,21 @@ rejected), and what would have prevented it."""
 
 def _outcome(run: Run) -> str:
     return {"ACCEPTED": "your work was accepted",
-            "SUPERSEDED": "your work was superseded by a later cycle",
             "FAILED": "your run failed"}.get(str(run.status), f"your run ended ({run.status})")
 
 
 def reflection_prompt(c: ChangeCore, runs: list[Run]) -> str:
-    """The reflection prompt for the session behind ``runs`` (one node and role, oldest first)."""
+    """The reflection prompt for the session behind ``runs`` (one ticket and role, oldest first)."""
     last = runs[-1]
-    node = c.nodes.get(last.node_id)
-    lines = [f"You were the `{last.role}` agent for `{last.node_id}`"
-             + (f" over {len(runs)} runs (cycles {', '.join(str(r.cycle) for r in runs)})."
+    ticket = c.tickets.t.get(last.ticket)
+    lines = [f"You were the `{last.role}` agent of ticket `{last.ticket}`"
+             + (f" over {len(runs)} runs (attempts {', '.join(str(r.attempt) for r in runs)})."
                 if len(runs) > 1 else ".")]
-    findings = bool(node and node.feedback)
-    if node and node.feedback:
-        lines.append("\nFeedback your work received (cycle, source: finding):")
-        lines += [f"- cycle {f.cycle}, {f.source}: {f.text[:600]}" for f in node.feedback[:40]]
+    told = list(dict.fromkeys(f for r in runs for f in (r.assignment.get("findings") or [])))
+    findings = bool(told or (ticket and ticket.findings))
+    if findings:
+        lines.append("\nFindings your work was told to fix:")
+        lines += [f"- {f[:600]}" for f in (told or ticket.findings)[:40]]
     else:
         lines.append("\nNo reviewer, verification or human finding was raised against your work.")
     rejected = [(r.id, v) for r in runs for v in r.violations]
@@ -108,14 +108,14 @@ class Reflector:
 
     def _session_runs(self, sandbox: str) -> list[Run]:
         """The runs whose agent session the sandbox still holds: the latest run with a session and
-        the earlier runs of the same node and role in this sandbox (a resumed session)."""
+        the earlier runs of the same ticket and role in this sandbox (a resumed session)."""
         skip = set(self.c.cfg.retrospective.reflect_skip_roles)
         runs = [r for r in self.c.runs.values()
                 if r.sandbox == sandbox and r.session_id and r.role not in skip]
         if not runs:
             return []
         last = runs[-1]
-        return [r for r in runs if r.node_id == last.node_id and r.role == last.role]
+        return [r for r in runs if r.ticket == last.ticket and r.role == last.role]
 
     async def reflect(self, sandbox: str, stopped: bool = False) -> None:
         """Resume the sandbox's agent session for a reflection turn and record the answer."""
@@ -144,7 +144,7 @@ class Reflector:
             last = runs[-1]
             prompt = reflection_prompt(c, runs)
         rid = f"{last.id}-reflect"
-        c.event("reflection", f"asking {last.role} run {last.id} to reflect", last.node_id, last.id)
+        c.event("reflection", f"asking {last.role} run {last.id} to reflect", last.ticket, last.id)
         try:
             rc, text = await resumed_turn(c, self.sandboxes, sandbox, last, rid, prompt,
                                           timeout=cfg.reflect_timeout_s, wake=stopped)
@@ -152,21 +152,21 @@ class Reflector:
             async with c.lock:
                 if result is None or result.is_error or not result.message.strip():
                     c.event("reflection", f"no reflection from run {last.id} (exit {rc})",
-                            last.node_id, last.id)
+                            last.ticket, last.id)
                     return
-                header = (f"# Reflection: {last.role} on {last.node_id}\n\n"
+                header = (f"# Reflection: {last.role} on {last.ticket}\n\n"
                           f"Runs: {', '.join(r.id for r in runs)}; session {last.session_id}\n\n")
                 got = agentlog.session_id(text)
                 if got and got != last.session_id:     # --resume did not take: a new session
                     c.event("reflection", f"run {last.id}: the agent did not resume session "
                                           f"{last.session_id} (it ran in {got})",
-                            last.node_id, last.id)
+                            last.ticket, last.id)
                     header += (f"> The agent did not resume session {last.session_id}: it ran in "
                                f"a new one ({got}), without this session's history.\n\n")
                 c.write_record(reflection_path(last.id), header + result.message.strip() + "\n")
                 c.write_record(f"control/logs/{rid}.log", text[-1024 * 1024:])
-                c.event("reflection", f"recorded {reflection_path(last.id)}", last.node_id, last.id)
+                c.event("reflection", f"recorded {reflection_path(last.id)}", last.ticket, last.id)
                 c.save()
         except Exception as e:                      # best-effort: never blocks the deletion
             c.event("reflection", f"reflection of run {last.id} skipped: {e or type(e).__name__}",
-                    last.node_id, last.id)
+                    last.ticket, last.id)

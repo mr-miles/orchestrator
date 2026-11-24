@@ -13,7 +13,7 @@ from legion_orch.sandbox import OpenShellRunner, SandboxError
 async def _planned(f: Flow):
     """The planner reported: its sandbox is kept, stopped, while the critic works."""
     await f.intake()
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     await f.plan()
     await f.settle()
     planner = next(r for r in f.ce.runs.values() if r.role == "planner")
@@ -25,13 +25,13 @@ async def _planned(f: Flow):
 async def test_the_gateway_says_which_sandboxes_are_stopped(f: Flow):
     planner = await _planned(f)
     _, ce2 = await f.restart()
-    assert ce2.runs[planner.id].sandbox_stopped and ce2.nodes["plan"].sandbox_stopped
-    critic = f.run("plan", "critic")
+    assert ce2.runs[planner.id].sandbox_stopped and ce2.st.tickets["design"].sandbox == planner.sandbox
+    critic = f.run("critique", "critic")
     assert not ce2.runs[critic.id].sandbox_stopped                # running on the gateway
     # started by hand while the controller was down: it is running now
     f.runner.phase[planner.sandbox] = "Ready"
     _, ce3 = await f.restart()
-    assert not ce3.runs[planner.id].sandbox_stopped and not ce3.nodes["plan"].sandbox_stopped
+    assert not ce3.runs[planner.id].sandbox_stopped
 
 
 @scenario()
@@ -40,7 +40,6 @@ async def test_a_sandbox_gone_from_the_gateway_is_gone(f: Flow):
     del f.runner.phase[planner.sandbox]                            # deleted by hand
     _, ce2 = await f.restart()
     assert ce2.runs[planner.id].sandbox_deleted and not ce2.runs[planner.id].sandbox_stopped
-    assert not ce2.nodes["plan"].sandbox_stopped
     # a partial listing (more than one page) says nothing of what it does not list
     f.runner.list_complete = False
     _, ce3 = await f.restart()

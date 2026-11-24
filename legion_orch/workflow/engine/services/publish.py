@@ -1,6 +1,6 @@
-"""Publishing a change accepted at H-3: its integration branch pushed to the workspace's source
-on GitHub as ``<publish_prefix><change-id>``, and a pull request from it – ready for review –
-with the reviewed description (``delivery/pr.md``), the change's id in its body, and its labels.
+"""Publishing a change signed off at H-3: its result pushed to the workspace's source on GitHub
+as ``<publish_prefix><change-id>``, and a pull request from it – ready for review – with the
+approved description (the ``pr`` pointer), the change's id in its body, and its labels.
 Done again, it changes only what differs: the branch is pushed if it moved (never forced), the
 pull request found and brought up to date, and each label family's labels made exactly the
 wanted ones (other labels, a human's included, are left alone). Recorded in
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from ....git import GitHubError
 from ... import guards
+from ...attest import FILE_RE
 from ..base.core import ChangeCore
 
 
@@ -50,15 +51,23 @@ class Publisher:
         return (guards.pr_body(text).rstrip() + "\n\n---\n"
                 f"Legion change: `{ch.id}` · risk tier {ch.tier or 'unassessed'}\n")
 
-    async def publish(self, labels: list[LabelSpec]) -> Published:
-        """Push, open or update the pull request, and set its labels. Raises
+    def text(self) -> str:
+        """The pull request's text: the approved description (the change's ``pr`` pointer)."""
+        ref = self.c.tickets.root.pointers.get("pr")
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        if m is None:
+            raise GitHubError("there is no approved pull request description (`pr`)")
+        return self.c.docs.read(m["path"], int(m["version"])).content
+
+    async def publish(self, labels: list[LabelSpec], head: str) -> Published:
+        """Push ``head``, open or update the pull request, and set its labels. Raises
         :class:`.GitHubError` with what went wrong."""
-        c, ch, gh, hub = self.c, self.c.change, self.c.svc.github, self.c.git
+        ch, gh, hub = self.c.change, self.c.svc.github, self.c.git
         repo = gh.repo_of(hub.source)
         if repo is None:
             raise GitHubError(f"workspace {ch.workspace}'s source is not on GitHub")
-        head, branch = ch.integration_head, self.branch()
-        text = c.doc(guards.PR_DOC).content
+        branch = self.branch()
+        text = self.text()
         title, body = guards.pr_title(text), self.body(text)
         await gh.push(hub.repo, hub.source, head, branch)
         pr = await gh.find_pr(repo, branch)

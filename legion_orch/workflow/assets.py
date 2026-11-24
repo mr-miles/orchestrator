@@ -8,6 +8,8 @@ Layout (naming convention)::
       skills/<skill>.md      skill: frontmatter with only a ``description`` (when to load it),
                              then the body; every run gets every skill as ``legion-<skill>``
       prompts/<role>.md      task prompt template (file name = role name)
+      workflow.yaml          the skeleton, tier policies and hooks (tickets/spec.py); also the
+                             ``workflow`` skill, generated from it
 
 Skills are not put in the prompt. Each is rendered with the run's variables into an Agent Skill
 (``legion-<skill>/SKILL.md``) that the agent loads on demand; the prompt only names the ones the
@@ -25,18 +27,29 @@ from typing import Any
 import yaml
 
 from ..store import SchemaRegistry
+from .tickets.model import Ticket
+from .tickets.spec import SKILL_DESCRIPTION as WORKFLOW_SKILL_DESCRIPTION
+from .tickets.spec import SpecError, WorkflowSpec
+from .tickets.spec import render as render_workflow
 
+WORKFLOW, WORKFLOW_SKILL = "workflow.yaml", "workflow"
 VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 TEMPLATE_VARS = {
-    "change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha", "branch",
-    "task_id",
-    "task_title", "task_json", "cycle", "role", "plan", "step", "context_refs", "feedback", "candidate_sha",
-    "write_scope", "required_docs", "workdir", "task_soul", "environment", "fix_round", "scaffold",
-    "sandbox_tools", "change_base_sha",
+    # the change
+    "change_id", "goal", "tier", "repo_name", "change_base_sha", "oracle_sha",
+    # the ticket and its round
+    "ticket_id", "ticket_goal", "work_json", "attempt", "role", "context_refs", "findings",
+    "outputs", "write_scope", "task_soul",
+    # where it works
+    "workdir", "branch", "base_sha", "head_sha", "judged_sha", "sandbox_tools",
+    # role-specific (their handlers bind them)
+    "environment", "scaffold",
 }
-ROLE_KEYS = {"soul", "skills", "write", "required_docs", "git", "repo", "souls_allowed", "report_schema"}
+ROLE_KEYS = {"soul", "skills", "git", "repo", "souls_allowed", "report_schema",
+             "outputs", "work_schema"}
+OUTPUT_RE = re.compile(r"^[a-z][a-z0-9-]*\*?$")
 
 
 class AssetError(Exception):
@@ -56,12 +69,12 @@ class Role:
     name: str
     soul: str
     skills: list[str]
-    write: list[str]
-    required_docs: list[str]
     git: GitMode
     repo: bool = True
     souls_allowed: list[str] = field(default_factory=list)
     report_schema: str = "report-none"
+    outputs: list[str] = field(default_factory=list)   # names it must produce (``x*``: a list)
+    work_schema: str | None = None      # the schema of its tickets' ``work`` (None: no work data)
 
 
 SKILL_PREFIX = "legion-"
@@ -117,6 +130,7 @@ class Assets:
             raise AssetError(f"{self.root}/roles.yaml not found")
         self.souls_ = self._load_dir("souls")
         self.skills_, self.skill_descriptions = self._load_skills()
+        self.workflow = self._load_workflow()
         self.prompts_ = self._load_dir("prompts")
         raw = yaml.safe_load((self.root / "roles.yaml").read_text()) or {}
         self.roles: dict[str, Role] = {}
@@ -162,8 +176,52 @@ class Assets:
             bodies[name], descriptions[name] = body, d.strip()
         return bodies, descriptions
 
+    def _load_workflow(self) -> WorkflowSpec | None:
+        """``workflow.yaml``, validated, and its skill (``workflow``); None without one."""
+        path = self.root / WORKFLOW
+        if not path.is_file():
+            return None
+        try:
+            spec = WorkflowSpec.load(path)
+        except SpecError as e:
+            raise AssetError(str(e)) from None
+        if WORKFLOW_SKILL in self.skills_:
+            raise AssetError(f"skills/{WORKFLOW_SKILL}.md: the {WORKFLOW_SKILL} skill is generated "
+                             f"from {WORKFLOW}")
+        self.skills_[WORKFLOW_SKILL] = render_workflow(spec)
+        self.skill_descriptions[WORKFLOW_SKILL] = WORKFLOW_SKILL_DESCRIPTION
+        return spec
+
+    def work_problems(self, ticket: Ticket) -> list[str]:
+        """What is wrong with a ticket's ``work`` for its role (the role's work schema; a role
+        without one takes none)."""
+        role = self.roles.get(ticket.type.partition(":")[2]) if ticket.type.startswith("agent:") \
+            else None
+        if role is None or role.work_schema is None:
+            return [f"{ticket.id}: a {ticket.type} ticket takes no work data"] if ticket.work else []
+        return [f"{ticket.id}: {e}" for e in self.schemas.validate_data(role.work_schema,
+                                                                          ticket.work)]
+
+    def role_outputs(self) -> dict[str, list[str]]:
+        """Each role's output names (a list output without its ``*``)."""
+        return {r.name: [o.rstrip("*") for o in r.outputs] for r in self.roles.values()}
+
+    def _workflow_roles(self) -> list[str]:
+        """Every role the workflow names: its agent tickets', its policies', its hooks'."""
+        spec = self.workflow
+        assert spec is not None
+        types = [t.type for t in spec.skeleton.walk()]
+        for name in spec.tiers:
+            p = spec.policy(name)
+            types += [r.type for r in p.every] + [c for r in p.every for c in r.criteria]
+            types += [c for v in p.labels.values() for c in v] + [*p.exists, *p.limits]
+            types += [x for r in p.order for x in (r.each, r.after or r.before)]
+        return [t.partition(":")[2] for t in types if t.startswith("agent:")] \
+            + list(spec.hooks.values())
+
     def _files(self) -> list[Path]:
-        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
+        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + [
+            p for p in [self.root / WORKFLOW] if p.is_file()] + sorted(
             p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md")) \
             + sorted((self.root / "schemas").glob("*.json"))
 
@@ -231,7 +289,20 @@ class Assets:
                 self.skill(sk)
             self.prompt(role.name)
         self.skill("harness-contract")              # every prompt tells the agent to load it
-        used_schemas = {n for _, n in self.schemas.bindings} | {r.report_schema for r in self.roles.values()}
+        for role in self.roles.values():
+            if bad := [o for o in role.outputs if not OUTPUT_RE.match(o)]:
+                raise AssetError(f"roles.yaml {role.name}: bad output names {bad}")
+        if self.workflow is not None:
+            if unknown := sorted(set(self._workflow_roles()) - set(self.roles)):
+                raise AssetError(f"{WORKFLOW}: roles not in roles.yaml: {unknown}")
+            if errs := self.workflow.subjects_problems(self.role_outputs()):
+                raise AssetError(f"{WORKFLOW}: " + "; ".join(errs))
+        used_schemas = {n for _, n in self.schemas.bindings} \
+            | {r.report_schema for r in self.roles.values()} \
+            | {r.work_schema for r in self.roles.values() if r.work_schema}
+        for r in self.roles.values():
+            if r.work_schema and r.work_schema not in self.schemas.schemas:
+                raise AssetError(f"role {r.name}: unknown work_schema {r.work_schema!r}")
         for r in self.roles.values():
             if r.report_schema not in self.schemas.schemas:
                 raise AssetError(f"role {r.name}: unknown report_schema {r.report_schema!r}")
@@ -247,11 +318,10 @@ class Assets:
                 for var in VAR_RE.findall(body):
                     if var not in TEMPLATE_VARS:
                         raise AssetError(f"{sub}/{name}.md: unknown template variable {{{{{var}}}}}")
-        for name, r in yaml.safe_load((self.root / "roles.yaml").read_text()).items():
-            for w in r.get("write", []) + r.get("required_docs", []):
-                for var in VAR_RE.findall(w):
-                    if var not in TEMPLATE_VARS:
-                        raise AssetError(f"roles.yaml {name}: unknown variable {{{{{var}}}}}")
+        for name, role in self.roles.items():
+            for var in VAR_RE.findall(role.soul):
+                if var not in TEMPLATE_VARS:
+                    raise AssetError(f"roles.yaml {name}: unknown variable {{{{{var}}}}}")
 
     # ------------------------------------------------------------------ render
     def render_role(self, role_name: str, variables: dict[str, Any]) -> RenderedPrompt:
@@ -281,8 +351,3 @@ class Assets:
         head = yaml.safe_dump({"name": skill_name(name), "description": self.skill_descriptions[name]},
                               sort_keys=False, allow_unicode=True, width=10_000)
         return f"---\n{head}---\n\n{render(self.skill(name), variables)}"
-
-    def role_paths(self, role_name: str, variables: dict[str, Any]) -> tuple[list[str], list[str]]:
-        role = self.roles[role_name]
-        return ([render(w, variables) for w in role.write],
-                [render(d, variables) for d in role.required_docs])

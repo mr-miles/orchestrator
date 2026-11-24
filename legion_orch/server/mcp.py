@@ -28,6 +28,7 @@ from ..store import DocCheck, DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
 from ..workflow import attest
+from ..workflow.cards import card_id
 from ..workflow.engine import ChangeEngine, Controller, WorkflowError
 from ..workflow.model import Run
 from ..workflow.results import ReportOutcome
@@ -40,17 +41,16 @@ versioned and schema-validated (docs_write creates a new version; pass base_vers
 docs_schema(path) shows what a path must contain). Paths are relative to your change unless they
 start with changes/. Back every claim with attestations: file:<path>@<version>,
 git:<repo>/<path>@<sha> or git:<repo>@<sha>. File your results with one accepted
-report(status="DONE"|"BLOCKED") – it records, it ends nothing – then end your task with
-a2a_reply(task_id=<run id>, state="completed"|"input-required"). Rejected reports list violated
-guard ids and use up an attempt; check first with report(..., dry_run=true) and
-docs_write(..., dry_run=true), which use none. Answer the messages in your inbox with
-a2a_reply() too."""
+report(status="DONE"|"BLOCKED") – accepted, it ends your task; then end your turn. Rejected
+reports list violated guard ids and use up an attempt; check first with report(..., dry_run=true)
+and docs_write(..., dry_run=true), which use none. Answer the messages in your inbox with
+a2a_reply()."""
 
-AGENT_HIDDEN = ("/control/logs/",)
-WORKFLOW_TOOLS = ("whoami", "get_assignment", "verify_attestation", "progress", "report",
+AGENT_HIDDEN = ("/control/runs/",)
+WORKFLOW_TOOLS = ("get_assignment", "verify_attestation", "progress", "report",
                   "inbox", "a2a_reply",
                   "verification_request", "verification_status", "verification_evidence",
-                  "step_status", "workflow_context")
+                  "ticket_status", "workflow_context")
 # The gateway's MCP allowlist (sandbox network policy) is generated from exactly this list.
 MCP_TOOLS = tuple(STORE_TOOLS) + WORKFLOW_TOOLS
 
@@ -119,25 +119,21 @@ async def build_mcp(ctl: Controller) -> MCPServer:
     register_store_tools(server, store_session)
 
     # ------------------------------------------------------------------ workflow tools
-    @server.tool(description="Identify this run: id, role, change, node, cycle, write scope.")
-    async def whoami(ctx: Context) -> dict:
-        ce, r = current(ctx)
-        return {"run": r.id, "change": ce.cid, "role": r.role, "node": r.node_id, "cycle": r.cycle,
-                "soul": r.soul, "write_scope": r.write_scope, "required_docs": r.required_docs,
-                "doc_root": ce.p(""), "prompt_pin": r.prompt_pin}
-
-    @server.tool(description="Full assignment: task contract, context attestations, feedback, git.")
+    @server.tool(description="Who you are and what to do: your run, role, ticket and attempt, "
+                             "its work, inputs and context attestations, the findings to fix, "
+                             "the outputs to report, your write scope, git.")
     async def get_assignment(ctx: Context) -> dict:
         ce, r = current(ctx)
         a = dict(r.assignment)
         a.update({"run": r.id, "change": ce.cid, "doc_root": ce.p(""), "role": r.role,
-                  "node": r.node_id, "write_scope": r.write_scope,
-                  "required_docs": r.required_docs, "context": r.context_refs,
+                  "ticket": r.ticket, "attempt": r.attempt, "write_scope": r.write_scope,
+                  "outputs": r.outputs, "context": r.context_refs,
                   "required_git": ctl.assets.roles[r.role].git,
                   "report_schema": ctl.assets.roles[r.role].report_schema,
                   "git": {"url": ce.git_url, "branch": r.branch, "base_sha": r.base_sha,
                           "checkout_sha": r.judged_sha or r.base_sha,
                           "can_push": r.branch is not None},   # only roles that push get one
+                  "soul": r.soul, "prompt_pin": r.prompt_pin,
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
         return a
 
@@ -158,15 +154,18 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         return {"ok": True}
 
     @server.tool(description="Submit the result of this run. status is DONE or BLOCKED. "
-                             "attestations: list of file:/git: references. data: role-specific "
-                             "structured result matching your report_schema. BLOCKED needs "
-                             "blocked_reason and missing_decision. Returns accepted (then end "
-                             "your turn: that hands your work back) or violations. "
-                             "dry_run=true runs every check without submitting or using up an "
-                             "attempt: it returns would_accept and the violations.")
+                             "attestations: list of file:/git: references. outputs: each output "
+                             "your role names (get_assignment) -> the document it is, as "
+                             "file:<path>@<version> (a list for a list output). data: "
+                             "role-specific structured result matching your report_schema. "
+                             "BLOCKED needs blocked_reason and missing_decision. Returns "
+                             "accepted (then end your turn: that hands your work back) or "
+                             "violations. dry_run=true runs every check without submitting or "
+                             "using up an attempt: it returns would_accept and the violations.")
     async def report(ctx: Context, status: str, summary: str, attestations: list[str],
                      data: dict[str, Any] | str | None = None, blocked_reason: str | None = None,
-                     missing_decision: str | None = None, dry_run: bool = False) -> dict:
+                     missing_decision: str | None = None, dry_run: bool = False,
+                     outputs: dict[str, Any] | None = None) -> dict:
         ce, r = current(ctx)
         if isinstance(data, str):
             try:
@@ -178,29 +177,34 @@ async def build_mcp(ctl: Controller) -> MCPServer:
             return ReportOutcome.reject("data must be a JSON object").model_dump(
                 mode="json", exclude_none=True)
         outcome = await ce.handle_report(r.id, status, summary, attestations, data,
-                                         blocked_reason, missing_decision, dry_run)
-        return outcome.model_dump(mode="json", exclude_none=True)
+                                         blocked_reason, missing_decision, dry_run, outputs)
+        out = outcome.model_dump(mode="json", exclude_none=True)
+        if outcome.accepted and not dry_run:          # what still waits for an answer from it
+            out["inbox"] = len(A2AHub.of(ctl).inbox.pending(ce.cid, card_id(r.role, r.ticket)))
+        return out
 
     # ------------------------------------------------------------------ where your work stands
-    @server.tool(description="A step of your change as it is now – yours by default, or any "
-                             "node id: its status and cycle, the budget left (review or critique "
-                             "cycles), its candidate's verification, the panel's verdicts so far, "
-                             "an escalation, and the state of its agents' cards.")
-    async def step_status(ctx: Context, node: str | None = None) -> dict:
+    @server.tool(description="A ticket of your change as it is now – yours by default, or any "
+                             "ticket id: its status and attempt (of its limit), what it waits "
+                             "for, its criteria and their verdicts, its runs, the findings it "
+                             "was told to fix, its outputs.")
+    async def ticket_status(ctx: Context, ticket: str | None = None) -> dict:
         ce, r = current(ctx)
         try:
-            return ce.step_status(node or r.node_id)
+            return ce.ticket_status(ticket or r.ticket)
         except WorkflowError as e:
             raise ToolError(str(e)) from None
 
-    @server.tool(description="How your step fits the change: the goal and tier, the stages and "
-                             "where you are, your task's place in the task graph (what it builds "
-                             "on, what builds on it, which tasks touch nearby files), the "
-                             "requirements and acceptance criteria it serves, who judges it and "
-                             "what they load, and whom to ask (cards).")
+    @server.tool(description="How your ticket fits the change: the goal and tier, its parent and "
+                             "the groups around it, what runs before and after it, its inputs "
+                             "(the approved versions it consumes), who judges it, and whom to "
+                             "ask (cards).")
     async def workflow_context(ctx: Context) -> dict:
         ce, r = current(ctx)
-        return ce.workflow_context(r.node_id)
+        try:
+            return ce.workflow_context(r.ticket)
+        except WorkflowError as e:
+            raise ToolError(str(e)) from None
 
     # ------------------------------------------------------------------ verification service
     def _view(v) -> dict:
@@ -277,18 +281,16 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                              "(task_id = your run id), its first message your assignment, then "
                              "the orchestrator's follow-ups – and messages other agents of the "
                              "change sent you over A2A, each waiting for your a2a_reply. Call it "
-                             "first, and again at milestones and before you end your task.")
+                             "first, and again at milestones and before you end your turn.")
     async def inbox(ctx: Context) -> dict:
         ce, r = current(ctx)
         return {"tasks": hub.agent_inbox(ce, r, await get_assignment(ctx))}
 
-    @server.tool(description="End (or pause) a task in your inbox with your text; returns what is "
-                             "still in your inbox (`inbox`). state: completed (default), "
+    @server.tool(description="Answer a task in your inbox with your text; returns what is still "
+                             "in your inbox (`inbox`). state: completed (default), "
                              "input-required, failed, rejected. Your own work's task (task_id = "
-                             "your run id): report(...) first – reply completed after an "
-                             "accepted DONE report, input-required after an accepted BLOCKED "
-                             "one, failed to give up; anything else is answered with what is "
-                             "missing. A message from another agent: completed answers it, "
+                             "your run id) is ended by your accepted report; reply failed on it "
+                             "only to give up. A message from another agent: completed answers it, "
                              "input-required asks them something back, rejected declines it "
                              "(say why). A question back (an agent you messaged asked you "
                              "something): your text continues that conversation.")

@@ -77,12 +77,12 @@ class Notifier:
 
     # ------------------------------------------------------------------ delivery
     def link(self, item: AttentionItem) -> str | None:
-        """The UI link that opens the item (``#<change>/overview[/<node>]``)."""
+        """The UI link that opens the item (``#<change>/overview[/<ticket>]``)."""
         if not self.cfg.ui_url:
             return None
         frag = f"{quote(item.change, safe='')}/overview"
-        if item.node:
-            frag += f"/{quote(item.node, safe='')}"
+        if item.ticket:
+            frag += f"/{quote(item.ticket, safe='')}"
         return f"{self.cfg.ui_url.rstrip('/')}/#{frag}"
 
     def payload(self, item: AttentionItem, event: str) -> dict[str, Any]:

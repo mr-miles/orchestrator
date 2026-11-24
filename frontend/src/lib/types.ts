@@ -2,121 +2,57 @@ import type {
   ActionResult,
   AgentQuestion,
   AttentionItem,
-  AttestationRecord,
   Change,
+  ChangeEnd,
   ChangeStatus,
   CommandResult,
-  CriterionTrace,
-  Escalation,
+  EnvironmentBuild,
   FailureSource,
-  Feedback,
-  Finding,
-  FixRound,
-  GateAttestation,
-  GateResult,
-  Node,
-  NodeStatus,
-  Override,
   Progress,
-  Readiness,
-  RequirementTrace,
   ResolverProposal,
-  ReviewResult,
   Risk,
   Run,
   RunFailure,
+  RunReport,
   RunStage,
   RunStatus,
-  Surface,
-  SurfacePin,
-  TaskContract,
-  TaskTrace,
-  TraceWarning,
-  Traceability,
+  Severity,
+  Status as TicketStatus,
+  Ticket,
   Turn,
   Verification,
+  VerificationRun,
+  Waiting,
 } from './api.gen'
 
 export type {
   ActionResult,
   AgentQuestion,
   AttentionItem,
-  AttestationRecord,
   Change,
+  ChangeEnd,
   ChangeStatus,
   CommandResult,
-  CriterionTrace,
-  Escalation,
+  EnvironmentBuild,
   FailureSource,
-  Feedback,
-  Finding,
-  FixRound,
-  GateAttestation,
-  GateResult,
-  Node,
-  NodeStatus,
-  Override,
   Progress,
-  Readiness,
-  RequirementTrace,
   ResolverProposal,
-  ReviewResult,
   Risk,
   Run,
   RunFailure,
+  RunReport,
   RunStage,
   RunStatus,
-  Surface,
-  SurfacePin,
-  TaskContract,
-  TaskTrace,
-  TraceWarning,
-  Traceability,
+  Severity,
+  Ticket,
+  TicketStatus,
   Turn,
   Verification,
+  VerificationRun,
+  Waiting,
 }
 
 // The controller's JSON API (legion_orch/server/views.py and web.py): what the UI reads.
-
-export interface ProtectedApproval {
-  task: string
-  paths: string[]
-  approver: string
-  at: string
-  reason: string
-}
-
-export interface EnvironmentRole {
-  profile: string
-  image?: string | null
-  network?: Record<string, { name: string; endpoints?: { host: string; port: number }[] }>
-  cpu?: string | null
-  memory?: string | null
-  driver_config?: string | null
-}
-
-export interface H2Subject {
-  subject: string
-  paths: string[]
-  status: 'approved' | 'stale' | 'pending'
-  approver?: string | null
-  warnings?: string[]
-  /** path -> the version approved (a stale subject: diff against it) */
-  approved?: Record<string, number>
-  /** path -> the latest version */
-  latest?: Record<string, number | null>
-  /** ``attestation``: R3's independent-baseline, decided with the subjects */
-  kind?: 'approval' | 'attestation'
-  /** attestation: what approving attests (the baseline report, the controller's run) */
-  sources?: string[]
-  /** attestation: the controller's results of the oracle commands at the head */
-  results?: { command: string; exit_code: number }[]
-  ok?: boolean | null
-  /** attestation: why it cannot be attested yet */
-  note?: string | null
-  /** the gate that decides it: H-E1 approves the plan, H-2 the oracle */
-  gate?: 'H-E1' | 'H-2'
-}
 
 export interface EnvironmentProfile {
   tools: string[]
@@ -124,20 +60,7 @@ export interface EnvironmentProfile {
   resources?: Record<string, string | number> | null
 }
 
-/** A stage of the change's workflow, with the nodes shown in it (nested stages too). */
-export interface Stage {
-  id: string
-  title: string
-  depth: number
-  /** how many stage levels it contains (0: none) */
-  level: number
-  /** the gate step that ends it (none: it is done when its stages are) */
-  gate: string | null
-  nodes: string[]
-  status: string
-}
-
-/** The change's pull request on GitHub, once published after H-3 (control/pr.json). */
+/** The change's pull request on GitHub, once published (control/pr.json). */
 export interface PullRequestRecord {
   url: string
   number: number
@@ -148,42 +71,48 @@ export interface PullRequestRecord {
   workspace: string
 }
 
+/** A sign-off waiting for a decision owner: what it shows (its subjects: name -> the exact
+ * documents, or ``git:<sha>`` for ``head``). */
+export interface SignoffWaiting {
+  subjects: Record<string, string | string[]>
+  attempt: number
+}
+
 export interface ChangeState {
   project: string
   repo: string
   decision_owners: string[]
   assets_sha: string
+  limits: Record<string, unknown>
   change: Change | null
-  nodes: Node[]
+  /** the tree: the root first, every ticket with its parent, subtask groups and criteria */
+  tickets: Ticket[]
   runs: Run[]
-  gates: string[]
-  h2: H2Subject[]
-  h3?: GateAttestation[]
-  /** from the workflow core: what a human may do on each node now; waiting gates' unmet
-   * preconditions */
-  workflow?: {
-    actions: Record<string, string[]>
-    unmet: Record<string, string[]>
-    stages: Stage[]
-  }
-  surfaces: Surface[]
+  /** side processes' tickets, outside the tree (the retrospective) */
+  hooks: Ticket[]
+  /** the approved version of each named output */
+  pointers: Record<string, string | string[]>
+  /** why the workflow is paused (none: it runs) */
+  paused: string[]
+  /** sign-offs waiting for a decision owner, by ticket */
+  signoffs: Record<string, SignoffWaiting>
   environment: EnvironmentSpec | null
-  attestation_kinds: string[]
   pull_request?: PullRequestRecord | null
-  /** node -> the log of its verification running now */
+  /** ticket -> the log of its verification running now */
   verifying?: Record<string, string>
+  verifications?: VerificationRun[]
   /** agent-to-agent: the change's cards and its agents' questions to the humans */
   a2a?: { cards: A2ACard[]; questions: AgentQuestion[] }
 }
 
-/** An A2A card: the change's orchestrator, or a step agent (``<role>@<node>``) with a sandbox. */
+/** An A2A card: the change's orchestrator or resolver, or a ticket's agent (``<role>@<ticket>``). */
 export interface A2ACard {
   id: string
-  node: string | null
+  ticket: string | null
   role: string | null
   title: string
-  sandbox: string | null
-  stopped: boolean
+  /** orchestrator · not started · running · stopped */
+  state: string
 }
 
 export interface ChangeSummary {
@@ -193,10 +122,9 @@ export interface ChangeSummary {
   status: ChangeStatus
   tier?: string | null
   created_at: string
-  accepted: number
-  nodes: number
+  passed: number
+  tickets: number
   live_runs: number
-  retrospective?: NodeStatus | null
   needs_you?: number
 }
 
@@ -275,27 +203,6 @@ export interface LogUpdate {
   from: number
   entries: LogEntry[]
   total: number
-}
-
-export interface FileStat {
-  path: string
-  added?: number | null
-  deleted?: number | null
-}
-
-/** What H-3 accepts: the diff, the protected paths it changes, the ship gates evaluated dry. */
-export interface Acceptance {
-  diff: {
-    base?: string | null
-    head?: string | null
-    files: FileStat[]
-    added: number
-    deleted: number
-    tasks: { id: string; title: string; files: FileStat[]; added: number; deleted: number }[]
-    protected: { path: string; approved_by: string[]; tasks: string[] }[]
-  } | null
-  readiness: Readiness | null
-  error?: string | null
 }
 
 export interface DocDiff {

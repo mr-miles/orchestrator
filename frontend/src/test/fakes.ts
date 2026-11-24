@@ -1,14 +1,6 @@
 import { mock } from 'bun:test'
-import {
-  AttentionItemDefaults,
-  ChangeDefaults,
-  CriterionTraceDefaults,
-  NodeDefaults,
-  RunDefaults,
-  TaskTraceDefaults,
-  TraceWarningDefaults,
-} from '@/lib/api.gen'
-import type { Attention, ChangeState, ChangeSummary, Node, Run, Traceability } from '@/lib/types'
+import { AttentionItemDefaults, ChangeDefaults, RunDefaults, TicketDefaults } from '@/lib/api.gen'
+import type { Attention, ChangeState, ChangeSummary, Run, Ticket } from '@/lib/types'
 
 /** An EventSource the test drives: ``emit`` delivers a named event to the latest connection. */
 export class FakeEventSource extends EventTarget {
@@ -74,15 +66,17 @@ export function install() {
   globalThis.EventSource = FakeEventSource as unknown as typeof EventSource
 }
 
-export const node = (n: Partial<Node> & Pick<Node, 'id' | 'kind' | 'title'>): Node => ({
-  ...NodeDefaults,
-  ...n,
+export const ticket = (t: Partial<Ticket> & Pick<Ticket, 'id' | 'type'>): Ticket => ({
+  ...TicketDefaults,
+  role: 'subtask',
+  goal: '',
+  ...t,
 })
 
-export const run = (r: Partial<Run> & Pick<Run, 'id' | 'node_id' | 'role'>): Run => ({
+export const run = (r: Partial<Run> & Pick<Run, 'id' | 'ticket' | 'role'>): Run => ({
   ...RunDefaults,
   soul: 'intake-analyst',
-  cycle: 1,
+  attempt: 1,
   status: 'ACTIVE',
   stage: 'RUNNING',
   sandbox: 'lg-sb',
@@ -96,19 +90,23 @@ export const CHANGES: ChangeSummary[] = [
     status: 'ACTIVE',
     tier: null,
     created_at: '2026-01-01',
-    accepted: 1,
-    nodes: 2,
+    passed: 1,
+    tickets: 3,
     live_runs: 0,
   },
 ]
 
-/** A change waiting at H-1, with intake's run done. */
+const REQS = 'file:changes/c1/tickets/intake/requirements.md@1'
+const RISK = 'file:changes/c1/tickets/intake/risk.json@1'
+
+/** A change whose intake is done: its sign-off H-1 waits for a decision owner. */
 export function stateAtH1(): ChangeState {
   return {
     project: 'demo',
     repo: 'app',
     decision_owners: ['miles'],
     assets_sha: 'sha256:abc',
+    limits: {},
     change: {
       ...ChangeDefaults,
       id: 'c1',
@@ -116,53 +114,124 @@ export function stateAtH1(): ChangeState {
       workspace: 'app',
       status: 'ACTIVE',
       base_sha: '0123456789abcdef',
-      integration_head: '0123456789abcdef',
-      risk: {
-        tier: 'R1',
-        total: 3,
-        threshold_tier: 'R1',
-        floors: [],
-        scores: { security: 0, public_api: 1 },
-      },
     },
-    nodes: [
-      node({
+    tickets: [
+      ticket({
+        id: 'change',
+        type: 'grouping',
+        role: 'root',
+        parent: null,
+        status: 'subtasks',
+        subtasks: [['workspace'], ['requirements'], ['plan']],
+      }),
+      ticket({
+        id: 'workspace',
+        type: 'controller:sync',
+        parent: 'change',
+        status: 'passed',
+        attempt: 1,
+      }),
+      ticket({
+        id: 'requirements',
+        type: 'grouping',
+        parent: 'change',
+        status: 'subtasks',
+        subtasks: [['intake']],
+      }),
+      ticket({
         id: 'intake',
-        kind: 'intake',
-        title: 'Intake: requirements & risk',
-        status: 'ACCEPTED',
+        type: 'agent:intake',
+        parent: 'requirements',
+        goal: 'the requirements and the risk assessment',
+        status: 'checking',
+        attempt: 1,
+        criteria: ['H-1'],
+        outputs: { requirements: REQS, risk: RISK },
         runs: ['r0001'],
       }),
-      node({
+      ticket({
         id: 'H-1',
-        kind: 'human',
-        title: 'Accept requirements & tier',
-        status: 'AWAITING_HUMAN',
-        depends_on: ['intake'],
+        type: 'human:signoff',
+        parent: 'intake',
+        role: 'criterion',
+        status: 'working',
+        attempt: 1,
+        signs: ['requirements', 'risk'],
+        applies: 'tier',
+        waivable: false,
+      }),
+      ticket({ id: 'plan', type: 'grouping', parent: 'change', subtasks: [['design']] }),
+      ticket({
+        id: 'design',
+        type: 'agent:planner',
+        parent: 'plan',
+        inputs: ['requirements', 'risk'],
       }),
     ],
     runs: [
-      run({ id: 'r0001', node_id: 'intake', role: 'intake', status: 'ACCEPTED', stage: 'EXITED' }),
+      run({ id: 'r0001', ticket: 'intake', role: 'intake', status: 'ACCEPTED', stage: 'EXITED' }),
     ],
-    gates: [],
-    h2: [],
-    surfaces: [],
+    hooks: [],
+    pointers: {},
+    paused: ['signing H-1'],
+    signoffs: { 'H-1': { subjects: { requirements: REQS, risk: RISK }, attempt: 1 } },
     environment: null,
-    attestation_kinds: ['e2e-evaluation'],
-    workflow: {
-      actions: { 'H-1': ['approve', 'send_back:stage:requirements', 'abandon'] },
-      unmet: {},
-      stages: [
-        {
-          id: 'stage:requirements',
-          title: 'Requirements',
-          depth: 0,
-          level: 0,
-          gate: 'H-1',
-          nodes: ['intake', 'H-1'],
-          status: 'running',
+  }
+}
+
+/** A build waiting on a human – its review failed with the same findings twice – with the
+ * resolver's proposal: waive the review. */
+export function stateWaiting(): ChangeState {
+  const s = stateAtH1()
+  const tickets = s.tickets
+    .map((t) =>
+      t.id === 'H-1'
+        ? { ...t, status: 'passed' as const }
+        : t.id === 'intake' || t.id === 'requirements'
+          ? { ...t, status: 'passed' as const }
+          : t,
+    )
+    .concat([
+      ticket({
+        id: 'T1',
+        type: 'agent:implementer',
+        parent: 'plan',
+        goal: 'write hello',
+        status: 'waiting',
+        waiting: 'repeated',
+        attempt: 2,
+        criteria: ['review:T1'],
+        findings: ['[BLOCKER] greet.txt lacks a newline'],
+      }),
+      ticket({
+        id: 'review:T1',
+        type: 'agent:reviewer',
+        parent: 'T1',
+        role: 'criterion',
+        status: 'rejected',
+        waivable: true,
+        findings: ['[BLOCKER] greet.txt lacks a newline'],
+      }),
+    ])
+  return {
+    ...s,
+    tickets,
+    paused: [],
+    signoffs: {},
+    pointers: { requirements: REQS, risk: RISK },
+    change: s.change && {
+      ...s.change,
+      tier: 'R1',
+      proposals: {
+        T1: {
+          action: 'waive:review:T1',
+          payload: { reason: 'the newline is not a requirement' },
+          rationale: 'The finding asks for something no requirement says.',
+          attestations: [REQS],
+          run: 'r0009',
+          record: null,
         },
-      ],
+      },
     },
   }
 }
@@ -181,10 +250,10 @@ export function attentionAtH1(): Attention {
         ...base,
         key: 'c1|H-1|gate|H-1|t',
         change: 'c1',
-        node: 'H-1',
+        ticket: 'H-1',
         kind: 'gate',
         detail: 'H-1',
-        title: 'H-1: Accept requirements & tier',
+        title: 'H-1: sign off requirements, risk',
         blocking: true,
       },
     ],
@@ -193,87 +262,12 @@ export function attentionAtH1(): Attention {
         ...base,
         key: 'c0|None|change_ended|READY|t',
         change: 'c0',
-        node: null,
+        ticket: null,
         kind: 'change_ended',
         detail: 'READY',
         title: 'Change is ready to ship',
         blocking: false,
       },
     ],
-  }
-}
-
-/** A change at H-2 (R2): the REQ-1 spec changed since it was approved. */
-export function stateAtH2(): ChangeState {
-  const s = stateAtH1()
-  const spec = 'changes/c1/plan/specs/REQ-1.md'
-  return {
-    ...s,
-    change: s.change && { ...s.change, tier: 'R2' },
-    nodes: [
-      ...s.nodes.map((n) => (n.id === 'H-1' ? { ...n, status: 'ACCEPTED' as const } : n)),
-      node({ id: 'H-2', kind: 'human', title: 'Approve spec & oracle', status: 'AWAITING_HUMAN' }),
-      node({ id: 'build:T1', kind: 'build', title: 'greet' }),
-    ],
-    h2: [
-      {
-        subject: 'REQ-1',
-        paths: [spec],
-        status: 'stale',
-        approver: 'miles',
-        approved: { [spec]: 1 },
-        latest: { [spec]: 2 },
-      },
-    ],
-  }
-}
-
-/** The traceability matrix of ``stateAtH2``. */
-export function traceAtH2(): Traceability {
-  const spec = 'changes/c1/plan/specs/REQ-1.md'
-  return {
-    built: false,
-    requirements: [
-      {
-        id: 'REQ-1',
-        text: 'greet.txt says hello',
-        spec: { path: spec, status: 'stale', approved: 1, latest: 2 },
-        tasks: ['T1'],
-        criteria: [
-          { ...CriterionTraceDefaults, id: 'AC-1', text: 'says hello', tests: [], commands: [] },
-        ],
-      },
-    ],
-    tasks: [
-      {
-        ...TaskTraceDefaults,
-        id: 'T1',
-        title: 'greet',
-        requirements: ['REQ-1'],
-        verification: ['ruff check'],
-        scaffold: false,
-        node: 'build:T1',
-        status: 'PENDING',
-        cycle: 1,
-        reviews: [],
-      },
-    ],
-    warnings: [
-      {
-        ...TraceWarningDefaults,
-        kind: 'stale',
-        message: 'plan/specs/REQ-1.md changed since miles approved v1 (now v2)',
-        requirement: 'REQ-1',
-        path: spec,
-        version: 1,
-      },
-      {
-        ...TraceWarningDefaults,
-        kind: 'unlinked_criterion',
-        message: 'AC-1 names no test or command that checks it',
-      },
-    ],
-    results: null,
-    summary: { requirements: 1, tasks: 1, criteria: 1, warnings: 2 },
   }
 }

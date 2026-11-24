@@ -19,10 +19,12 @@ before the first paint as a same-origin script for the same reason.
 
 ## Layout
 
-- `src/lib/` – the API client and types, the event streams (`streams.ts`: a change's state and a
-  run's log, pushed over server-sent events), the task graph layout and status helpers.
-- `src/components/change/` – one change: the tabs (Overview, Agents, Gates, Plan, Documents,
-  Workflow) and the sheets opened over them (a node with its decisions, an agent log, a
-  document).
+- `src/lib/` – the API client and types (`api.gen.ts` generated from the backend's models), the
+  event streams (`streams.ts`: a change's state and a run's log, pushed over server-sent
+  events), the ticket tree (`tickets.ts`) and status helpers.
+- `src/components/change/` – one change: the tabs (Tickets – the tree, the change's actions,
+  what is signed off –, Agents, Documents, Workflow) and the sheets opened over them (a ticket
+  with its decisions – a sign-off's subjects, a waiting ticket's remedies and the resolver's
+  proposal –, an agent log, a document).
 - `src/components/ui/` – shadcn/ui components, added with `bunx --bun shadcn@latest add <name>`.
 - `src/test/` – test setup (happy-dom) and fakes for `EventSource` and `fetch`.

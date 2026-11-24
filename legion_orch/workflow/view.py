@@ -13,7 +13,8 @@ from pydantic import BaseModel
 from ..config import Config
 from ..git import GitRemote
 from ..store import DocStore, DocVersion
-from .model import Change, Node, Run
+from .model import Change, Run
+from .tickets import Ticket, Tickets
 
 
 class ChangeView(Protocol):
@@ -27,10 +28,16 @@ class ChangeView(Protocol):
     def change(self) -> Change: ...
 
     @property
-    def nodes(self) -> dict[str, Node]: ...
+    def tickets(self) -> Tickets:
+        """The change's tickets (the root's pointers: the approved outputs)."""
 
     @property
     def runs(self) -> dict[str, Run]: ...
+
+    @property
+    def hooks(self) -> dict[str, Ticket]:
+        """Its side processes' tickets, outside the tree (the retrospective)."""
+        ...
 
     def p(self, rel: str) -> str:
         """Qualify a path into the change namespace (changes/<id>/...)."""
@@ -46,12 +53,6 @@ class ChangeView(Protocol):
     def write_record(self, rel: str, content: str | dict | BaseModel) -> DocVersion:
         """Write a controller-owned document (author 'controller') as a new version."""
 
-    def build_nodes(self) -> list[Node]: ...
-
-    def scaffold_node(self) -> Node | None: ...
-
-    def current(self, base: str) -> Node | None:
-        """The current fix round's node ``base`` (or the latest round's that has one)."""
 
 
 class RoleContext(ChangeView, Protocol):
@@ -61,11 +62,8 @@ class RoleContext(ChangeView, Protocol):
 
     assets: Any        # workflow.assets.Assets (roles, schemas)
 
-    def event(self, kind: str, message: str, node: str | None = None,
+    def event(self, kind: str, message: str, ticket: str | None = None,
               run: str | None = None) -> None: ...
-
-
-    def oracle_commands(self) -> list[str]: ...
 
     def stored_log(self, run_id: str) -> str:
         """A run's whole archived agent log."""

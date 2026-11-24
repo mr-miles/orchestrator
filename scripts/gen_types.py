@@ -14,15 +14,14 @@ from pydantic.json_schema import models_json_schema
 
 from legion_orch.workflow import model
 from legion_orch.workflow.attention import AttentionItem
-from legion_orch.workflow.governance.attestations import GateAttestation
 from legion_orch.workflow.results import ActionResult
-from legion_orch.workflow.traceability import Traceability
+from legion_orch.workflow.tickets import Ticket
 
 OUT = Path(__file__).resolve().parent.parent / "frontend/src/lib/api.gen.ts"
 
 # the records the UI reads (their nested records come with them)
-MODELS = [model.Change, model.Node, model.Run, model.AgentQuestion, ActionResult, AttentionItem,
-          GateAttestation, Traceability]
+MODELS = [model.Change, Ticket, model.Run, model.AgentQuestion, ActionResult, AttentionItem,
+          model.Verification, model.VerificationRun]
 # the UI's names for records named otherwise in the backend
 ALIASES = {"Risk": "RiskAssessment"}
 

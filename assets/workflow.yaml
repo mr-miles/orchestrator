@@ -1,0 +1,147 @@
+# The workflow: every change's skeleton, the risk tiers' policies, and its hooks
+# (legion_orch/workflow/tickets/spec.py; plan: ~/plans/tickets-design.md §6, §7).
+#
+# A ticket is its own work (by its type), then its subtask groups in order – a list item is one
+# ticket, or a list of tickets that run in parallel – then its criteria, in order. Sign-offs name
+# the outputs they sign (roles.yaml `outputs`; the agent's report says which documents they are),
+# resolved against the work they check – their owner, else the one producer in its subtree – and
+# `head`, the commit their owner's criteria judge. A pass moves the change's pointers to exactly
+# what was signed; tickets name the pointers they consume in `inputs`. `applies`: what a pass
+# applies – `tier` (the tickets marked with `tiers`) or a signed output that is a replan (the
+# planner's `tickets`). A ticket has its own branch if it is the root (the change's integration
+# branch), an agent's, or a grouping ticket with criteria; it merges into its nearest ancestor's.
+
+hooks:
+  on_complete: retrospective        # after any ending: passed, abandoned, failed
+  on_escalation: resolver           # proposes a replan; a human signs it off
+
+stale:                              # a finished ticket whose approved input is revised (a replan's
+  controller:provision: redo        # new design, signed off): a new instance after the revision –
+  agent:oracle: redo                # or, every type not named, it stands (builds' code is committed:
+                                    # a replan adds builds; the baseline is a snapshot before them)
+
+criteria:                           # per criterion type: may a decision owner waive a failure?
+  controller:verify: {waivable: false}
+  controller:preflight: {waivable: false}
+  controller:can-merge: {waivable: false}
+  human:signoff: {waivable: false}
+
+skeleton:
+  id: change
+  subtasks:
+    - id: workspace                 # the change's base: its workspace's hub synced first
+      type: "controller:sync"
+      goal: "the change's base: the workspace synced with its source"
+    - id: requirements
+      subtasks:
+        - id: intake
+          type: "agent:intake"
+          goal: "the requirements and the risk assessment"
+          criteria:                 # on the intake: a rejection reworks it
+            - id: H-1
+              type: "human:signoff"
+              signs: [requirements, risk]
+              applies: tier
+    - id: plan
+      subtasks:
+        - id: design
+          type: "agent:planner"
+          goal: "the spec, the oracle, the environment and the tickets"
+          inputs: [requirements, risk]
+          criteria:
+            - {id: critique, type: "agent:critic"}
+            - id: H-E1
+              type: "human:signoff"
+              signs: [spec, specs, oracle, environment, tickets]
+              applies: tickets
+        - id: provision
+          type: "controller:provision"
+          goal: "the signed-off environment, built"
+          inputs: [environment]
+        - id: scaffold              # the project's layout and tooling, before any test or build:
+          type: "agent:scaffolder"  # the planner gives it its work (`update`) – required in a
+          goal: "the project's layout and tooling, as the plan specifies"   # blank repository –
+          inputs: [spec]            # or cancels it when what is there will do
+          criteria:
+            - {id: "verify:scaffold", type: "controller:verify"}
+            - {id: "review:scaffold", type: "agent:reviewer"}
+            - {id: "can-merge:scaffold", type: "controller:can-merge"}
+        - id: acceptance
+          tiers: [R2, R3]
+          subtasks:
+            - id: oracle
+              type: "agent:oracle"
+              goal: "the acceptance tests, failing before any build"
+              inputs: [spec, specs, oracle]
+              criteria:             # on the oracle: a rejection reworks it
+                - {id: preflight, type: "controller:preflight"}   # its commands run
+                - id: H-2
+                  type: "human:signoff"
+                  signs: [tests]
+            - id: baseline
+              type: "controller:baseline"   # the oracle's commands before any build: what
+              tiers: [R3]                   # fails, as it should, and what already did
+              goal: "the baseline: what passes and fails before any build"
+              criteria:             # its sign-off: a rejection escalates (nothing to rework)
+                - id: H-2b
+                  type: "human:signoff"
+                  severity: escalate
+                  signs: [baseline]
+    - id: delivery
+      # the planner's builds; its criteria judge them together, at its head (its own branch:
+      # it merges into the change's once they pass – a failure escalates: fixes are a replan)
+      criteria:
+        - {id: "verify:delivery", type: "controller:verify"}    # the oracle's commands, at its head
+        - id: integration
+          type: "agent:integration"
+          goal: "the change, integrated: every acceptance and integration command, the real interfaces"
+          inputs: [oracle]
+    - id: evaluate
+      subtasks:
+        - id: describe
+          type: "agent:describer"
+          goal: "the pull request's description"
+          inputs: [requirements, spec]
+      criteria:
+        - id: H-3
+          type: "human:signoff"
+          signs: [head, pr]
+    - id: release
+      subtasks:
+        - {id: publish, type: "controller:publish", goal: "the change, published"}
+
+tiers:                              # rules by ticket type – never by id (ids are only names)
+  R0:
+    exists:                         # the tree contains these
+      ["agent:intake", "agent:planner", "controller:provision", "agent:integration",
+       "controller:publish"]
+    order:                          # where the planner may put builds (the skeleton orders the rest)
+      - {each: "agent:implementer", after: "controller:provision"}
+      - {each: "agent:implementer", before: "agent:integration"}
+    every:
+      - {type: "agent:implementer", criteria: ["controller:verify", "controller:can-merge"]}
+      - {type: "agent:scaffolder", criteria: ["controller:verify", "controller:can-merge"]}
+    limits: {"agent:implementer": 3, "agent:planner": 3, "agent:scaffolder": 3}
+  R1:
+    extends: R0
+    every:
+      - type: "agent:implementer"
+        criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
+      - type: "agent:scaffolder"
+        criteria: ["controller:verify", "agent:reviewer", "controller:can-merge"]
+    labels:
+      security: ["agent:security"]
+  R2:
+    extends: R1
+    exists: ["agent:oracle"]
+    order:
+      - {each: "agent:implementer", after: "agent:oracle"}        # the tests exist first
+    every:
+      - {type: "agent:oracle", criteria: ["controller:preflight", "human:signoff"]}
+  R3:
+    extends: R2
+    exists: ["controller:baseline"]
+    order:
+      - {each: "agent:implementer", after: "controller:baseline"}
+    every:
+      - {type: "controller:baseline", criteria: ["human:signoff"]}

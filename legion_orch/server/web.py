@@ -286,14 +286,6 @@ def build_app(ctl: Controller) -> Starlette:
             raise BadRequest("path and from (a version) are required")
         return views.doc_diff(ctl.docs, path, old, int_param(request, "to", None))
 
-    @api()
-    async def trace(request: Request):
-        return views.trace(ctl.get(request.path_params["cid"]))
-
-    @api()
-    async def acceptance(request: Request):
-        return await views.acceptance(ctl.get(request.path_params["cid"]))
-
     # ---- browsing: workspaces, the repository, documents, configuration
     @api()
     async def list_workspaces(_: Request):
@@ -451,9 +443,9 @@ def build_app(ctl: Controller) -> Starlette:
         return {"change": ce.cid}
 
     @api(write=True)
-    async def node_action(request: Request, body: dict):
+    async def ticket_action(request: Request, body: dict):
         ce = ctl.get(request.path_params["cid"])
-        return await ce.human_action(request.path_params["node_id"], body.get("action", ""),
+        return await ce.human_action(request.path_params["ticket_id"], body.get("action", ""),
                                      body.get("approver", ""), body.get("payload") or {})
 
     @api()
@@ -504,7 +496,7 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/digest", digest),
         Route("/api/changes", start_change, methods=["POST"]),
         Route("/api/changes/{cid}/state", state),
-        Route("/api/changes/{cid}/nodes/{node_id}/action", node_action, methods=["POST"]),
+        Route("/api/changes/{cid}/tickets/{ticket_id}/action", ticket_action, methods=["POST"]),
         Route("/api/changes/{cid}/action", change_action, methods=["POST"]),
         Route("/api/changes/{cid}/events", change_events),
         Route("/api/changes/{cid}/questions", questions),
@@ -518,8 +510,6 @@ def build_app(ctl: Controller) -> Starlette:
         Route("/api/workspaces/{ws}/git/file", git_file),
         Route("/api/config/{group}", config_files),
         Route("/api/config/{group}/file", config_file),
-        Route("/api/changes/{cid}/trace", trace),
-        Route("/api/changes/{cid}/acceptance", acceptance),
         Route("/api/runs/{run_id}/log/events", log_events),
         Route("/api/docs", docs),
         Route("/api/doc", doc),

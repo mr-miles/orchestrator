@@ -163,12 +163,11 @@ async def test_one_sync_of_a_hub_at_a_time_and_a_waiting_one_takes_its_result(tm
 
 
 @pytest.mark.anyio
-async def test_a_workspace_that_cannot_sync_escalates_and_a_retry_takes_it_up(tmp_path):
-    """The source's base branch was rewritten: the change's first step escalates with the
-    standard actions; the hub fixed by hand, a retry bases the change and intake starts."""
+async def test_a_workspace_that_cannot_sync_waits_and_a_retry_takes_it_up(tmp_path):
+    """The source's base branch was rewritten: the change's first ticket (controller:sync)
+    waits on a human – an escalation like any other –, nothing else starts; the hub fixed by
+    hand, a retry of that ticket bases the change and intake starts."""
     from engine_harness import make_source_repo
-
-    from legion_orch.workflow.model import ACCEPTED, ESCALATED, RUNNING
 
     make_source_repo(tmp_path / "src-repo")
     f = Flow(tmp_path)
@@ -178,15 +177,15 @@ async def test_a_workspace_that_cannot_sync_escalates_and_a_retry_takes_it_up(tm
     _git(src, "commit", "-q", "--amend", "-m", "init, rewritten")   # main rewritten
     f.ce = await f.ctl.start_change("Say hello", REPO)
     await f.settle()
-    ws = f.ce.nodes["workspace"]
-    assert ws.status == ESCALATED and ws.escalation.kind == "workspace_unsynced"
-    assert "was rewritten" in ws.escalation.reason and f.ce.change.base_sha is None
-    assert {"answer", "retry", "abandon"} <= set(f.ce._flow.actions("workspace"))
-    assert "intake" not in [r.node_id for r in f.ce.runs.values()]   # nothing starts
+    ws = f.ticket("workspace")
+    assert (ws.status, ws.waiting) == ("waiting", "system") and f.ce.change.base_sha is None
+    assert any("was rewritten" in x for x in ws.findings), ws.findings
+    assert any(i.kind == "escalation" and i.ticket == "workspace" for i in f.ce.attention_items)
+    assert not f.ce.runs                                      # nothing starts
     new = _git(src, "rev-parse", "HEAD")
     await f.git.git("update-ref", "refs/heads/main", new)    # the operator resets the hub
     await f.human("workspace", "retry")
-    assert f.status("workspace") == ACCEPTED and f.ce.change.base_sha == new
-    assert await f.git.integration_head(f.ce.cid) == new and f.status("intake") == RUNNING
+    assert f.status("workspace") == "passed" and f.ce.change.base_sha == new
+    assert await f.git.integration_head(f.ce.cid) == new and f.status("intake") == "working"
     assert f.ce.json_doc("control/workspace.json")["base"] == new
     await f.ctl.stop()

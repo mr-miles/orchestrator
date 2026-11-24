@@ -1,7 +1,7 @@
 """Sandboxes: the one owner of a change's sandboxes (plan: stages-and-steps.md §2, the sandbox
 layer). The sessions work executes in (:mod:`.work`) – an agent's sandbox, created or woken and
 paused after; a verifier's, created and deleted – and the commands that prepare a working copy;
-which sandboxes a node holds for rework; and retiring a sandbox – a reflection turn, then
+which sandboxes a ticket keeps for its next round; and retiring a sandbox – a reflection turn, then
 deletion. When to do which is the run policy's business (:mod:`.runs`, :mod:`.agent_runs`)."""
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from ....bus import SandboxDeleted
 from ....sandbox import (
     AGENT_PREFIX,
     VERIFIER_PREFIX,
@@ -21,16 +22,16 @@ from ....sandbox import (
     is_name_clash,
     write_payload,
 )
-from ... import governance
 from ...assets import GitMode
 from ...environment import VERIFIER
-from ...model import LIVE_RUN, Change, Node, Run, RunStage
+from ...model import LIVE_RUN, Change, Run, RunStage
 from ...setup import SETUP_COMMAND
+from ...tickets import Ticket
 from ..base.auth import VerifierGrant
 from ..base.core import ChangeCore
 from ..base.work import COMMAND, PREPARE, SETUP, Command, Script, Shell, Work
 from .answer import Answerer
-from .plan import Environments, Holds, SandboxPlan
+from .plan import Environments, SandboxPlan, held
 from .reflect import Reflector
 
 
@@ -46,7 +47,7 @@ def sandbox_env(change: Change, role: str) -> SandboxEnv | None:
 
 
 class AgentSession:
-    """An agent run's sandbox: created for the run, or the node's kept one woken and given the
+    """An agent run's sandbox: created for the run, or the ticket's kept one woken and given the
     new payload. On close the payload goes, and a sandbox kept for its session is paused."""
 
     def __init__(self, sandboxes: Sandboxes, run: Run, plan: SandboxPlan, fresh: bool,
@@ -67,12 +68,9 @@ class AgentSession:
         c, run, payload = self.sb.c, self.run, self._dir / "payload"
         if not self.fresh:
             async with contextlib.nullcontext() if self.held else self.sb.lock(run.sandbox):
-                node = c.nodes.get(run.node_id)
                 if self.sb.stopped(run.sandbox):    # kept for rework, or stopped after an A2A turn
                     await self.stage(RunStage.PREPARING, f"starting sandbox {run.sandbox}")
                     await self.sb.wake(run.sandbox)
-                    if node and node.sandbox == run.sandbox:
-                        node.sandbox_stopped = False
                 await self.stage(RunStage.LAUNCHING, f"reusing sandbox {run.sandbox}")
                 await self.sb.upload(run.sandbox, payload)
             return
@@ -117,7 +115,7 @@ class VerifierSession:
             env = sandbox_env(c.change, VERIFIER)
             policy = c.svc.write_policy(self._base / "policy.yaml", agent=False,
                                         network=env.network if env else None)
-            if stale := governance.stale_environment(c):
+            if stale := stale_environment(c):
                 raise SandboxError(stale)
             try:
                 self._ref = await c.runner.create(SandboxSpec(
@@ -150,9 +148,19 @@ class VerifierSession:
                 c.event("sandbox", f"verifier delete failed: {e}")
 
 
+def stale_environment(c: ChangeCore) -> str | None:
+    """G-E5: the provisioned environment was built from the approved spec (the ``environment``
+    pointer) – not from one a replan has since replaced."""
+    build, ref = c.change.environment, c.tickets.root.pointers.get("environment") \
+        if c.st.tickets else None
+    if build is None or ref is None or build.spec == ref:
+        return None
+    return f"G-E5: the environment was built from {build.spec}, but the approved spec is {ref}"
+
+
 class Sandboxes:
-    def __init__(self, core: ChangeCore, holds: Holds):
-        self.c, self._holds = core, holds
+    def __init__(self, core: ChangeCore):
+        self.c = core
         self.environments: Environments | None = None    # set once the provisioner exists
         self.reflector = Reflector(core, self)
         self.answerer = Answerer(core, self)     # A2A messages for steps not running
@@ -170,16 +178,15 @@ class Sandboxes:
         return self._locks.setdefault(name, asyncio.Lock())
 
     # ------------------------------------------------------------------ which are held
-    def holds(self, node: Node) -> bool:
-        """The node's producer still keeps ``node.sandbox`` for rework, as its step's sandbox
-        plan says (until a gate is accepted, or until the node is). Nothing is held once the
-        change is no longer active."""
-        if not node.sandbox or self.c.change.status != "ACTIVE":
+    def holds(self, ticket: Ticket) -> bool:
+        """The ticket still keeps ``ticket.sandbox`` for its next round (until it is closed).
+        Nothing is held once the change is no longer active."""
+        if not ticket.sandbox or self.c.change.status != "ACTIVE":
             return False
-        return self._holds.holds(node)
+        return held(ticket)
 
     def held(self) -> set[str]:
-        return {n.sandbox for n in self.c.nodes.values() if self.holds(n)}
+        return {t.sandbox for t in self.c.tickets.t.values() if self.holds(t)}
 
     # ------------------------------------------------------------------ agent sandboxes
     async def create(self, run: Run, payload: Path, policy: Path, *, push: bool,
@@ -190,17 +197,17 @@ class Sandboxes:
             try:
                 return await self.c.runner.create(SandboxSpec(
                     name=run.sandbox, payload_dir=payload, policy_file=policy, agent=True, push=push,
-                    change=self.c.cid, task=run.node_id, role=run.role, run=run.id,
+                    change=self.c.cid, task=run.ticket, role=run.role, run=run.id,
                     env=sandbox_env(self.c.change, run.role)))
             except Exception as e:
                 if not is_name_clash(e) or attempt == attempts - 1:
                     raise
                 old, run.sandbox = run.sandbox, self.c.host.new_sandbox_name(AGENT_PREFIX)
-                node = self.c.nodes.get(run.node_id)
-                if node and node.sandbox == old:
-                    node.sandbox = run.sandbox
+                ticket = self.c.ticket(run.ticket)
+                if ticket and ticket.sandbox == old:
+                    ticket.sandbox = run.sandbox
                 self.c.event("sandbox", f"name {old} is taken on the gateway; using {run.sandbox}",
-                             run.node_id, run.id)
+                             run.ticket, run.id)
         raise AssertionError("unreachable")
 
     async def wake(self, name: str) -> None:
@@ -226,17 +233,13 @@ class Sandboxes:
                 run.sandbox_deleted, run.sandbox_stopped = False, sb.stopped
             elif complete:
                 run.sandbox_deleted, run.sandbox_stopped = True, False
-        for node in c.nodes.values():
-            sb = found.get(node.sandbox or "")
-            node.sandbox_stopped = bool(sb and sb.stopped)
         for name in sorted(set(found) - known):
             c.event("cleanup", f"sandbox {name} is labelled for this change but no run of it "
                     "has it: deleting it")
             c.spawn(self.delete(name))
 
     def stopped(self, name: str) -> bool:
-        return any(r.sandbox == name and r.sandbox_stopped for r in self.c.runs.values()) \
-            or any(n.sandbox == name and n.sandbox_stopped for n in self.c.nodes.values())
+        return any(r.sandbox == name and r.sandbox_stopped for r in self.c.runs.values())
 
     # ------------------------------------------------------------------ suspending
     def suspend_when_idle(self, names: set[str]) -> None:
@@ -270,17 +273,14 @@ class Sandboxes:
             except Exception as e:
                 async with self.c.lock:
                     self.c.event("sandbox", f"could not stop {name}; it stays running: {e}",
-                                 runs[-1].node_id, runs[-1].id)
+                                 runs[-1].ticket, runs[-1].id)
                     self.c.save()
                 return
             async with self.c.lock:
                 for r in runs:
                     r.sandbox_stopped = True
-                for n in self.c.nodes.values():
-                    if n.sandbox == name:
-                        n.sandbox_stopped = True
-                self.c.event("sandbox", f"stopped {name}: its step has no work until it is "
-                             "resumed", runs[-1].node_id, runs[-1].id)
+                self.c.event("sandbox", f"stopped {name}: its ticket has no work until its next "
+                             "round", runs[-1].ticket, runs[-1].id)
                 self.c.save()
 
     async def upload(self, name: str, payload: Path) -> None:
@@ -336,14 +336,14 @@ class Sandboxes:
         return Work(VerifierSession(self, name, label), cmds, ready=ready)
 
     def _should_pause(self, run: Run) -> bool:
-        node = self.c.nodes.get(run.node_id)
-        return (node is not None and node.sandbox == run.sandbox and not node.sandbox_stopped
-                and self.holds(node)
+        ticket = self.c.ticket(run.ticket)
+        return (ticket is not None and ticket.sandbox == run.sandbox
+                and not self.stopped(run.sandbox) and self.holds(ticket)
                 and not any(r.sandbox == run.sandbox and r.status in LIVE_RUN
                             for r in self.c.runs.values()))
 
     async def pause(self, run: Run) -> None:
-        """Stop a kept sandbox until its node is reworked (best effort: if the runner cannot
+        """Stop a kept sandbox until its ticket's next round (best effort: if the runner cannot
         stop it, it stays running and is reused as it is). Under the sandbox lock, so a rework
         prepared meanwhile either finds it running (and this skips) or stopped (and starts it)."""
         async with self.lock(run.sandbox):
@@ -355,15 +355,15 @@ class Sandboxes:
             except Exception as e:
                 async with self.c.lock:
                     self.c.event("sandbox", f"could not stop {run.sandbox}; it stays running: {e}",
-                                 run.node_id, run.id)
+                                 run.ticket, run.id)
                     self.c.save()
                 return
             async with self.c.lock:
-                node = self.c.nodes.get(run.node_id)
-                if node and node.sandbox == run.sandbox:
-                    node.sandbox_stopped = True
-                    self.c.event("sandbox", f"stopped {run.sandbox} until {node.id} is reworked",
-                                 run.node_id, run.id)
+                for r in self.c.runs.values():
+                    if r.sandbox == run.sandbox:
+                        r.sandbox_stopped = True
+                self.c.event("sandbox", f"stopped {run.sandbox} until {run.ticket}'s next round",
+                             run.ticket, run.id)
                 self.c.save()
 
     # ------------------------------------------------------------------ retiring
@@ -397,9 +397,10 @@ class Sandboxes:
             for r in self.c.runs.values():
                 if r.sandbox == name:
                     r.sandbox_deleted, r.sandbox_stopped = True, False   # gone, not stopped
-            for n in self.c.nodes.values():
-                if n.sandbox == name:
-                    n.sandbox_stopped = False
+            for t in self.c.tickets.t.values():
+                if t.sandbox == name:
+                    t.sandbox = None
             self.c.event("sandbox", f"sandbox {name} deleted")
+            self.c.emit(SandboxDeleted(self.c.cid, name))
             self.c.save()
         return True

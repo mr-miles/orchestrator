@@ -3,9 +3,10 @@
   "description": "An agent run's assignment (<step records>/runs/<run>/assignment.json; the run and its step are in the path): who it is, its sandbox and git context, the session it continues, what it was given and may write, and what reproduces its prompt. Never a credential.",
   "type": "object",
   "required": [
+    "ticket",
     "role",
     "soul",
-    "cycle",
+    "attempt",
     "created_at"
   ],
   "properties": {
@@ -14,9 +15,6 @@
     },
     "soul": {
       "type": "string"
-    },
-    "cycle": {
-      "type": "integer"
     },
     "consult": {
       "type": "boolean"
@@ -36,6 +34,14 @@
         "null"
       ]
     },
-    "token": false
+    "token": false,
+    "ticket": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0
+    }
   }
 }

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A build's (or the scaffold's) work: what it builds and how it is checked (the planner's tickets.json: an added build's `work`, the `scaffold` ticket's `update`). Its id is the ticket's, its title the ticket's goal, its order the tree's.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "soul",
+    "requirements",
+    "files_modified",
+    "instructions",
+    "acceptance",
+    "verification"
+  ],
+  "properties": {
+    "soul": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^REQ-[0-9]+$"
+      },
+      "uniqueItems": true,
+      "maxItems": 50
+    },
+    "files_modified": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))(?!.*\\\\)\\S.*$"
+      },
+      "uniqueItems": true,
+      "maxItems": 50
+    },
+    "files_forbidden": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?!/)(?!.*(^|/)\\.\\.?(/|$))(?!.*\\\\)\\S.*$"
+      },
+      "maxItems": 50
+    },
+    "context": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(file:[^@\\s]+@[1-9][0-9]*|git:[^@\\s]+@[0-9a-f]{40})$"
+      },
+      "maxItems": 50
+    },
+    "instructions": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 50
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      },
+      "maxItems": 20
+    }
+  }
+}

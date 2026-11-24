@@ -15,15 +15,17 @@ from ...model import (
     R_REPORTED,
     R_STARTING,
     FailureSource,
-    Node,
     Progress,
     ReportStatus,
     Run,
     RunReport,
     RunStage,
+    TaskReply,
 )
-from ...results import Escalate, PhaseResult, ReportOutcome
+from ...results import ReportOutcome
 from ...roles import Report, handler_for
+from ...tickets import Ticket
+from ...tickets.executors import AgentEnd
 from ...view import RoleContext
 from ..base.common import WorkflowError, log
 from ..base.core import ChangeCore
@@ -39,21 +41,22 @@ class _Submitted:
     data: dict
     blocked_reason: str | None
     missing_decision: str | None
+    outputs: dict = field(default_factory=dict)
 
 
 @dataclass
 class _Admitted:
     """A report that passed phase 1, carried through the checks to the apply phase."""
     run: Run
-    node: Node
+    ticket: Ticket
     attempt: int                 # run.attempts when admitted; a change means it was superseded
     r: _Submitted
     violations: list[str] = field(default_factory=list)
 
 
-END_TURN = ("Accepted: recorded. Now end your task with a2a_reply(task_id=<your run id>, text, "
-            "state) – completed after DONE, input-required after BLOCKED – then end your turn: "
-            "the controller takes your work when it ends, and nothing you do after that counts.")
+END_TURN = ("Accepted: recorded, and your task is ended with it. Answer anything still in your "
+            "inbox (a2a_reply on each), then end your turn: the controller takes your work "
+            "when it ends, and nothing you do after that counts.")
 
 
 class Reports:
@@ -90,11 +93,11 @@ class Reports:
         if v.version == base_version:            # identical to the latest: no new version
             if v.author != run.id and v.attestation not in run.confirmed_docs:
                 run.confirmed_docs.append(v.attestation)
-            self.c.event("doc", f"{v.attestation} unchanged", run.node_id, run.id)
+            self.c.event("doc", f"{v.attestation} unchanged", run.ticket, run.id)
             return v
         run.docs_written += 1
         run.doc_bytes += size
-        self.c.event("doc", f"{v.attestation} written", run.node_id, run.id)
+        self.c.event("doc", f"{v.attestation} written", run.ticket, run.id)
         return v
 
     async def agent_write(self, run: Run, path: str, content: str, base_version: int | None,
@@ -114,7 +117,7 @@ class Reports:
             run.stage = RunStage.RUNNING
             if run.status == R_STARTING:
                 run.status = R_ACTIVE
-            self.c.event("sandbox", f"agent connected from sandbox {run.sandbox}", run.node_id, run.id)
+            self.c.event("sandbox", f"agent connected from sandbox {run.sandbox}", run.ticket, run.id)
 
     def progress(self, run: Run, message: str, percent: float | None) -> None:
         run.progress.append(Progress(message=message[:500], percent=percent))
@@ -128,7 +131,8 @@ class Reports:
 
     async def handle_report(self, run_id: str, status: str, summary: str, attestations: list[str],
                             data: dict | None, blocked_reason: str | None,
-                            missing_decision: str | None, dry_run: bool = False) -> ReportOutcome:
+                            missing_decision: str | None, dry_run: bool = False,
+                            outputs: dict | None = None) -> ReportOutcome:
         """Three phases. (1) :meth:`_admit_report`, under the controller lock: bookkeeping and
         cheap checks. (2) :meth:`_check_report`, without it: attestation resolution, git checks
         and role guards, which can be slow – reports of the same run are serialised by a per-run
@@ -141,7 +145,8 @@ class Reports:
             async with self.c.lock:
                 sub = self._admit_report(run_id, _Submitted(
                     status=status, summary=summary, attestations=attestations, data=data or {},
-                    blocked_reason=blocked_reason, missing_decision=missing_decision), dry_run)
+                    blocked_reason=blocked_reason, missing_decision=missing_decision,
+                    outputs=outputs or {}), dry_run)
             if isinstance(sub, ReportOutcome):
                 return sub
             report = await self._check_report(sub) if not sub.violations else None
@@ -154,7 +159,7 @@ class Reports:
         run, v = sub.run, sub.violations
         left = self.c.cfg.limits.max_report_attempts - run.attempts
         self.c.event("report_checked", f"dry run: {len(v)} violation(s)"
-                     + (": " + "; ".join(v)[:600] if v else ""), sub.node.id, run.id)
+                     + (": " + "; ".join(v)[:600] if v else ""), sub.ticket.id, run.id)
         return ReportOutcome(accepted=False, dry_run=True, would_accept=not v, violations=v,
                              attempts_left=max(left, 0))
 
@@ -165,12 +170,14 @@ class Reports:
         run = self.c.runs[run_id]
         if run.consult:
             return ReportOutcome.reject("this turn only answers an A2A message: your answer is "
-                                        "your final message; your work on the step comes later")
+                                        "your final message; your work on the ticket comes later")
         if run.status not in LIVE_RUN:
             return ReportOutcome.reject(f"run is {run.status}")
         if not dry_run:
             run.attempts += 1
-        sub = _Admitted(run=run, node=self.c.nodes[run.node_id], attempt=run.attempts, r=r)
+        if (ticket := self.c.ticket(run.ticket)) is None:
+            return ReportOutcome.reject(f"no ticket {run.ticket}")
+        sub = _Admitted(run=run, ticket=ticket, attempt=run.attempts, r=r)
         sub.violations = guards.report_limits(r.summary, r.attestations, r.data, r.blocked_reason,
                                               r.missing_decision)
         if not sub.violations:
@@ -200,7 +207,8 @@ class Reports:
                 sub.violations += v
                 if sub.violations or sub.r.status != ReportStatus.DONE:
                     return None
-                v, report = await self._role_guards(sub.run, sub.node, parsed, sub.r.data)
+                v, report = await self._role_guards(sub.run, sub.ticket, parsed, sub.r.data,
+                                                    sub.r.outputs)
                 sub.violations += v
                 return report
         except TimeoutError:
@@ -210,21 +218,25 @@ class Reports:
     async def _apply_report(self, sub: _Admitted, report: Report | None) -> ReportOutcome:
         """Phase 3 (lock held): reject, or record the report and run the transition. Any
         exception restores the state and escalates – never a half-applied transition."""
-        run, node, r = sub.run, sub.node, sub.r
+        run, ticket, r = sub.run, sub.ticket, sub.r
         if run.status not in LIVE_RUN or run.attempts != sub.attempt:
             return ReportOutcome.reject(f"run changed during checks ({run.status})")
         if sub.violations:
-            return self._reject_report(run, node, sub.violations)
+            return self._reject_report(run, ticket, sub.violations)
         try:
             with self.c.st.transaction():
                 run.status = R_REPORTED
                 run.ended_at = now_iso()
                 run.report = RunReport(status=r.status, summary=r.summary,
                                        attestations=r.attestations, data=r.data,
+                                       outputs=report.outputs if report else {},
                                        blocked_reason=r.blocked_reason,
                                        missing_decision=r.missing_decision, at=run.ended_at)
+                # the accepted report ends the run's task: DONE completes it, BLOCKED asks back
+                run.reply = TaskReply(state="input-required" if r.status == ReportStatus.BLOCKED
+                                      else "completed", text=r.summary[:2000], at=run.ended_at)
                 self.c.event("report", f"{run.role} reported {r.status}: {r.summary[:200]}",
-                             node.id, run.id)
+                             ticket.id, run.id)
                 # what it means is decided when the agent's turn ends (conclude)
                 self._accepted[run.id] = report
                 self.c.save()
@@ -236,60 +248,62 @@ class Reports:
             with contextlib.suppress(Exception):
                 self.c.save()
             return ReportOutcome.reject("controller error while applying the report; escalated")
-        return ReportOutcome(accepted=True, next=node.status, instruction=END_TURN)
+        return ReportOutcome(accepted=True, next=ticket.status, instruction=END_TURN)
 
-    async def conclude(self, run: Run) -> PhaseResult | None:
-        """The agent's turn ended (the lock is held). After an accepted report, its role handler
-        judges what it means – a BLOCKED report escalates; the result goes back with the run's
-        work to its phase. (Without one, the run already failed.) Any exception restores the
-        state and fails the run."""
-        node = self.c.nodes.get(run.node_id)
-        if run.status != R_REPORTED or run.concluded or node is None or run.report is None:
+    async def conclude(self, run: Run) -> AgentEnd | None:
+        """The agent's turn ended (the lock is held): after an accepted report, how the run
+        ended for its ticket – its commit, its outputs and (a judge's) the verdict its role
+        handler reads from it; a BLOCKED report is blocked on a human. (Without a report, the
+        run already failed.) Any exception fails the run (the controller's error)."""
+        ticket = self.c.ticket(run.ticket)
+        if run.status != R_REPORTED or run.concluded or ticket is None or run.report is None:
             return None
+        if run.report.status == ReportStatus.BLOCKED:
+            return AgentEnd(False, blocked=True, detail=run.report.blocked_reason or "",
+                            findings=tuple(x for x in [run.report.missing_decision] if x))
         try:
+            # what the role's report means (see workflow/roles/): all or nothing
             with self.c.st.transaction():
-                if run.report.status == ReportStatus.BLOCKED:
-                    return Escalate(
-                        "blocked", run.report.blocked_reason or "", None,  # the step resumes it
-                        run=run.id, missing_decision=run.report.missing_decision)
-                # what the role's report means (see workflow/roles/)
-                report = self._accepted.pop(run.id, None) or await self._recheck(run, node)
-                return await handler_for(run.role).on_done(self.roles, report)
+                report = self._accepted.pop(run.id, None) or await self._recheck(run, ticket)
+                said = await handler_for(run.role).on_done(self.roles, report)
+            return AgentEnd(True, sha=report.sha, verdict=said.verdict, findings=said.findings,
+                            outputs=dict(run.report.outputs))
         except Exception as e:
             log.exception("concluding run %s failed", run.id)
-            self.lifecycle.fail_run(run, f"controller error while applying the report: {e!r} "
-                                    "(external effects such as git merges may already exist)",
+            self.lifecycle.fail_run(run, f"controller error while concluding the report: {e!r}",
                                     FailureSource.CONTROLLER)
-            return self.lifecycle.escalation(run)
+            return AgentEnd(False, failure=FailureSource.CONTROLLER,
+                            detail=self.lifecycle.why_failed(run))
 
-    async def _recheck(self, run: Run, node: Node) -> Report:
+    async def _recheck(self, run: Run, ticket: Ticket) -> Report:
         """The typed report again, from the run's record (the controller restarted since it
         was accepted); raises if it no longer holds."""
         parsed, v = await attest.check_all(run.report.attestations, [self.c.workspace],
                                            self.c.docs, self.c.git)
         if not v:
-            v, report = await self._role_guards(run, node, parsed, run.report.data)
+            v, report = await self._role_guards(run, ticket, parsed, run.report.data,
+                                                run.report.outputs)
         if v or report is None:
             raise ValueError("the accepted report no longer holds: " + "; ".join(v))
         return report
 
-    def _reject_report(self, run: Run, node: Node, v: list[str]) -> ReportOutcome:
+    def _reject_report(self, run: Run, ticket: Ticket, v: list[str]) -> ReportOutcome:
         run.violations.append(v)
         left = self.c.cfg.limits.max_report_attempts - run.attempts
         self.c.event("report_rejected", f"{len(v)} violation(s): " + "; ".join(v)[:600],
-                     node.id, run.id)
+                     ticket.id, run.id)
         if left <= 0:
             self.lifecycle.fail_run(run, "G-R6: too many rejected reports", FailureSource.AGENT)
         self.c.save()
         return ReportOutcome.reject(*v, attempts_left=max(left, 0))
 
-    async def _role_guards(self, run: Run, node: Node, parsed: list[attest.Attestation],
-                           data: dict) -> tuple[list[str], Report | None]:
-        """Required documents and git (G-R4/G-R5, G-B2), then the role handler's own guards.
+    async def _role_guards(self, run: Run, ticket: Ticket, parsed: list[attest.Attestation],
+                           data: dict, outputs: dict) -> tuple[list[str], Report | None]:
+        """Its outputs and git (G-R4/G-R5, G-B2), then the role handler's own guards.
         Returns the violations and, once the generic checks pass, the typed report."""
         role = self.c.assets.roles[run.role]
-        found, v = guards.required_docs(run.id, run.required_docs, parsed, self.c.docs,
-                                        run.confirmed_docs)
+        pinned, v = guards.required_outputs(run.id, run.outputs, outputs, run.write_scope,
+                                            self.c.docs, self.c.cid, run.confirmed_docs)
         sha, vg = guards.required_git(role.git, parsed, self.c.workspace, run.judged_sha)
         v += vg
         if v:
@@ -301,9 +315,10 @@ class Reports:
                         f"(tip: {tip or 'branch not pushed'}) – push before reporting"], None
             if not await self.c.git.is_ancestor(run.base_sha, sha):
                 return [f"G-B2: {sha} does not descend from base {run.base_sha}"], None
-        if role.git == GitMode.HEAD and sha != self.c.change.integration_head:
-            return [f"G-R5: integration head moved to {self.c.change.integration_head}"], None
+        at = run.judged_sha or run.base_sha
+        if role.git == GitMode.HEAD and sha != at:
+            return [f"G-R5: attest the commit you were given, {at}"], None
 
         typed = report_data.parse(role.report_schema, data)     # schema-valid (G-R7)
-        report = Report(run=run, node=node, parsed=parsed, data=typed, docs=found, sha=sha)
+        report = Report(run=run, ticket=ticket, parsed=parsed, data=typed, outputs=pinned, sha=sha)
         return await handler_for(run.role).guards(self.roles, report), report

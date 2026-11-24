@@ -6,7 +6,7 @@ from typing import Any
 
 from ...store import DocStore
 from ..assets import GitMode
-from ..attest import Attestation
+from ..attest import FILE_RE, Attestation, normalize
 from ..model import ReportStatus
 
 MAX_TEXT = 2000
@@ -44,27 +44,43 @@ def report_shape(status: str, blocked_reason: str | None, missing_decision: str 
     return v
 
 
-def required_docs(run_id: str, required: list[str], atts: list[Attestation], docs: DocStore,
-                  confirmed: list[str] = ()) -> tuple[dict[str, Attestation], list[str]]:
-    """G-R4: each required document attested at its latest version, which this run wrote – or
-    confirmed, by writing it again unchanged (``confirmed``: those attestations)."""
-    found: dict[str, Attestation] = {}
-    v = []
-    for path in required:
-        cands = [a for a in atts if a.kind == "file" and a.path == path]
-        if not cands:
-            v.append(f"G-R4: required document {path} not attested")
+def required_outputs(run_id: str, required: list[str], outputs: dict, scope: list[str],
+                     docs: DocStore, cid: str, confirmed: list[str] = ()
+                     ) -> tuple[dict[str, str | list[str]], list[str]]:
+    """G-R4: the report names each output its role requires (``name*``: a list, possibly empty)
+    as documents (``file:<path>@<version>``) inside the run's write scope, each at its latest
+    version, which this run wrote – or confirmed, by writing it again unchanged. Returns the
+    outputs as they are pinned (fully qualified) and the violations."""
+    pinned: dict[str, str | list[str]] = {}
+    v: list[str] = []
+    wanted = {name.rstrip("*"): name.endswith("*") for name in required}
+    if extra := sorted(set(outputs) - set(wanted)):
+        v.append(f"G-R4: outputs {extra} are not this role's (it reports {sorted(wanted)})")
+    for name, many in wanted.items():
+        value = outputs.get(name, [] if many else None)
+        refs = value if isinstance(value, list) else [value] if value else []
+        if not many and len(refs) != 1:
+            v.append(f"G-R4: output {name!r} must name one document (file:<path>@<version>)")
             continue
-        att = max(cands, key=lambda a: a.version)
-        latest = docs.latest_version(path)
-        if att.version != latest:
-            v.append(f"G-R4: {att} is not the latest version (latest {latest})")
-            continue
-        if docs.read(path, att.version).author != run_id and str(att) not in confirmed:
-            v.append(f"G-R4: {att} was not written by this run")
-            continue
-        found[path] = att
-    return found, v
+        good = []
+        for ref in refs:
+            ref = normalize(str(ref), cid)
+            m = FILE_RE.match(ref)
+            if not m:
+                v.append(f"G-R4: output {name!r}: {ref} is not a document (file:<path>@<version>)")
+                continue
+            path, version = m["path"], int(m["version"])
+            if not any(path.startswith(w) for w in scope):
+                v.append(f"G-R4: output {name!r}: {path} is outside your write scope")
+            elif version != (latest := docs.latest_version(path)):
+                v.append(f"G-R4: output {name!r}: {ref} is not the latest version (latest {latest})")
+            elif docs.read(path, version).author != run_id and ref not in confirmed:
+                v.append(f"G-R4: output {name!r}: {ref} was not written by this run")
+            else:
+                good.append(ref)
+        if len(good) == len(refs):
+            pinned[name] = good if many else good[0]
+    return pinned, v
 
 
 def required_git(mode: GitMode, atts: list[Attestation], repo: str,

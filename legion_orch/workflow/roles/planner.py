@@ -1,87 +1,91 @@
-"""planner: spec, delta specs, oracle and task graph (G-P1..G-P11) and, with the environment
-stage configured, the sandbox environment spec composed from the library (G-E1..G-E4)."""
+"""planner: the spec, its delta specs, the oracle, the sandbox environment and the tickets – the
+first replan, signed off at H-E1 (G-P1..G-P12 on the tickets' builds, G-E1..G-E4)."""
 from __future__ import annotations
 
-from .. import governance, guards
+import json
+
+from .. import guards
 from ..assets import GitMode
 from ..environment import EnvironmentSpec, Library, LibraryError
-from ..model import Node
-from ..results import Ok, PhaseResult
+from ..tickets import Ticket
+from ..tickets.plan_doc import depends, parse_plan
 from ..view import RoleContext
-from .base import Report, RoleHandler, fix_round_note, register, scaffold_note
+from .base import Report, RoleHandler, output, protected, register, requirement_ids
 
-NO_ENVIRONMENT = ("No sandbox environment stage is configured: do not write `{spec}`; "
-                  "every sandbox uses the default image.")
+SCAFFOLD = "scaffold"            # the skeleton's scaffold ticket (workflow.yaml)
+SCAFFOLD_BLANK = ("**The repository is blank.** Give `scaffold` its work (G-P11): the project's "
+                  "layout, manifest, build, lint and test tooling and their configuration, and a "
+                  "placeholder entry point – none of the requirements' behaviour – fixing every "
+                  "choice the acceptance tests depend on; its verification passes without them.")
+SCAFFOLD_CODE = ("The repository has code. Give `scaffold` its work only if the layout or "
+                 "tooling must change before the tests and builds rely on it (a test runner, a "
+                 "restructure); otherwise cancel it (G-P11).")
+
+NO_ENVIRONMENT = ("No sandbox environment stage is configured: every sandbox uses the default "
+                  "image. Your `environment` output is still required: write "
+                  "`{\"summary\": \"the default image\", \"profiles\": {\"default\": {\"tools\": []}}, "
+                  "\"roles\": {}, \"rationale\": \"no environment stage\"}`.")
 
 
 @register
 class Planner(RoleHandler):
     roles = ("planner",)
-    sees_oracle_commit = False
 
-    def extra_context(self, e: RoleContext, node: Node) -> list[str]:
-        """In a fix round: the round record and the integration failure (the approved plan
-        documents are the common context)."""
-        rnd = e.change.rounds[-1] if node.round > 1 and e.change.rounds else None
-        return [a for a in ([rnd.attestation, *rnd.failure] if rnd else []) if a]
-
-    def extra_variables(self, e: RoleContext, node: Node) -> dict[str, str]:
+    def extra_variables(self, e: RoleContext, ticket: Ticket) -> dict[str, str]:
         """The environment part of the assignment: the library catalogue (an invalid library is
-        reported, not raised: the spec is then rejected by G-E1 until an operator fixes it);
-        in a fix round, what the round asks."""
-        return self._environment_vars(e, node) | {"fix_round": fix_round_note(e, "planner"),
-                                            "scaffold": scaffold_note(e, "planner")}
-
-    def _environment_vars(self, e: RoleContext, node: Node) -> dict[str, str]:
-        spec = governance.env_spec(e, node.id)          # its own plan's
+        reported, not raised: the spec is then rejected by G-E1 until an operator fixes it)."""
+        scaffold = SCAFFOLD_BLANK if e.change.blank_repo else SCAFFOLD_CODE
         if e.cfg.environment is None:
-            return {"environment": NO_ENVIRONMENT.format(spec=spec)}
+            return {"environment": NO_ENVIRONMENT, "scaffold": scaffold}
         try:
             catalogue = Library.for_config(e.cfg, e.assets.schemas).catalogue()
         except LibraryError as x:
             catalogue = f"(the library is invalid; an operator must fix it: {x})"
-        return {"environment": f"Also attest `{spec}` (required), following the sandbox "
-                               "environment skill; on a rework, rewrite it only if the plan's "
-                               f"needs changed. The library:\n\n{catalogue}"}
+        return {"environment": "Your `environment` output follows the sandbox environment "
+                               "skill; on a rework, rewrite it only if the plan's needs changed. "
+                               f"The library:\n\n{catalogue}", "scaffold": scaffold}
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
-        d = r.node.id                                   # its own plan's documents
-        tg, e1 = guards.load_json(e.docs, r.docs[e.p(f"{d}/taskgraph.json")], "G-P1")
-        orc, e2 = guards.load_json(e.docs, r.docs[e.p(f"{d}/oracle.json")], "G-P1")
-        if e1 or e2:
-            return e1 + e2
+        try:
+            plan_data = json.loads(output(e, r, "tickets") or "")
+            orc = json.loads(output(e, r, "oracle") or "")
+        except ValueError as x:
+            return [f"G-P1: an output is not JSON: {x}"]
+        plan, v = parse_plan(plan_data)
+        if v:
+            return [f"G-P1: tickets: {x}" for x in v]
+        # each ticket's work fits its role (the work schema – path shapes included), as its
+        # sign-off checks again before applying it
+        scaffold = plan.update.get(SCAFFOLD, {}).get("work")
+        v = [f"G-P1: {x}" for a in plan.add for x in e.assets.work_problems(a.ticket)]
+        if scaffold is not None:
+            v += [f"G-P1: {x}" for x in e.assets.work_problems(
+                Ticket(id=SCAFFOLD, type="agent:scaffolder", work=scaffold))]
+        if v:
+            return v
+        after = depends(plan)
+        builds = [a.ticket for a in plan.add if a.ticket.type == "agent:implementer"]
+        tasks = [{"id": b.id, "title": b.goal or b.id, "depends_on": after.get(b.id, []), **b.work}
+                 for b in builds]
+        decision = "none" if (scaffold is not None) == (SCAFFOLD in plan.cancel) \
+            else "work" if scaffold is not None else "cancel"
+        sk = e.tickets.t.get(SCAFFOLD)               # decided already (a revised design): moot
+        v = guards.scaffold(decision, e.change.blank_repo) \
+            if sk is not None and sk.status == "pending" else []
         souls = e.assets.roles["implementer"].souls_allowed
-        if r.node.round > 1:          # a fix round appends to the task graph (G-FR1, G-FR2)
-            built = {b.task.id: b.task.model_dump(mode="json") for b in e.build_nodes()
-                     if b.round < r.node.round}           # earlier rounds' (this one's is redone)
-            v = guards.fix_round(tg, orc, e.change.requirements, e.change.tier,
-                                 e.cfg.protected_paths + governance.setup_paths(e), souls,
-                                 e.docs.schemas, built)
-        else:
-            v = guards.plan(tg, orc, e.change.requirements, e.change.tier,
-                            e.cfg.protected_paths + governance.setup_paths(e),
-                            souls, e.docs.schemas, blank_repo=e.change.blank_repo)
-        _, vs = guards.required_docs(r.run.id, [e.p(governance.spec_doc(e, q, d))
-                                                for q in e.change.requirements],
-                                     r.parsed, e.docs, r.run.confirmed_docs)
-        return v + [x.replace("G-R4", "G-P9") for x in vs] + self._environment(e, r)
+        if tasks or scaffold:
+            v += guards.plan({"tasks": tasks}, orc, requirement_ids(e), e.change.tier or "R0",
+                             protected(e, orc), souls, e.docs.schemas, scaffold_work=scaffold)
+        return v + self._environment(e, r)
 
     def _environment(self, e: RoleContext, r: Report) -> list[str]:
-        """G-E1..G-E4 on the environment spec, when the stage is configured. The report attests
-        its latest version, which a rework may leave as an earlier run wrote it."""
+        """G-E1..G-E4 on the environment spec, when the stage is configured."""
         if e.cfg.environment is None:
             return []
-        spec = governance.env_spec(e, r.node.id)
-        path = e.p(spec)
-        att = max((a for a in r.parsed if a.kind == "file" and a.path == path),
-                  key=lambda a: a.version, default=None)
-        if att is None:
-            return [f"G-E1: {path} not attested (required with the environment stage)"]
-        if att.version != e.latest(spec):
-            return [f"G-E1: {att} is not the latest version ({e.latest(spec)})"]
-        raw, err = guards.load_json(e.docs, att, "G-E1")
-        if err:
-            return err
+        try:
+            raw = json.loads(output(e, r, "environment") or "")
+        except ValueError as x:
+            return [f"G-E1: environment is not JSON: {x}"]
         try:
             lib = Library.for_config(e.cfg, e.assets.schemas)
         except LibraryError as x:
@@ -89,8 +93,3 @@ class Planner(RoleHandler):
         _, v = guards.environment(EnvironmentSpec.model_validate(raw), lib, e.cfg, set(e.assets.roles),
                                   {n for n, r in e.assets.roles.items() if r.git != GitMode.NONE})
         return v
-
-    async def on_done(self, e: RoleContext, r: Report) -> PhaseResult:
-        """The plan is critiqued next (its step's panel phase: the critic); it is accepted when
-        the critic passes it."""
-        return Ok()

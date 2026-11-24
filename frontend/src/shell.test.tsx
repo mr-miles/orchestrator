@@ -48,8 +48,8 @@ const MORE: ChangeSummary[] = [
     status: 'READY',
     tier: 'R1',
     created_at: '2025-12-01',
-    accepted: 4,
-    nodes: 4,
+    passed: 4,
+    tickets: 4,
     live_runs: 0,
   },
 ]
@@ -159,7 +159,7 @@ describe('the shell', () => {
         .getAttribute('aria-current'),
     ).toBe('page')
     const needs = screen.getByRole('list', { name: 'Needs you' })
-    expect(within(needs).getByText('H-1: Accept requirements & tier')).toBeTruthy()
+    expect(within(needs).getByText('H-1: sign off requirements, risk')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: 'Mark all read' }))
     expect(JSON.parse(localStorage.getItem('inbox-read') ?? '[]')).toEqual([
       'c0|None|change_ended|READY|t',
@@ -182,7 +182,7 @@ describe('the shell', () => {
       '#/work',
     )
     expect(within(crumbs).getByRole('link', { name: 'Demo' }).getAttribute('href')).toBe('#/ws/app')
-    expect(await screen.findByRole('tab', { name: /Overview/ })).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /Tickets/ })).toBeTruthy()
   })
 
   test('a workspace browses its document store, with copy and download', async () => {

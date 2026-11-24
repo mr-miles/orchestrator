@@ -1,6 +1,6 @@
 """What is recorded for a retrospective (whole timestamped logs, digests, template values, asset
-hashes, the timeline), agents' reflections before their sandbox goes, and the on-demand
-retrospective of an ended change."""
+hashes, the timeline), agents' reflections before their sandbox goes, and the retrospective –
+the workflow's on-complete process – of an ended change."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +16,7 @@ from legion_orch.sandbox.runner import spawn_logged, stamp
 from legion_orch.workflow.assets import Assets
 from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.engine.services.runs import RunLifecycle, split_lines
-from legion_orch.workflow.model import ACCEPTED, ChangeStatus, Run
+from legion_orch.workflow.model import ChangeStatus, Run
 
 
 def say(f: Flow, run: Run, *events: dict) -> None:
@@ -86,10 +86,11 @@ def test_digest_summarises_tools_errors_repeats_and_timing():
 def test_a_prompt_is_checked_against_the_current_asset_files(tmp_path):
     shutil.copytree(ROOT / "assets", tmp_path / "assets")
     a = Assets(tmp_path / "assets")
-    values = {v: "x" for v in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha", "oracle_sha",
-                               "branch", "task_id", "task_title", "task_json", "cycle", "role",
-                               "context_refs", "feedback", "candidate_sha", "write_scope",
-                               "required_docs", "workdir", "task_soul", "environment", "plan", "step")}
+    values = {v: "x" for v in ("change_id", "goal", "tier", "repo_name", "base_sha", "head_sha",
+                               "oracle_sha", "change_base_sha", "branch", "ticket_id",
+                               "ticket_goal", "work_json", "attempt", "role", "context_refs",
+                               "findings", "judged_sha", "write_scope", "outputs", "workdir",
+                               "sandbox_tools", "task_soul", "environment", "scaffold")}
     pin, recorded = a.render_role("release", values).pin, a.manifest()
     assert a.check_prompt("release", values, pin, recorded) == {"status": "exact", "changed": []}
     soul = tmp_path / "assets/souls/release-planner.md"
@@ -110,7 +111,7 @@ async def test_a_run_keeps_its_whole_log_digest_values_and_session(f: Flow):
         await f.intake()
     finally:
         RunLifecycle.PART_BYTES = saved
-    assert f.ce.latest(f"control/logs/{intake.id}.2.log")                 # stored in parts
+    assert f.ce.latest(f"control/runs/{intake.id}/log.2")                 # stored in parts
     assert f.ce.stored_log(intake.id) == whole
     assert f.ce.log_tail(intake.id, 1) == whole.splitlines()[-1]
     digest = f.ce.json_doc(f"control/digests/{intake.id}.json")
@@ -121,18 +122,22 @@ async def test_a_run_keeps_its_whole_log_digest_values_and_session(f: Flow):
     assert f.ce.json_doc(f"control/assets/{sha}.json")["files"]["souls/intake-analyst.md"]
     assert f.ce.assets.check_prompt("intake", intake.template_vars, intake.prompt_pin)["status"] == "exact"
     kinds = [json.loads(line)["kind"] for line in f.ce.timeline().splitlines()]
-    assert "dispatch" in kinds and "human" in kinds
+    assert "dispatch" in kinds and "signoff" in kinds
+
+
+async def to_critique(f: Flow) -> Run:
+    await f.intake()
+    await f.signoff("H-1")
+    return f.run("design")
 
 
 @scenario()
 async def test_a_rework_records_the_session_it_resumed(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    first = f.run("plan")
+    first = await to_critique(f)
     say(f, first, init("plan-session"))
     await f.plan()
     await f.critique("REWORK")
-    second = f.run("plan")
+    second = f.run("design")
     assert (second.resumed_from, second.resumed_session) == (first.id, "plan-session")
 
 
@@ -140,14 +145,12 @@ async def test_a_rework_records_the_session_it_resumed(f: Flow):
 @scenario()
 async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
     f.cfg.retrospective.reflect = True
-    await f.intake()
-    await f.human("H-1", "accept")
-    plan = f.run("plan")
+    plan = await to_critique(f)
     say(f, plan, init("plan-session"))
     await f.plan()
     await f.critique("PASS")
     assert not f.runner.reflected                        # still kept: H-E1 can send it back
-    await f.human("H-E1", "approve")
+    await f.signoff("H-E1")
     await f.settle()
     (sb, prompt), = [x for x in f.runner.reflected if x[0] == plan.sandbox]
     assert "Your only tool in this turn is the Skill tool" in prompt and "## Time sinks" in prompt
@@ -162,7 +165,7 @@ async def test_an_agent_reflects_before_its_kept_sandbox_is_deleted(f: Flow):
     work = next(e for e in f.runner.run_envs if "LEGION_RUN_ID=" + plan.id + "\n" in e)
     assert "--tools" not in work                         # the work run keeps them
     doc = f.ce.doc(f"control/reflections/{plan.id}.md").content
-    assert doc.startswith("# Reflection: planner on plan") and "The tests took long." in doc
+    assert doc.startswith("# Reflection: planner on design") and "The tests took long." in doc
     assert sb in f.runner.deleted
 
 
@@ -171,16 +174,14 @@ async def test_the_planner_reflects_once_h_e1_approves_its_plan_and_environment(
     """The planner's sandbox is kept until H-E1 approves the plan (with its environment); then
     it reflects as usual – provisioning, which maps the build roles, does not touch it."""
     f.cfg.retrospective.reflect = True
-    await f.intake()
-    await f.human("H-1", "accept")
-    plan = f.run("plan")
+    plan = await to_critique(f)
     say(f, plan, init("plan-session"))
     await f.plan()
     await f.critique("PASS")
-    assert f.ce.nodes["plan"].sandbox == plan.sandbox and not f.runner.reflected
-    await f.human("H-E1", "approve")
+    assert f.ticket("design").sandbox == plan.sandbox and not f.runner.reflected
+    await f.signoff("H-E1")
     await f.settle()
-    assert f.status("provision") == "ACCEPTED", f.status()
+    assert f.status("provision") == "passed", f.status()
     assert "planner" not in f.ce.change.environment.roles
     assert [sb for sb, _ in f.runner.reflected] == [plan.sandbox]
     assert plan.sandbox in f.runner.restarted          # started again to reflect
@@ -191,15 +192,14 @@ async def test_the_planner_reflects_once_h_e1_approves_its_plan_and_environment(
 @scenario()
 async def test_an_implementer_reflects_on_the_findings_against_its_work(f: Flow):
     f.cfg.retrospective.reflect = True
-    await f.to_build("R1")
-    first = f.run("build:T1", "implementer")
+    await f.to_build()
+    first = f.run("T1", "implementer")
     say(f, first, init("impl-session"))
     await f.implement()
     await f.review(verdict="FAIL", title="greeting lacks a newline")
-    second = f.run("build:T1", "implementer")
+    second = f.run("T1", "implementer")
     say(f, second, init("impl-session"))
-    await f.implement()
-    await f.review(verdict="PASS")
+    await f.to_end_from_build()
     await f.settle()
     assert f.ce.change.status == ChangeStatus.READY
     prompt = next(p for sb, p in f.runner.reflected if sb == first.sandbox)
@@ -210,11 +210,10 @@ async def test_an_implementer_reflects_on_the_findings_against_its_work(f: Flow)
 @scenario()
 async def test_an_implementer_without_findings_is_not_asked_about_them(f: Flow):
     f.cfg.retrospective.reflect = True
-    await f.to_build("R1")
-    impl = f.run("build:T1", "implementer")
+    await f.to_build()
+    impl = f.run("T1", "implementer")
     say(f, impl, init("impl-1"))
-    await f.implement()
-    await f.review(verdict="PASS")
+    await f.to_end_from_build()
     await f.settle()
     (_, prompt), = [x for x in f.runner.reflected if x[0] == impl.sandbox]
     assert "No reviewer, verification or human finding was raised" in prompt
@@ -227,11 +226,10 @@ async def test_a_resume_that_does_not_take_is_flagged(f: Flow):
     says so and the timeline notes it."""
     f.cfg.retrospective.reflect = True
     f.runner.reflection_session = "fresh-session"
-    await f.to_build("R1")
-    impl = f.run("build:T1", "implementer")
+    await f.to_build()
+    impl = f.run("T1", "implementer")
     say(f, impl, init("impl-1"))
-    await f.implement()
-    await f.review(verdict="PASS")
+    await f.to_end_from_build()
     await f.settle()
     doc = f.ce.doc(f"control/reflections/{impl.id}.md").content
     assert "> The agent did not resume session impl-1: it ran in a new one (fresh-session)" in doc
@@ -240,13 +238,11 @@ async def test_a_resume_that_does_not_take_is_flagged(f: Flow):
 
 @scenario()
 async def test_a_rework_that_does_not_continue_its_session_is_noted(f: Flow):
-    await f.intake()
-    await f.human("H-1", "accept")
-    first = f.run("plan")
+    first = await to_critique(f)
     say(f, first, init("plan-1"))
     await f.plan()
     await f.critique("REWORK")
-    second = f.run("plan")
+    second = f.run("design")
     assert second.id != first.id and second.resumed_session == "plan-1"
     say(f, second, init("plan-2"))
     await f.plan()
@@ -258,11 +254,10 @@ async def test_a_rework_that_does_not_continue_its_session_is_noted(f: Flow):
 async def test_an_empty_answer_is_no_reflection(f: Flow):
     f.cfg.retrospective.reflect = True
     f.runner.reflection_text = "  \n"
-    await f.to_build("R1")
-    impl = f.run("build:T1", "implementer")
+    await f.to_build()
+    impl = f.run("T1", "implementer")
     say(f, impl, init("impl-1"))
-    await f.implement()
-    await f.review(verdict="PASS")
+    await f.to_end_from_build()
     await f.settle()
     assert not f.ce.latest(f"control/reflections/{impl.id}.md")
     assert f"no reflection from run {impl.id}" in f.ce.timeline()
@@ -271,106 +266,122 @@ async def test_an_empty_answer_is_no_reflection(f: Flow):
 @scenario()
 async def test_no_reflection_without_a_session_or_when_turned_off(f: Flow):
     await f.intake()                                     # reflect is off in the harness
-    await f.human("H-1", "accept")
+    await f.signoff("H-1")
     f.cfg.retrospective.reflect = True
-    plan = f.run("plan")
+    plan = f.run("design")
     await f.plan()                                       # no session id in its log
     await f.critique("PASS")
-    await f.human("H-E1", "approve")
+    await f.signoff("H-E1")
     await f.settle()
     assert not f.runner.reflected and plan.sandbox in f.runner.deleted
     assert f"sandbox {plan.sandbox}: no agent session recorded" in f.ce.timeline()
 
 
 # ---------------------------------------------------------------------------- retrospective
+async def report_retro(f: Flow, run: Run):
+    doc = await f.write(run, "report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
+    return await f.report(run, [doc], outputs={"report": doc})
+
+
 @scenario()
 async def test_a_retrospective_runs_on_demand_once_the_change_has_ended(f: Flow):
     with pytest.raises(WorkflowError, match="ended change"):
         await f.change_action("retrospective")
-    await f.to_build("R1")
-    impl = f.run("build:T1", "implementer")
+    await f.to_build()
+    impl = f.run("T1", "implementer")
     say(f, impl, init("impl"), tool("t", "Bash", {"command": "make"}, "2026-01-01T00:00:00.000Z"))
-    await f.implement()
-    await f.review(verdict="PASS")
-    assert f.ce.change.status == ChangeStatus.READY and "retrospective" not in f.ce.nodes
+    await f.to_end_from_build()
+    assert f.ce.change.status == ChangeStatus.READY and not f.runs("retrospective")
     await f.change_action("retrospective", focus="why was the build slow?")
+    await f.settle()
     run = f.run("retrospective")
     files = f.runner.payloads[run.sandbox]
-    for rel in ("README.md", "runs.json", "nodes.json", "timeline.jsonl", "prompt-check.json",
-                f"logs/{impl.id}.log", f"digests/{impl.id}.json", "docs/plan/taskgraph.json",
+    for rel in ("README.md", "runs.json", "tickets.json", "timeline.jsonl", "prompt-check.json",
+                f"logs/{impl.id}.log", f"digests/{impl.id}.json", "docs/tickets/design/tickets.json",
                 "assets/roles.yaml", "assets/souls/retrospective-analyst.md"):
         assert f"retro/{rel}" in files, rel
-    assert not any(k.startswith("retro/docs/control/logs/") for k in files)
+    assert not any(k.startswith("retro/docs/control/runs/") for k in files)
     assert json.loads(files["retro/prompt-check.json"])[impl.id]["status"] == "exact"
     assert "why was the build slow?" in run.instructions      # its task's first message
     assert "inbox()" in files["prompt.md"]
     with pytest.raises(WorkflowError, match="already"):
         await f.change_action("retrospective")
-    doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
-    out = await f.report(run, [doc])
-    assert out.accepted and f.status("retrospective") == ACCEPTED
-    assert f.ce.change.status == ChangeStatus.READY                  # the verdict is unchanged
-    await f.change_action("retrospective")                           # again: a new cycle
-    assert f.ce.nodes["retrospective"].cycle == 2 and f.run("retrospective").id != run.id
+    out = await report_retro(f, run)
+    assert out.accepted and f.status("retrospective") == "passed"
+    assert f.ce.change.status == ChangeStatus.READY and f.ce.change.completed
+    await f.change_action("retrospective")                           # again: another attempt
+    await f.settle()
+    assert f.ticket("retrospective").attempt == 2 and f.run("retrospective").id != run.id
 
 
 @scenario()
 async def test_the_review_ledger_shows_when_each_finding_was_first_raised(f: Flow):
-    f.cfg.retrospective.reflect = True
-    await f.to_build("R1")
-    for cycle, (verdict, title) in enumerate([("FAIL", "no newline"), ("FAIL", "wrong greeting"),
-                                              ("PASS", "")], start=1):
+    await f.to_build()
+    for verdict, title in [("FAIL", "no newline"), ("FAIL", "wrong greeting")]:
         await f.implement()
-        rev = f.run("build:T1", "reviewer")
-        say(f, rev, init(f"review-{cycle}"))                 # judges do not reflect by default
         await f.review(verdict=verdict, title=title)
+    await f.to_end_from_build()
     assert f.ce.change.status == ChangeStatus.READY
-    assert not any(sb == rev.sandbox for sb, _ in f.runner.reflected)
     await f.change_action("retrospective")
+    await f.settle()
     ledger = json.loads(f.runner.payloads[f.run("retrospective").sandbox]["retro/findings.json"])
-    t1 = ledger["tasks"]["T1"]
-    assert [c["verdicts"] for c in t1["candidates"]] == [{"reviewer": "FAIL"}, {"reviewer": "FAIL"},
-                                                         {"reviewer": "PASS"}]
-    assert all(c["verification"]["ok"] and c["sha"] for c in t1["candidates"])
+    t1 = ledger["tickets"]["T1"]
+    assert [r["verdicts"] for r in t1["rounds"]] == [
+        {"review:T1": "FAIL"}, {"review:T1": "FAIL"}, {"review:T1": "PASS"}]
+    assert all(r["sha"] for r in t1["rounds"])
     late = next(x for x in t1["findings"] if x["title"] == "wrong greeting")
-    assert late["first_raised_cycle"] == 2 and late["raised_in_cycles"] == [2]
-    assert late["earlier_reviews"] == [{"cycle": 1, "sha": t1["candidates"][0]["sha"],
-                                        "verdict": "FAIL"}]      # a possible escape in cycle 1
-    assert ledger["critique"] and ledger["critique"][0]["verdict"] == "PASS"
+    assert (late["first_round"], late["rounds"]) == (2, [2])         # an escape in round 1?
+    assert ledger["tickets"]["design"]["rounds"][0]["verdicts"] == {"critique": "PASS"}
 
 
 @scenario()
 async def test_the_retrospective_starts_by_itself_once_reflections_are_done(f: Flow):
     assert type(f.cfg.retrospective)().auto                  # the default
     f.cfg.retrospective.auto = True
-    await f.to_build("R1")
-    await f.implement()
-    f.ce._sandboxes.reflector.pending.add("still-reflecting")
-    await f.review(verdict="PASS")
-    assert f.ce.change.status == ChangeStatus.READY
-    assert f.status("retrospective") == "READY" and not f.runs("retrospective")   # waits
-    f.ce._sandboxes.reflector.pending.clear()
+    await f.to_build()
+    reflector = f.ce._sandboxes.reflector
+    reflector.pending.add("still-reflecting")
+    await f.to_end_from_build()
+    await f.settle()
+    assert f.ce.change.status == ChangeStatus.READY and not f.ce.change.completed
+    assert f.status("retrospective") == "working" and not f.runs("retrospective")   # waits
+    reflector.pending.clear()
     f.ce.notify()                                            # as a finished reflection does
     await f.settle()
-    run = f.run("retrospective")
-    doc = await f.write(run, "retro/report.md", "# Retrospective\n\n## Summary\n\nFine.\n")
-    await f.report(run, [doc])
-    assert f.status("retrospective") == ACCEPTED and len(f.runs("retrospective")) == 1
+    await report_retro(f, f.run("retrospective"))
+    assert f.status("retrospective") == "passed" and len(f.runs("retrospective")) == 1
+    assert f.ce.change.completed and f.ce.change.cleaned_at          # then cleaned up
+
+
+@scenario()
+async def test_a_restart_runs_the_retrospective_again_at_the_same_attempt(f: Flow):
+    f.cfg.retrospective.auto = True
+    await f.to_end()
+    await f.settle()
+    first = f.run("retrospective")
+    ctl, ce = await f.restart(recover=True)
+    f.ctl, f.ce = ctl, ce
+    await f.settle()
+    again = f.run("retrospective")
+    assert again.id != first.id and f.ticket("retrospective").attempt == 1
+    await report_retro(f, again)
+    assert f.ce.change.completed
 
 
 # ---------------------------------------------------------------------------- abandoning
 @scenario()
 async def test_abandoning_records_the_reason_and_runs_the_retrospective(f: Flow):
     """Abandoned early (at intake): the reason is recorded, and the retrospective runs on what
-    exists so far although retrospectives do not run automatically here."""
-    assert not f.cfg.retrospective.auto
+    exists so far."""
+    f.cfg.retrospective.auto = True
     r = f.run("intake")
     await f.report(r, [], status="BLOCKED",
                    blocked_reason="the goal is unclear", missing_decision="which game?")
-    assert f.status("intake") == "ESCALATED"
-    res = await f.human("intake", "abandon", reason="wrong goal: we wanted chess, not Connect 4")
+    assert f.status("intake") == "waiting"
+    await f.change_action("abandon", reason="wrong goal: we wanted chess, not Connect 4")
+    await f.settle()
     ch = f.ce.change
-    assert ch.status == ChangeStatus.ABANDONED and res.attestation == ch.ended.attestation
+    assert ch.status == ChangeStatus.ABANDONED
     assert (ch.ended.by, ch.ended.node, ch.ended.action) == ("miles", "intake", "abandon")
     assert ch.ended.reason == "wrong goal: we wanted chess, not Connect 4"
     assert f.ce.json_doc("control/ended.json")["reason"] == ch.ended.reason
@@ -382,22 +393,11 @@ async def test_abandoning_records_the_reason_and_runs_the_retrospective(f: Flow)
 
 
 @scenario()
-async def test_abandoning_can_skip_the_retrospective_and_h3_reject_records_its_reason(f: Flow):
+async def test_abandoning_can_skip_the_retrospective(f: Flow):
+    f.cfg.retrospective.auto = True
     r = f.run("intake")
     await f.report(r, [], status="BLOCKED", blocked_reason="x", missing_decision="y")
-    await f.human("intake", "abandon", retrospective=False)
-    assert f.ce.change.ended.reason is None and "retrospective" not in f.ce.nodes
-    assert "(no reason given)" in f.ce.timeline()
-
-
-@scenario()
-async def test_rejecting_at_h3_records_why(f: Flow):
-    await f.to_build(tier="R2")
-    await f.implement()
-    await f.review()
-    await f.integration()
-    await f.human("H-3", "reject", reason="the UI is not what we asked for")
-    ch = f.ce.change
-    assert ch.status == ChangeStatus.ABANDONED and ch.ended.action == "reject"
-    assert ch.ended.node == "H-3" and ch.ended.reason == "the UI is not what we asked for"
-    assert f.status("retrospective") in ("READY", "RUNNING")
+    await f.change_action("abandon", retrospective=False)
+    await f.settle()
+    assert f.ce.change.ended.reason is None and not f.runs("retrospective")
+    assert f.ce.change.completed and "(no reason given)" in f.ce.timeline()
