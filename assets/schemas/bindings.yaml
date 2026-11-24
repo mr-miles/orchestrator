@@ -8,6 +8,9 @@
 - {pattern: "tickets/*/questions.md", schema: questions}
 - {pattern: "tickets/*/spec.md", schema: markdown}
 - {pattern: "tickets/*/specs/REQ-*.md", schema: delta-spec}
+- {pattern: "tickets/*/findings.json", schema: findings}
+- {pattern: "tickets/*/findings-review.json", schema: findings-review}
+- {pattern: "tickets/*/selection.json", schema: selection}
 - {pattern: "tickets/*/oracle.json", schema: oracle}
 - {pattern: "tickets/*/environment.json", schema: environment}
 - {pattern: "tickets/*/evidence*.md", schema: evidence}
