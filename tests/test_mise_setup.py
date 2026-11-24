@@ -148,6 +148,29 @@ async def test_a_setup_that_fails_at_provision_makes_it_wait(tmp_path):
         await f.stop()
 
 
+@pytest.mark.anyio
+async def test_a_plan_keeping_the_repositorys_mise_toml_must_install_its_pinned_tools(tmp_path):
+    """The planner proposes no mise.toml, so the repository's runs; it pins uv 0.13 and the
+    environment's unpinned uv is the library's 0.9: the plan is refused (G-E8) until it pins
+    uv@0.13 – before, the setup tried to download 0.13 in a sandbox that reaches no host."""
+    make_source_repo(tmp_path / "src-repo", {"mise.toml": '[tools]\npython = "3.12"\nuv = "0.13"\n'})
+    f = await Flow.create(tmp_path, environment={})
+    try:
+        await f.intake()
+        await f.signoff("H-1")
+        out = await f.plan(environment=ENVIRONMENT)
+        assert not out.accepted
+        assert any("the repository's mise.toml pins uv 0.13" in v and "`uv@0.13`" in v
+                   for v in out.violations), out.violations
+        pinned = copy.deepcopy(ENVIRONMENT)
+        for prof in pinned["profiles"].values():
+            prof["tools"] = ["uv@0.13" if t == "uv" else t for t in prof["tools"]]
+        out = await f.plan(environment=pinned)
+        assert out.accepted, out.violations
+    finally:
+        await f.stop()
+
+
 # ====================================================================== G-E8 and the mise.toml helpers
 @pytest.fixture(scope="module")
 def lib():
@@ -158,26 +181,40 @@ def lib():
         (ROOT / "assets/schemas/environment.json").read_text()))
 
 
-def g_e8(lib, raw: dict) -> list[str]:
+def g_e8(lib, raw: dict, repo_mise: str | None = None) -> list[str]:
     from legion_orch.workflow.environment import resolve
     spec = EnvironmentSpec.model_validate(raw)
     profiles, problems = resolve(spec, lib)
     assert problems == []
-    return mise_setup(spec, profiles, {"implementer", "oracle", "reviewer"})
+    return mise_setup(spec, profiles, {"implementer", "oracle", "reviewer"}, repo_mise)
 
 
 def test_g_e8_checks_tools_versions_and_setup_network(lib):
     assert g_e8(lib, env_spec()) == []
     v = g_e8(lib, env_spec(mise={"content": '[tools]\nbun = "1.4"\n'}))
-    assert v and all("'bun' is not installed" in x for x in v)
+    assert v and all("the proposed mise.toml uses tool 'bun', which profile" in x for x in v)
     v = g_e8(lib, env_spec(mise={"content": '[tools]\npython = "3.11"\n'}))
-    assert v and "wants python 3.11" in v[0]
+    assert v and "pins python 3.11" in v[0] and "`python@3.11`" in v[0]
     offline = env_spec()
     offline["profiles"]["check"]["offline"] = True
     [v] = g_e8(lib, offline)
     assert "profile check runs the setup task but lacks its network ['pypi']" in v
     assert g_e8(lib, env_spec(mise={"content": "[tools\n"}))[0].startswith("G-E8: mise.toml does not")
     assert g_e8(lib, env_spec(mise=None)) == []
+
+
+def test_g_e8_checks_the_repositorys_mise_toml_when_the_spec_proposes_none(lib):
+    """The spec keeps the repository's mise.toml, which pins uv 0.13; an unpinned uv tool is the
+    library's 0.9: the setup would try to download 0.13 in a sandbox that reaches no host."""
+    pinned = '[tools]\npython = "3.12"\nuv = "0.13"\n'
+    v = g_e8(lib, env_spec(mise=None), repo_mise=pinned)
+    assert v and all("the repository's mise.toml pins uv 0.13" in x and "installs 0.9" in x
+                     and "`uv@0.13`" in x for x in v), v
+    fixed = env_spec(mise=None)
+    for prof in fixed["profiles"].values():
+        prof["tools"] = [("uv@0.13" if t == "uv" else t) for t in prof["tools"]]
+    assert g_e8(lib, fixed, repo_mise=pinned) == []
+    assert g_e8(lib, env_spec(mise=None), repo_mise=None) == []       # no mise.toml at all
 
 
 def test_mise_toml_helpers():

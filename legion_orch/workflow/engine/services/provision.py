@@ -55,7 +55,7 @@ class Provisioner:
             self.c.write_record(PROVISION_LOG, log)
         return f"G-PV1: {reason}"[:2000] + (f"\n\nlog tail:\n{log[-4000:]}" if log else "")
 
-    def _plan(self) -> ProvisionPlan | str:
+    async def _plan(self) -> ProvisionPlan | str:
         """Under the lock: the approved spec resolved into what to build, or why it cannot be."""
         c = self.c
         ref = c.tickets.root.pointers.get("environment")
@@ -68,8 +68,11 @@ class Provisioner:
             lib = Library.for_config(c.cfg, c.assets.schemas)
         except LibraryError as e:
             return self._fail(f"the environment library is invalid: {e}")
+        repo = None if spec.mise is not None or not c.change.base_sha else \
+            await setup.read_at(c.git, c.change.base_sha)
         profiles, v = guards.environment(spec, lib, c.cfg, set(c.assets.roles),
-                                         {n for n, r in c.assets.roles.items() if r.git != GitMode.NONE})
+                                         {n for n, r in c.assets.roles.items() if r.git != GitMode.NONE},
+                                         repo_mise=repo)
         if v:
             return self._fail("the approved spec no longer resolves against the library: "
                               + "; ".join(v))
@@ -97,7 +100,7 @@ class Provisioner:
         async with c.lock:
             if not wanted():
                 return None
-            plan = self._plan()
+            plan = await self._plan()
             if isinstance(plan, str):
                 return plan
             recipes = {r.tag: r for r in plan.recipes.values()}

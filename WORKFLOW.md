@@ -640,7 +640,7 @@ from the signed spec version and never overwrites a library entry.
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
-| G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that runs the setup (those that work with a commit), and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
+| G-E8 | The `mise.toml` the sandboxes will run – a proposed `mise` (§5.3c), else the repository's at the change's base – parses; every profile of a role that runs the setup (those that work with a commit), and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time, and sandboxes reach no download host: pin `name@version`); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
 
 ### 5.3b `controller:provision` – the environment, built (`plan` ▸ `provision`)
 

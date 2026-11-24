@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from .. import guards
+from .. import guards, setup
 from ..assets import GitMode
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..tickets import Ticket
@@ -76,10 +76,11 @@ class Planner(RoleHandler):
         if tasks or scaffold:
             v += guards.plan({"tasks": tasks}, orc, requirement_ids(e), e.change.tier or "R0",
                              protected(e, orc), souls, e.docs.schemas, scaffold_work=scaffold)
-        return v + self._environment(e, r)
+        return v + await self._environment(e, r)
 
-    def _environment(self, e: RoleContext, r: Report) -> list[str]:
-        """G-E1..G-E4 on the environment spec, when the stage is configured."""
+    async def _environment(self, e: RoleContext, r: Report) -> list[str]:
+        """G-E1..G-E8 on the environment spec, when the stage is configured – G-E8 against the
+        repository's mise.toml at the change's base when the spec proposes none."""
         if e.cfg.environment is None:
             return []
         try:
@@ -90,6 +91,10 @@ class Planner(RoleHandler):
             lib = Library.for_config(e.cfg, e.assets.schemas)
         except LibraryError as x:
             return [f"G-E1: the environment library is invalid (an operator must fix it): {x}"]
-        _, v = guards.environment(EnvironmentSpec.model_validate(raw), lib, e.cfg, set(e.assets.roles),
-                                  {n for n, r in e.assets.roles.items() if r.git != GitMode.NONE})
+        spec = EnvironmentSpec.model_validate(raw)
+        repo = None if spec.mise is not None or not e.change.base_sha else \
+            await setup.read_at(e.git, e.change.base_sha)
+        _, v = guards.environment(spec, lib, e.cfg, set(e.assets.roles),
+                                  {n for n, r in e.assets.roles.items() if r.git != GitMode.NONE},
+                                  repo_mise=repo)
         return v

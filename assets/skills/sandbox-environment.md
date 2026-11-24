@@ -37,6 +37,9 @@ unless the plan's needs changed.
 
 * `tools` – library tool names, optionally `name@version` to pin a single-tool entry to the
   version the project uses (`python@3.13`). Every command in the plan must find its tools here.
+  An unpinned tool gets the library's default version, which need not be the project's: pin
+  every tool the repository's `mise.toml` `[tools]` names to its version there (`uv@0.13`) –
+  sandboxes cannot download a different one at run time, and G-E8 refuses a mismatch.
   Tools are installed with mise under `/usr/local/share/mise` and are on `PATH` (shims).
 * **Network comes with the tools.** A library tool declares the network policies it needs to
   work (`uv` brings `pypi`, `node` brings `npm-registry`; the catalogue says "brings network").
