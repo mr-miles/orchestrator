@@ -322,7 +322,8 @@ class AgentRuns:
         tw = self.c.round_of(ticket)                         # its round as it would start now
         asg = self._assignment(ticket, role, tw, None if pushes else tw.base)
         try:
-            rendered = self.c.assets.render_role(role, asg.variables)
+            rendered = self.c.assets.render_role(role, asg.variables,
+                                                  workflow=self.c.change.workflow)
         except AssetError as e:
             raise WorkflowError(f"{role}@{ticket_id}: {e}") from None
         kept = self.sandboxes.answerer.session_run(ticket_id, role)   # its sandbox, if it has one
@@ -476,7 +477,8 @@ class AgentRuns:
         branch = tw.branch if plan.pushes else None
         asg = self._assignment(ticket, role, tw, judged)
         try:
-            rendered = self.c.assets.render_role(role, asg.variables)
+            rendered = self.c.assets.render_role(role, asg.variables,
+                                                  workflow=self.c.change.workflow)
         except AssetError as e:
             return str(e)
         run = Run(id=self.c.host.next_run_id(), ticket=ticket.id, role=role,

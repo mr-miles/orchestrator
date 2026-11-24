@@ -15,6 +15,7 @@ from ...sandbox import GatewaySandbox
 from ...store import DocCheck, DocVersion
 from ...util import now_iso
 from .. import context, scope
+from ..assets import DEFAULT_WORKFLOW
 from ..model import (
     LIVE_RUN,
     V_FINAL,
@@ -76,10 +77,10 @@ class ChangeEngine(ChangeCore):
 
         self.seed_attention()
 
-    def start(self, goal: str, workspace: str) -> None:
+    def start(self, goal: str, workspace: str, workflow: str = DEFAULT_WORKFLOW) -> None:
         """Initialise a new change in ``workspace`` (the caller holds the lock): its skeleton;
         once the workspace is synced (its base), its root starts."""
-        self.st.change = Change(id=self.cid, goal=goal, workspace=workspace)
+        self.st.change = Change(id=self.cid, goal=goal, workspace=workspace, workflow=workflow)
         self.trace.begin(workspace)
         self._agent_runner.open_change()                     # its orchestrator, its resolver
         self.write_record("control/goal.md", f"# Goal\n\n{goal}\n\nWorkspace: `{workspace}`\n")
