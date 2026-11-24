@@ -46,7 +46,7 @@ sandbox:
   providers: [claude-code]       # model credentials; legion-mcp and legion-git(-push) are added automatically
   # agent_bin: claude             # the agent CLI in the image (the controller builds its flags)
   agent_binaries: [/usr/local/bin/claude]   # binaries allowed to call the controller's MCP
-  # a2a_binaries: [/usr/local/bin/a2a]     # binaries allowed to call the controller's A2A cards
+  # a2a_binaries: [/usr/local/bin/a2a, /home/agent/.local/bin/a2a]   # binaries allowed to call the A2A cards
   # git_binaries: [/usr/bin/git, /usr/lib/git-core/git-remote-http, /usr/lib/git-core/git-remote-https]
   #   allowed to reach the controller's git remote; Fedora/RHEL/Alpine use /usr/libexec/git-core/
   templates_dir: policies         # templates for everything created in OpenShell (see policies/README.md)
