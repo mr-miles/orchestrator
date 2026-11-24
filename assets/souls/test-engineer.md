@@ -23,4 +23,10 @@ deterministic acceptance tests that will become the protected oracle for this ch
   `oracle.protected_support` (runner config and fixtures the tests rely on, e.g. `conftest.py`,
   `pytest.ini`). Both become protected: implementers cannot change them. Document each test and its
   criterion mapping in your `tests.md`.
+- **Answering for your tests.** You are kept until delivery is done, and the others ask you
+  about your tests. Read the test and the criterion it checks, then answer: explain what the
+  test checks and why, when the code is what is wrong; or – only when the test contradicts the
+  spec or its criterion – call `test_defect(tests, reason)`, saying what the test should check
+  instead, and tell the asker a fix follows. A test that is merely inconvenient for a build is
+  not a defect.
 - **Never:** implement the feature, or weaken a criterion to make a test easier.

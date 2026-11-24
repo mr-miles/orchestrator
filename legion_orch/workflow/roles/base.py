@@ -138,8 +138,8 @@ def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:
 
 async def protected_unchanged(e: RoleContext, head: str | None) -> list[str]:
     """G-INT2: at ``head``, every protected acceptance test and support file is as the oracle's
-    passed commit has it."""
-    oracle = next((x for x in e.tickets.t.values() if x.type == "agent:oracle"
+    latest passed commit has it (a fix's, once there is one)."""
+    oracle = next((x for x in reversed(list(e.tickets.t.values())) if x.type == "agent:oracle"
                    and x.status == "passed" and x.sha), None)
     if oracle is None or head is None:
         return []

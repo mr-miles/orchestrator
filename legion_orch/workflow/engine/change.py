@@ -126,6 +126,10 @@ class ChangeEngine(ChangeCore):
                                                  blocked_reason, missing_decision, dry_run,
                                                  outputs)
 
+    async def test_defect(self, run: Run, tests: list[str], reason: str) -> dict:
+        """The oracle confirms some of its tests are wrong: a fix follows (TicketFlow)."""
+        return await self._flow.test_defect(run, tests, reason)
+
     # ------------------------------------------------------------------ where a ticket stands
     def ticket_status(self, ticket_id: str) -> dict:
         """A ticket as it is now (workflow/context.py); WorkflowError for an unknown ticket."""

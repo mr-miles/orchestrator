@@ -100,22 +100,30 @@ def followups(t: Mapping[str, Ticket], signoff: str, signed: Mapping[str, object
     for type_, x in latest.items():
         if type_ in open_:
             continue
-        nid = next_id(x.id, taken)
-        taken.add(nid)
-        tree = []
-        for cid in x.criteria:
-            c = t[cid]
-            ncid = next_id(cid, taken)
-            taken.add(ncid)
-            tree.append(c.model_copy(update={"id": ncid, "parent": nid, "status": Status.PENDING,
-                                             "attempt": 0, "findings": [], "waived": False,
-                                             "outputs": {}, "runs": [], "sha": None,
-                                             "since": "", "waiting": None}))
-        fresh = Ticket(id=nid, type=x.type, goal=x.goal, labels=list(x.labels),
-                       inputs=list(x.inputs), work=dict(x.work), limit=x.limit,
-                       criteria=[c.id for c in tree])
-        adds.append(Add(fresh, into.id, group + len(adds), new_group=True, tree=tree))
+        adds.append(renewal(t, x, into.id, group + len(adds), taken))
     return Replan(add=adds)
+
+
+def renewal(t: Mapping[str, Ticket], x: Ticket, into: str, group: int, taken: set[str],
+            findings: Iterable[str] = ()) -> Add:
+    """A new instance of ``x`` – the same work, fresh copies of its criteria – as a new subtask
+    group at ``group`` under ``into``; ``findings``: what its first round is told to address.
+    Mutates ``taken`` (the ids now in use)."""
+    nid = next_id(x.id, taken)
+    taken.add(nid)
+    tree = []
+    for cid in x.criteria:
+        c = t[cid]
+        ncid = next_id(cid, taken)
+        taken.add(ncid)
+        tree.append(c.model_copy(update={"id": ncid, "parent": nid, "status": Status.PENDING,
+                                         "attempt": 0, "findings": [], "waived": False,
+                                         "outputs": {}, "runs": [], "sha": None,
+                                         "since": "", "waiting": None}))
+    fresh = Ticket(id=nid, type=x.type, goal=x.goal, labels=list(x.labels),
+                   inputs=list(x.inputs), work=dict(x.work), limit=x.limit, keep=x.keep,
+                   findings=list(findings), criteria=[c.id for c in tree])
+    return Add(fresh, into, group, new_group=True, tree=tree)
 
 
 def _root(t: Mapping[str, Ticket]) -> str:

@@ -50,7 +50,7 @@ AGENT_HIDDEN = ("/control/runs/",)
 WORKFLOW_TOOLS = ("get_assignment", "verify_attestation", "progress", "report",
                   "inbox", "a2a_reply",
                   "verification_request", "verification_status", "verification_evidence",
-                  "ticket_status", "workflow_context")
+                  "ticket_status", "workflow_context", "test_defect")
 # The gateway's MCP allowlist (sandbox network policy) is generated from exactly this list.
 MCP_TOOLS = tuple(STORE_TOOLS) + WORKFLOW_TOOLS
 
@@ -182,6 +182,20 @@ async def build_mcp(ctl: Controller) -> MCPServer:
         if outcome.accepted and not dry_run:          # what still waits for an answer from it
             out["inbox"] = len(A2AHub.of(ctl).inbox.pending(ce.cid, card_id(r.role, r.ticket)))
         return out
+
+    @server.tool(description="The oracle only, while answering a message: confirm that some of "
+                             "your protected tests are wrong (not the code). tests: their paths; "
+                             "reason: what is wrong and what the test should check instead. The "
+                             "controller adds a fix – your next round, in your session, at the "
+                             "end of delivery – and a human signs the revised tests. Use it only "
+                             "when the test contradicts the spec or criterion, never to make a "
+                             "build pass.")
+    async def test_defect(ctx: Context, tests: list[str], reason: str) -> dict:
+        ce, r = current(ctx)
+        try:
+            return await ce.test_defect(r, tests, reason)
+        except WorkflowError as e:
+            raise ToolError(str(e)) from None
 
     # ------------------------------------------------------------------ where your work stands
     @server.tool(description="A ticket of your change as it is now – yours by default, or any "

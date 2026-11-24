@@ -35,6 +35,7 @@ from .executors import Done, Executors, Fault, Judged, Merger, Outcome, Work, ap
 from .model import Remedy, Status, Ticket, Waiting
 from .outputs import TIER, resolve
 from .rules import (
+    REPLANNING,
     Effect,
     Ended,
     Escalate,
@@ -119,6 +120,28 @@ class Runner:
                 raise TicketError("; ".join(v))
             self._replan = plan
             await self._carry(self.t.decide(tid, Remedy.REPLAN))
+
+    async def replan_when_quiet(self, plan: Replan) -> None:
+        """A replan the controller makes while work runs (a test fix the oracle confirmed): it
+        is checked now, as a signed-off one is; the workflow pauses – nothing new starts – and
+        it applies as soon as nothing is active any more. One at a time."""
+        async with self.lock:
+            if self._replan is not None:
+                raise TicketError("another replan is waiting to be applied")
+            tier = self._tier()
+            if v := self._prepare(plan, tier):
+                raise TicketError("; ".join(v))
+            trial = Tickets(x.model_copy(deep=True) for x in self.t.t.values())
+            trial.replan(plan, trial=True)
+            if tier and (v := check_policy(self.spec, tier, trial.t)):
+                raise TicketError("; ".join(v))
+            self._replan = plan
+            await self._carry(self.t.pause(REPLANNING))
+
+    def queued(self, type_: str) -> Ticket | None:
+        """A ticket of ``type_`` the replan waiting to be applied adds (None: there is none)."""
+        return next((a.ticket for a in (self._replan.add if self._replan else [])
+                     if a.ticket.type == type_), None)
 
     async def replan(self, plan: Replan) -> None:
         """A replan signed off outside a criterion (a human's, on an escalation): applied

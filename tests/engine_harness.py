@@ -521,8 +521,8 @@ class Flow:
                                                      "checked": ["traceability"]},
                                  outputs={"critique": doc})
 
-    async def oracle(self, files: dict | None = None):
-        r = self.run("oracle")
+    async def oracle(self, files: dict | None = None, tid: str = "oracle"):
+        r = self.run(tid)
         sha = self.commit(r, files or {"tests/acceptance/test_greet.sh": "grep -q hello src/greet.txt\n"})
         doc = await self.write(r, "tests.md", "AC-1 -> tests/acceptance/test_greet.sh")
         return await self.report(r, [f"git:{REPO}@{sha}", doc], outputs={"tests": doc})

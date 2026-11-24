@@ -128,7 +128,8 @@ change – sent you this message while you were not running:
 Answer it from what you know of your work in this session: reply with
 `a2a_reply(task_id="{task}", text=...)` (or end with your answer as your final message). Your
 tools in this turn are the Skill tool and your legion MCP tools (read the documents, your
-inbox): nothing is to change – no files, no reports. If you cannot answer, say so and why.
+inbox): nothing is to change – no files, no reports (the oracle alone may confirm that a test of
+its is wrong, with `test_defect`). If you cannot answer, say so and why.
 """
 
 RESOLVER_PROMPT = """# A message for the resolver
@@ -452,8 +453,9 @@ class AgentRuns:
         return list(dict.fromkeys(refs))
 
     def _oracle_sha(self) -> str:
-        """The protected acceptance tests' commit: the oracle's, once it has passed (H-2)."""
-        return next((t.sha for t in self.c.tickets.t.values()
+        """The protected acceptance tests' commit: the latest oracle instance's to pass (H-2) –
+        a fix's, once there is one."""
+        return next((t.sha for t in reversed(list(self.c.tickets.t.values()))
                      if t.type == "agent:oracle" and t.status == Status.PASSED and t.sha), "")
 
     @staticmethod

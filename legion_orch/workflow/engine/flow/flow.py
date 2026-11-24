@@ -33,9 +33,9 @@ from ....util import now_iso
 from ... import metrics, setup
 from ...attest import FILE_RE
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
-from ...model import ChangeEnd, ChangeStatus
+from ...model import ChangeEnd, ChangeStatus, Run
 from ...risk import derive_tier
-from ...tickets import Remedy, Replan, Status, Ticket, TicketError, Tickets, Waiting
+from ...tickets import Remedy, Replan, Status, Ticket, TicketError, Tickets, Waiting, stale
 from ...tickets.executors import (
     AgentEnd,
     AgentExecutor,
@@ -267,6 +267,65 @@ class TicketFlow:
         end = await self._agents.run(role, Work(t, t.attempt, tuple(t.findings), change=c.cid,
                                                 base=c.change.base_sha))
         await self._concluded(t, end)
+
+    # ------------------------------------------------------------------ test defects
+    ORACLE = "agent:oracle"
+
+    def _protected_tests(self) -> set[str]:
+        """The approved oracle's protected paths: its tests and the support they rely on."""
+        ref = self.c.tickets.root.pointers.get("oracle")
+        m = FILE_RE.match(ref) if isinstance(ref, str) else None
+        if m is None:
+            return set()
+        doc = json.loads(self.c.docs.read(m["path"], int(m["version"])).content)
+        return {*doc.get("acceptance_tests", []), *doc.get("protected_support", [])}
+
+    async def test_defect(self, run: Run, tests: list[str], reason: str) -> dict[str, Any]:
+        """The oracle, answering someone, confirms that some of its tests are wrong: the fix is
+        its next instance at the end of its parent (delivery), told why – its tests signed off
+        again (its criteria are copied, H-2 with them) – and the parent's criteria judge again
+        once it merges. It continues the oracle's session; it applies once nothing is active.
+        A fix still to start is told this reason too."""
+        c = self.c
+        if run.role != "oracle" or not run.consult:
+            raise WorkflowError("only the oracle, answering a message, confirms a test defect")
+        if not reason.strip() or not tests:
+            raise WorkflowError("name the tests that are wrong and why")
+        if bad := sorted(set(tests) - self._protected_tests()):
+            raise WorkflowError(f"not the oracle's tests: {bad}")
+        if self.runner is None:
+            raise WorkflowError("the change has no tickets yet")
+        finding = f"BLOCKER: the oracle confirmed these tests are wrong – {', '.join(tests)}: {reason}"
+        async with c.lock:
+            t = c.tickets.t
+            mine = [x for x in t.values() if x.type == self.ORACLE]
+            if not mine:
+                raise WorkflowError("this change has no oracle")
+            if (q := self.runner.queued(self.ORACLE)) is not None:
+                todo = [q]                                  # a fix waiting to be applied
+            else:
+                todo = [x for x in mine if x.status == Status.PENDING]
+            if todo:
+                todo[0].findings.append(finding)            # a fix still to start: told this too
+                c.event("tests", f"{run.id} confirmed another test defect for {todo[0].id}: "
+                        f"{reason}", todo[0].id, run.id)
+                c.save()
+                return {"fix": todo[0].id, "queued": True}
+            if busy := [x for x in mine if x.status not in CLOSED]:
+                raise WorkflowError(f"{busy[0].id} is fixing the tests now: tell it (a2a) instead")
+            latest = mine[-1]
+            parent = t[latest.parent or ""]
+            if parent.status in CLOSED:
+                raise WorkflowError(f"{parent.id} is done: its tests stand")
+            add = stale.renewal(t, latest, parent.id, len(parent.subtasks), set(t), [finding])
+            add.ticket.sandbox = run.sandbox                # the oracle's own agent fixes them
+        try:
+            await self.runner.replan_when_quiet(Replan(add=[add]))
+        except TicketError as e:
+            raise WorkflowError(f"the fix cannot be planned: {e}") from None
+        c.event("tests", f"{run.id} confirmed a test defect: {add.ticket.id} fixes "
+                f"{', '.join(tests)} once nothing is running – {reason}", add.ticket.id, run.id)
+        return {"fix": add.ticket.id, "queued": False}
 
     def write_metrics(self) -> None:
         """The change's metrics as they stand (``control/metrics.json``, :mod:`..metrics`):

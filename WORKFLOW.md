@@ -170,6 +170,7 @@ included. A criterion with nothing behind it does not pass.
 | `progress(message, percent?)` | heartbeat shown live in the UI |
 | `report(status, summary, attestations, outputs, data?, blocked_reason?, missing_decision?, dry_run?)` | submit the result; guards run synchronously; returns `accepted` or the list of violations. `dry_run`: every guard, but no attempt is counted (G-R6) and nothing is recorded or applied; returns `would_accept` and the violations (timeline event `report_checked`) |
 | `ticket_status(ticket?)` / `workflow_context()` | where work stands (§5.15) |
+| `test_defect(tests, reason)` | the oracle only, answering a message: some of its tests are wrong – a fix follows (§5.4) |
 | `verification_request(sha?)` / `verification_status(id?)` / `verification_evidence(id)` | the verification service (§5.7) |
 | `inbox()` / `a2a_reply(task_id, text, state?)` | the agent's A2A inbox (§5.15) |
 
@@ -762,6 +763,24 @@ merge – but its agent stays, its sandbox stopped and its session intact, until
 done: its card stays in the catalog, and a message to it resumes the session to answer. Whoever
 is unsure what a test means, or thinks one is wrong, asks it (`oracle@oracle`). When delivery
 closes its sandbox goes, like any closed ticket's.
+
+**A test that is wrong.** Only the oracle decides that a failure is its test's fault, not the
+code's: whoever suspects a test – an implementer, the integration verifier, the resolver – asks
+it, and it either explains what the test checks or, answering, calls `test_defect(tests,
+reason)` (its protected tests only). The controller then plans the fix:
+
+* the oracle's next instance (`oracle.2`: the same work, fresh copies of its criteria, H-2
+  included) at the end of `delivery`, told the reason as its findings, in the oracle's own
+  sandbox and session;
+* applied as every replan is, once nothing is active: the workflow pauses meanwhile (`replan`),
+  so work under way drains and nothing new starts;
+* a further defect confirmed before the fix starts is added to its findings; one while it works
+  is told to it over A2A.
+
+The fix's revised tests are signed off again (its H-2), its commit becomes the protected tests'
+reference (G-INT2, the integration's `oracle_sha`), and delivery's criteria judge the head again
+after it. Builds are never held up by a wrong test meanwhile: their own criteria run their
+tasks' verification, not the acceptance tests.
 
 ### 5.5 `controller:baseline` (R3) – independent baseline (`delivery` ▸ `baseline`)
 
