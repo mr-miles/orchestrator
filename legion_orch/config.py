@@ -153,8 +153,10 @@ class SandboxConfig(Section):
     providers: list[str] = Field(default_factory=list)
     # Binaries in the agent image allowed to call the controller's MCP endpoint
     agent_binaries: list[str] = Field(default_factory=lambda: ["/usr/local/bin/claude"])
-    # Binaries allowed to reach the controller's A2A endpoint (the a2a CLI, github.com/a2aproject/a2a-cli)
-    a2a_binaries: list[str] = Field(default_factory=lambda: ["/usr/local/bin/a2a"])
+    # Binaries allowed to reach the controller's A2A endpoint (the a2a CLI, github.com/a2aproject/a2a-cli):
+    # installed system-wide, or in the agent user's ~/.local/bin
+    a2a_binaries: list[str] = Field(default_factory=lambda: ["/usr/local/bin/a2a",
+                                                             "/home/agent/.local/bin/a2a"])
     # Binaries allowed to reach the controller's git remote. git's HTTP traffic is sent by its
     # remote helper: /usr/lib/git-core on Debian/Ubuntu, /usr/libexec/git-core on Fedora/RHEL/Alpine.
     git_binaries: list[str] = Field(default_factory=lambda: [

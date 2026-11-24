@@ -533,7 +533,8 @@ def test_generated_policies_and_provider_profiles(tmp_path):
     assert calls == [{"method": "tools/call", "tool": {"any": list(MCP_TOOLS)}}]
     # each endpoint only for the binaries that use it
     assert profs["legion-mcp"]["binaries"] == cfg.sandbox.agent_binaries
-    assert profs["legion-a2a"]["binaries"] == cfg.sandbox.a2a_binaries == ["/usr/local/bin/a2a"]
+    assert profs["legion-a2a"]["binaries"] == cfg.sandbox.a2a_binaries == [
+        "/usr/local/bin/a2a", "/home/agent/.local/bin/a2a"]
     assert profs["legion-git"]["binaries"] == profs["legion-git-push"]["binaries"] == cfg.sandbox.git_binaries
     # the same allows; deny rules win over every allow, so only legion-git denies push
     assert git["rules"] == push["rules"]
