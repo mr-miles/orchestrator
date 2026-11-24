@@ -25,13 +25,13 @@ GATEWAY = {"run": {"sandbox_deleted", "sandbox_stopped"}}
 # dispatch, and – once it is no longer live – its outcome. Everything else a run has (its stage,
 # latest progress, A2A bookkeeping, its counters while live) is the live run's, in memory; its
 # log is the document of everything it did.
-RUN_ASSIGNMENT = ("ticket", "role", "soul", "attempt", "consult", "created_at", "sandbox",
+RUN_ASSIGNMENT = ("ticket", "role", "soul", "attempt", "model", "effort", "consult", "created_at", "sandbox",
                   "sandbox_ref", "base_sha", "branch", "judged_sha", "resumed_from",
                   "resumed_session", "prompt_pin", "assets_sha", "template_vars", "write_scope",
                   "outputs", "context_refs", "assignment", "instructions")
 RUN_OUTCOME = ("status", "failure", "exit_code", "ended_at", "concluded", "session_id", "report",
                "reply", "attempts", "violations", "docs_written", "doc_bytes", "confirmed_docs",
-               "verification_requests", "turns")
+               "verification_requests", "turns", "model_served")
 
 
 class StateStore:

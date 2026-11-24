@@ -256,6 +256,9 @@ class Run(Record):
     role: str
     soul: str
     attempt: int                          # the ticket's attempt it is a run of
+    model: str | None = None              # the model and effort asked for (config ``models``;
+    effort: str | None = None             # None: the agent CLI's default)
+    model_served: str | None = None       # the model that served it (its log's init event)
     status: RunStatus = R_STARTING
     stage: RunStage | None = None
     failure: RunFailure | None = None

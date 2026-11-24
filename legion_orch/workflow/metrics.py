@@ -13,7 +13,8 @@ from the agent CLI's result events). What it says:
 * ``waiting`` – every time a ticket waited on a human, by reason, and for how long;
 * ``signoffs`` – the decision owners: sign-offs decided, rejected, and how long they waited for
   a decision;
-* ``roles`` – per role: runs, how they ended, reports rejected, wall time, cost and tokens;
+* ``roles`` – per role: runs, how they ended, the models that served them, reports rejected,
+  wall time, cost and tokens;
 * ``tickets`` – the same per ticket with work, for finding the outliers.
 """
 from __future__ import annotations
@@ -176,6 +177,8 @@ def compute(change: Mapping[str, Any], history: Iterable[list[tuple[str, dict[st
         st = str(r.get("status", "?"))
         g["statuses"][st] = g["statuses"].get(st, 0) + 1
         g["rejected_reports"] += len(r.get("violations") or [])
+        served = r.get("model_served") or "unknown"
+        g.setdefault("models", {})[served] = g.get("models", {}).get(served, 0) + 1
         g["wall_seconds"] = round(g["wall_seconds"] + (
             _seconds(r.get("created_at"), r.get("ended_at") or now) or 0), 1)
         _add(g, usd, tokens)

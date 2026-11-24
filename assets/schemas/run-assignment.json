@@ -42,6 +42,20 @@
     "attempt": {
       "type": "integer",
       "minimum": 0
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "the model the run asked for (config models; null: the agent CLI's default)"
+    },
+    "effort": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "the effort the run asked for (null: the CLI's default)"
     }
   }
 }

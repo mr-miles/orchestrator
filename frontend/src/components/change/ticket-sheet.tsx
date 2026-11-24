@@ -25,6 +25,7 @@ import {
   AttestationLink,
   Attestations,
   Failure,
+  ModelNote,
   Muted,
   Pre,
   Sha,
@@ -221,7 +222,7 @@ function RunCard({ run }: { run: Run }) {
           <StatusBadge status={run.status} />
           {isLive(run) && <StageBadge stage={run.stage} />}
           <span className="font-normal">
-            {run.role} · attempt {run.attempt} · {run.soul}
+            {run.role} · attempt {run.attempt} · {run.soul} <ModelNote run={run} />
             {run.consult && ' · a message'}
           </span>
         </CardTitle>

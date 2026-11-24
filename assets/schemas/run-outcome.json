@@ -13,6 +13,13 @@
         "FAILED"
       ]
     },
-    "token": false
+    "token": false,
+    "model_served": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "the model that served the run (its log's init event)"
+    }
   }
 }

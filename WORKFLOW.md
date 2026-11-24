@@ -261,6 +261,25 @@ model call, and lists everything that needs you in full.
 
 ---
 
+### 2.3 Models
+
+Which model and effort each role's runs use is operational, so it is set in `orchestrator.yaml`
+(`models:`), not in the assets: the asset set's hash stays about the text agents are given.
+
+* **Resolution:** a run takes `default`, then its role's setting, then its soul's (an
+  implementer's soul is chosen per build), each overriding only what it names. Nothing set: the
+  agent CLI's own default. Names the assets do not have are refused at start and by `check`.
+* **To the CLI:** the run's environment carries `LEGION_MODEL` and `LEGION_EFFORT`, and the agent
+  command passes them as `--model` and `--effort` only when they are set. A turn that resumes a
+  session (a consult, a reflection) keeps that session's choice.
+* **On the record:** each run records the model and effort it asked for and the model that served
+  it (its log's init event). A different one is a timeline event – an alias such as `opus`
+  matches the full name it stands for – and the UI marks it. The metrics (§5.13) count the
+  served models per role.
+* **Why it matters:** a judge on another model than the work it judges catches what that
+  model's blind spots let through. Set the judging roles (reviewer, integration, critic) apart
+  from the implementers'.
+
 ## 3. Risk tiers and their policies
 
 Intake scores twelve risk signals 0–3 (`security, authorization, data_migration,
