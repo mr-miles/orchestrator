@@ -85,6 +85,15 @@ ORCHESTRATOR_SKILLS = [
                            "only what your assignment and the documents cannot answer.",
                tags=["human"],
                examples=["/ask_human Should the CLI keep the deprecated --legacy flag?"]),
+    AgentSkill(id="request_scope", name="Ask for more files",
+               description="A build asks to change files outside its files_modified, with why "
+                           "its contract needs them. A decision owner approves (the paths join "
+                           "your files_modified) or denies it; the task completes with the "
+                           "decision, which can take hours: send with --async and poll. The "
+                           "oracle's tests are never granted: ask the oracle.",
+               tags=["human", "scope"],
+               examples=["/request_scope src/api/routes.py: the new endpoint must be registered "
+                         "in the route table"]),
 ]
 STEP_SKILL = AgentSkill(
     id="message", name="Message the ticket's agent",
@@ -420,8 +429,9 @@ class StepExecutor(_Executor):
 
 
 HELP = ("Name the skill: a data part {\"skill\": \"ask_human\", \"question\": …} or text "
-        "starting /ask_human <question>. Message another agent at its own card; find the cards "
-        "with `a2a catalog update legion`.")
+        "starting /ask_human <question>; {\"skill\": \"request_scope\", \"paths\": […], "
+        "\"reason\": …} or /request_scope <paths>: <reason>. Message another agent at its own "
+        "card; find the cards with `a2a catalog update legion`.")
 
 
 def parse_skill(text: str, data: list[dict]) -> tuple[str, dict[str, Any]]:
@@ -433,6 +443,9 @@ def parse_skill(text: str, data: list[dict]) -> tuple[str, dict[str, Any]]:
         rest = rest.strip()
         if head == "ask_human":
             return head, {"question": rest}
+        if head == "request_scope":
+            paths, _, reason = rest.partition(":")
+            return head, {"paths": paths.replace(",", " ").split(), "reason": reason.strip()}
         return head, {}
     return "", {}
 
@@ -444,6 +457,11 @@ class OrchestratorExecutor(_Executor):
         skill, args = parse_skill(text, data)
         if skill == "ask_human":
             await self.ask_human(up, task_id, caller, str(args.get("question") or "").strip())
+        elif skill == "request_scope":
+            paths = args.get("paths") or []
+            await self.request_scope(up, task_id, caller,
+                                     [str(p) for p in paths] if isinstance(paths, list) else [],
+                                     str(args.get("reason") or ""))
         else:
             await up.reject(_text(up, (f"unknown skill {skill!r}. " if skill else "") + HELP))
 
@@ -457,6 +475,30 @@ class OrchestratorExecutor(_Executor):
                         if r.sandbox_ref == caller.sandbox), None)
             q = ce.ask_human(task_id, caller.task, caller.role, run, question)
         await up.start_work(_text(up, "asked the change's decision owners; waiting for an answer"))
+        await self._answered(up, q, caller)
+
+    async def request_scope(self, up, task_id, caller, paths: list[str], reason: str) -> None:
+        ce = self.ce
+        async with ce.lock:
+            run = next((r.id for r in reversed(list(ce.runs.values()))
+                        if r.sandbox_ref == caller.sandbox), None)
+            try:
+                q = ce.request_scope(task_id, caller.task, caller.role, run, paths, reason)
+            except WorkflowError as e:
+                await up.reject(_text(up, str(e)))
+                return
+        if q is None:
+            await up.add_artifact([new_text_part("those paths are in your scope already")],
+                                  name="in scope")
+            await up.complete()
+            return
+        await up.start_work(_text(up, f"asked a decision owner to approve {', '.join(q.paths)}; "
+                                      "waiting for the decision"))
+        await self._answered(up, q, caller)
+
+    async def _answered(self, up, q, caller) -> None:
+        """Until a decision owner answers ``q`` (the task completes with it) or it is withdrawn."""
+        ce = self.ce
         try:
             while True:
                 if q.answer is not None:

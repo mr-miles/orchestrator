@@ -103,11 +103,18 @@ export function changeAction(
   )
 }
 
-/** Answer an agent's question (A2A ask_human): the answer completes its task. */
-export function answerQuestion(cid: string, qid: string, answer: string, who: Who) {
+/** Answer an agent's question (A2A ask_human) – or decide a build's request for more files
+ * (request_scope: ``decision`` approve or deny, ``answer`` the reason): it completes its task. */
+export function answerQuestion(
+  cid: string,
+  qid: string,
+  answer: string,
+  who: Who,
+  decision?: 'approve' | 'deny',
+) {
   return api<AgentQuestion>(
     `/api/changes/${encodeURIComponent(cid)}/questions/${encodeURIComponent(qid)}/answer`,
-    { answer, approver: who.approver },
+    { answer, approver: who.approver, ...(decision ? { decision } : {}) },
     who.token,
   )
 }

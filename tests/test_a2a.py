@@ -106,7 +106,7 @@ async def test_cards_follow_the_sandboxes_and_are_scoped_to_the_callers_change(f
         assert card["supportedInterfaces"][0]["url"].endswith("/a2a/planner@design")
         skills = (await c.get("/a2a/orchestrator/.well-known/agent-card.json",
                               headers=token(f, critic))).json()["skills"]
-        assert [x["id"] for x in skills] == ["ask_human"]       # discovery is the catalog's
+        assert [x["id"] for x in skills] == ["ask_human", "request_scope"]   # discovery: the catalog
 
         # scope: the bearer's change only, live sandboxes only, never a verifier
         cat = "/a2a/ai-catalog.json"

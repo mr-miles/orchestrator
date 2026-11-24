@@ -126,14 +126,23 @@ def outputs_of_owner(e: RoleContext, ticket: Ticket) -> list[str]:
 MISE_TOML = "mise.toml"
 
 
-def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:
-    """Paths no build may touch: the approved oracle's tests and support files, the operator's
-    protected paths, and ``mise.toml`` while the environment pins a setup (§5.3c)."""
+def oracle_paths(e: RoleContext, oracle: dict | None = None) -> list[str]:
+    """The approved oracle's tests and support files: only the oracle changes them (§5.4)."""
     orc = oracle if oracle is not None else _json(pointer(e, "oracle"))
+    return [*orc.get("acceptance_tests", []), *orc.get("protected_support", [])]
+
+
+def guarded(e: RoleContext) -> list[str]:
+    """The operator's protected paths, and ``mise.toml`` while the environment pins a setup
+    (§5.3c): a build changes one only when a decision owner approved it (request_scope)."""
     env = _json(pointer(e, "environment"))
-    return [*orc.get("acceptance_tests", []), *orc.get("protected_support", []),
-            *e.cfg.protected_paths,
-            *([MISE_TOML] if env.get("mise") or e.change.setup_pin else [])]
+    return [*e.cfg.protected_paths, *([MISE_TOML] if env.get("mise") or e.change.setup_pin else [])]
+
+
+def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:
+    """Paths no plan puts in a build's files (G-P7), and no build changes unapproved: the
+    oracle's, and the guarded ones."""
+    return [*oracle_paths(e, oracle), *guarded(e)]
 
 
 async def protected_unchanged(e: RoleContext, head: str | None) -> list[str]:

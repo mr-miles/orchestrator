@@ -31,10 +31,15 @@ never run `a2a auth login`. You see and reach only this change's agents.
   you report BLOCKED on a guard, a protected path or the oracle. It investigates and answers;
   every escalation also goes to it, and it proposes a decision for a human.
 - **The orchestrator** is the controller itself, not a model, and it is the CLI's default agent
-  (`$A2ACLI_AGENT_CARD`). Its one skill:
-  `a2a send --async "/ask_human <question>"` asks the change's decision owners. Their answer can
+  (`$A2ACLI_AGENT_CARD`). Its skills, both answered by the change's decision owners – which can
   take hours: poll with `a2a task get <task-id> --wait --timeout 10m` at a later milestone
-  rather than waiting idle.
+  rather than waiting idle:
+  - `a2a send --async "/ask_human <question>"` asks them a question;
+  - `a2a send --async "/request_scope <paths>: <reason>"` (a build) asks to change files outside
+    your `files_modified` – say what fails or is missing without them. They approve it (the
+    paths are added to your `files_modified`, and the task's answer says so) or deny it, with
+    their reason. Ask for exactly the paths you need, once; a request for the oracle's tests is
+    refused at once.
 - **Messaging another agent**: `a2a send --async -a urn:air:legion:agent:<card> "<message>"`, then
   `a2a task get -a <same card> <task-id> --wait --timeout 5m`. The CLI's default timeout is 30s,
   and an answer takes longer: the recipient answers between its own work, or in a turn started

@@ -226,6 +226,11 @@ def waves(tasks: list[dict]) -> dict[str, int]:
     return level
 
 
+def files_clash(a: list[str], b: list[str]) -> str | None:
+    """Where two file scopes (exact paths, ``dir/`` prefixes, globs) overlap, else None."""
+    return _files_clash(_file_index(a), _file_index(b))
+
+
 def _file_index(paths: list[str]) -> tuple[set[str], list[str]]:
     """Exact paths (set) and patterns (directory prefixes ending in '/', globs)."""
     patterns = [p for p in paths if p.endswith("/") or any(c in p for c in "*?[")]

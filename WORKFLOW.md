@@ -234,7 +234,7 @@ all use. Nothing here gates the workflow; it only says what is waiting.
 | `gate` | a sign-off is waiting for a decision owner (H-1, H-E1, H-2, H-2b, H-3, any the plan adds) | yes |
 | `escalation` | a ticket is `waiting` on a human: why (§4.4), its findings, the resolver's proposal | yes |
 | `paused` | the workflow is paused, and by whom (§4.6) | yes |
-| `question` | an agent asked the humans (A2A `ask_human`, §5.15) | yes |
+| `question` | an agent asked the humans (A2A `ask_human`), or a build asked for more files (`request_scope`, §5.6) | yes |
 | `change_ended` | the change is `READY` or `ABANDONED` | no (inbox) |
 | `retrospective` | a retrospective report is ready (each attempt is a new item) | no (inbox) |
 
@@ -809,10 +809,28 @@ record is its output `baseline`; the integration verifier is given it.
 * **Sandbox:** created on its first round and **kept across its attempts** (the agent keeps its
   working copy and session); deleted when the ticket is closed.
 
+**Asking for more files.** A build's scope – its `files_modified`, less its `files_forbidden` and
+the protected paths – is a hard limit (G-B3), and only a decision owner widens it. A build whose
+contract cannot be met without another file asks the change's orchestrator over A2A
+(`/request_scope <paths>: <reason>`, `workflow/scope.py`), and goes on with the rest meanwhile:
+
+* the request is a blocking attention item: the paths, the reason, the build's `files_modified`
+  now and as it would be, and what to know – a protected path (a pinned `mise.toml`'s edits never
+  change the setup the checks run), one the plan forbids, a file a build still open owns;
+* **approved**, the paths join the build's `files_modified` (and lift `files_forbidden` and a
+  protected path for them: `scope_added`), and the agent's task is answered so; **denied**, with
+  the reason, it works within its scope or reports BLOCKED;
+* paths already in its scope are answered at once; the oracle's tests are refused at once (only
+  the oracle changes them, §5.4).
+
+The metrics list each build's approved and denied paths: many say the plan scoped its builds too
+tightly (the planner gives each build a directory prefix for its own area and exact paths for the
+shared wiring it touches).
+
 | ID | Rule |
 | --- | --- |
 | G-B2 | The attested commit is the current tip of the ticket's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
-| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected. |
+| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected – except the paths a decision owner approved for it (`request_scope`); never the oracle's tests. A refusal says how to ask. |
 | G-B4 | The evidence document names every `verification` command of the build with its exit code. |
 
 Its criteria, in order, by the tier's policy: `controller:verify` (§5.7), the review panel's
@@ -1043,9 +1061,11 @@ the caller's sandbox, change, ticket and role, and each request is answered for 
   else: a catalog that subscribes (the A2A listener, after a restart) is given every change's
   cards again. Each publication and withdrawal is a timeline event (`a2a`).
   * `orchestrator` – the controller itself, not a model, for as long as the change is active.
-    Its one skill: `ask_human` (a question to the decision owners: a blocking attention
+    Its skills: `ask_human` (a question to the decision owners: a blocking attention
     item, notified like a sign-off, answered in the UI or
-    `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task).
+    `POST /api/changes/<id>/questions/<task>/answer`; the answer completes the task) and
+    `request_scope` (a build asks for files outside its scope, §5.6: the same, decided with
+    `decision: approve | deny` – a denial with its reason).
   * `resolver` – the change's resolver agent (§5.16), for as long as the change is active.
   * one per **agent that has started** on a ticket, `<role>@<ticket>` (`implementer@T1`,
     `reviewer@review:T1`, `critic@critique`), while it has a sandbox – running, or stopped
