@@ -193,8 +193,19 @@ class ChangeTrace(NullTrace):
     @_guarded
     def tickets(self, tickets: Iterable[Any]) -> None:
         by_id = {str(t.id): t for t in tickets}
-        for tid, t in by_id.items():
-            self._ticket(tid, t, by_id)
+
+        def depth(tid: str) -> int:
+            n, t = 0, by_id.get(tid)
+            while t is not None and t.parent and n < len(by_id):
+                n, t = n + 1, by_id.get(str(t.parent))
+            return n
+
+        # those still open first, in order; then the closing ones, deepest first: a save that
+        # closes a ticket and its parent (its last subtask passed) ends the child's span first
+        closing = {tid for tid, t in by_id.items() if _text(t.status) in _CLOSED}
+        for tid in [*(x for x in by_id if x not in closing),
+                    *sorted(closing, key=depth, reverse=True)]:
+            self._ticket(tid, by_id[tid], by_id)
 
     def _ticket(self, tid: str, t: Any, by_id: Mapping[str, Any]) -> None:
         status, attempt = _text(t.status), int(getattr(t, "attempt", 0) or 0)

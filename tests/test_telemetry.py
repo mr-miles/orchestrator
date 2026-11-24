@@ -155,6 +155,22 @@ def test_a_parent_span_opens_before_its_child():
     assert t1.parent.span_id == r.one("grouping delivery").context.span_id
 
 
+def test_a_child_span_ends_before_its_parent_closed_in_the_same_save():
+    r = Rig()
+    r.tr.tickets([root(), tk("plan", "subtasks", type_="grouping"),
+                  tk("acceptance", "subtasks", parent="plan", type_="grouping"),
+                  tk("oracle", parent="acceptance")])
+    # the oracle passing finishes acceptance, which finishes plan: parents listed first
+    r.tr.tickets([root(), tk("plan", "passed", type_="grouping"),
+                  tk("acceptance", "passed", parent="plan", type_="grouping"),
+                  tk("oracle", "passed", parent="acceptance")])
+    ended = [s.name for s in r.spans]
+    assert ended == ["agent:implementer oracle", "grouping acceptance", "grouping plan"]
+    for child, parent in (("agent:implementer oracle", "grouping acceptance"),
+                          ("grouping acceptance", "grouping plan")):
+        assert r.one(child).end_time <= r.one(parent).end_time
+
+
 def test_status_changes_are_events_with_the_attempt():
     r = Rig()
     r.tr.tickets([root(), tk("T1")])
