@@ -161,8 +161,10 @@ async def _drive(ce):
     await _wait(ce, lambda: ce.change.status == "READY", "publication")
     assert t["T1"].attempt == 2                 # review FAIL -> rework
     assert t["T2"].attempt == 2                 # verification FAIL -> rework
+    # T3's out-of-scope change never left its sandbox: the hub refused the push (G-B3 at push,
+    # checked by the agent), so its one report was in scope
     t3_runs = [ce.runs[r] for r in t["T3"].runs]
-    assert any(any(v.startswith("G-B3") for v in vs) for r in t3_runs for vs in r.violations)
+    assert not any(v.startswith("G-B3") for r in t3_runs for vs in r.violations for v in vs)
     assert all(x.status == "passed" for x in t.values() if x.id != "scaffold"
                and x.parent != "scaffold") and t["scaffold"].status == "cancelled"
 
