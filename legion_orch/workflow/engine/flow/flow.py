@@ -142,8 +142,8 @@ class TicketFlow:
 
     async def sync(self, work: Work) -> str | None:
         """``controller:sync`` (its port): the workspace synced, the change's base – whether
-        the repository is blank, its setup pin (not in a blank repository, where what a setup
-        needs does not exist yet) – and the runner told it. A change that has its base keeps
+        the repository is blank, its mise.toml (recorded for information) – and the runner told
+        it. A change that has its base keeps
         it. None when done; why the hub cannot follow its source, else (an outage raises)."""
         c = self.c
         if c.change.base_sha:
@@ -154,16 +154,17 @@ class TicketFlow:
         except WorkspaceUnsynced as e:
             return f"workspace {c.change.workspace}: {e}"
         blank = is_blank_tree(await c.git.tree_paths(base))
-        pin = None if blank else await setup.pin_at_base(c.git, base)
+        mise = await setup.blob_at(c.git, base)
         tools = {} if blank else setup.tools_at(await setup.read_at(c.git, base))
         async with c.lock:
             ch = c.change
-            ch.base_sha, ch.blank_repo, ch.setup_pin = base, blank, pin
+            ch.base_sha, ch.blank_repo, ch.base_mise = base, blank, mise
             ch.base_tools = tools
             await c.git.init_integration(c.cid, base)
             c.write_record("control/workspace.json", {
                 "workspace": ch.workspace, "source": c.git.source,
-                "base_branch": c.git.base_branch, "base": base, "blank_repo": blank})
+                "base_branch": c.git.base_branch, "base": base, "blank_repo": blank,
+                "mise_toml": mise})
             c.event("workspace", f"{ch.workspace} synced: the change is based on {base[:12]}"
                     + (" (a blank repository: the plan's scaffold sets the project up)"
                        if blank else ""), work.ticket.id)

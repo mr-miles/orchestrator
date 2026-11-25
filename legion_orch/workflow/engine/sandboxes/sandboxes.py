@@ -25,7 +25,7 @@ from ....sandbox import (
 from ...assets import GitMode
 from ...environment import VERIFIER
 from ...model import LIVE_RUN, Change, Run, RunStage
-from ...setup import SETUP_COMMAND
+from ...setup import SETUP_COMMAND, runs_setup_at
 from ...tickets import Ticket
 from ..base.auth import VerifierGrant
 from ..base.core import ChangeCore
@@ -293,44 +293,45 @@ class Sandboxes:
         """The commands preparing an agent's working copy. A role that pushes works on its
         branch – from its tip on the hub if earlier runs pushed it, else from its base; every
         other role gets its commit checked out detached. Roles that work with a commit then run
-        the repository's setup (§5.3c), which may fail: the agent still starts (it may work
-        around it, and verification runs the setup again)."""
+        the repository's setup (§5.3c), when that commit's mise.toml has one, which may fail:
+        the agent still starts (it may work around it, and verification runs the setup
+        again)."""
         role = self.c.assets.roles[run.role]
         if not role.repo:
             return []
         cmds: list[Command] = [Script("clone the repository", PREPARE, True, "clone.sh",
                                       in_work=False)] if fresh else []
         if run.branch:
-            start = await self.c.git.ref_sha(f"refs/heads/{run.branch}") or run.base_sha
-            cmds.append(Script(f"check out branch {run.branch} at {start[:12]}", PREPARE, True,
-                               "branch.sh", (run.branch, start)))
+            sha = await self.c.git.ref_sha(f"refs/heads/{run.branch}") or run.base_sha
+            cmds.append(Script(f"check out branch {run.branch} at {sha[:12]}", PREPARE, True,
+                               "branch.sh", (run.branch, sha)))
         else:
             sha = run.judged_sha or run.base_sha
             cmds.append(Script(f"check out {sha[:12]} (detached)", PREPARE, True, "checkout.sh",
                                (sha,)))
-        pin = self.c.change.setup_pin
-        if pin and role.git != GitMode.NONE and not self.c.setup_waits_for_scaffold():
-            cmds.append(self.setup(pin.blob, required=False))
+        if role.git != GitMode.NONE and not self.c.setup_waits_for_scaffold() \
+                and await runs_setup_at(self.c.git, sha):
+            cmds.append(self.setup(required=False))
         return cmds
 
-    def setup(self, pin: str, *, required: bool) -> Script:
-        """The repository's setup at the checkout (G-MS1: only the pinned mise.toml)."""
-        return Script(SETUP_COMMAND, SETUP, required, "mise-setup.sh", (pin,),
+    def setup(self, *, required: bool) -> Script:
+        """The repository's setup at the checkout: its own mise.toml's ``setup`` task (§5.3c)."""
+        return Script(SETUP_COMMAND, SETUP, required, "mise-setup.sh",
                       timeout=self.c.cfg.limits.setup_timeout_s)
 
-    def verifier_work(self, name: str, label: str, sha: str, commands: tuple[str, ...],
-                      in_new_build: bool = False) -> Work:
+    async def verifier_work(self, name: str, label: str, sha: str, commands: tuple[str, ...],
+                            in_new_build: bool = False) -> Work:
         """A verification: a fresh verifier sandbox checked out at ``sha`` (the same steps as an
-        agent's detached checkout), the repository's setup (§5.3c, G-V3: a failure stops here),
+        agent's detached checkout), the setup of its mise.toml if it has one (§5.3c; G-V3: a
+        failure stops here),
         then each command – all of them, whatever their exit codes. It starts once the
         verifier's environment is built – but ``in_new_build`` (provisioning's own check runs in
         the build it checks)."""
         timeout = self.c.cfg.limits.verify_timeout_s
-        pin = self.c.change.setup_pin
         cmds: list[Command] = [Script("clone.sh", PREPARE, True, "clone.sh", in_work=False),
                                Script("checkout.sh", PREPARE, True, "checkout.sh", (sha,))]
-        if pin:
-            cmds.append(self.setup(pin.blob, required=True))
+        if await runs_setup_at(self.c.git, sha):
+            cmds.append(self.setup(required=True))
         cmds += [Shell(cmd, COMMAND, False, timeout=timeout) for cmd in commands]
         ready = None if in_new_build else (lambda: self.environment_built(VERIFIER))
         return Work(VerifierSession(self, name, label), cmds, ready=ready)

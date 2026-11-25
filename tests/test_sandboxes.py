@@ -10,10 +10,11 @@ import json
 import pytest
 from engine_harness import Flow, scenario
 
+from legion_orch.git.branches import Branches, integration_branch
 from legion_orch.sandbox import SandboxError
 from legion_orch.workflow.engine.sandboxes.plan import plan_for
 from legion_orch.workflow.engine.sandboxes.sandboxes import Sandboxes
-from legion_orch.workflow.model import R_ACTIVE, R_REPORTED, ChangeStatus, Run, SetupPin
+from legion_orch.workflow.model import R_ACTIVE, R_REPORTED, ChangeStatus, Run
 from legion_orch.workflow.tickets import Status, Ticket
 
 SHA = "a" * 40
@@ -25,8 +26,9 @@ def sb(f: Flow) -> Sandboxes:
 
 
 def make_run(f: Flow, role: str, *, ticket: str = "T9", sandbox: str = "sb-t9", **kw) -> Run:
+    kw.setdefault("base_sha", SHA)
     run = Run(id=f"r{9000 + len(f.ce.runs)}", ticket=ticket, role=role, soul="s", attempt=1,
-              base_sha=SHA, sandbox=sandbox, **kw)
+              sandbox=sandbox, **kw)
     f.ce.runs[run.id] = run
     return run
 
@@ -103,16 +105,37 @@ async def test_a_pushing_role_works_on_its_branch_from_its_base_or_hub_tip(f: Fl
         [["branch.sh", "legion/t9", tip]]
 
 
+SETUP_TOML = '[tasks.setup]\nrun = "uv sync --locked"\n'
+
+
+async def with_mise(f: Flow, text: str = SETUP_TOML) -> str:
+    """A commit on the integration branch whose mise.toml is ``text``."""
+    return await Branches(f.ce.git).commit_file(integration_branch(f.ce.cid), "mise.toml", text,
+                                                "mise.toml")
+
+
 @scenario()
-async def test_setup_runs_only_with_a_pin_for_roles_that_use_a_commit(f: Flow):
-    f.ce.change.setup_pin = SetupPin(blob="c" * 40, source="base")
-    impl = await sb(f).checkout(make_run(f, "implementer", branch="legion/t9"), fresh=True)
-    assert scripts(impl)[-1] == ["mise-setup.sh", "c" * 40]
+async def test_setup_runs_where_the_commit_has_a_setup_task_for_roles_that_use_a_commit(f: Flow):
+    at = await with_mise(f)
+    impl = await sb(f).checkout(make_run(f, "implementer", branch="legion/t9", base_sha=at),
+                                fresh=True)
+    assert scripts(impl)[-1] == ["mise-setup.sh"]
     assert impl[-1].kind == "setup" and not impl[-1].required   # a failure does not stop it
-    intake = await sb(f).checkout(make_run(f, "intake"), fresh=True)   # git: none
+    judge = await sb(f).checkout(make_run(f, "reviewer", judged_sha=at), fresh=True)
+    assert scripts(judge)[-1] == ["mise-setup.sh"]
+    intake = await sb(f).checkout(make_run(f, "intake", base_sha=at), fresh=True)  # git: none
     assert "mise-setup.sh" not in [s[0] for s in scripts(intake)]
+    plain = await sb(f).checkout(make_run(f, "implementer", branch="legion/t8"), fresh=True)
+    assert "mise-setup.sh" not in [s[0] for s in scripts(plain)]     # no mise.toml at its base
+    tools_only = await with_mise(f, '[tools]\npython = "3.12"\n')
+    run = make_run(f, "implementer", branch="legion/t7", base_sha=tools_only)
+    assert "mise-setup.sh" not in [s[0] for s in scripts(await sb(f).checkout(run, fresh=True))]
+    broken = await with_mise(f, "[tasks.setup\n")         # does not parse: run, and seen to fail
+    run = make_run(f, "implementer", branch="legion/t6", base_sha=broken)
+    assert scripts(await sb(f).checkout(run, fresh=True))[-1] == ["mise-setup.sh"]
     f.ce.change.blank_repo = True                     # until the scaffold is accepted
-    impl = await sb(f).checkout(make_run(f, "implementer", branch="legion/t9"), fresh=True)
+    impl = await sb(f).checkout(make_run(f, "implementer", branch="legion/t5", base_sha=at),
+                                fresh=True)
     assert "mise-setup.sh" not in [s[0] for s in scripts(impl)]
 
 
@@ -154,9 +177,8 @@ async def test_a_failed_checkout_stops_the_preparation(f: Flow):
 
 @scenario()
 async def test_a_failed_setup_is_logged_and_the_preparation_goes_on(f: Flow):
-    f.ce.change.setup_pin = SetupPin(blob="c" * 40, source="base")
-    f.runner.commands["c" * 40] = (1, "mise: no such task\n")
-    run = make_run(f, "implementer", branch="legion/t9")
+    f.runner.commands["mise-setup.sh"] = (1, "mise: no such task\n")
+    run = make_run(f, "implementer", branch="legion/t9", base_sha=await with_mise(f))
     build_ticket(f)
     outcome = await prepare(f, run)
     assert outcome.stopped is None and outcome.error is None
@@ -231,7 +253,7 @@ def grants(f: Flow) -> dict:
 
 @scenario()
 async def test_a_verifier_is_checked_out_and_removed_afterwards(f: Flow):
-    work = sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest -q",))
+    work = await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest -q",))
     seen = {}
     real = f.runner.exec
 
@@ -252,7 +274,7 @@ async def test_a_verifier_is_checked_out_and_removed_afterwards(f: Flow):
 @scenario()
 async def test_a_verifier_is_removed_when_its_checkout_fails(f: Flow):
     f.runner.setup_rc = 1
-    outcome = await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest",)).execute()
+    outcome = await (await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest",))).execute()
     assert outcome.stopped.command.label == "clone.sh" and len(outcome.steps) == 1
     assert f.runner.deleted == ["v-1"] and not grants(f)
 
@@ -260,7 +282,7 @@ async def test_a_verifier_is_removed_when_its_checkout_fails(f: Flow):
 @scenario()
 async def test_a_verifier_that_was_never_created_is_not_deleted(f: Flow):
     f.runner.fail_create = "verifier"
-    outcome = await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest",)).execute()
+    outcome = await (await sb(f).verifier_work("v-1", "T1", JUDGED, ("pytest",))).execute()
     assert outcome.error and f.runner.deleted == []
     assert not (f.ctl.svc.tmp / "verify" / "v-1").exists()
 

@@ -80,7 +80,8 @@ class FakeRunner(Runner):
         self.reflection_skills: dict[str, list[str]] = {}  # sandbox -> skills its reflection got
         self.reflection_text = "## Time sinks\nThe tests took long.\n"
         self.reflection_session: str | None = None     # set: the resume does not take
-        self.commands: dict[str, tuple[int, str]] = {}   # verification command -> (rc, output)
+        # verification command (or payload script name) -> (rc, output)
+        self.commands: dict[str, tuple[int, str]] = {}
         self.execs: list[tuple[str, list[str]]] = []      # (sandbox, argv) of every exec
         self.setup_rc = 0
         self.fail_create: str | None = None              # role whose sandbox creation fails
@@ -134,7 +135,9 @@ class FakeRunner(Runner):
         self.execs.append((name, list(argv)))
         if argv[1].endswith(("clone.sh", "checkout.sh", "branch.sh")):
             return self.setup_rc, "checked out\n"
-        return self.commands.get(argv[-1], (0, "ok\n"))
+        # a verification command by its text; a payload script (mise-setup.sh) by its name
+        found = self.commands.get(argv[-1]) or self.commands.get(argv[-1].rsplit("/", 1)[-1])
+        return found or (0, "ok\n")
 
     async def start_agent(self, name, log_file):
         log_file.parent.mkdir(parents=True, exist_ok=True)

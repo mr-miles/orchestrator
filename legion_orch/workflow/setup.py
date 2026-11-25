@@ -1,7 +1,10 @@
 """The repository's setup (WORKFLOW.md §5.3c): ``mise.toml``'s ``[tools]`` are installed when the
 environment's images are built, and its ``setup`` task runs after every checkout – in agent and
-verifier sandboxes alike – as ``mise run setup``. Only a pinned version runs (G-MS1): the one
-approved at H-E1, else the base branch's when the change started. No ``setup`` task: no setup."""
+verifier sandboxes alike – as ``mise run setup``, from the ``mise.toml`` of the commit checked
+out. That file is protected (``roles.base.guarded``) and the hub refuses a push that changes it
+without approval (G-B3 at push), so whatever a sandbox finds there was approved. No ``setup``
+task: no setup.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -9,7 +12,6 @@ import tomllib
 from typing import Any
 
 from ..git import GitRemote
-from .model import SetupPin
 
 MISE_TOML = "mise.toml"
 SETUP_COMMAND = "mise run setup"      # what the results show for the setup step
@@ -62,13 +64,6 @@ def blob_sha(text: str) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git's id
 
 
-def pin_for(text: str | None, source: str) -> SetupPin | None:
-    """A pin for this ``mise.toml`` content, or None when it has no ``setup`` task (no setup)."""
-    if text is None or not has_setup(text):
-        return None
-    return SetupPin(path=MISE_TOML, blob=blob_sha(text), source=source)
-
-
 async def read_at(git: GitRemote, sha: str) -> str | None:
     """``mise.toml`` at ``sha`` (None: there is none, or it is not text)."""
     data = await git.browse_blob(sha, MISE_TOML, MAX_BYTES)
@@ -80,10 +75,18 @@ async def read_at(git: GitRemote, sha: str) -> str | None:
         return None
 
 
-async def pin_at_base(git: GitRemote, sha: str) -> SetupPin | None:
-    """The base branch's setup when the change starts (trusted: written before the change)."""
+async def blob_at(git: GitRemote, sha: str) -> str | None:
+    """``mise.toml``'s blob at ``sha`` (None: there is none) – recorded, for information."""
+    return await git.blob(sha, MISE_TOML)
+
+
+async def runs_setup_at(git: GitRemote, sha: str) -> bool:
+    """Whether a sandbox checked out at ``sha`` runs the setup: its ``mise.toml`` has a
+    ``setup`` task. One that does not parse runs it too, so the failure is seen, not skipped."""
     text = await read_at(git, sha)
+    if text is None:
+        return False
     try:
-        return pin_for(text, "base")
+        return has_setup(text)
     except MiseError:
-        return None
+        return True

@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...git import PushScope
 from ..attest import FILE_RE, Attestation
 from ..model import Finding, Record, Run, Verdict
 from ..tickets import Ticket
@@ -67,6 +68,12 @@ class RoleHandler:
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         return []
+
+    def push_scope(self, e: RoleContext, run: Run) -> PushScope | None:
+        """The paths the run's pushes may change, counted from its base – the hub refuses a push
+        outside them (its report's guards check them again). None: any path. A role that pushes
+        (``git: commit``) must say: the controller refuses to start if it does not."""
+        return None
 
     async def on_done(self, e: RoleContext, r: Report) -> Said:
         """Default: the work is done (its outputs and commit are the report's)."""
@@ -133,10 +140,13 @@ def oracle_paths(e: RoleContext, oracle: dict | None = None) -> list[str]:
 
 
 def guarded(e: RoleContext) -> list[str]:
-    """The operator's protected paths, and ``mise.toml`` while the environment pins a setup
-    (§5.3c): a build changes one only when a decision owner approved it (request_scope)."""
+    """The operator's protected paths, and ``mise.toml`` once the change has one – the base's,
+    or the one the environment approved (§5.3c): every sandbox runs its setup task, so a build
+    changes one only when a decision owner approved it (request_scope). A blank repository's
+    scaffold may still create it."""
     env = _json(pointer(e, "environment"))
-    return [*e.cfg.protected_paths, *([MISE_TOML] if env.get("mise") or e.change.setup_pin else [])]
+    mise = env.get("mise") or e.change.base_mise
+    return [*e.cfg.protected_paths, *([MISE_TOML] if mise else [])]
 
 
 def protected(e: RoleContext, oracle: dict | None = None) -> list[str]:

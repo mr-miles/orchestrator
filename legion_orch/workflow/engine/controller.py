@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from ...bus import Bus, DocWritten, Pushed
 from ...config import Config
-from ...git import GitRemote
+from ...git import GitRemote, PushScope
 from ...identity import WorkloadBinding
 from ...notify import Notifier
 from ...sandbox import (
@@ -29,7 +29,7 @@ from ...store.journal import Journal
 from ...store.state_tables import StateTables
 from ...telemetry import Telemetry
 from ...util import stop_process
-from ..assets import DEFAULT_WORKFLOW, Assets
+from ..assets import DEFAULT_WORKFLOW, Assets, GitMode
 from ..attention import AttentionItem
 from ..environment import Library
 from ..model import (
@@ -38,6 +38,7 @@ from ..model import (
     Verification,
 )
 from ..roles import REGISTRY as ROLE_HANDLERS
+from ..roles.base import RoleHandler
 from .base.auth import WorkloadAuth
 from .base.common import WorkflowError, log
 from .base.dispatch import Dispatcher, PriorityCap
@@ -66,11 +67,14 @@ class Controller:
         unhandled = set(assets.roles) - set(ROLE_HANDLERS)
         if unhandled:
             raise RuntimeError(f"roles without a handler in workflow/roles/: {sorted(unhandled)}")
+        if unscoped := sorted(r for r, role in assets.roles.items() if role.git == GitMode.COMMIT
+                              and type(ROLE_HANDLERS[r]).push_scope is RoleHandler.push_scope):
+            raise RuntimeError(f"roles that push without a push_scope in workflow/roles/: {unscoped}")
         if wrong := cfg.models.unknown(assets.roles, assets.souls()):
             raise RuntimeError("; ".join(wrong))
         self.changes: dict[str, ChangeEngine] = {}
         self.bus = Bus(self.spawn)          # notifications between components (bus.py)
-        self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of)
+        self.auth = WorkloadAuth(cfg, self._runs_by_change, self._workspace_of, self._push_scope)
         runner = runner or make_runner(cfg, self.auth.dev_gateway if self.auth.dev_spire else None)
         lock = threading.RLock()            # the database's (documents and state tables)
         self.svc = Services(
@@ -359,6 +363,13 @@ class Controller:
                 if v.sandbox == log_id or (v.result and v.result.log == log_id):
                     return ce, v.result
         raise WorkflowError(f"unknown run {log_id}")
+
+    def _push_scope(self, cid: str, run: Run) -> PushScope | None:
+        """The paths ``run`` may push: its role's rule, as its change stands now."""
+        ce = self.changes.get(cid)
+        if ce is None:                                   # no change: nothing is in scope
+            return PushScope("G-B3", run.base_sha)
+        return ROLE_HANDLERS[run.role].push_scope(ce, run)
 
     def _runs_by_change(self):
         for ce in self.changes.values():

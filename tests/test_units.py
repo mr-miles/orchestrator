@@ -710,7 +710,7 @@ def test_protected_support_files_are_protected():
     import types
 
     from legion_orch.workflow.roles.base import protected
-    e = types.SimpleNamespace(change=types.SimpleNamespace(setup_pin=None),
+    e = types.SimpleNamespace(change=types.SimpleNamespace(base_mise=None),
                               cfg=types.SimpleNamespace(protected_paths=[".github/"]),
                               tickets=types.SimpleNamespace(root=types.SimpleNamespace(pointers={})))
     assert protected(e, support) == ["tests/acc/test_a.py", "tests/acc/conftest.py", ".github/"]

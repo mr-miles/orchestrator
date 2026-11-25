@@ -2,7 +2,9 @@
 its evidence naming its verification (G-B4)."""
 from __future__ import annotations
 
+from ...git import PushScope
 from .. import guards, scope
+from ..model import Run
 from ..view import RoleContext
 from .base import Report, RoleHandler, output, register
 
@@ -17,3 +19,9 @@ class Implementer(RoleHandler):
         v = scope.guard(e, e.tickets.t.get(r.ticket.id, r.ticket), changed)
         return v + guards.evidence_mentions(output(e, r, "evidence") or "",
                                             list(work.get("verification", [])))
+
+    def push_scope(self, e: RoleContext, run: Run) -> PushScope:
+        t = e.tickets.t.get(run.ticket)
+        if t is None:                                   # no ticket: nothing is in its scope
+            return PushScope("G-B3", run.base_sha)
+        return scope.push_scope(e, t, run.base_sha)

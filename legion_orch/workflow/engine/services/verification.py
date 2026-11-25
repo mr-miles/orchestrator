@@ -1,7 +1,8 @@
 """Verification as a service: a commit's commands run in a fresh verifier sandbox once per key.
 
-A verification's **key** is everything that decides its outcome – the commit, the commands, the
-repository's setup pin (§5.3c), the verifier image and the timeout. A passed or failed run is the
+A verification's **key** is everything that decides its outcome – the commit (which fixes the
+repository's setup too: its own mise.toml, §5.3c), the commands, the verifier image and the
+timeout. A passed or failed run is the
 key's result for good: whoever asks again – the step's Verify phase, an agent over MCP, a later
 check at an unchanged head – gets it without a new sandbox. An infrastructure error is not a
 result: the next request runs again (a new attempt). Requests for a key that is queued or
@@ -47,14 +48,12 @@ STEP, HEAD_CHECK, PUSH, AGENT = 0, 1, 2, 3
 class VerificationKey:
     sha: str
     commands: tuple[str, ...]
-    setup_pin: str | None
     image: str | None
     timeout_s: int
 
     @property
     def hash(self) -> str:
-        blob = json.dumps([self.sha, list(self.commands), self.setup_pin, self.image,
-                           self.timeout_s])
+        blob = json.dumps([self.sha, list(self.commands), self.image, self.timeout_s])
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
@@ -100,7 +99,6 @@ class Verifications:
         env = sandbox_env(ch, VERIFIER)
         image = (env.image if env and env.image else None) or sc.verifier_image or sc.image
         return VerificationKey(sha=sha, commands=tuple(commands),
-                               setup_pin=ch.setup_pin.blob if ch.setup_pin else None,
                                image=image, timeout_s=self.c.cfg.limits.verify_timeout_s)
 
     def latest(self, key: VerificationKey) -> VerificationRun | None:
@@ -130,7 +128,7 @@ class Verifications:
         attempt = cur.attempt + 1 if cur is not None else 1
         run = VerificationRun(id=f"v-{key.hash}" + (f"-{attempt}" if attempt > 1 else ""),
                               key=key.hash, sha=key.sha, commands=list(key.commands),
-                              setup_pin=key.setup_pin, image=key.image, timeout_s=key.timeout_s,
+                              image=key.image, timeout_s=key.timeout_s,
                               node=node, branch=branch, attempt=attempt, requested_by=[by],
                               priority=priority)
         self.c.change.verifications[run.id] = run
@@ -174,7 +172,7 @@ class Verifications:
         slot, so a holder always gets on – then the verifier."""
         fut = self._futures[run.id]
         try:
-            if not key.commands and not key.setup_pin:
+            if not key.commands:
                 res = Verification(sha=key.sha, infra_error="no commands to verify")
             else:
                 res = await self._dispatched(run, key)
@@ -269,7 +267,7 @@ class _Capped:
                 for tell in svc._watchers.get(run.id, []):
                     tell(name)
                 c.save()
-            work = svc.sandboxes.verifier_work(name, run.node or run.id, key.sha, key.commands)
+            work = await svc.sandboxes.verifier_work(name, run.node or run.id, key.sha, key.commands)
             log = c.run_dir(name) / "agent.log"
             log.parent.mkdir(parents=True, exist_ok=True)
 

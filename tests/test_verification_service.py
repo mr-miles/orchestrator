@@ -12,7 +12,7 @@ from engine_harness import TASKS, Flow, scenario
 from legion_orch.git import GitGrant
 from legion_orch.workflow.engine import WorkflowError
 from legion_orch.workflow.engine.base.dispatch import PriorityCap
-from legion_orch.workflow.model import SetupPin, VerificationState
+from legion_orch.workflow.model import VerificationState
 
 CMD = TASKS[0]["verification"][0]
 
@@ -57,15 +57,12 @@ async def test_the_key_holds_everything_that_decides_the_outcome(f: Flow):
     base = svc.key("a" * 40, ("pytest",))
     assert svc.key("a" * 40, ("pytest",)).hash == base.hash
     others = [svc.key("b" * 40, ("pytest",)), svc.key("a" * 40, ("pytest", "ruff"))]
-    f.ce.change.setup_pin = SetupPin(blob="c" * 40, source="base")
-    others.append(svc.key("a" * 40, ("pytest",)))
-    f.ce.change.setup_pin = None
     f.cfg.limits.verify_timeout_s += 1
     others.append(svc.key("a" * 40, ("pytest",)))
     f.cfg.limits.verify_timeout_s -= 1
     f.cfg.sandbox.verifier_image = "reg/other:1"
     others.append(svc.key("a" * 40, ("pytest",)))
-    assert len({k.hash for k in others} | {base.hash}) == 6
+    assert len({k.hash for k in others} | {base.hash}) == 5     # the sha fixes the setup
 
 
 @scenario()

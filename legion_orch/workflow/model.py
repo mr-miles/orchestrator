@@ -173,13 +173,13 @@ V_LIVE = {VerificationState.QUEUED, VerificationState.RUNNING}
 
 class VerificationRun(Record):
     """One verification of the service (services/verification.py): ``commands`` at ``sha`` with
-    the setup pin, verifier image and timeout of its key. A passed or failed run is the key's
-    result for good (once per sha); requests for it later are served from it."""
+    the verifier image and timeout of its key (the sha fixes the setup: its own mise.toml). A
+    passed or failed run is the key's result for good (once per sha); requests for it later are
+    served from it."""
     id: str                          # v-<hash of the key>[-<attempt>]
     key: str                         # the key's hash
     sha: str
     commands: list[str] = []
-    setup_pin: str | None = None
     image: str | None = None
     timeout_s: int = 0
     node: str | None = None          # the step whose commands they are
@@ -367,13 +367,6 @@ class EnvironmentBuild(Record):
     attestation: str | None = None        # the stored build record
 
 
-class SetupPin(Record):
-    """The repository setup the controller trusts (§5.3c, G-MS1): ``mise.toml``'s blob."""
-    path: str = "mise.toml"
-    blob: str
-    source: str                       # base (the base branch at change start) | H-E1
-
-
 class AgentQuestion(Record):
     """A question an agent asked the human through the change's orchestrator card (A2A
     ``ask_human``). Its id is the A2A task's; answering it completes that task. Open questions
@@ -428,7 +421,9 @@ class Change(Record):
     risk: RiskAssessment | None = None
     ended: ChangeEnd | None = None                        # abandoned or rejected: by, where, why
     environment: EnvironmentBuild | None = None           # provisioned after H-E1
-    setup_pin: SetupPin | None = None                     # None: no setup task, nothing runs
+    # mise.toml's blob at the base (None: there is none) – for information: a sandbox runs the
+    # setup of the mise.toml at the commit it checks out, which only a permitted push wrote
+    base_mise: str | None = None
     completed: bool = False          # ended, and its on-complete process (retrospective) done
     cleaned_at: str | None = None    # ended, retrospective done: branches and images removed
     pruned_at: str | None = None     # a human removed the integration branch and evidence refs
