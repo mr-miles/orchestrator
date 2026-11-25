@@ -279,4 +279,14 @@ export interface EnvironmentSpec {
   proposals: { tools: string[]; policies: string[] }
   network: Record<string, { policy: string; tools: string[]; hosts: string[] }[]>
   problems: string[]
+  /** each tool's version – the same in every image – and where it comes from: the mise.toml
+   * that runs, this change's earlier provisioning (kept), or the latest (null: looked up when
+   * the environment is provisioned) */
+  versions?: {
+    tool: string
+    version: string | null
+    source: 'mise.toml' | 'kept' | 'latest'
+    in_mise_toml: boolean
+    provisioned: boolean
+  }[]
 }

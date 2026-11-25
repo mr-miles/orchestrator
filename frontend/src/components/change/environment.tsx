@@ -87,6 +87,46 @@ export function EnvironmentSpec({ env }: { env: Spec | null }) {
           ))}
         </TableBody>
       </Table>
+      {(env.versions ?? []).length > 0 && (
+        <section className="space-y-1" aria-label="Tool versions">
+          <h4 className="font-medium">Tool versions – every image</h4>
+          <p className="text-muted-foreground">
+            Every sandbox image has every tool, at one version each: the version the{' '}
+            <code>mise.toml</code> that runs gives it, else its latest (looked up once, when the
+            environment is provisioned).
+          </p>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Tool</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>From</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(env.versions ?? []).map((v) => (
+                <TableRow key={v.tool}>
+                  <TableCell className="font-mono">{v.tool}</TableCell>
+                  <TableCell className="font-mono">
+                    {v.version ?? <Muted>latest, at provisioning</Muted>}
+                  </TableCell>
+                  <TableCell>
+                    {v.source === 'mise.toml' ? (
+                      <Badge variant="secondary">mise.toml</Badge>
+                    ) : v.source === 'kept' ? (
+                      <Badge variant="secondary">kept from this change</Badge>
+                    ) : (
+                      <Badge variant="outline" title="not in the mise.toml">
+                        new: latest
+                      </Badge>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </section>
+      )}
       {spec.mise && (
         <section className="space-y-1" aria-label="Repository setup">
           <h4 className="font-medium">

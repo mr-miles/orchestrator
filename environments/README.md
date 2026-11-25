@@ -20,7 +20,7 @@ an existing entry. Review promoted files like code: every change can then use th
 
 ```yaml
 description: CPython (python, python3, pip)      # shown to the planner
-mise: {python: "3.12"}                            # mise tool id -> default version
+mise: {python: "3.12"}                            # mise tool id (the version is not used)
 apt: [libpq-dev]                                  # optional Debian packages mise cannot provide
 binaries: ["bin/python*", "bin/pip*"]             # the executables that use the network
 network: []                                       # policies the tool needs (uv: [pypi])
@@ -29,8 +29,11 @@ env: {PIP_CACHE_DIR: /tmp/pip-cache}              # optional image ENV for sandb
 
 * `mise` takes any tool mise can install: core tools (`python`, `node`, `go`, `java`, `rust`),
   and backends such as `npm:<pkg>`, `pipx:<pkg>`, `cargo:<crate>`, `aqua:<owner/repo>`,
-  `ubi:<owner/repo>`. A spec may pin a single-tool entry with `name@version`. A tool from a
-  system package has `apt` and no `mise` (see `git.yaml`, `curl.yaml`).
+  `ubi:<owner/repo>`. A tool from a system package has `apt` and no `mise` (see `git.yaml`,
+  `curl.yaml`). **The version here is not used:** a change's versions are decided once, at
+  provisioning – the `mise.toml` that runs (the repository's, or the plan's) gives a tool's,
+  else it is the latest – recorded in `control/environment/mise.toml`, and the same in every
+  image. A spec names tools, never versions.
 * Tools are installed at image build time into `/usr/local/share/mise` (read-only in every
   sandbox) and are on `PATH` through mise's shims; mise's cache and state are under `/tmp`.
 * `binaries` is **the one place a tool's executable paths are written.** Paths are relative to

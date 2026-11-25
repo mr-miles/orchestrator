@@ -91,8 +91,9 @@ describe('the operator UI', () => {
     const tree = await screen.findByRole('list', { name: 'Tickets' })
     const rows = within(tree)
       .getAllByRole('button')
+      .filter((b) => !b.hasAttribute('aria-expanded'))
       .map((b) => b.querySelector('.font-mono')?.textContent)
-    expect(rows).toEqual(['change', 'workspace', 'requirements', 'intake', 'H-1', 'plan', 'design'])
+    expect(rows).toEqual(['change', 'workspace', 'requirements', 'intake', 'H-1', 'plan'])
     expect(within(tree).getByText('sign-off due')).toBeTruthy()
     expect(within(tree).getByLabelText('criterion')).toBeTruthy()
   })
@@ -103,7 +104,7 @@ describe('the operator UI', () => {
     renderApp()
     await push()
     const tree = await screen.findByRole('list', { name: 'Tickets' })
-    await userEvent.click(within(tree).getByRole('button', { name: /H-1/ }))
+    await userEvent.click(within(tree).getByText('H-1', { selector: '.font-mono' }))
     const sheet = await screen.findByRole('dialog')
     expect(within(sheet).getByText('Sign-off due')).toBeTruthy()
     expect(
@@ -331,6 +332,53 @@ describe('the operator UI', () => {
         payload: { reason: 'checked by hand' },
       }),
     )
+  })
+
+  test('a waiting build can be restarted after a confirmation; grouping and empty ones cannot', async () => {
+    localStorage.setItem('approver', 'miles')
+    calls = fakeFetch({
+      '/api/changes/c1/tickets/T1/action': { status: 'pending' },
+      '/api/changes': CHANGES,
+    })
+    location.hash = '#c1/overview/T1'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    await act(async () => {
+      es.open()
+      es.emit('state', stateWaiting())
+    })
+    const sheet = await screen.findByRole('dialog')
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Restart' }))
+    const confirm = await screen.findByRole('alertdialog', { name: 'Restart T1' })
+    expect(within(confirm).getByText(/branch and sandboxes are deleted/)).toBeTruthy()
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Restart' }))
+    await waitFor(() =>
+      expect(calls.find((c) => c.url === '/api/changes/c1/tickets/T1/action')?.body).toEqual({
+        action: 'restart',
+        approver: 'miles',
+        payload: {},
+      }),
+    )
+  })
+
+  test.each([
+    ['a grouping ticket', { type: 'grouping', subtasks: [['A']] }],
+    ['an empty one', { waiting: 'empty' }],
+  ] as const)('restart is not offered on %s', async (_name, patch) => {
+    location.hash = '#c1/overview/T1'
+    renderApp()
+    const es = await waitFor(() => FakeEventSource.last('/api/changes/c1/events'))
+    const s = stateWaiting()
+    await act(async () => {
+      es.open()
+      es.emit('state', {
+        ...s,
+        tickets: s.tickets.map((t) => (t.id === 'T1' ? { ...t, ...patch } : t)),
+      })
+    })
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByRole('button', { name: 'Replan' })).toBeTruthy()
+    expect(within(sheet).queryByRole('button', { name: 'Restart' })).toBeNull()
   })
 
   test('the change is paused and resumed from the tickets tab', async () => {

@@ -132,3 +132,18 @@ async def test_a_replan_proposal_needs_a_plan_that_replaces_or_repairs_the_ticke
     assert p.action == "replan" and p.payload["plan"]["fail"] == ["intake"]
     turns = [r for r in f.ce.runs.values() if r.role == "resolver"]
     assert len(turns) == 3                       # the first two were returned, each a new turn
+
+
+@scenario()
+async def test_restart_is_offered_for_a_waiting_build_and_not_a_grouping_ticket(f: Flow):
+    from legion_orch.workflow.engine.services.resolver import remedies
+    await f.to_build()
+    await f.implement()
+    await f.review(verdict="FAIL")
+    await f.implement()
+    await f.review(verdict="FAIL")
+    assert f.ticket("T1").waiting == "repeated"
+    assert "restart" in remedies(f.ce, f.ticket("T1"))
+    d = f.ticket("delivery")
+    d.status, d.waiting = "waiting", "escalated"                     # a grouping ticket waits
+    assert "restart" not in remedies(f.ce, d) and "replan" in remedies(f.ce, d)

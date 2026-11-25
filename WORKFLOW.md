@@ -690,17 +690,32 @@ from the signed spec version and never overwrites a library entry.
 
 | ID | Rule |
 | --- | --- |
-| G-E1 | The planner's report names the latest `environment`. Every profile's tools, and the network policies they bring or the profile adds per tool, resolve to a library entry or a proposal (proposals may not shadow library names; `name@version` only for single-tool entries); every policy in use is reachable by at least one binary of the tools using it; every mapped profile exists; no two tools of a profile set the same environment variable to different values. |
+| G-E1 | The planner's report names the latest `environment`. Every profile's tools, and the network policies they bring or the profile adds per tool, resolve to a library entry or a proposal (proposals may not shadow library names; a profile names tools, never versions – `name@version` is refused: versions come from the `mise.toml`, §5.3b); every policy in use is reachable by at least one binary of the tools using it; every mapped profile exists; no two tools of a profile set the same environment variable to different values. |
 | G-E2 | No network-policy endpoint targets the controller host (`server.public_host`, `server.token_host`) or loopback, and no tool environment variable has a credential-like name (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`, …): the image environment is readable by every agent. Network policies cannot carry credentials (the schema has no field for them). |
 | G-E3 | Requested resources are within `environment.max_memory_mib`, `max_vcpus`, `max_disk_mib`. |
 | G-E4 | Only roles that run after provisioning, and `verifier`, are mapped (`intake`, `planner`, `critic` always use the default sandbox). |
-| G-E8 | A proposed `mise` (§5.3c) parses; every profile of a role that runs the setup (those that work with a commit), and the verifier's, installs its `[tools]` at compatible versions (mise never installs at run time); when it has a `setup` task, each of those profiles has the `setup_network` policies. |
+| G-E8 | The `mise.toml` the sandboxes will run – a proposed `mise` (§5.3c), else the repository's at the change's base – parses; every tool in its `[tools]` is provided by the spec's tools (every image installs them all, at the versions it gives); when it has a `setup` task, every profile of a role that runs the setup (those that work with a commit), and the verifier's, has the `setup_network` policies. |
 
 ### 5.3b `controller:provision` – the environment, built (`plan` ▸ `provision`)
 
 The signed-off `environment` (the pointer H-E1 moved) is resolved against the library again and
-built: one image per (profile, base image) – `FROM sandbox.image` for agents, `FROM
-sandbox.verifier_image` for the verifier – with the profile's tools installed by mise under
+built.
+
+**One tool set, one version each, for the whole change.** Every image installs every tool of
+every profile – profiles differ in network and resources, not tools – at one version per tool,
+decided once: the version the `mise.toml` that runs gives it (the approved `mise`, else the
+repository's at the change's base, whose `[tools]` the change records when it syncs); else this
+change's earlier provisioning's (a revised environment keeps its versions); else the tool's
+latest, looked up with `mise latest` in an image of the environment images' own first layers –
+the base image and the pinned mise (`environment.mise_version`) – so no tool is needed on the
+host. The versions are written to `control/environment/mise.toml` (attested), which each image
+installs as its `/etc/mise/config.toml`, and recorded per tool in the build record with where
+each came from (`mise.toml`, `kept`, `latest` and when). The library's and the spec's versions are
+not used: the spec names tools only. The UI shows each tool's version and source at H-E1 (what
+provisioning will decide) and after the build.
+
+One image per base image – `FROM sandbox.image` for agents, `FROM
+sandbox.verifier_image` for the verifier – with the tools installed by mise under
 `/usr/local/share/mise` (read-only in every sandbox) and their `env` settings as image `ENV`, via
 `podman build`, tagged per change and recipe (`localhost/legion-env:<change>-<recipe hash>`, or
 pushed to `environment.registry`) and labelled `org.legion.change` / `org.legion.recipe`. Roles of

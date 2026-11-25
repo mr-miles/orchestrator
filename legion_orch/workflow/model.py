@@ -349,10 +349,19 @@ class RoleEnvironment(Record):
     driver_config: str | None = None      # --driver-config-json (disk)
 
 
+class ToolVersionRecord(Record):
+    """A tool's version in every image of the change, and where it came from."""
+    version: str
+    source: str                           # mise.toml | kept | latest
+    resolved_at: str | None = None        # (latest) when it was looked up
+
+
 class EnvironmentBuild(Record):
     """The provisioned environment: what each mapped role's sandboxes are created with."""
     spec: str                             # attestation of the approved environment.json
     roles: dict[str, RoleEnvironment] = {}    # role (or "verifier") -> its environment
+    tools: dict[str, ToolVersionRecord] = {}  # mise tool -> its version, the same in every image
+    mise: str | None = None               # attestation of control/environment/mise.toml
     log: str | None = None                # attestation of the build log
     at: str = Field(default_factory=now_iso)
     attestation: str | None = None        # the stored build record
@@ -414,6 +423,7 @@ class Change(Record):
     base_sha: str | None = None
     # the base has no build tooling or code yet (§5.3d): the plan starts with a scaffold task
     blank_repo: bool = False
+    base_tools: dict[str, str] = {}   # the repository's mise.toml [tools] at the base (tool -> version)
     tier: str | None = None                               # from the approved risk (H-1)
     risk: RiskAssessment | None = None
     ended: ChangeEnd | None = None                        # abandoned or rejected: by, where, why

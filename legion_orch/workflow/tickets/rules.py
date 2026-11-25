@@ -15,6 +15,8 @@ The rules (the numbered ones are ~/plans/tickets.md's corner-case rules):
   failure always escalates (R4); the same findings as last time escalate early (R16);
 * reaching the attempt limit makes a ticket wait – it becomes failed (immutable, removed from its
   parent's lists) only when a human chooses a replan;
+* a restart (a build, never a grouping ticket or one with subtasks) clears the ticket – attempts,
+  findings, commit, sandbox, runs, criteria – and starts it afresh;
 * system errors and an exceeded budget make a ticket wait; neither is an attempt (R14);
 * a ticket with a commit that passes its criteria is merged into its parent's branch first
   (``merging``): merged, it passes and the parent's commit is the new head; a conflict is a failed
@@ -40,13 +42,13 @@ from typing import Any
 from .model import (
     ACTIVE,
     GROUPING,
-    REMEDIES,
     SETTLED,
     Remedy,
     Severity,
     Status,
     Ticket,
     Waiting,
+    allowed_remedies,
 )
 
 
@@ -292,11 +294,18 @@ class Tickets:
             parent.status, parent.waiting = Status.CHECKING, None
             self._check(parent)
             return self._take()
-        if x.status != Status.WAITING or remedy not in REMEDIES[x.waiting]:
+        if x.status != Status.WAITING or remedy not in allowed_remedies(x):
             raise TicketError(f"{remedy} is not a remedy for {tid} ({x.status}, {x.waiting})")
         if remedy == Remedy.RETRY:                  # the same ticket, another round (or merge)
             x.waiting = None
             self._go(x, "merge" if x.merging else "retry")
+        elif remedy == Remedy.RESTART:              # afresh: as if never started (limit kept)
+            if REPLANNING in self.root.paused:
+                raise TicketError(f"a replan is chosen: {tid} cannot restart")
+            x.attempt, x.findings, x.waiting, x.sha, x.sandbox = 0, [], None, None, None
+            x.outputs, x.runs, x.held, x.merging = {}, [], None, False
+            self._rerun_criteria(x, everyone=True)
+            self._go(x, "start")
         elif remedy == Remedy.REPLAN:               # the constraints must change: a static
             self.pause(REPLANNING)                  # backdrop until the plan is applied (it
                                                     # fails the ticket, or adds to it)

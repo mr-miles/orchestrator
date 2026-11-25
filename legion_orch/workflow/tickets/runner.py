@@ -65,6 +65,8 @@ class Hooks(Protocol):
 
     async def ended(self, status: Status) -> None: ...
 
+    async def discard(self, ticket: Ticket) -> None: ...        # its branch and sandboxes, removed
+
 
 class Runner:
     def __init__(self, change: str, tickets: Tickets, *, executors: Executors, branches: Branches,
@@ -90,8 +92,21 @@ class Runner:
             await self._carry(self.t.start())
 
     async def decide(self, tid: str, remedy: Remedy) -> None:
+        if remedy == Remedy.RESTART:
+            return await self._restart(tid)
         async with self.lock:
             await self._carry(self.t.decide(tid, remedy))
+
+    async def _restart(self, tid: str) -> None:
+        """A restart: refused on a trial first (nothing changed), then the ticket's branch and
+        sandboxes are discarded outside the lock (a failure leaves it waiting), then it is reset."""
+        async with self.lock:
+            trial = Tickets(x.model_copy(deep=True) for x in self.t.t.values())
+            trial.decide(tid, Remedy.RESTART)
+            snapshot = self.t.t[tid].model_copy(deep=True)
+        await self.hooks.discard(snapshot)
+        async with self.lock:
+            await self._carry(self.t.decide(tid, Remedy.RESTART))
 
     async def pause(self, reason: str = "operator") -> None:
         """Nothing starts until :meth:`resume`: work under way goes on to its conclusion."""

@@ -16,7 +16,7 @@
   decision owner can ask for it again. The change is *completed* once it is over (then cleaned
   up, §5.14).
 * **Human actions** (decision owners only): a sign-off's decision, a waiting ticket's remedy
-  (retry, waive, replan), a replan, pause and resume, abandon (with or without the
+  (retry, waive, restart, replan), a replan, pause and resume, abandon (with or without the
   retrospective), the retrospective again.
 * **Restart**: :meth:`recover` – every ticket under way goes on at the same attempt (R14).
 """
@@ -73,6 +73,7 @@ class TicketFlow:
         self._executors: Executors | None = None
         self._branches: Branches | None = None
         self.runner: Runner | None = None
+        self._restarting: set[str] = set()          # tickets whose restart is under way
         self._merged_branches: set[str] = set()     # branches of passed tickets, deleted
         self._agents = agents
         self.skip_on_complete = False               # abandoned without the retrospective
@@ -154,9 +155,11 @@ class TicketFlow:
             return f"workspace {c.change.workspace}: {e}"
         blank = is_blank_tree(await c.git.tree_paths(base))
         pin = None if blank else await setup.pin_at_base(c.git, base)
+        tools = {} if blank else setup.tools_at(await setup.read_at(c.git, base))
         async with c.lock:
             ch = c.change
             ch.base_sha, ch.blank_repo, ch.setup_pin = base, blank, pin
+            ch.base_tools = tools
             await c.git.init_integration(c.cid, base)
             c.write_record("control/workspace.json", {
                 "workspace": ch.workspace, "source": c.git.source,
@@ -218,6 +221,43 @@ class TicketFlow:
     async def escalated(self, ticket: Ticket, reason: Waiting) -> None:
         async with self.c.lock:
             self.c.event("escalation", f"waiting on a human: {reason}", ticket.id)
+            self.c.save()
+
+    async def discard(self, ticket: Ticket) -> None:
+        """A restart's cleanup (the runner's hook): the ticket's own branch and its runs' live
+        sandboxes are deleted – absent ones are fine; a failure raises (the ticket keeps waiting)."""
+        c = self.c
+        try:
+            if ticket.owns_branch and ticket.parent is not None:
+                name = self._runner().branch_name(ticket.id)
+                try:
+                    if await c.git.delete_ref(f"refs/heads/{name}"):
+                        await self._cleaned(f"deleted branch {name} (restart)", ticket.id)
+                    if await self.branches.head(name) is not None:
+                        raise WorkflowError(f"cannot delete branch {name}")
+                except Exception as e:
+                    await self._cleaned(f"cannot delete branch {name} (restart): {e}", ticket.id)
+                    raise
+            names: list[str] = []
+            for rid in ticket.runs:
+                r = c.runs.get(rid)
+                if (r is not None and r.sandbox and r.sandbox_ref and not r.sandbox_deleted
+                        and r.sandbox not in self.lifecycle.sandboxes.retiring
+                        and r.sandbox not in names):
+                    names.append(r.sandbox)
+            for name in names:
+                if not await self.lifecycle.sandboxes.delete(name):
+                    await self._cleaned(f"cannot delete sandbox {name} (restart)", ticket.id)
+                    raise WorkflowError(f"cannot delete sandbox {name}")
+                await self._cleaned(f"deleted sandbox {name} (restart)", ticket.id)
+        except WorkflowError:
+            raise
+        except Exception as e:                       # noqa: BLE001 – the refusal is a WorkflowError
+            raise WorkflowError(f"{ticket.id}: restart cleanup failed: {e}") from e
+
+    async def _cleaned(self, what: str, tid: str) -> None:
+        async with self.c.lock:
+            self.c.event("cleanup", what, tid)
             self.c.save()
 
     async def ended(self, status: Status) -> None:
@@ -432,7 +472,9 @@ class TicketFlow:
         """A decision owner's action on a ticket: ``approve`` / ``reject`` (a sign-off waiting
         for them), and a waiting ticket's remedies: ``retry`` (its ``answer`` – to a blocked
         agent's question, say – is what its next round is told), ``waive:<criterion>`` (a
-        rejected, waivable criterion of it, with a ``reason``), ``replan`` (with its ``plan``:
+        rejected, waivable criterion of it, with a ``reason``), ``restart`` (a build
+        afresh: its branch and sandboxes are deleted first – a failure keeps it waiting – then
+        attempts, findings and runs are cleared), ``replan`` (with its ``plan``:
         the ticket fails and the plan applies as soon as nothing is active; without one, the
         workflow waits paused for a change-level replan). Returns what happened."""
         self._owner(approver)
@@ -448,9 +490,12 @@ class TicketFlow:
             ticket_id, action = action.removeprefix("waive:"), "waive"
         elif action == "waive":
             raise WorkflowError("waive a criterion on the ticket that waits: waive:<criterion>")
-        remedy = {"retry": Remedy.RETRY, "replan": Remedy.REPLAN, "waive": Remedy.WAIVE}.get(action)
+        remedy = {"retry": Remedy.RETRY, "replan": Remedy.REPLAN, "waive": Remedy.WAIVE,
+                  "restart": Remedy.RESTART}.get(action)
         if remedy is None:
             raise WorkflowError(f"unknown action {action!r}")
+        if ticket_id in self._restarting:
+            raise WorkflowError(f"{ticket_id}: a restart is under way")
         if remedy == Remedy.REPLAN and payload.get("plan") is not None:
             plan, v = parse_plan(payload["plan"])
             if v:
@@ -473,6 +518,8 @@ class TicketFlow:
                 if (t := c.tickets.t.get(ticket_id)) is not None and t.status == Status.WAITING:
                     told, t.findings = list(t.findings), [*t.findings,
                                                           f"Answer from {approver}: {answer}"]
+        if remedy == Remedy.RESTART:
+            self._restarting.add(ticket_id)
         try:
             await self._runner().decide(ticket_id, remedy)
         except TicketError as e:
@@ -480,6 +527,8 @@ class TicketFlow:
                 async with c.lock:
                     c.tickets.t[ticket_id].findings = told
             raise WorkflowError(str(e)) from None
+        finally:
+            self._restarting.discard(ticket_id)
         async with c.lock:
             c.change.proposals.pop(ticket_id, None)
             c.event("decision", f"{approver}: {action}"

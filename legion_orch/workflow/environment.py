@@ -14,7 +14,8 @@ proposal promotes into the library verbatim (:func:`promote`).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -274,10 +275,15 @@ def resolve(spec: EnvironmentSpec, lib: Library) -> tuple[dict[str, ResolvedProf
         mine: list[str] = []
         for ref in prof.tools:
             name, _, version = ref.partition("@")
+            if version:
+                mine.append(f"tool {ref!r}: the spec names tools, not versions – a tool gets "
+                            f"the version the repository's mise.toml gives it, else the latest "
+                            f"(resolved once, at provisioning): write {name!r}")
+                continue
             if name not in tools:
                 mine.append(f"unknown tool {name!r} (not in the library or proposed)")
                 continue
-            t, err = resolve_tool(name, tools[name], version or None)
+            t, err = resolve_tool(name, tools[name], None)
             if err:
                 mine.append(err)
             elif t:
@@ -290,3 +296,58 @@ def resolve(spec: EnvironmentSpec, lib: Library) -> tuple[dict[str, ResolvedProf
     problems += [f"role {role} mapped to unknown profile {p!r}"
                  for role, p in spec.roles.items() if p not in spec.profiles]
     return out, problems
+
+
+# ------------------------------------------------------------------------------- versions
+MISE_TOML, KEPT, LATEST = "mise.toml", "kept", "latest"
+
+
+@dataclass(frozen=True)
+class ToolVersion:
+    """A mise tool's version for every image of a change, and where it came from: the
+    ``mise.toml`` that runs, a version this change already resolved (``kept``), or the
+    ``latest`` (resolved at provisioning; ``version`` None until then)."""
+    version: str | None
+    source: str
+
+
+def all_tools(profiles: dict[str, ResolvedProfile]) -> list[Tool]:
+    """Every profile's tools, each once (by name), in order: what every image installs."""
+    seen: dict[str, Tool] = {}
+    for prof in profiles.values():
+        for t in prof.tools:
+            seen.setdefault(t.name, t)
+    return list(seen.values())
+
+
+def planned_versions(tools: list[Tool], mise_tools: dict[str, str],
+                     kept: dict[str, str] | None = None) -> dict[str, ToolVersion]:
+    """The version of each mise tool the images install, decided once for the change: the
+    ``mise.toml`` that runs gives it (``mise_tools``: its ``[tools]``), else this change's
+    earlier resolution (``kept``: a re-provisioning keeps its versions), else the latest. The
+    library's and proposals' versions are not used: the spec names tools only."""
+    out: dict[str, ToolVersion] = {}
+    for t in tools:
+        for tid in t.mise:
+            pinned = (mise_tools.get(tid) or "").strip()
+            if pinned and pinned != LATEST:
+                out[tid] = ToolVersion(pinned, MISE_TOML)
+            elif (kept or {}).get(tid):
+                out[tid] = ToolVersion((kept or {})[tid], KEPT)
+            else:
+                out[tid] = ToolVersion(None, LATEST)
+    return out
+
+
+def with_versions(tools: list[Tool], versions: dict[str, str]) -> list[Tool]:
+    """The tools at the change's versions (every mise tool of theirs must have one)."""
+    return [replace(t, mise={k: versions[k] for k in t.mise}) for t in tools]
+
+
+def versions_toml(versions: dict[str, str]) -> str:
+    """The change's tool versions as a mise.toml (``control/environment/mise.toml``): what
+    every image installs, and the record of it."""
+    return "\n".join(["# The tool versions every sandbox image of this change installs (legion-orch):",
+                      "# from the repository's mise.toml, else the latest when first provisioned.",
+                      "[tools]", *(f"{json.dumps(k)} = {json.dumps(v)}"
+                                   for k, v in sorted(versions.items()))]) + "\n"

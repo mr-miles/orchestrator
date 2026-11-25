@@ -21,6 +21,7 @@ from legion_orch.workflow.tickets import (
     TicketError,
     Tickets,
     Waiting,
+    allowed_remedies,
     validate,
 )
 
@@ -469,3 +470,132 @@ def test_a_replan_without_new_work_reruns_only_the_criteria_not_passed():
                              "d", 2, criterion=True)]))
     eff = t.resume("operator")
     assert t.t["v"].status == Status.PASSED and started(eff) == ["int"]   # v's verdict stands
+
+
+# ------------------------------------------------------------------------------- restart
+def one(sev=Severity.REWORK, limit=2) -> Tickets:
+    t = Tickets([T("c", subtasks=[["w"]]),
+                 T("w", "c", type="agent:implementer", criteria=["k"], limit=limit),
+                 crit("k", "w", sev)])
+    t.start()
+    return t
+
+
+def fail(t: Tickets, *findings: str) -> None:
+    t.work_done("w", "a" * 40)
+    t.verdict("k", False, findings)
+
+
+def waiting_for(reason: Waiting) -> Tickets:
+    t = one(Severity.ESCALATE if reason == Waiting.ESCALATED else Severity.REWORK)
+    if reason == Waiting.SYSTEM:
+        t.system_error("w")
+    elif reason == Waiting.BUDGET:
+        t.budget_exceeded("w")
+    elif reason == Waiting.BLOCKED:
+        t.blocked("w")
+    elif reason == Waiting.ESCALATED:
+        fail(t, "bad")
+    elif reason == Waiting.REPEATED:
+        t.t["w"].limit = 5
+        fail(t, "x")
+        fail(t, "x")
+    else:
+        fail(t, "a")
+        fail(t, "b")
+    assert t.t["w"].waiting == reason, t.t["w"].waiting
+    return t
+
+
+@pytest.mark.parametrize("reason", [Waiting.ATTEMPTS, Waiting.REPEATED, Waiting.ESCALATED,
+                                    Waiting.SYSTEM, Waiting.BUDGET, Waiting.BLOCKED])
+def test_restart_is_accepted_on_a_waiting_build_for_every_reason_but_empty(reason):
+    t = waiting_for(reason)
+    assert Remedy.RESTART in allowed_remedies(t.t["w"])
+    assert t.decide("w", Remedy.RESTART) == [StartWork("w", 1, ())]
+    assert t.t["w"].status == Status.WORKING and t.t["w"].attempt == 1
+
+
+def test_restart_resets_the_ticket_and_its_criteria_but_keeps_the_limit():
+    t = waiting_for(Waiting.ESCALATED)
+    w = t.t["w"]
+    w.sandbox, w.outputs, w.runs, w.findings = "sb", {"o": "d@1"}, ["r1"], ["f"]
+    t.t["k"].waived = True
+    t.decide("w", Remedy.RESTART)
+    assert (w.attempt, w.sha, w.sandbox, w.outputs, w.runs) == (1, None, None, {}, [])
+    assert (w.findings, w.waiting, w.held, w.merging, w.limit) == ([], None, None, False, 2)
+    k = t.t["k"]
+    assert (k.status, k.findings, k.waived, k.attempt) == (Status.PENDING, [], False, 0)
+
+
+def test_restart_refusals_change_nothing():
+    t = one()
+    before = {i: x.model_copy(deep=True) for i, x in t.t.items()}
+
+    def refused(tid):
+        with pytest.raises(TicketError):
+            t.decide(tid, Remedy.RESTART)
+        assert t.t == before
+
+    refused("w")                                           # not waiting
+    t = Tickets([T("c", subtasks=[["g"]]), T("g", "c", subtasks=[["w"]], criteria=["k"]),
+                 T("w", "g", type="agent:implementer"), crit("k", "g", Severity.ESCALATE)])
+    t.start()
+    t.work_done("w")
+    t.verdict("k", False, ["x"])
+    assert t.t["g"].waiting == Waiting.ESCALATED           # a grouping ticket
+    before = {i: x.model_copy(deep=True) for i, x in t.t.items()}
+    refused("g")
+    t = Tickets([T("c", subtasks=[["g"]]), T("g", "c")])
+    t.start()
+    assert t.t["g"].waiting == Waiting.EMPTY
+    before = {i: x.model_copy(deep=True) for i, x in t.t.items()}
+    refused("g")
+
+
+def test_restart_is_refused_on_a_criterion_a_ticket_with_subtasks_and_a_merge_owed():
+    t = waiting_for(Waiting.ESCALATED)
+    with pytest.raises(TicketError):
+        t.decide("k", Remedy.RESTART)
+    t = one()
+    t.t["w"].subtasks = [["x"]]
+    t.system_error("w")
+    assert Remedy.RESTART not in allowed_remedies(t.t["w"])
+    with pytest.raises(TicketError):
+        t.decide("w", Remedy.RESTART)
+    t = one()
+    t.work_done("w", "a" * 40)
+    t.verdict("k", True)                                   # merging
+    assert t.system_error("w")
+    assert t.t["w"].merging and Remedy.RESTART not in allowed_remedies(t.t["w"])
+    with pytest.raises(TicketError):
+        t.decide("w", Remedy.RESTART)
+
+
+def test_restart_is_refused_while_a_replan_is_chosen():
+    t = Tickets([T("c", subtasks=[["w", "v"]]), T("w", "c", type="agent:implementer"),
+                 T("v", "c", type="agent:implementer")])
+    t.start()
+    t.system_error("w")
+    t.system_error("v")
+    t.decide("v", Remedy.REPLAN)
+    with pytest.raises(TicketError, match="replan"):
+        t.decide("w", Remedy.RESTART)
+    assert t.t["w"].status == Status.WAITING
+
+
+def test_restart_in_a_paused_workflow_holds_then_starts_on_resume():
+    t = waiting_for(Waiting.SYSTEM)
+    t.pause()
+    assert t.decide("w", Remedy.RESTART) == []
+    assert t.t["w"].status == Status.PAUSED and t.t["w"].held == "start"
+    assert t.resume() == [StartWork("w", 1, ())]
+
+
+def test_restart_gives_a_full_set_of_attempts_again():
+    t = waiting_for(Waiting.ATTEMPTS)
+    t.decide("w", Remedy.RESTART)
+    t.work_done("w", "a" * 40)
+    assert started(t.verdict("k", False, ["c"])) == ["w"]
+    t.work_done("w", "a" * 40)
+    assert t.verdict("k", False, ["d"]) == [Escalate("w", Waiting.ATTEMPTS)]

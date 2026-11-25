@@ -16,9 +16,9 @@ unless the plan's needs changed.
 {
   "summary": "Python 3.12 service tested with pytest via uv; the UI lint needs node 22",
   "profiles": {
-    "dev":   {"tools": ["python@3.12", "uv", "ruff", "node@22"],
+    "dev":   {"tools": ["python", "uv", "ruff", "node"],
               "resources": {"memory_mib": 8192, "vcpus": 4}},
-    "check": {"tools": ["python@3.12", "uv", "ruff", "node@22"],
+    "check": {"tools": ["python", "uv", "ruff", "node"],
               "network": {"uv": ["internal-pypi"]}},
     "lint":  {"tools": ["ruff"]}
   },
@@ -35,9 +35,15 @@ unless the plan's needs changed.
 
 ### Profiles
 
-* `tools` – library tool names, optionally `name@version` to pin a single-tool entry to the
-  version the project uses (`python@3.13`). Every command in the plan must find its tools here.
-  Tools are installed with mise under `/usr/local/share/mise` and are on `PATH` (shims).
+* `tools` – library tool names, **never versions** (`uv`, not `uv@0.13`: a version is refused).
+  Every command in the plan must find its tools here, and every tool the `mise.toml` that runs
+  names (G-E8). Versions are decided once for the change, at provisioning, the same in every
+  image: a tool the `mise.toml` pins gets that version (the repository's, or the one you
+  propose); any other tool its latest, looked up then and recorded. **Every image installs
+  every tool of every profile** – profiles differ in network and resources, not tools – so a
+  command that works in one sandbox works in all. Tools are installed with mise under
+  `/usr/local/share/mise` and are on `PATH` (shims). To fix a version, pin it in the
+  `mise.toml` (propose it, below): that is the project's own record of its tools.
 * **Network comes with the tools.** A library tool declares the network policies it needs to
   work (`uv` brings `pypi`, `node` brings `npm-registry`; the catalogue says "brings network").
   A profile gets them automatically, and each policy allows only the binaries of the tools that
