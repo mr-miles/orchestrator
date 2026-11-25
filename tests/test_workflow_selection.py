@@ -146,7 +146,7 @@ async def test_http_workflow_parameter_and_meta(tmp_path):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://op") as c:
             meta = (await c.get("/api/meta")).json()
-            assert meta["workflows"] == ["default", "second"]
+            assert meta["workflows"] == ["default", "design-review", "second"]
             assert meta["default_workflow"] == "default"
             for bad in ("x", 5):
                 r = await c.post("/api/changes", json={"goal": "g", "workspace": REPO,
