@@ -202,6 +202,8 @@ class Reports:
         timeout = self.c.cfg.limits.report_check_timeout_s
         try:
             async with asyncio.timeout(timeout):
+                # kept as the full shas (an unambiguous abbreviation expanded; else G-R3 says why)
+                sub.r.attestations, _ = await attest.expand_all(sub.r.attestations, self.c.git)
                 parsed, v = await attest.check_all(sub.r.attestations, [self.c.workspace],
                                                    self.c.docs, self.c.git)
                 sub.violations += v

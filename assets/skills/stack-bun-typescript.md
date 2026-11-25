@@ -10,11 +10,12 @@ House conventions for TypeScript and web frontend projects (see `legion-language
   components are generated with its CLI (`bunx --bun shadcn@latest add <name>`), committed and
   kept on its default theme, light and dark.
 * **bun for everything, never npm, pnpm, yarn or npx.** Dependencies are locked in `bun.lock`
-  (commit it). Add with `bun add <pkg>` (dev tools: `bun add -d <pkg>`), install with
-  `bun install --frozen-lockfile`.
+  (commit it). Add with `bun add <pkg>` (dev tools: `bun add -d <pkg>`). The repository's
+  `setup` task in `mise.toml` installs them with `bun install --frozen-lockfile`.
 * **Scripts run on bun, not Node:** a bun sandbox has no `node`, so a package's CLI is run as
-  `bun --bun <cli>` (e.g. `bun --bun vite build`, `bun --bun prettier --check .`). Run
-  `bun install --frozen-lockfile` first: before it no package CLI exists.
+  `bun --bun <cli>` (e.g. `bun --bun vite build`, `bun --bun prettier --check .`). No package
+  CLI exists until `mise run setup` has installed the dependencies: it runs after every checkout,
+  so run it again yourself only after you change `package.json` or `bun.lock`.
 * **A happy-dom test preload replaces DOM globals** (`Blob`, `fetch`, …) in every test file, so
   `Bun.spawn({ stdin: new Blob(…) })` fails with "stdio must be an array of 'inherit', 'ignore',
   or null". A test that runs a CLI as a process pipes its stdin and returns named results:
@@ -52,9 +53,14 @@ House conventions for TypeScript and web frontend projects (see `legion-language
   for tests** (happy-dom and Testing Library for components). Use the `package.json` scripts
   `typecheck` (`tsc -b`), `lint`, `format:check` and `test`.
 * **Verification commands** for frontend tasks use exactly these forms:
-  `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`,
-  `bun run format:check`, `bun test …`. Every task that changes frontend code verifies with
-  all of them.
+  `bun run typecheck`, `bun run lint`, `bun run format:check`, `bun test …`. Every task that
+  changes frontend code verifies with all of them. Never list an install among them: the
+  verifier runs `mise run setup` first, as every sandbox and CI do (an install-only command is
+  rejected, G-P13). Run a package's CLI through bun (`bun run <script>`, `bun --bun <cli>`),
+  never by its bare name: each command runs in a fresh shell, and `node_modules/.bin` is not on
+  `PATH`.
+  A command for a package in a subdirectory changes into it itself (`cd frontend && bun run
+  lint`): the next command starts at the root of the clone again.
 * **The page must run under a Content Security Policy of `script-src 'self'`:** no inline
   `<script>` or `on*=` attributes, and no library that injects one. Never render raw HTML
   (`dangerouslySetInnerHTML`, `innerHTML`); show untrusted text as text. Credentials and tokens

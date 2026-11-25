@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from .. import guards, setup
+from .. import attest, guards, setup
 from ..assets import GitMode
 from ..environment import EnvironmentSpec, Library, LibraryError
 from ..tickets import Ticket
@@ -51,8 +51,11 @@ class Planner(RoleHandler):
             orc = json.loads(output(e, r, "oracle") or "")
         except ValueError as x:
             return [f"G-P1: an output is not JSON: {x}"]
-        plan, v = parse_plan(plan_data)
-        if v:
+        # its context's shas in full (as its sign-off expands them again before applying it): an
+        # ambiguous or unknown abbreviation is the planner's to correct
+        plan_data, v = await attest.plan_shas(plan_data, e.git)
+        plan, w = parse_plan(plan_data)
+        if v := v + w:
             return [f"G-P1: tickets: {x}" for x in v]
         # each ticket's work fits its role (the work schema – path shapes included), as its
         # sign-off checks again before applying it

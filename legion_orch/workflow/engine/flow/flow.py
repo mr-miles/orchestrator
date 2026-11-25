@@ -31,7 +31,7 @@ from ....git.branches import Branches
 from ....git.remote import WorkspaceUnsynced, is_blank_tree
 from ....util import now_iso
 from ... import metrics, setup
-from ...attest import FILE_RE
+from ...attest import FILE_RE, plan_shas
 from ...environment import EnvironmentSpec, Kind, Library, LibraryError, promote
 from ...model import ChangeEnd, ChangeStatus, Run
 from ...risk import derive_tier
@@ -202,9 +202,10 @@ class TicketFlow:
             data = json.loads(self.c.docs.read(m["path"], int(m["version"])).content)
         except ValueError as e:
             raise ValueError(f"the plan is not JSON: {e}") from None
-        plan, v = parse_plan(data)
-        if v:
-            raise ValueError("; ".join(v))
+        data, v = await plan_shas(data, self.c.git)
+        plan, w = parse_plan(data)
+        if v or w:
+            raise ValueError("; ".join(v + w))
         return plan
 
     def problems(self, ticket: Ticket) -> list[str]:
@@ -447,7 +448,9 @@ class TicketFlow:
         if remedy is None:
             raise WorkflowError(f"unknown action {action!r}")
         if remedy == Remedy.REPLAN and payload.get("plan") is not None:
-            plan, v = parse_plan(payload["plan"])
+            data, v = await plan_shas(payload["plan"], c.git)
+            plan, w = parse_plan(data)
+            v += w
             if v:
                 raise WorkflowError("; ".join(v))
             try:
@@ -542,8 +545,9 @@ class TicketFlow:
                     self._ended_by(approver, str(payload.get("reason") or "").strip() or None)
                 await runner.abandon()
             elif action == "replan":
-                plan, v = parse_plan(payload.get("plan"))
-                if v:
+                data, v = await plan_shas(payload.get("plan"), self.c.git)
+                plan, w = parse_plan(data)
+                if v := v + w:
                     raise WorkflowError("; ".join(v))
                 await runner.replan(plan)
             else:
