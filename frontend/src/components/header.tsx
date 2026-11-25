@@ -51,6 +51,8 @@ export function NewChangeDialog({
   onStarted,
   workspaces,
   defaultWorkspace,
+  workflows = [],
+  defaultWorkflow = '',
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
@@ -58,11 +60,16 @@ export function NewChangeDialog({
   workspaces: Workspace[]
   /** the workspace being looked at, else the first */
   defaultWorkspace: string
+  /** the workflows offered; the select shows only when several */
+  workflows?: string[]
+  defaultWorkflow?: string
 }) {
   const who = useSettings()
   const [goal, setGoal] = useState('')
   const [picked, setPicked] = useState<string | null>(null)
   const ws = picked ?? defaultWorkspace
+  const [pickedWf, setPickedWf] = useState<string | null>(null)
+  const wf = pickedWf ?? defaultWorkflow
   const [busy, setBusy] = useState(false)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -73,9 +80,10 @@ export function NewChangeDialog({
             e.preventDefault()
             setBusy(true)
             try {
-              const r = await startChange(goal, ws, who)
+              const r = await startChange(goal, ws, who, wf)
               setGoal('')
               setPicked(null)
+              setPickedWf(null)
               onOpenChange(false)
               onStarted(r.change, ws)
             } catch (err) {
@@ -99,6 +107,15 @@ export function NewChangeDialog({
                 onChange={setPicked}
                 options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
                 description="The repository the change is made in."
+              />
+            )}
+            {workflows.length > 1 && (
+              <SelectField
+                label="Workflow"
+                value={wf}
+                onChange={setPickedWf}
+                options={workflows.map((w) => ({ value: w, label: w }))}
+                description="The workflow the change follows."
               />
             )}
             <TextField
