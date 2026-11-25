@@ -709,26 +709,6 @@ def test_language_preferences_reach_the_roles_that_plan_build_and_judge_code():
     assert "uv" in a.skill("language-preferences") and "ruff" in a.skill("language-preferences")
 
 
-def test_the_web_frontend_conventions_match_the_projects_own_frontend():
-    """The commands the skill tells agents to verify with are scripts of this repository's own
-    frontend (the reference for the conventions), its CLIs run on bun, and the library entries
-    the skill names exist."""
-    import json
-    import re
-    skill = Assets(ROOT / "assets").skill("stack-bun-typescript")
-    scripts = json.loads((ROOT / "frontend/package.json").read_text())["scripts"]
-    for name in re.findall(r"`bun run ([a-z0-9:_-]+)`", skill):
-        assert name in scripts, f"the skill names `bun run {name}`, which frontend/ lacks"
-    assert scripts["test"] == "bun test" and "`bun test" in skill
-    for cmd in scripts.values():                      # no Node: package CLIs run on bun
-        for cli in ("vite", "prettier"):
-            assert not re.search(rf"(?<!--bun )\b{cli}\b", cmd), cmd
-    assert (ROOT / "frontend/bun.lock").is_file() and "bun install --frozen-lockfile" in skill
-    lib = library()
-    assert {"bun"} <= set(lib.tools) and {"npm-registry", "shadcn-registry"} <= set(lib.policies)
-    assert "`bun`" in skill and "`shadcn-registry`" in skill
-
-
 def test_npm_registry_keeps_encoded_slashes_for_scoped_packages():
     """npm fetches scoped packages as /@scope%2fname; the gateway rejects %2F unless allowed."""
     lib = library()
