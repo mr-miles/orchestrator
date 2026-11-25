@@ -5,10 +5,17 @@ import difflib
 import json
 
 from ..store import DocStore
-from ..workflow import cards
+from ..workflow import cards, setup
 from ..workflow.attest import FILE_RE
 from ..workflow.engine import ChangeEngine, Controller
-from ..workflow.environment import EnvironmentSpec, Library, LibraryError, resolve
+from ..workflow.environment import (
+    EnvironmentSpec,
+    Library,
+    LibraryError,
+    all_tools,
+    planned_versions,
+    resolve,
+)
 from ..workflow.model import LIVE_RUN
 from ..workflow.tickets import Status
 from .a2a import A2AHub
@@ -45,11 +52,28 @@ def environment_spec(ce: ChangeEngine) -> dict | None:
         network = {p: [{"policy": x.name, "tools": list(x.tools),
                         "hosts": [f"{e.host}:{e.port}" for e in x.endpoints]}
                        for x in rp.policies] for p, rp in profiles.items()}
+        versions = _versions(ce, spec, profiles)
     except LibraryError as e:
-        network, problems = {}, [str(e)]
+        network, problems, versions = {}, [str(e)], []
     return {"path": m["path"], "version": int(m["version"]), "spec": raw,
             "proposals": {k.plural: v for k, v in spec.used_proposals().items()},
-            "network": network, "problems": problems}
+            "network": network, "problems": problems, "versions": versions}
+
+
+def _versions(ce: ChangeEngine, spec: EnvironmentSpec, profiles) -> list[dict]:
+    """The version each tool gets – the same in every image – and where it comes from: the
+    provisioned build's, else what provisioning will decide (the mise.toml that runs gives it,
+    else the latest, looked up then: ``version`` None)."""
+    built = ce.change.environment.tools if ce.change.environment else {}
+    running = setup.tools_at(spec.mise.content) if spec.mise is not None else ce.change.base_tools
+    planned = planned_versions(all_tools(profiles), running)
+    out = []
+    for tool, p in sorted(planned.items()):
+        b = built.get(tool)
+        out.append({"tool": tool, "version": b.version if b else p.version,
+                    "source": b.source if b else p.source,
+                    "in_mise_toml": tool in running, "provisioned": b is not None})
+    return out
 
 
 def change_state(ctl: Controller, ce: ChangeEngine) -> dict:

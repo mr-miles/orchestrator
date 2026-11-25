@@ -5,7 +5,7 @@ Knows nothing about the workflow or the MCP server; the MCP tool allowlist is pa
 """
 from . import agentlog
 from .builders import BuildError, EnvironmentBuilder, NoBuilder, PodmanBuilder, make_builder
-from .images import ImageRecipe, Tool
+from .images import ImageRecipe, Tool, lookup_recipe
 from .names import (
     AGENT_PREFIX,
     MAX_NAME,
@@ -41,5 +41,6 @@ __all__ = ["agentlog", "render_policy", "CONTROLLER_PROFILES", "provider_profile
            "TEMPLATES", "VOCABULARY", "TemplateError",
            "base_values", "render", "spec_to_args", "MAX_NAME", "check_name", "human_name",
            "is_name_clash", "AGENT_PREFIX", "VERIFIER_PREFIX", "BuildError", "EnvironmentBuilder",
-           "ImageRecipe", "NoBuilder", "PodmanBuilder", "Policy", "Tool", "make_builder", "SandboxEnv",
+           "ImageRecipe", "lookup_recipe", "NoBuilder", "PodmanBuilder", "Policy", "Tool",
+           "make_builder", "SandboxEnv",
            "Endpoint", "merge_network", "policy_entry", "Resources", "driver_config"]

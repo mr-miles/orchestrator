@@ -501,12 +501,15 @@ class AgentRuns:
         return run
 
     def _sandbox_tools(self, role: str) -> str:
-        """What the role's sandbox has for the project, stated as a fact: its environment
-        profile's tools, or – without a provisioned environment – the default image, to check."""
+        """What the role's sandbox has for the project, stated as a fact: the change's tools at
+        their versions (the same in every image), or – without a provisioned environment – the
+        default image, to check."""
         ch = self.c.change
         env = ch.environment.roles.get(role) if ch.environment else None
         tools: list[str] = []
-        if env is not None and (spec := self.c.pointer_json("environment")) is not None:
+        if env is not None and ch.environment.tools:     # every image has every tool, at these
+            tools = [f"{k} {v.version}" for k, v in sorted(ch.environment.tools.items())]
+        elif env is not None and (spec := self.c.pointer_json("environment")) is not None:
             try:
                 tools = list(spec["profiles"][env.profile]["tools"])
             except (KeyError, TypeError):

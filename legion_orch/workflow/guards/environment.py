@@ -12,6 +12,7 @@ from ..environment import (
     EnvironmentSpec,
     Library,
     ResolvedProfile,
+    all_tools,
     resolve,
 )
 
@@ -61,43 +62,31 @@ def roles(spec: EnvironmentSpec, known_roles: set[str]) -> list[str]:
             for r in spec.roles if r not in allowed]
 
 
-def _compatible(wanted: str, have: str) -> bool:
-    """mise versions: ``1.4`` and ``1.4.2`` agree (one is a prefix of the other); empty or
-    ``latest`` agrees with anything."""
-    w, h = wanted.strip(), have.strip()
-    if w in ("", "latest") or h in ("", "latest") or w == h:
-        return True
-    return w.startswith(h + ".") or h.startswith(w + ".")
-
-
 def mise_setup(spec: EnvironmentSpec, profiles: dict[str, ResolvedProfile],
-               repo_roles: set[str]) -> list[str]:
-    """G-E8: the proposed mise.toml parses; every profile whose roles run the setup (those that
-    work with a commit, §5.3c) and the verifier's installs its ``[tools]`` at compatible
-    versions – mise never installs at run time – and, when it has a ``setup`` task, has the
-    network the spec says setup needs."""
-    if spec.mise is None:
+               repo_roles: set[str], repo_mise: str | None = None) -> list[str]:
+    """G-E8: the mise.toml the sandboxes will run – the one the spec proposes, else the
+    repository's (``repo_mise``, at the change's base) – parses, and every tool in its
+    ``[tools]`` is one the spec's tools provide: every image installs every tool, at the version
+    that mise.toml gives it (mise never installs at run time, and sandboxes reach no download
+    host). When it has a ``setup`` task, every profile of a role that runs the setup (those
+    that work with a commit, §5.3c) and the verifier's has the network the spec says setup
+    needs."""
+    text = spec.mise.content if spec.mise is not None else repo_mise
+    if text is None:
         return []
+    which = "the proposed mise.toml" if spec.mise is not None else "the repository's mise.toml"
     try:
-        wanted, runs = setup.tools(spec.mise.content), setup.has_setup(spec.mise.content)
+        wanted, runs = setup.tools(text), setup.has_setup(text)
     except setup.MiseError as e:
         return [f"G-E8: {e}"]
-    used = sorted({p for r, p in spec.roles.items() if r == VERIFIER or r in repo_roles})
-    v = []
-    for name in used:
-        prof = profiles.get(name)
-        if prof is None:
-            continue
-        have: dict[str, str] = {}
-        for t in prof.tools:
-            have.update(t.mise)
-        for tool, ver in sorted(wanted.items()):
-            if tool not in have:
-                v.append(f"G-E8: mise.toml tool {tool!r} is not installed in profile {name}: add "
-                         "the library tool that provides it (or propose one)")
-            elif not _compatible(ver, have[tool]):
-                v.append(f"G-E8: mise.toml wants {tool} {ver}; profile {name} installs {have[tool]}")
-        if runs:
+    have = {tid for t in all_tools(profiles) for tid in t.mise}
+    v = [f"G-E8: {which} uses tool {tool!r}, which none of the spec's tools provides: add the "
+         "library tool that does (or propose one)" for tool in sorted(set(wanted) - have)]
+    if runs:
+        for name in sorted({p for r, p in spec.roles.items() if r == VERIFIER or r in repo_roles}):
+            prof = profiles.get(name)
+            if prof is None:
+                continue
             nets = {p.name for p in prof.policies}
             missing = [n for n in spec.setup_network if n not in nets]
             if missing:
@@ -107,11 +96,14 @@ def mise_setup(spec: EnvironmentSpec, profiles: dict[str, ResolvedProfile],
 
 
 def environment(spec: EnvironmentSpec, lib: Library, cfg: Config,
-                known_roles: set[str], repo_roles: set[str] | None = None
+                known_roles: set[str], repo_roles: set[str] | None = None,
+                repo_mise: str | None = None
                 ) -> tuple[dict[str, ResolvedProfile], list[str]]:
     """All spec guards; returns the resolved profiles and every violation. ``repo_roles``: the
-    roles that run the repository's setup (those that work with a commit)."""
+    roles that run the repository's setup (those that work with a commit); ``repo_mise``: the
+    repository's mise.toml at the change's base (what runs when the spec proposes none)."""
     profiles, problems = resolve(spec, lib)
     return profiles, ([f"G-E1: {p}" for p in problems] + endpoints(profiles, cfg)
                       + secrets(profiles) + resources(profiles, cfg) + roles(spec, known_roles)
-                      + mise_setup(spec, profiles, known_roles if repo_roles is None else repo_roles))
+                      + mise_setup(spec, profiles, known_roles if repo_roles is None else repo_roles,
+                                   repo_mise))
