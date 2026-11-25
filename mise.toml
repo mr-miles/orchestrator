@@ -18,7 +18,7 @@ python.uv_venv_auto = true
 [tasks.setup]
 run = [
   "uv sync --extra test --extra dev",
-  "cd frontend && bun install --frozen-lockfile && bun run types",
+  "bun install --cwd frontend --frozen-lockfile && bun run --cwd frontend types",
 ]
 
 [tasks.install]
