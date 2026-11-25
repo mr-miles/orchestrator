@@ -8,6 +8,7 @@ import { useAct } from '@/hooks/use-act'
 import { WAITING_TEXT } from '@/lib/status'
 import { refsOf } from '@/lib/tickets'
 import type { ChangeState, Ticket, Waiting } from '@/lib/types'
+import { ConfirmButton } from '../confirm-button'
 import { FormDialog } from '../form-dialog'
 import { TextField } from '../fields'
 import { AttestationLink, Attestations, Muted, Pre, Sha } from '../status'
@@ -15,16 +16,20 @@ import { EnvironmentSpec } from './environment'
 import { useNav } from './nav'
 
 /** The remedies each reason for waiting allows (tickets/model.py REMEDIES): waivers are per
- * rejected, waivable criterion. */
-const REMEDIES: Record<Waiting, ('retry' | 'waive' | 'replan')[]> = {
-  attempts: ['waive', 'replan'],
-  repeated: ['waive', 'replan'],
-  escalated: ['waive', 'replan'],
-  system: ['retry', 'replan'],
-  budget: ['retry', 'replan'],
-  blocked: ['retry', 'replan'],
+ * rejected, waivable criterion; ``restart`` is further only for a restartable build. */
+const REMEDIES: Record<Waiting, ('retry' | 'waive' | 'replan' | 'restart')[]> = {
+  attempts: ['waive', 'restart', 'replan'],
+  repeated: ['waive', 'restart', 'replan'],
+  escalated: ['waive', 'restart', 'replan'],
+  system: ['retry', 'restart', 'replan'],
+  budget: ['retry', 'restart', 'replan'],
+  blocked: ['retry', 'restart', 'replan'],
   empty: ['replan'],
 }
+
+/** A build that can start afresh: not a grouping ticket, not one with subtasks or mid-merge. */
+const restartable = (t: Ticket) =>
+  t.type !== 'grouping' && t.role === 'subtask' && t.subtasks.length === 0 && !t.merging
 
 /** A sign-off's subjects as shown to its decision owners: each named output's documents at the
  * exact versions, ``head`` as its commit. */
@@ -175,6 +180,16 @@ function Remedies({ ticket, state }: { ticket: Ticket; state: ChangeState }) {
           ))}
         {allowed.includes('waive') && waivable.length === 0 && ticket.waiting !== 'empty' && (
           <Muted>No failed criterion of it can be waived.</Muted>
+        )}
+        {allowed.includes('restart') && restartable(ticket) && (
+          <ConfirmButton
+            title={`Restart ${ticket.id}`}
+            description="Its branch and sandboxes are deleted, its attempts and budget are reset, and it starts afresh. This cannot be undone."
+            confirm="Restart"
+            onConfirm={() => act.ticket(ticket.id, 'restart', {})}
+          >
+            Restart
+          </ConfirmButton>
         )}
         <FormDialog
           trigger="Replan"
