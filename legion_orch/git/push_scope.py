@@ -7,16 +7,15 @@ as ``outside``. The diff is cumulative, ``base..new`` (two dots, as the host's r
 reads it), so a push that reverts an earlier push's out-of-scope change is let through.
 
 The HTTP layer passes a grant's scope to the hook as JSON in ``LEGION_SCOPE`` (and the host's
-interpreter in ``LEGION_PYTHON``); the hook runs ``python -m legion_orch.git.push_scope`` with
-the ``old new ref`` lines on stdin, which prints what is refused – git shows it to the pusher –
+interpreter in ``LEGION_PYTHON``); the hook runs ``python -m legion_orch.git.push_hook`` with
+the ``old new ref`` lines on stdin (its entry point is ``push_hook``, a module of its own:
+the package already imports this one), which prints what is refused – git shows it to the pusher –
 and exits 1 if anything is. A scope too big for the environment fails the push: never open.
 """
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import sys
 from dataclasses import asdict, dataclass, field
 
 from .remote import path_matches
@@ -78,17 +77,3 @@ def check(scope: PushScope, updates: list[tuple[str, str, str]]) -> list[str]:
     commit to diff and is skipped – the hook refuses deletions before it gets here."""
     return [v for _, new, _ in updates if new != ZERO
             for v in scope.violations(changed_paths(scope.base, new))]
-
-
-def main() -> int:
-    scope = PushScope.from_json(os.environ["LEGION_SCOPE"])
-    updates = [tuple(line.split()) for line in sys.stdin if line.strip()]
-    if refused := check(scope, updates):            # type: ignore[arg-type]
-        print("legion: push refused – it changes paths outside this run's scope:",
-              *refused, sep="\n", file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
