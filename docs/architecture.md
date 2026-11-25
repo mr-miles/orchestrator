@@ -27,7 +27,7 @@ flowchart TB
     subgraph tickets["The tickets – no engine (workflow/tickets/)"]
         direction TB
         rules["Ticket rules – pure<br/>rules.py, model.py<br/><i>events in, effects out: start, stop,<br/>merge, escalate, end; pause, replans</i>"]
-        spec["The workflow spec<br/>spec.py ← assets/workflow.yaml<br/><i>skeleton, tier policies, hooks</i>"]
+        spec["The workflow spec<br/>spec.py ← assets/workflows/*.yaml<br/><i>skeleton, tier policies, hooks</i>"]
         runner["Runner<br/>runner.py<br/><i>applies events under the lock,<br/>carries effects out</i>"]
         execs["Executors<br/>executors/*.py<br/><i>one per type: agent, sign-off, verify,<br/>can-merge, provision, publish – and the merge</i>"]
     end
@@ -102,7 +102,7 @@ import contracts in `pyproject.toml`, checked by `lint-imports`):
 
 | Package | Holds |
 | --- | --- |
-| `workflow/tickets/` | the ticket model and rules, the spec (`workflow.yaml`), named outputs and their resolution, the replan document, what a revision calls for (`stale.py`: a new sign-off, renewed provisioning and oracle), the runner, the executors and their ports, the tickets' persistence (`store.py`) |
+| `workflow/tickets/` | the ticket model and rules, the spec (`workflows/*.yaml`), named outputs and their resolution, the replan document, what a revision calls for (`stale.py`: a new sign-off, renewed provisioning and oracle), the runner, the executors and their ports, the tickets' persistence (`store.py`) |
 | `engine/flow/` | `TicketFlow` (the change's workflow: start, recover, hooks, human actions, housekeeping) and the adapters (`Agents`, `Signoffs`, `Verify`, `Provision`, `Remote`) |
 | `engine/services/` | `AgentRunner` (the workflow's one counterpart for agents: cards, work, A2A turns, placement; `services/agents/`), `AgentRuns`, `Reports`, `RunLifecycle`, the verification service, `Provisioner`, `Publisher`, the resolver, the end-of-change cleanup |
 | `engine/sandboxes/` | `Sandboxes` and their sessions, sandbox plans (`plan_for(ticket)`), reflections, consult turns |
@@ -368,7 +368,7 @@ Rules:
 | Layer | Tested with | Needs |
 | --- | --- | --- |
 | Ticket rules | scenarios per rule and a property test over random trees and events (`test_tickets.py`, `tests/ticket_harness.py`) | nothing |
-| Spec and tier policy | `workflow.yaml` loaded and checked; skeletons and trees against each tier (`test_tickets.py`) | nothing |
+| Spec and tier policy | `workflows/*.yaml` loaded and checked; skeletons and trees against each tier (`test_tickets.py`) | nothing |
 | Executors | fake ports (`test_ticket_executors.py`) | nothing |
 | Runner | fake ports, real git branches (`test_ticket_runner.py`) | git |
 | Dispatcher | scripted work (`test_dispatch.py`) | nothing |
