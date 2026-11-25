@@ -154,6 +154,9 @@ export interface Meta {
   assets_sha: string
   live_runs: number
   max_parallel: number
+  /** the workflows a change can be started with */
+  workflows?: string[]
+  default_workflow?: string
 }
 
 export interface DocMeta {
