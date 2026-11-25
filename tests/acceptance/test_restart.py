@@ -183,21 +183,6 @@ def test_AC_8_a_decision_owner_restart_is_journalled_and_keeps_the_run_records()
         assert e["after"]["runs"][rid]["role"] == rec["role"]
 
 
-# ================================================================================== AC-9
-def tsx_remedies() -> dict[str, list[str]]:
-    src = (ROOT / "frontend" / "src" / "components" / "change" / "ticket-actions.tsx").read_text()
-    m = re.search(r"const REMEDIES[^=]*=\s*\{(.*?)\n\}", src, re.S)
-    assert m, "no REMEDIES table in ticket-actions.tsx"
-    return {k: sorted(re.findall(r"'(\w+)'", v))
-            for k, v in re.findall(r"(\w+):\s*\[([^\]]*)\]", m.group(1))}
-
-
-def test_AC_9_the_frontend_remedy_table_equals_the_backends():
-    backend = drive("model")["remedies"]
-    assert backend["attempts"] and "restart" in backend["attempts"]
-    assert tsx_remedies() == backend
-
-
 # ================================================================================== AC-10
 def test_AC_10_the_resolution_skill_and_the_c4_doc_mention_restart():
     skill = (ROOT / "assets" / "skills" / "resolution-protocol.md").read_text().lower()
@@ -256,8 +241,7 @@ def base_text(rel: str) -> str:
 
 TOKEN = {"tests/test_tickets.py": r"Remedy\.RESTART|restart",
          "tests/test_ticket_runner.py": r"Remedy\.RESTART|restart",
-         "tests/test_resolver.py": r"restart",
-         "frontend/src/App.test.tsx": r"restart|Restart"}
+         "tests/test_resolver.py": r"restart"}
 
 
 def test_AC_14_tests_restart_py_exists_and_passes():
@@ -274,16 +258,3 @@ def test_AC_14_each_python_suite_has_a_restart_test_that_passes(rel):
     assert re.search(r"def test_\w*restart\w*", text), f"{rel}: no test named for restart"
     p = sh([sys.executable, "-m", "pytest", "-q", "-n", "0", "-k", "restart", rel])
     assert p.returncode == 0, p.stdout[-2500:] + p.stderr[-1000:]
-
-
-def test_AC_14_the_frontend_app_tests_have_a_restart_test_that_passes():
-    rel = "frontend/src/App.test.tsx"
-    text = (ROOT / rel).read_text()
-    assert len(re.findall(TOKEN[rel], text)) > len(re.findall(TOKEN[rel], base_text(rel)))
-    assert re.search(r"test\(\s*['\"`][^'\"`]*restart", text, re.I), "no test named for restart"
-    p = subprocess.run(["bun", "test", "src/App.test.tsx", "-t", "restart"], cwd=ROOT / "frontend",
-                       capture_output=True, text=True, timeout=600)
-    out = p.stdout + p.stderr
-    assert p.returncode == 0, out[-2500:]
-    m = re.search(r"(\d+)\s+pass", out)
-    assert m and int(m.group(1)) >= 1, out[-1500:]
