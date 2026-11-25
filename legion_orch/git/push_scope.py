@@ -74,7 +74,8 @@ def changed_paths(base: str, new: str) -> list[str]:
 
 
 def check(scope: PushScope, updates: list[tuple[str, str, str]]) -> list[str]:
-    """Every refusal among ``(old, new, ref)`` updates (a deletion changes no files)."""
+    """Every refusal among ``(old, new, ref)`` updates. A ref deletion (``new`` all zeros) has no
+    commit to diff and is skipped – the hook refuses deletions before it gets here."""
     return [v for _, new, _ in updates if new != ZERO
             for v in scope.violations(changed_paths(scope.base, new))]
 
