@@ -101,7 +101,3 @@ run = "curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/instal
 description = "One-time workspace setup: import the legion-controller provider profile and create the provider"
 depends = ["install"]
 run = 'legion-orch -c "${LEGION_CONFIG:-orchestrator.yaml}" setup-openshell --apply'
-
-[tasks.setup]
-description = "Install what the tests need in a fresh clone: the Python environment (uv.lock) and the web UI's packages (bun.lock)"
-run = ["uv sync -q --locked --extra test --extra dev", "bun install --cwd frontend --frozen-lockfile"]
