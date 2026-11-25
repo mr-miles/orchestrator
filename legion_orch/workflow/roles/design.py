@@ -15,6 +15,19 @@ def _latest(e: RoleContext, name: str) -> str | None:
     return refs[-1] if refs else None
 
 
+def _review(e: RoleContext) -> str | None:
+    """The findings review: a judge's report outputs are not pinned on its criterion ticket, so
+    it is the latest accepted report of a ``findings-reviewer`` run (a ticket's pinned one first)."""
+    pinned = _latest(e, "findings-review")
+    if pinned:
+        return pinned
+    for run in reversed(list(getattr(e, "runs", {}).values())):
+        if run.role == "findings-reviewer" and run.report and run.report.status == "DONE":
+            if isinstance(ref := run.report.outputs.get("findings-review"), str):
+                return ref
+    return None
+
+
 def _doc(text: str | None) -> dict:
     try:
         data = json.loads(text or "{}")
@@ -56,7 +69,7 @@ class Selector(RoleHandler):
     roles = ("selector",)
 
     def extra_context(self, e: RoleContext, ticket: Ticket) -> list[str]:
-        return [ref for ref in (_latest(e, "findings"), _latest(e, "findings-review")) if ref]
+        return [ref for ref in (_latest(e, "findings"), _review(e)) if ref]
 
     async def guards(self, e: RoleContext, r: Report) -> list[str]:
         try:
@@ -64,4 +77,4 @@ class Selector(RoleHandler):
         except ValueError as x:
             return [f"G-DR3: selection is not JSON: {x}"]
         return guards.selection_problems(selection, _doc(doc_of(e, _latest(e, "findings"))),
-                                         _doc(doc_of(e, _latest(e, "findings-review"))))
+                                         _doc(doc_of(e, _review(e))))

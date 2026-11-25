@@ -77,7 +77,7 @@ def test_rest_of_skeleton_is_the_defaults(specs):
 
 # ---------------------------------------------------------------- the scenario
 async def _start(tmp_path) -> Flow:
-    f = Flow(tmp_path)
+    f = Flow(tmp_path, max_report_attempts=20)
     await f.git.ensure()
     f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
     f.ce = await f.ctl.start_change(GOAL, REPO, workflow="design-review")
@@ -105,9 +105,6 @@ async def _selection(f: Flow, ev: str) -> None:
     assert out.accepted, out.violations
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BLOCKED: a criterion's report outputs (findings-review) are never pinned on its ticket, so "
-    "roles/design.py Selector sees no review and G-DR3 rejects every selection as unreviewed"))
 @pytest.mark.scenario
 def test_selection_gates_the_plan_and_builds_serve_selected_findings(tmp_path):
     async def go():
@@ -173,6 +170,9 @@ def test_selection_gates_the_plan_and_builds_serve_selected_findings(tmp_path):
             assert f.status("design") == "working"        # only now
 
             await f.plan()
+            assert not [t for t in f.ce.st.tickets.values() if t.type == "agent:implementer"]
+            await f.critique("PASS")
+            await f.signoff("H-E1")                       # the signed plan adds its builds
             builds = [t for t in f.ce.st.tickets.values() if t.type == "agent:implementer"]
             assert [b.id for b in builds] == ["T1"]
             reqs = f.ce.doc("tickets/intake/requirements.md").content
@@ -186,3 +186,20 @@ def test_selection_gates_the_plan_and_builds_serve_selected_findings(tmp_path):
         finally:
             await f.stop()
     asyncio.run(go())
+
+
+def test_selector_reads_the_judges_report_when_no_ticket_pins_it():
+    from types import SimpleNamespace as NS
+
+    from legion_orch.workflow.roles.design import _review
+
+    def run(role, status, outputs):
+        return NS(role=role, report=NS(status=status, outputs=outputs))
+    ref = "file:d/review.json@2"
+    e = NS(tickets=NS(t={}), runs={
+        "r1": run("findings-reviewer", "DONE", {"findings-review": "file:d/review.json@1"}),
+        "r2": run("findings-reviewer", "DONE", {"findings-review": ref}),
+        "r3": run("selector", "DONE", {"selection": "file:d/s.json@1"}),
+        "r4": run("findings-reviewer", "BLOCKED", {})})
+    assert _review(e) == ref
+    assert _review(NS(tickets=NS(t={}), runs={})) is None

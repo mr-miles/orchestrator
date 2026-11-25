@@ -39,7 +39,7 @@ def edit(name: str, fn):
 
 def test_two_valid_workflows_load(copy):
     a = Assets(copy(second=True))
-    assert list(a.workflows) == ["default", "other"]
+    assert list(a.workflows) == ["default", "design-review", "other"]
     assert a.workflow is a.workflows["default"]
 
 
