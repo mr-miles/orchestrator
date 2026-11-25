@@ -52,17 +52,19 @@ class Waiting(StrEnum):
 class Remedy(StrEnum):
     RETRY = "retry"            # the same ticket, another round (same id, same attempt count)
     WAIVE = "waive"            # a failed, waivable criterion counts as passed
+    RESTART = "restart"        # a build starts afresh: attempts, findings, sandbox and branch cleared
     REPLAN = "replan"          # the constraints must change: a plan fails it or adds to it
 
 
-# the remedies each reason for waiting allows (a replan is always possible)
+# the remedies each reason for waiting allows (a replan is always possible; a restart only on a
+# restartable ticket – see allowed_remedies)
 REMEDIES: dict[Waiting, set[Remedy]] = {
-    Waiting.ATTEMPTS: {Remedy.WAIVE, Remedy.REPLAN},
-    Waiting.REPEATED: {Remedy.WAIVE, Remedy.REPLAN},
-    Waiting.ESCALATED: {Remedy.WAIVE, Remedy.REPLAN},
-    Waiting.SYSTEM: {Remedy.RETRY, Remedy.REPLAN},
-    Waiting.BUDGET: {Remedy.RETRY, Remedy.REPLAN},
-    Waiting.BLOCKED: {Remedy.RETRY, Remedy.REPLAN},
+    Waiting.ATTEMPTS: {Remedy.WAIVE, Remedy.RESTART, Remedy.REPLAN},
+    Waiting.REPEATED: {Remedy.WAIVE, Remedy.RESTART, Remedy.REPLAN},
+    Waiting.ESCALATED: {Remedy.WAIVE, Remedy.RESTART, Remedy.REPLAN},
+    Waiting.SYSTEM: {Remedy.RETRY, Remedy.RESTART, Remedy.REPLAN},
+    Waiting.BUDGET: {Remedy.RETRY, Remedy.RESTART, Remedy.REPLAN},
+    Waiting.BLOCKED: {Remedy.RETRY, Remedy.RESTART, Remedy.REPLAN},
     Waiting.EMPTY: {Remedy.REPLAN},
 }
 
@@ -113,6 +115,12 @@ class Ticket(BaseModel):
         return self.type != GROUPING
 
     @property
+    def restartable(self) -> bool:
+        """Whether a restart applies: a subtask with its own work, no subtasks, no merge owed."""
+        return self.has_work and self.role == "subtask" and not any(self.subtasks) \
+            and not self.merging
+
+    @property
     def owns_branch(self) -> bool:
         """Whether it has a branch of its own (decided by the tree, never by a plan): the root
         (the change's result), an agent's ticket (its work may commit), a grouping ticket with
@@ -124,3 +132,11 @@ class Ticket(BaseModel):
     @property
     def leaf(self) -> bool:
         return not self.subtasks and not self.criteria
+
+
+def allowed_remedies(ticket: Ticket) -> set[Remedy]:
+    """The remedies a human may choose for a ticket waiting as it is now."""
+    out = set(REMEDIES.get(ticket.waiting, set())) if ticket.waiting else set()
+    if not ticket.restartable:
+        out.discard(Remedy.RESTART)
+    return out

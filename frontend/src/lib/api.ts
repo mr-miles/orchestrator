@@ -75,7 +75,7 @@ export function startChange(goal: string, workspace: string, who: Who) {
 }
 
 /** A decision on a ticket: a sign-off's ``approve`` / ``reject``, a waiting ticket's remedy
- * (``retry``, ``waive:<criterion>``, ``replan``). */
+ * (``retry``, ``waive:<criterion>``, ``restart``, ``replan``). */
 export function ticketAction(
   cid: string,
   ticket: string,

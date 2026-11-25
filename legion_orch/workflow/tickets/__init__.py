@@ -1,6 +1,17 @@
 """The workflow as tickets (plan: ~/plans/tickets-design.md): the ticket record and its rules.
 Not wired into the engine yet."""
-from .model import ACTIVE, GROUPING, REMEDIES, SETTLED, Remedy, Severity, Status, Ticket, Waiting
+from .model import (
+    ACTIVE,
+    GROUPING,
+    REMEDIES,
+    SETTLED,
+    Remedy,
+    Severity,
+    Status,
+    Ticket,
+    Waiting,
+    allowed_remedies,
+)
 from .rules import (
     Add,
     Effect,
@@ -17,4 +28,4 @@ from .rules import (
 
 __all__ = ["ACTIVE", "GROUPING", "REMEDIES", "SETTLED", "Add", "Effect", "Ended", "Escalate",
            "Merge", "Remedy", "Replan", "Severity", "StartWork", "Status", "StopWork", "Ticket",
-           "TicketError", "Tickets", "Waiting", "validate"]
+           "TicketError", "Tickets", "Waiting", "allowed_remedies", "validate"]
