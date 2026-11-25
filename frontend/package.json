@@ -8,7 +8,7 @@
     "dev": "bun run types && bun --bun vite",
     "build": "bun run types && tsc -b && bun --bun vite build",
     "preview": "bun --bun vite preview",
-    "typecheck": "tsc -b",
+    "typecheck": "bun run types && tsc -b",
     "lint": "oxlint --deny-warnings",
     "format": "bun --bun prettier --write .",
     "format:check": "bun --bun prettier --check .",

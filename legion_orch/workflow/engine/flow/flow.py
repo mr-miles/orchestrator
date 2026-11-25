@@ -52,7 +52,7 @@ from ...tickets.executors import (
 )
 from ...tickets.plan_doc import parse_plan
 from ...tickets.runner import Runner
-from ...tickets.spec import CONTROLLER_OUTPUTS
+from ...tickets.spec import CONTROLLER_OUTPUTS, WorkflowSpec
 from ..base.common import WorkflowError
 from ..base.core import ChangeCore
 from ..services import cleanup
@@ -69,9 +69,6 @@ class TicketFlow:
                  provision: Provision, publisher: Publisher, agent_runner: AgentRunner,
                  lifecycle: RunLifecycle, backoff: Backoff = Backoff()):
         self.c, self.signoffs, self.agent_runner, self.lifecycle = c, signoffs, agent_runner, lifecycle
-        if c.assets.workflow is None:
-            raise WorkflowError("the assets have no workflow.yaml")
-        self.spec = c.assets.workflow
         self._ports = (agents, verify, provision, publisher, backoff)
         self._executors: Executors | None = None
         self._branches: Branches | None = None
@@ -81,6 +78,16 @@ class TicketFlow:
         self._agents = agents
         self.skip_on_complete = False               # abandoned without the retrospective
         self.awaiting_reflections = False           # the on-complete process waits for them
+
+    @property
+    def spec(self) -> WorkflowSpec:
+        """The workflow the change runs under (read once its record exists)."""
+        name = self.c.change.workflow
+        try:
+            return self.c.assets.workflows[name]
+        except KeyError:
+            raise WorkflowError(f"change {self.c.cid} runs workflow {name!r}, which the assets "
+                                "no longer have") from None
 
     @property
     def branches(self) -> Branches:

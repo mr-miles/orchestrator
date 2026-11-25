@@ -70,8 +70,12 @@ export interface Who {
   token: string
 }
 
-export function startChange(goal: string, workspace: string, who: Who) {
-  return api<{ change: string }>('/api/changes', { goal, workspace }, who.token)
+export function startChange(goal: string, workspace: string, who: Who, workflow?: string) {
+  return api<{ change: string }>(
+    '/api/changes',
+    workflow ? { goal, workspace, workflow } : { goal, workspace },
+    who.token,
+  )
 }
 
 /** A decision on a ticket: a sign-off's ``approve`` / ``reject``, a waiting ticket's remedy

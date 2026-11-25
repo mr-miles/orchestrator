@@ -29,7 +29,7 @@ from ...store.journal import Journal
 from ...store.state_tables import StateTables
 from ...telemetry import Telemetry
 from ...util import stop_process
-from ..assets import Assets
+from ..assets import DEFAULT_WORKFLOW, Assets
 from ..attention import AttentionItem
 from ..environment import Library
 from ..model import (
@@ -278,7 +278,8 @@ class Controller:
             await asyncio.sleep(self.REMIND_S)
 
     # ------------------------------------------------------------------ changes
-    async def start_change(self, goal: str, workspace: str) -> ChangeEngine:
+    async def start_change(self, goal: str, workspace: str,
+                           workflow: str | None = None) -> ChangeEngine:
         """A new change in ``workspace``. (No workspace is kept for a change across workspaces,
         planned by an agent in several places – not supported yet.)"""
         goal = goal.strip()
@@ -289,6 +290,11 @@ class Controller:
                                 "across workspaces is not supported yet)")
         if workspace not in self.hubs:
             raise WorkflowError(f"unknown workspace {workspace!r} (one of {', '.join(self.hubs)})")
+        name = workflow or DEFAULT_WORKFLOW
+        if name not in self.assets.workflows:
+            have = ', '.join(sorted(self.assets.workflows)) or None
+            raise WorkflowError(f"unknown workflow {name!r} (one of {have})" if have
+                                else "the assets have no workflows")
         async with self.svc.lock:
             while True:
                 cid = "c" + datetime.now(UTC).strftime("%y%m%d") + "-" + secrets.token_hex(2)
@@ -296,7 +302,7 @@ class Controller:
                     break
             ce = ChangeEngine(self.svc, self, cid)
             self.changes[cid] = ce
-            ce.start(goal, workspace)               # its first step syncs the workspace
+            ce.start(goal, workspace, name)             # its first step syncs the workspace
             return ce
 
     def get(self, cid: str) -> ChangeEngine:

@@ -2,6 +2,7 @@
 from . import (  # noqa: F401  (registration side effects)
     critic,
     describer,
+    design,
     implementer,
     intake,
     integration,

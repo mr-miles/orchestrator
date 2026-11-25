@@ -3,8 +3,9 @@
 This document specifies the orchestrator's workflow: the tickets every change is made of, the
 guards on them, the risk tiers' policies, and which soul, skills and prompt each role uses. The
 agent-facing text itself lives in [`assets/`](assets/) (see §6), one file per asset, and the
-controller loads it from there. Apart from [`assets/workflow.yaml`](assets/workflow.yaml) (the
-skeleton and the tier policies, §4.2, §3) this document is not parsed.
+controller loads it from there. Apart from the workflows, [`assets/workflows/default.yaml`](assets/workflows/default.yaml) and
+[`assets/workflows/design-review.yaml`](assets/workflows/design-review.yaml) (the skeleton and the tier
+policies, §4.2, §3) this document is not parsed.
 
 Every dispatch records two pins: the SHA-256 of the whole asset set and the SHA-256 of the rendered
 soul + skills + prompt. Any edit to an asset is therefore visible in the run record. Guard IDs
@@ -298,7 +299,7 @@ scope_breadth, novelty_uncertainty, verification_quality`).
   `baseline` at R3) are linked into the tree, and the tier's attempt limits set on the tickets not
   yet started.
 
-Each tier is a **policy** in [`assets/workflow.yaml`](assets/workflow.yaml) (`tiers`): rules a
+Each tier is a **policy** in the change's workflow (`assets/workflows/<name>.yaml`, `tiers`): rules a
 tree must keep, stated by ticket **type** and order – never by id, since ids are only names. A
 tier may `extend` another:
 
@@ -321,7 +322,7 @@ checked as a partial tree (rules about types still to be planned don't apply). `
 check` validates the file, and every run gets the skeleton and the policies as the generated
 `legion-workflow` skill, so the planner and the resolver plan into them.
 
-`workflow.yaml` also says which **criterion types** a decision owner may waive (`criteria`:
+The workflow also says which **criterion types** a decision owner may waive (`criteria`:
 verify, preflight, can-merge and sign-offs may not) and the **hooks** – the side processes
 outside the tree (`on_complete: retrospective`, `on_escalation: resolver`).
 
@@ -354,11 +355,25 @@ passes (§4.5).
 
 ### 4.2 The skeleton, outputs and sign-offs
 
-Every change starts from `workflow.yaml`'s `skeleton` (shown at the top): `requirements`, `plan`,
+Every change starts from its workflow's `skeleton` (the default's is shown at the top): `requirements`, `plan`,
 `delivery`, `evaluate` and `release`, with the bare minimum under them. The planner fills
 `delivery` (its builds; `delivery`'s own criteria – the oracle's commands at its head, then the
 integration – are the skeleton's) and may add to `evaluate` and `release`; its output
 `tickets` is the **first replan** (§4.6), applied when H-E1 passes.
+
+**Choosing a workflow.** The workflows are the files under [`assets/workflows/`](assets/workflows/default.yaml):
+[`default`](assets/workflows/default.yaml) (the skeleton above) and
+[`design-review`](assets/workflows/design-review.yaml). A change chooses one when it starts –
+`legion-orch start --workflow <name>` (`-W`), or `workflow` in the API's start request; without it
+`default` – and keeps it for its life (it is recorded on the change, and replans, tier policies,
+hooks and the `legion-workflow` skill all come from it). An unknown name is refused at start.
+
+`design-review` is the default's skeleton with a `review` stage inserted before `requirements`:
+`inspect` (`design-reviewer`, criterion `findings-review` by the `findings-reviewer`), then
+`select` (`selector`, criterion H-S, a sign-off of `selection`). The `intake` then takes
+`selection` as an input and writes one requirement per selected finding (G-DR4); `plan`,
+`delivery`, `evaluate` and `release` follow as in the default, so only selected findings become
+builds. The stage's roles are §5.1a–§5.1c; the review's guards are G-DR1..G-DR4.
 
 A **sign-off** (`human:signoff`) is a criterion of the work it checks. It names the outputs it
 signs (`signs: [spec, specs, oracle, environment, tickets]`), resolved against that work: its
@@ -374,6 +389,7 @@ violations the findings, so the planner reworks.
 
 | Sign-off | Criterion of | Signs | Applies |
 | --- | --- | --- | --- |
+| H-S | `select` (`design-review` only) | `selection` | – |
 | H-1 | `intake` | `requirements`, `risk` | `tier` |
 | H-E1 | `design` (after the critique) | `spec`, `specs`, `oracle`, `environment`, `tickets` | `tickets` |
 | H-2 | `oracle` (after preflight), R2+ | `tests` | – |
@@ -471,7 +487,7 @@ adds produces, say, a new `environment` – says only that; what follows is mech
   it applies that too: a revised design's plan adds builds and cancels pending ones, against the
   tree as it is, under the tier's policy like any replan;
 * when that sign-off passes and moves a pointer to a **different** version, every finished
-  ticket that consumed the old one (its `inputs`) and whose type `workflow.yaml`'s `stale` says
+  ticket that consumed the old one (its `inputs`) and whose type the workflow's `stale` says
   to `redo` – the provisioning, the oracle – gets a new instance (`provision.2`: the same work,
   fresh criteria; a redo type has one ticket per change, so instances are matched by type – the
   id is only a name) in a new subtask group right after the producer, applied with the sign-off's
@@ -569,7 +585,45 @@ it.
 | G-I1 | `requirements` contains at least one requirement id `REQ-<n>`; ids are unique. |
 | G-I2 | `risk` has all 12 signals, each once, integer score 0–3, a rationale that is not blank (the shape is the [`risk`](assets/schemas/risk.json) schema's, enforced on write). |
 | G-I3 | If a `questions.md` is attested, every question is either answered in it or reported as `BLOCKED` (questions go to the human; nothing is guessed). |
+| G-DR4 | `design-review` only: every `REQ-<n>` block cites ≥1 finding id (`F-<n>`) that the `selection` selected, and every selected finding is cited by ≥1 requirement. |
 | H-1 | A decision owner signs `requirements` and `risk`; the pass fixes the tier (§3) and moves the pointers. A rejection reworks the intake with the reason. |
+
+### 5.1a `design-reviewer` – the design findings (`review` ▸ `inspect`, `design-review` only)
+
+* **Soul:** `design-reviewer`  **Skills:** `harness-contract`, `a2a-protocol`, `a2a-cli`, `docstore-protocol`, `attestation-format`, `codebase-design`, `blocked-protocol`
+* **Outputs:** `findings` (`findings.json`, the [`findings`](assets/schemas/findings.json) schema)
+
+The agent reviews the repository's technical design with the [`codebase-design`](assets/skills/codebase-design.md)
+skill and records ranked, evidenced findings. It changes no code (git: none).
+
+| ID | Rule |
+| --- | --- |
+| G-DR1 | Finding ids are unique, and every evidence reference of a finding is also attested by the report (and resolves). |
+
+### 5.1b `findings-reviewer` – the findings judged (criterion of `inspect`)
+
+* **Soul:** `findings-reviewer`  **Skills:** `harness-contract`, `a2a-protocol`, `a2a-cli`, `docstore-protocol`, `attestation-format`, `finding-format`, `blocked-protocol`
+* **Outputs:** `findings-review` (the [`findings-review`](assets/schemas/findings-review.json) schema)
+
+A judge like the `critic` (§5.3, its universal guards and verdict rules apply): it judges each
+finding – valid, evidenced, severity. A `REWORK` reworks the design reviewer with the findings.
+
+| ID | Rule |
+| --- | --- |
+| G-DR2 | Every finding is reviewed exactly once and only findings are reviewed (no unknown, repeated or missing finding id). |
+
+### 5.1c `selector` – the findings to work on (`review` ▸ `select`)
+
+* **Soul:** `design-selector`  **Skills:** `harness-contract`, `a2a-protocol`, `a2a-cli`, `docstore-protocol`, `attestation-format`, `blocked-protocol`
+* **Inputs/context:** `findings` and the findings review (the judge's latest accepted `findings-review`)  **Outputs:** `selection` (the [`selection`](assets/schemas/selection.json) schema)
+
+Each finding is selected (with a reason) or dropped (with a reason). A decision owner signs
+`selection` (H-S); a rejection reworks the selector with the reason.
+
+| ID | Rule |
+| --- | --- |
+| G-DR3 | Each finding is selected or dropped exactly once; a selected finding was reviewed `valid` and keeps the finding's evidence. |
+| H-S | A decision owner signs `selection`; the pass lets the intake start from it (§5.1, G-DR4). |
 
 ### 5.2 `planner` – the design (`plan` ▸ `design`)
 
@@ -1215,7 +1269,7 @@ assets/
   souls/<soul>.md          agent persona, injected verbatim (never summarised)
   skills/<skill>.md        skill: frontmatter `description` (when to load it), then the body
   prompts/<role>.md        task prompt template for the role (file name = role name)
-  workflow.yaml            the skeleton, the tier policies, waivable criteria and the hooks
+  workflows/<name>.yaml    a workflow: the skeleton, the tier policies, waivable criteria and the hooks
 ```
 
 * A role's prompt is `prompts/<role>.md`, kept light: the rendered template followed by one line
@@ -1262,8 +1316,9 @@ assets/
 
 **Role bindings:** [`assets/roles.yaml`](assets/roles.yaml)
 
-**The workflow:** [`assets/workflow.yaml`](assets/workflow.yaml) – every change's skeleton, what
-each risk tier's tree must contain (§3), the waivable criteria and the hooks. `legion-orch check` validates it; every run also gets it as the
+**The workflows:** [`assets/workflows/default.yaml`](assets/workflows/default.yaml) and
+[`assets/workflows/design-review.yaml`](assets/workflows/design-review.yaml) (a change chooses one, §4.2) – each a change's skeleton, what
+each risk tier's tree must contain (§3), the waivable criteria and the hooks. `legion-orch check` validates them; every run also gets its change's workflow as the
 generated `legion-workflow` skill.
 
 | Role | Prompt |
@@ -1283,6 +1338,9 @@ generated `legion-workflow` skill.
 | `release` | [`prompts/release.md`](assets/prompts/release.md) |
 | `retrospective` | [`prompts/retrospective.md`](assets/prompts/retrospective.md) |
 | `resolver` | [`prompts/resolver.md`](assets/prompts/resolver.md) |
+| `design-reviewer` | [`prompts/design-reviewer.md`](assets/prompts/design-reviewer.md) |
+| `findings-reviewer` | [`prompts/findings-reviewer.md`](assets/prompts/findings-reviewer.md) |
+| `selector` | [`prompts/selector.md`](assets/prompts/selector.md) |
 
 **Souls**
 
@@ -1302,6 +1360,9 @@ generated `legion-workflow` skill.
 * [`release-planner`](assets/souls/release-planner.md)
 * [`retrospective-analyst`](assets/souls/retrospective-analyst.md)
 * [`resolver`](assets/souls/resolver.md)
+* [`design-reviewer`](assets/souls/design-reviewer.md)
+* [`findings-reviewer`](assets/souls/findings-reviewer.md)
+* [`design-selector`](assets/souls/design-selector.md)
 
 **Schemas** ([`bindings.yaml`](assets/schemas/bindings.yaml) maps path patterns to these; agents
 can fetch them with MCP `docs_schema(path)` / `schema_get(name)`; an agent's outputs are bound
@@ -1315,6 +1376,8 @@ guards, because a per-file schema cannot express them.
 * [`environment`](assets/schemas/environment.json)
 * [`environment-build`](assets/schemas/environment-build.json)
 * [`evidence`](assets/schemas/evidence.json)
+* [`findings`](assets/schemas/findings.json) – the design reviewer's findings (`design-review`)
+* [`findings-review`](assets/schemas/findings-review.json) – the findings reviewer's judgement
 * [`json`](assets/schemas/json.json)
 * [`markdown`](assets/schemas/markdown.json)
 * [`oracle`](assets/schemas/oracle.json)
@@ -1328,6 +1391,7 @@ guards, because a per-file schema cannot express them.
 * [`risk`](assets/schemas/risk.json)
 * [`run-assignment`](assets/schemas/run-assignment.json)
 * [`run-outcome`](assets/schemas/run-outcome.json)
+* [`selection`](assets/schemas/selection.json) – the selector's choice of findings
 * [`text`](assets/schemas/text.json)
 * [`verification`](assets/schemas/verification.json)
 * [`work-implementer`](assets/schemas/work-implementer.json) – an implementer ticket's `work` (tickets)
@@ -1349,6 +1413,11 @@ guards, because a per-file schema cannot express them.
   * [`stack-python`](assets/skills/stack-python.md) – uv, ruff, pytest
   * [`stack-bun-typescript`](assets/skills/stack-bun-typescript.md) – React, TypeScript, Vite,
     bun, oxlint, Prettier, bun test with happy-dom
+* [`codebase-design`](assets/skills/codebase-design.md) – the design reviewer's skill: how to review
+  a codebase's technical design (shallow modules, leaky seams, tangled dependencies). Adapted from
+  [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering/codebase-design);
+  the file records its attribution and that the upstream licence is not verified, so it is a
+  summary in our own words, not a copy
 * [`pre-mortem`](assets/skills/pre-mortem.md)
 * [`finding-format`](assets/skills/finding-format.md)
 * [`security-checklist`](assets/skills/security-checklist.md)

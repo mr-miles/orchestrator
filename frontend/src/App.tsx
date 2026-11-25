@@ -190,6 +190,8 @@ export default function App() {
         open={creating}
         onOpenChange={setCreating}
         workspaces={workspaces}
+        workflows={meta?.workflows}
+        defaultWorkflow={meta?.default_workflow}
         defaultWorkspace={
           resolved.page === 'workspace' || resolved.page === 'change' ? resolved.ws : defaultWs
         }
