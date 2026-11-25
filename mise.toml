@@ -15,6 +15,12 @@ _.python.venv = { path = ".venv", create = true }
 [settings]
 python.uv_venv_auto = true
 
+[tasks.setup]
+run = [
+  "uv sync --extra test --extra dev",
+  "cd frontend && bun install --frozen-lockfile && bun run types",
+]
+
 [tasks.install]
 description = "Install the package (editable) with test and dev extras into .venv, as uv.lock pins them"
 run = "uv sync -q --locked --extra test --extra dev"
@@ -95,9 +101,3 @@ run = "curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/instal
 description = "One-time workspace setup: import the legion-controller provider profile and create the provider"
 depends = ["install"]
 run = 'legion-orch -c "${LEGION_CONFIG:-orchestrator.yaml}" setup-openshell --apply'
-
-[tasks.setup]
-run = [
-  "uv sync --extra test --extra dev",
-  "cd frontend && bun install --frozen-lockfile && bun run types",
-]
