@@ -47,7 +47,11 @@ included. A criterion with nothing behind it does not pass.
    approve, merge, mark anything accepted, or write `control/**`.
 2. **Immutable evidence.** Every artifact is either a document version in the versioned store
    (`file:<path>@<version>`) or a git object (`git:<repo>/<path>@<sha>` / `git:<repo>@<sha>`).
-   Neither can change after it is written, so an attestation is re-verifiable forever.
+   Neither can change after it is written, so an attestation is re-verifiable forever. A sha is
+   kept in full (40 characters): where one comes in – a report's attestations, a plan's or
+   replan's `work.context`, a resolver's proposal, an MCP tool's `sha` – an abbreviation that
+   exactly one commit starts with is expanded, and an ambiguous or unknown one is refused with
+   what to give instead. Messages and events show 12 characters, for reading only.
 3. **Harness contract** for every agent:
    `read-before-write -> evidence-before-action -> minimal diff -> verify-before-report`.
 4. **No self-deferral.** A run ends in exactly one of `DONE` or `BLOCKED`. There is no "partially

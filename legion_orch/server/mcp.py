@@ -24,6 +24,7 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import METHOD_NOT_FOUND
 
+from ..git import ShaError
 from ..store import DocCheck, DocStoreError, DocVersion
 from ..store.mcp import STORE_TOOLS, StoreSession, register_store_tools
 from ..util import bearer
@@ -40,8 +41,8 @@ are immutable,
 versioned and schema-validated (docs_write creates a new version; pass base_version when revising;
 docs_schema(path) shows what a path must contain). Paths are relative to your change unless they
 start with changes/. Back every claim with attestations: file:<path>@<version>,
-git:<repo>/<path>@<sha> or git:<repo>@<sha>. File your results with one accepted
-report(status="DONE"|"BLOCKED") – accepted, it ends your task; then end your turn. Rejected
+git:<repo>/<path>@<sha> or git:<repo>@<sha>, with the full 40-character sha. File your results
+with one accepted report(status="DONE"|"BLOCKED") – accepted, it ends your task; then end your turn. Rejected
 reports list violated guard ids and use up an attempt; check first with report(..., dry_run=true)
 and docs_write(..., dry_run=true), which use none. Answer the messages in your inbox with
 a2a_reply()."""
@@ -137,11 +138,13 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                   "attempts_left": ctl.cfg.limits.max_report_attempts - r.attempts})
         return a
 
-    @server.tool(description="Check whether an attestation (file: or git:) resolves.")
+    @server.tool(description="Check whether an attestation (file: or git:) resolves; `ref` is "
+                             "its full form (a git sha in full, as reports and plans keep it).")
     async def verify_attestation(ctx: Context, ref: str) -> dict:
         ce, _ = current(ctx)
         ref = attest.normalize(ref, ce.cid)
         try:
+            ref = await attest.expand(ref, ce.git)
             a = attest.parse(ref, [ce.workspace])
         except attest.AttestationError as e:
             return {"ref": ref, "valid": False, "error": str(e)}
@@ -233,8 +236,11 @@ async def build_mcp(ctl: Controller) -> MCPServer:
                 "attestation": res.attestation if res else None}
 
     async def _sha_of(ce: ChangeEngine, r: Run, sha: str | None) -> str:
-        if sha:
-            return sha
+        if sha:                            # in full: an unambiguous abbreviation expanded
+            try:
+                return await ce.git.expand_commit(sha)
+            except ShaError as e:
+                raise ToolError(str(e)) from None
         if r.branch:
             tip = await ce.git.ref_sha(f"refs/heads/{r.branch}")
             if tip:

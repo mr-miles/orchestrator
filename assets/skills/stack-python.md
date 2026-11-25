@@ -8,7 +8,9 @@ House conventions for Python projects (see `legion-language-preferences`).
 
 * **uv for everything, never pip or `python -m venv`.** Dependencies are declared in
   `pyproject.toml` and locked in `uv.lock` (commit both). Add with `uv add <pkg>` (dev tools:
-  `uv add --dev <pkg>`), install with `uv sync --locked`, run with `uv run <cmd>`.
+  `uv add --dev <pkg>`), run with `uv run <cmd>`. The repository's `setup` task in `mise.toml`
+  installs them with `uv sync --locked` (`mise run setup` runs it after every checkout, in CI and
+  before verification; never list an install among the verification commands).
 * **ruff for linting and formatting** (no black, isort, flake8 or pylint). Configure it in
   `pyproject.toml` under `[tool.ruff]`. Run the ruff binary directly: `ruff check .` and
   `ruff format --check .` (they need no dependencies or network); `ruff check --fix .` and
@@ -16,7 +18,11 @@ House conventions for Python projects (see `legion-language-preferences`).
 * **Tests with pytest via uv:** `uv run pytest -q <paths>`.
 * **Verification commands** (task `verification`, oracle commands) for Python tasks use exactly
   these forms: `uv run pytest -q …`, `ruff check …`, `ruff format --check …`. Every Python task
-  that changes code verifies with ruff as well as its tests.
+  that changes code verifies with ruff as well as its tests. Anything else that runs Python or a
+  project tool goes through `uv run` too (`uv run python …`, `uv run mypy …`): each command runs
+  in a fresh shell with no virtualenv activated, so a bare `pytest` or `python` misses the
+  project's `.venv` and fails as not found (or runs without its dependencies). `ruff` is the one
+  exception: the profile installs it in the image.
 * **Sandbox environment:** a Python profile has `python@<version matching requires-python>`,
   `uv` and `ruff` from the library. `uv` brings read-only PyPI access (`uv run` installs the
   locked dependencies first, so every profile that runs tests needs `uv`); `python` and `ruff`

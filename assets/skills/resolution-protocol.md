@@ -41,7 +41,9 @@ description: "How the resolver diagnoses a waiting ticket and proposes a remedy 
 5. **Propose** exactly one of the listed `actions`, its `payload`, a short `rationale`, and
    `attestations` for the evidence you relied on – the fenced JSON block of your prompt, at the
    end of your answer. A proposal that names an action not offered is returned to you with the
-   reason.
+   reason. Every `git:` reference – in `attestations` and in a replan's `work.context` – names
+   its commit by the **full 40-character sha**: the short shas of events and messages are
+   expanded only when unambiguous, and an ambiguous one returns your proposal to be corrected.
 
 You never apply anything: a human reads your proposal on the escalation and applies, edits or
 ignores it.

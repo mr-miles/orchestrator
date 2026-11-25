@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 
-from ... import cards
+from ... import attest, cards
 from ...model import ResolverProposal
 from ...tickets import Remedy, Status, Ticket, allowed_remedies
 from ...tickets.plan_doc import parse_plan
@@ -117,6 +117,18 @@ class Resolver:
         """Record the proposal for the escalation ``key``. Returns why it was not taken – None
         when it was; "stale" when the escalation was decided first."""
         c = self.c
+        # shas in full before anything is checked or kept: an unambiguous abbreviation expanded,
+        # an ambiguous or unknown one sent back to be corrected
+        payload = proposal.get("payload") or {}
+        if isinstance(payload, dict) and isinstance(payload.get("plan"), dict):
+            plan_data, v = await attest.plan_shas(payload["plan"], c.git)
+            if v:
+                return "; ".join(v)
+            payload = payload | {"plan": plan_data}
+        atts, v = await attest.expand_all(
+            [a for a in proposal.get("attestations") or [] if isinstance(a, str)], c.git)
+        if v:
+            return "; ".join(v)
         async with c.lock:
             t = c.tickets.t.get(ticket_id)
             if t is None or t.status != Status.WAITING or escalation_key(t) != key:
@@ -128,7 +140,6 @@ class Resolver:
             action = proposal.get("action")
             if action not in actions:
                 return f"action must be one of {', '.join(actions)} (got {action!r})"
-            payload = proposal.get("payload") or {}
             if not isinstance(payload, dict):
                 return "payload must be a JSON object"
             if action == "replan":                 # its plan, checked as applying it would
@@ -139,7 +150,6 @@ class Resolver:
                 if ticket_id not in plan.fail and not any(a.into == ticket_id for a in plan.add):
                     return (f"the plan must fail {ticket_id} (replaced) or add to it "
                             "(repaired)")
-            atts = [a for a in proposal.get("attestations") or [] if isinstance(a, str)]
             n = len(c.docs.list(c.p(f"control/proposals/{_slug(ticket_id)}-"))) + 1
             p = ResolverProposal(action=action, payload=payload,
                                  rationale=str(proposal.get("rationale") or "")[:4000],

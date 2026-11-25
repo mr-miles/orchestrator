@@ -18,10 +18,10 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
         "requirements": ["REQ-1"],
         "files_modified": ["src/api/users/", "tests/unit/users/", "src/api/routes.py"],  // its area (dir/), exact shared files
         "files_forbidden": ["src/auth/"],
-        "context": ["git:app/src/api/__init__.py@<sha>"],   // only what it needs beyond its inputs
+        "context": ["git:app/src/api/__init__.py@<full 40-char sha>"],   // only what it needs beyond its inputs
         "instructions": "decision-complete instructions; no choices left to the implementer",
         "acceptance": ["GET /users/{id} returns 404 for unknown ids"],
-        "verification": ["pytest -q tests/unit/test_users.py"]},
+        "verification": ["uv run pytest -q tests/unit/test_users.py"]},
       "criteria": [{"id": "verify:T1", "type": "controller:verify"},
                    {"id": "review:T1", "type": "agent:reviewer"},
                    {"id": "can-merge:T1", "type": "controller:can-merge"}]}},
@@ -49,7 +49,9 @@ requires). `tickets.json` is a **replan**: it adds tickets, and decides about th
 * **Inputs** name signed-off outputs (`spec`, `specs`, `oracle`, `environment`): its runs are
   given them at their signed versions, with the delta specs of the build's own `requirements`.
   List in `work.context` only what else the build needs, typically a few files: every entry is
-  something the implementer must read.
+  something the implementer must read. A `git:` entry names its commit by the **full
+  40-character sha** (`git rev-parse <commit>`), not the short one events and logs show; an
+  abbreviation that more than one commit starts with is rejected.
 * You may add tickets to `evaluate` (before the description, `"into": "evaluate"`) or `release`
   – e.g. an `agent:pr-reviewer` criterion of `describe`, or a `release` planner – when the
   change needs them.
@@ -69,14 +71,14 @@ placeholder entry point, none of the requirements' behaviour.
 ```json
 {"acceptance_tests": ["tests/acceptance/test_users_api.py"],
  "protected_support": ["tests/acceptance/conftest.py"],
- "acceptance_commands": ["pytest -q tests/acceptance"],
- "integration_commands": ["pytest -q"],
+ "acceptance_commands": ["uv run pytest -q tests/acceptance"],
+ "integration_commands": ["uv run pytest -q"],
  "criteria": [{"id": "AC-1", "requirement": "REQ-1", "text": "…",
                "tests": ["tests/acceptance/test_users_api.py"],
-               "commands": ["pytest -q tests/acceptance"]}],
+               "commands": ["uv run pytest -q tests/acceptance"]}],
  "surfaces": [{"id": "users-api",
                "description": "HTTP API served by docker compose, checked against the OpenAPI schema",
-               "commands": ["docker compose up -d && pytest -q tests/integration/test_api.py"],
+               "commands": ["docker compose up -d && uv run pytest -q tests/integration/test_api.py"],
                "pins": ["docker-compose.yml", "schema/openapi.yaml"]}]}
 ```
 
@@ -88,6 +90,13 @@ in these lists: a command that only installs dependencies here is rejected (G-P1
 would run after the acceptance commands that need it. Right after the oracle reports, the
 controller runs the setup and the acceptance commands this way (preflight): a setup that fails
 sends the oracle back; a command the verifier image lacks stops the change for a human.
+
+**Each command runs on its own, in a new non-interactive shell at the root of the clone:**
+nothing the setup or an earlier command did to the shell carries over – no activated virtualenv,
+no `PATH` change, no `cd`. A command that needs a project environment brings it itself, in the
+form its stack skill gives (`uv run pytest …`, never a bare `pytest` or `python`; `bun run …`);
+a tool installed only into the project (`.venv`, `node_modules`) is not found otherwise, and
+the verification fails as if the image lacked it.
 
 **Criteria** name the acceptance tests and commands that check them (`tests` ⊆
 `acceptance_tests`, `commands` ⊆ `acceptance_commands`, G-P12). Give every criterion at least one

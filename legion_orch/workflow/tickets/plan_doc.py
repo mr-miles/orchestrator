@@ -14,9 +14,14 @@ signs it passes.
 ``into``: the ticket it goes under; ``group``: the index of its subtask group there (``join``:
 into that group, else a new group at that index); ``criterion: true``: as a criterion of
 ``into`` at that index. A ticket's ``criteria`` and ``subtasks`` come with it (nested). A
-criterion's ``severity`` defaults to ``rework`` – ``escalate`` on a grouping ticket (R4)."""
+criterion's ``severity`` defaults to ``rework`` – ``escalate`` on a grouping ticket (R4).
+
+A ``git:`` reference in a ticket's ``work.context`` names a commit by its full 40-character sha;
+:func:`expand_shas` expands an unambiguous abbreviation before the document is parsed."""
 from __future__ import annotations
 
+import copy
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -62,6 +67,45 @@ def parse_plan(data: Any) -> tuple[Replan, list[str]]:
     if dup := sorted({i for i in seen if seen.count(i) > 1}):
         v.append(f"duplicate ticket ids {dup}")
     return Replan(cancel=cancel, fail=fail, add=adds, update=dict(update)), v
+
+
+async def expand_shas(data: Any, expand: Callable[[str], Awaitable[str]]) -> tuple[Any, list[str]]:
+    """The plan document with every ``work.context`` reference's sha in full – ``expand`` gives
+    a reference's full form, or raises ``ValueError`` saying why it cannot (no such commit, or
+    an ambiguous abbreviation) – and those errors. The document itself is not changed."""
+    if not isinstance(data, dict):
+        return data, []
+    data, errors = copy.deepcopy(data), []
+
+    async def work(where: str, w: Any) -> None:
+        refs = w.get("context") if isinstance(w, dict) else None
+        if not isinstance(refs, list):
+            return
+        for i, ref in enumerate(refs):
+            if isinstance(ref, str):
+                try:
+                    refs[i] = await expand(ref)
+                except ValueError as e:
+                    errors.append(f"{where}.work.context[{i}]: {e}")
+
+    async def ticket(where: str, t: Any) -> None:
+        if not isinstance(t, dict):
+            return
+        await work(where, t.get("work"))
+        for gi, group in enumerate(t.get("subtasks") or []):
+            for mi, m in enumerate(group if isinstance(group, list) else [group]):
+                await ticket(f"{where}.subtasks[{gi}][{mi}]", m)
+        for ci, c in enumerate(t.get("criteria") or []):
+            await ticket(f"{where}.criteria[{ci}]", c)
+
+    for i, a in enumerate(data.get("add") or [] if isinstance(data.get("add"), list) else []):
+        if isinstance(a, dict):
+            await ticket(f"add[{i}]", a.get("ticket"))
+    update = data.get("update")
+    for tid, fields in (update.items() if isinstance(update, dict) else []):
+        if isinstance(fields, dict):
+            await work(f"update {tid}", fields.get("work"))
+    return data, errors
 
 
 def lists(data: dict, key: str, v: list[str]) -> list[str]:

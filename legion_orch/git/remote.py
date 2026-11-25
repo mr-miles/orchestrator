@@ -41,6 +41,10 @@ class GitError(Exception):
     pass
 
 
+class ShaError(ValueError):
+    """A sha that names no single commit: what to give instead."""
+
+
 async def run(*args: str, cwd: Path | None = None, check: bool = True,
               timeout: float = 300, env: dict | None = None) -> tuple[int, str]:
     try:
@@ -207,6 +211,28 @@ class GitRemote:
         spec = f"{sha}:{path}" if path else f"{sha}^{{commit}}"
         rc, _ = await run("git", "cat-file", "-e", spec, cwd=self.repo, check=False)
         return rc == 0
+
+    async def expand_commit(self, sha: str) -> str:
+        """The full sha of the one commit ``sha`` abbreviates (4–40 hex digits). Raises
+        :class:`ShaError` saying what to fix when no commit, or more than one, has it."""
+        s = sha.strip().lower()
+        if not 4 <= len(s) <= 40 or any(c not in "0123456789abcdef" for c in s):
+            raise ShaError(f"{sha!r} is not a commit sha: give the full 40-character sha")
+        if len(s) == 40:
+            if await self.has_object(s):
+                return s
+            raise ShaError(f"no commit {s} in the workspace")
+        rc, out = await run("git", "rev-parse", f"--disambiguate={s}", cwd=self.repo,
+                            check=False)
+        found = [x for x in out.split() if len(x) == 40] if rc == 0 else []
+        commits = [x for x in found if await self.has_object(x)]
+        if len(commits) == 1:
+            return commits[0]
+        if not commits:
+            raise ShaError(f"no commit starting {s} in the workspace: give the full "
+                           "40-character sha")
+        raise ShaError(f"{s} is ambiguous – it starts {len(commits)} commits "
+                       f"({', '.join(sorted(commits))}): give the full 40-character sha")
 
     async def rev_parse(self, ref: str) -> str:
         return (await self.git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")).strip()

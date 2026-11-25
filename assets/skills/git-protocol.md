@@ -22,7 +22,8 @@ description: "Working copy, commits, pushing your branch, rebasing, and what jud
   tip you push, in a fresh verifier sandbox, once per commit: check the result with
   `verification_status()` (MCP) and read a failure with `verification_evidence(id)` before you
   report. The commit you report is then usually verified already.
-- Attest the pushed `git rev-parse HEAD` as `git:{{repo_name}}@<sha>`. The controller checks it is
+- Attest the pushed `git rev-parse HEAD` – the full 40-character sha it prints – as
+  `git:{{repo_name}}@<sha>`. The controller checks it is
   the tip of `{{branch}}` on its remote (G-B2) – report only after the push succeeded.
 - If asked to rebase (feedback says "rebase onto <sha>"), `git fetch origin` then
   `git rebase <sha>`, resolve conflicts only within your `files_modified`, and
