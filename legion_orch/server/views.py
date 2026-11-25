@@ -19,7 +19,7 @@ def change_list(ctl: Controller) -> list[dict]:
     for ce in ctl.changes.values():
         c, tickets = ce.change, list(ce.tickets.t.values())
         out.append({"id": c.id, "workspace": c.workspace, "goal": c.goal,
-                    "status": c.status, "tier": c.tier,
+                    "status": c.status, "tier": c.tier, "workflow": c.workflow,
                     "created_at": c.created_at,
                     "passed": sum(t.status == Status.PASSED for t in tickets),
                     "tickets": len(tickets),

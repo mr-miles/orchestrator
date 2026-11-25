@@ -6,7 +6,7 @@ import json
 from .. import guards
 from ..model import ReportStatus
 from ..view import RoleContext
-from .base import Report, RoleHandler, output, register
+from .base import Report, RoleHandler, output, pointer, register
 
 
 @register
@@ -19,4 +19,10 @@ class Intake(RoleHandler):
             rj = json.loads(risk or "")
         except ValueError as x:
             return [f"G-I2: risk is not JSON: {x}"]
-        return guards.intake(req or "", rj, None, ReportStatus.DONE)
+        v = guards.intake(req or "", rj, None, ReportStatus.DONE)
+        if sel := pointer(e, "selection"):
+            try:
+                v += guards.requirements_problems(req or "", json.loads(sel))
+            except ValueError as x:
+                v.append(f"G-DR4: selection is not JSON: {x}")
+        return v

@@ -12,7 +12,7 @@ guarded delivery workflow with LLM agents in [NVIDIA OpenShell](https://github.c
   context, its containers, the controller's components and the ticket workflow's classes.
 * **[docs/database.md](docs/database.md)** is the database schema as an entity-relationship
   diagram: the immutable documents and the state tables.
-* **[assets/](assets/)** holds the agent-facing text and document schemas: `workflow.yaml` (every
+* **[assets/](assets/)** holds the agent-facing text and document schemas: `workflows/<name>.yaml` (a workflow: every
   change's skeleton, the tier policies, the hooks), `roles.yaml`, `schemas/` (JSON Schemas bound to document paths; the store validates every write and records the schema),
   `souls/<soul>.md`, `skills/<skill>.md` and `prompts/<role>.md`. The controller loads and validates
   the folder at start-up, then pins the asset-set hash and the rendered-prompt hash on every run.
@@ -49,9 +49,11 @@ change
 └─ release         publish
 ```
 
+**Design review workflow.** A change chooses its workflow when it starts and keeps it: `legion-orch start --workflow design-review "<goal>" -w <workspace>` (`-W` for short; the API's start request takes `workflow`; without it, `default`). Under `design-review` a review stage comes before the requirements: a `design-reviewer` runs the `codebase-design` skill over the codebase and records evidenced findings, a `findings-reviewer` judges them, a `selector` picks the ones to work on (a human signs the selection), and the intake writes one requirement per selected finding, so the usual plan, build, test and merge phases follow. Guards G-DR1..G-DR4 check the findings, their review, the selection and the requirements against each other (WORKFLOW.md §4.2). The `codebase-design` skill (`assets/skills/codebase-design.md`) is a summary in our own words adapted from [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering/codebase-design); its licence is not verified, so no upstream text is copied.
+
 Every change is one tree of **tickets** – a ticket is its own work, then its subtask groups (in
 order; a group's tickets in parallel), then its acceptance criteria (in order) – and a human
-sign-off is just a criterion. The skeleton comes from `assets/workflow.yaml`; the planner fills
+sign-off is just a criterion. The skeleton comes from the change's workflow, one of `assets/workflows/*.yaml`; the planner fills
 `delivery`, and each risk tier's policy says which ticket types, criteria and order a tree must
 have. A failed criterion reworks the ticket (an attempt); past its limit, or on a system error,
 an exceeded budget or a BLOCKED agent, it waits on a human, whose remedies are retry, waive or

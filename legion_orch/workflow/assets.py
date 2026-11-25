@@ -8,8 +8,9 @@ Layout (naming convention)::
       skills/<skill>.md      skill: frontmatter with only a ``description`` (when to load it),
                              then the body; every run gets every skill as ``legion-<skill>``
       prompts/<role>.md      task prompt template (file name = role name)
-      workflow.yaml          the skeleton, tier policies and hooks (tickets/spec.py); also the
-                             ``workflow`` skill, generated from it
+      workflows/<name>.yaml  a workflow: skeleton, tier policies and hooks (tickets/spec.py); the
+                             folder is optional but then holds ``default.yaml``; each one also
+                             generates the ``workflow`` skill of its changes
 
 Skills are not put in the prompt. Each is rendered with the run's variables into an Agent Skill
 (``legion-<skill>/SKILL.md``) that the agent loads on demand; the prompt only names the ones the
@@ -32,9 +33,11 @@ from .tickets.spec import SKILL_DESCRIPTION as WORKFLOW_SKILL_DESCRIPTION
 from .tickets.spec import SpecError, WorkflowSpec
 from .tickets.spec import render as render_workflow
 
-WORKFLOW, WORKFLOW_SKILL = "workflow.yaml", "workflow"
+WORKFLOWS_DIR, DEFAULT_WORKFLOW, WORKFLOW_SKILL = "workflows", "default", "workflow"
+CONTROLLER_TYPES = {"sync", "verify", "preflight", "baseline", "can-merge", "provision", "publish"}
 VAR_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+WORKFLOW_NAME_RE = re.compile(r"^[a-z0-9-]+$")
 
 TEMPLATE_VARS = {
     # the change
@@ -130,7 +133,7 @@ class Assets:
             raise AssetError(f"{self.root}/roles.yaml not found")
         self.souls_ = self._load_dir("souls")
         self.skills_, self.skill_descriptions = self._load_skills()
-        self.workflow = self._load_workflow()
+        self.workflows = self._load_workflows()
         self.prompts_ = self._load_dir("prompts")
         raw = yaml.safe_load((self.root / "roles.yaml").read_text()) or {}
         self.roles: dict[str, Role] = {}
@@ -176,21 +179,41 @@ class Assets:
             bodies[name], descriptions[name] = body, d.strip()
         return bodies, descriptions
 
-    def _load_workflow(self) -> WorkflowSpec | None:
-        """``workflow.yaml``, validated, and its skill (``workflow``); None without one."""
-        path = self.root / WORKFLOW
-        if not path.is_file():
-            return None
-        try:
-            spec = WorkflowSpec.load(path)
-        except SpecError as e:
-            raise AssetError(str(e)) from None
+    @property
+    def workflow(self) -> WorkflowSpec | None:
+        """The default workflow (None without a workflows folder)."""
+        return self.workflows.get(DEFAULT_WORKFLOW)
+
+    def _load_workflows(self) -> dict[str, WorkflowSpec]:
+        """Every ``workflows/<name>.yaml``, validated by the spec, by name; and the default's
+        skill (``workflow``). Without the folder: none."""
+        d = self.root / WORKFLOWS_DIR
+        if not d.is_dir():
+            return {}
+        out: dict[str, WorkflowSpec] = {}
+        for p in sorted(d.iterdir()):
+            if p.suffix != ".yaml" or not p.is_file() or not WORKFLOW_NAME_RE.match(p.stem):
+                raise AssetError(f"{WORKFLOWS_DIR}/{p.name}: workflow files must be named "
+                                 f"<lowercase-name>.yaml (letters, digits, -)")
+            try:
+                out[p.stem] = WorkflowSpec.load(p)
+            except SpecError as e:
+                raise AssetError(str(e)) from None
+        if DEFAULT_WORKFLOW not in out:
+            raise AssetError(f"{WORKFLOWS_DIR}/{DEFAULT_WORKFLOW}.yaml is required when "
+                             f"{WORKFLOWS_DIR}/ exists")
         if WORKFLOW_SKILL in self.skills_:
             raise AssetError(f"skills/{WORKFLOW_SKILL}.md: the {WORKFLOW_SKILL} skill is generated "
-                             f"from {WORKFLOW}")
-        self.skills_[WORKFLOW_SKILL] = render_workflow(spec)
+                             f"from {WORKFLOWS_DIR}/")
+        self.skills_[WORKFLOW_SKILL] = render_workflow(out[DEFAULT_WORKFLOW])
         self.skill_descriptions[WORKFLOW_SKILL] = WORKFLOW_SKILL_DESCRIPTION
-        return spec
+        return out
+
+    def workflow_skill(self, name: str) -> str:
+        """The generated ``workflow`` skill body of one workflow."""
+        if name not in self.workflows:
+            raise AssetError(f"unknown workflow {name!r}; have {sorted(self.workflows)}")
+        return render_workflow(self.workflows[name])
 
     def work_problems(self, ticket: Ticket) -> list[str]:
         """What is wrong with a ticket's ``work`` for its role (the role's work schema; a role
@@ -206,22 +229,39 @@ class Assets:
         """Each role's output names (a list output without its ``*``)."""
         return {r.name: [o.rstrip("*") for o in r.outputs] for r in self.roles.values()}
 
-    def _workflow_roles(self) -> list[str]:
-        """Every role the workflow names: its agent tickets', its policies', its hooks'."""
-        spec = self.workflow
-        assert spec is not None
+    @staticmethod
+    def _workflow_types(spec: WorkflowSpec) -> list[str]:
+        """Every ticket type the workflow names: its skeleton's, its policies'."""
         types = [t.type for t in spec.skeleton.walk()]
         for name in spec.tiers:
             p = spec.policy(name)
             types += [r.type for r in p.every] + [c for r in p.every for c in r.criteria]
             types += [c for v in p.labels.values() for c in v] + [*p.exists, *p.limits]
             types += [x for r in p.order for x in (r.each, r.after or r.before)]
-        return [t.partition(":")[2] for t in types if t.startswith("agent:")] \
+        return types
+
+    def _workflow_roles(self, spec: WorkflowSpec) -> list[str]:
+        """Every role the workflow names: its agent tickets', its policies', its hooks'."""
+        return [t.partition(":")[2] for t in self._workflow_types(spec) if t.startswith("agent:")] \
             + list(spec.hooks.values())
 
+    def _workflow_problems(self, spec: WorkflowSpec) -> list[str]:
+        bad = sorted({t for t in self._workflow_types(spec) if not self._type_ok(t)})
+        out = [f"unknown ticket types {bad} (grouping, human:signoff, agent:<role>, "
+               f"controller:{sorted(CONTROLLER_TYPES)})"] if bad else []
+        if unknown := sorted(set(self._workflow_roles(spec)) - set(self.roles)):
+            out.append(f"roles not in roles.yaml: {unknown}")
+        return out + spec.subjects_problems(self.role_outputs())
+
+    @staticmethod
+    def _type_ok(t: str) -> bool:
+        kind, _, x = t.partition(":")
+        return t in ("grouping", "human:signoff") or (kind == "agent" and bool(x)) \
+            or (kind == "controller" and x in CONTROLLER_TYPES)
+
     def _files(self) -> list[Path]:
-        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + [
-            p for p in [self.root / WORKFLOW] if p.is_file()] + sorted(
+        return [self.root / "roles.yaml", self.root / "schemas" / "bindings.yaml"] + sorted(
+            (self.root / WORKFLOWS_DIR).glob("*.yaml")) + sorted(
             p for sub in ("souls", "skills", "prompts") for p in (self.root / sub).glob("*.md")) \
             + sorted((self.root / "schemas").glob("*.json"))
 
@@ -238,14 +278,15 @@ class Assets:
                 for p in self._files()}
 
     def check_prompt(self, role: str, template_vars: dict[str, str], pin: str | None,
-                     recorded: dict[str, str] | None = None) -> dict[str, Any]:
+                     recorded: dict[str, str] | None = None,
+                     workflow: str = DEFAULT_WORKFLOW) -> dict[str, Any]:
         """Whether these assets reproduce a run's prompt: re-rendered with the run's template
         values, ``exact`` if the pin matches. Otherwise ``changed`` lists the asset files that
         differ from the manifest recorded for the run's asset set (``recorded``)."""
         out: dict[str, Any] = {"status": "unknown", "changed": []}
         try:
             if template_vars and role in self.roles:
-                if self.render_role(role, dict(template_vars)).pin == pin:
+                if self.render_role(role, dict(template_vars), workflow).pin == pin:
                     return {"status": "exact", "changed": []}
                 out["status"] = "changed"
         except AssetError as e:
@@ -292,11 +333,9 @@ class Assets:
         for role in self.roles.values():
             if bad := [o for o in role.outputs if not OUTPUT_RE.match(o)]:
                 raise AssetError(f"roles.yaml {role.name}: bad output names {bad}")
-        if self.workflow is not None:
-            if unknown := sorted(set(self._workflow_roles()) - set(self.roles)):
-                raise AssetError(f"{WORKFLOW}: roles not in roles.yaml: {unknown}")
-            if errs := self.workflow.subjects_problems(self.role_outputs()):
-                raise AssetError(f"{WORKFLOW}: " + "; ".join(errs))
+        for name, spec in self.workflows.items():
+            if errs := self._workflow_problems(spec):
+                raise AssetError(f"{WORKFLOWS_DIR}/{name}.yaml: " + "; ".join(errs))
         used_schemas = {n for _, n in self.schemas.bindings} \
             | {r.report_schema for r in self.roles.values()} \
             | {r.work_schema for r in self.roles.values() if r.work_schema}
@@ -324,8 +363,10 @@ class Assets:
                     raise AssetError(f"roles.yaml {name}: unknown variable {{{{{var}}}}}")
 
     # ------------------------------------------------------------------ render
-    def render_role(self, role_name: str, variables: dict[str, Any]) -> RenderedPrompt:
-        """G-D2: resolve soul, skills and prompt; bind every variable; compute the pin."""
+    def render_role(self, role_name: str, variables: dict[str, Any],
+                    workflow: str = DEFAULT_WORKFLOW) -> RenderedPrompt:
+        """G-D2: resolve soul, skills and prompt; bind every variable; compute the pin. The
+        ``workflow`` skill is that of the given workflow."""
         role = self.roles[role_name]
         soul_name = render(role.soul, variables)
         if role.souls_allowed and soul_name not in role.souls_allowed:
@@ -333,6 +374,9 @@ class Assets:
         soul = self.soul(soul_name)
         prompt = render(self.prompt(role_name), variables).rstrip() + "\n\n" + self._load_first(role)
         skills = {skill_name(n): self._skill_md(n, variables) for n in sorted(self.skills_)}
+        if WORKFLOW_SKILL in self.skills_:
+            skills[skill_name(WORKFLOW_SKILL)] = self._skill_md(
+                WORKFLOW_SKILL, variables, self.workflow_skill(workflow))
         h = hashlib.sha256((soul + "\x00" + prompt).encode())
         for n, text in skills.items():
             h.update(b"\x00" + n.encode() + b"\x00" + text.encode())
@@ -346,8 +390,8 @@ class Assets:
                                               else "") + ". Load any other legion skill whose "
                 "description fits what you are doing.\n")
 
-    def _skill_md(self, name: str, variables: dict[str, Any]) -> str:
+    def _skill_md(self, name: str, variables: dict[str, Any], body: str | None = None) -> str:
         """``SKILL.md`` of one skill, rendered with the run's variables."""
         head = yaml.safe_dump({"name": skill_name(name), "description": self.skill_descriptions[name]},
                               sort_keys=False, allow_unicode=True, width=10_000)
-        return f"---\n{head}---\n\n{render(self.skill(name), variables)}"
+        return f"---\n{head}---\n\n{render(self.skill(name) if body is None else body, variables)}"

@@ -1,0 +1,397 @@
+{
+ "criteria": {
+  "controller:can-merge": {
+   "waivable": false
+  },
+  "controller:preflight": {
+   "waivable": false
+  },
+  "controller:verify": {
+   "waivable": false
+  },
+  "human:signoff": {
+   "waivable": false
+  }
+ },
+ "hooks": {
+  "on_complete": "retrospective",
+  "on_escalation": "resolver"
+ },
+ "skeleton": [
+  [
+   "change",
+   "grouping"
+  ],
+  [
+   "workspace",
+   "controller:sync"
+  ],
+  [
+   "requirements",
+   "grouping"
+  ],
+  [
+   "intake",
+   "agent:intake"
+  ],
+  [
+   "H-1",
+   "human:signoff"
+  ],
+  [
+   "plan",
+   "grouping"
+  ],
+  [
+   "design",
+   "agent:planner"
+  ],
+  [
+   "critique",
+   "agent:critic"
+  ],
+  [
+   "H-E1",
+   "human:signoff"
+  ],
+  [
+   "provision",
+   "controller:provision"
+  ],
+  [
+   "scaffold",
+   "agent:scaffolder"
+  ],
+  [
+   "verify:scaffold",
+   "controller:verify"
+  ],
+  [
+   "review:scaffold",
+   "agent:reviewer"
+  ],
+  [
+   "can-merge:scaffold",
+   "controller:can-merge"
+  ],
+  [
+   "delivery",
+   "grouping"
+  ],
+  [
+   "oracle",
+   "agent:oracle"
+  ],
+  [
+   "preflight",
+   "controller:preflight"
+  ],
+  [
+   "H-2",
+   "human:signoff"
+  ],
+  [
+   "baseline",
+   "controller:baseline"
+  ],
+  [
+   "H-2b",
+   "human:signoff"
+  ],
+  [
+   "builds",
+   "grouping"
+  ],
+  [
+   "verify:delivery",
+   "controller:verify"
+  ],
+  [
+   "integration",
+   "agent:integration"
+  ],
+  [
+   "evaluate",
+   "grouping"
+  ],
+  [
+   "describe",
+   "agent:describer"
+  ],
+  [
+   "H-3",
+   "human:signoff"
+  ],
+  [
+   "release",
+   "grouping"
+  ],
+  [
+   "publish",
+   "controller:publish"
+  ]
+ ],
+ "stale": {
+  "agent:oracle": "redo",
+  "controller:provision": "redo"
+ },
+ "start_ids": [
+  "change",
+  "workspace",
+  "requirements",
+  "intake",
+  "H-1",
+  "plan",
+  "design",
+  "critique",
+  "H-E1",
+  "provision",
+  "scaffold",
+  "verify:scaffold",
+  "review:scaffold",
+  "can-merge:scaffold",
+  "delivery",
+  "builds",
+  "verify:delivery",
+  "integration",
+  "evaluate",
+  "describe",
+  "H-3",
+  "release",
+  "publish"
+ ],
+ "tiers": {
+  "R0": {
+   "every": [
+    {
+     "criteria": [
+      "controller:verify",
+      "controller:can-merge"
+     ],
+     "type": "agent:implementer"
+    },
+    {
+     "criteria": [
+      "controller:verify",
+      "controller:can-merge"
+     ],
+     "type": "agent:scaffolder"
+    }
+   ],
+   "exists": [
+    "agent:intake",
+    "agent:planner",
+    "controller:provision",
+    "agent:integration",
+    "controller:publish"
+   ],
+   "extends": null,
+   "labels": {},
+   "limits": {
+    "agent:implementer": 3,
+    "agent:planner": 3,
+    "agent:scaffolder": 3
+   },
+   "order": [
+    {
+     "after": "controller:provision",
+     "before": null,
+     "each": "agent:implementer"
+    },
+    {
+     "after": null,
+     "before": "agent:integration",
+     "each": "agent:implementer"
+    }
+   ]
+  },
+  "R1": {
+   "every": [
+    {
+     "criteria": [
+      "controller:verify",
+      "agent:reviewer",
+      "controller:can-merge"
+     ],
+     "type": "agent:implementer"
+    },
+    {
+     "criteria": [
+      "controller:verify",
+      "agent:reviewer",
+      "controller:can-merge"
+     ],
+     "type": "agent:scaffolder"
+    }
+   ],
+   "exists": [
+    "agent:intake",
+    "agent:planner",
+    "controller:provision",
+    "agent:integration",
+    "controller:publish"
+   ],
+   "extends": null,
+   "labels": {
+    "security": [
+     "agent:security"
+    ]
+   },
+   "limits": {
+    "agent:implementer": 3,
+    "agent:planner": 3,
+    "agent:scaffolder": 3
+   },
+   "order": [
+    {
+     "after": "controller:provision",
+     "before": null,
+     "each": "agent:implementer"
+    },
+    {
+     "after": null,
+     "before": "agent:integration",
+     "each": "agent:implementer"
+    }
+   ]
+  },
+  "R2": {
+   "every": [
+    {
+     "criteria": [
+      "controller:verify",
+      "agent:reviewer",
+      "controller:can-merge"
+     ],
+     "type": "agent:implementer"
+    },
+    {
+     "criteria": [
+      "controller:verify",
+      "agent:reviewer",
+      "controller:can-merge"
+     ],
+     "type": "agent:scaffolder"
+    },
+    {
+     "criteria": [
+      "controller:preflight",
+      "human:signoff"
+     ],
+     "type": "agent:oracle"
+    }
+   ],
+   "exists": [
+    "agent:intake",
+    "agent:planner",
+    "controller:provision",
+    "agent:integration",
+    "controller:publish",
+    "agent:oracle"
+   ],
+   "extends": null,
+   "labels": {
+    "security": [
+     "agent:security"
+    ]
+   },
+   "limits": {
+    "agent:implementer": 3,
+    "agent:planner": 3,
+    "agent:scaffolder": 3
+   },
+   "order": [
+    {
+     "after": "controller:provision",
+     "before": null,
+     "each": "agent:implementer"
+    },
+    {
+     "after": null,
+     "before": "agent:integration",
+     "each": "agent:implementer"
+    },
+    {
+     "after": "agent:oracle",
+     "before": null,
+     "each": "agent:implementer"
+    }
+   ]
+  },
+  "R3": {
+   "every": [
+    {
+     "criteria": [
+      "controller:verify",
+      "agent:reviewer",
+      "controller:can-merge"
+     ],
+     "type": "agent:implementer"
+    },
+    {
+     "criteria": [
+      "controller:verify",
+      "agent:reviewer",
+      "controller:can-merge"
+     ],
+     "type": "agent:scaffolder"
+    },
+    {
+     "criteria": [
+      "controller:preflight",
+      "human:signoff"
+     ],
+     "type": "agent:oracle"
+    },
+    {
+     "criteria": [
+      "human:signoff"
+     ],
+     "type": "controller:baseline"
+    }
+   ],
+   "exists": [
+    "agent:intake",
+    "agent:planner",
+    "controller:provision",
+    "agent:integration",
+    "controller:publish",
+    "agent:oracle",
+    "controller:baseline"
+   ],
+   "extends": null,
+   "labels": {
+    "security": [
+     "agent:security"
+    ]
+   },
+   "limits": {
+    "agent:implementer": 3,
+    "agent:planner": 3,
+    "agent:scaffolder": 3
+   },
+   "order": [
+    {
+     "after": "controller:provision",
+     "before": null,
+     "each": "agent:implementer"
+    },
+    {
+     "after": null,
+     "before": "agent:integration",
+     "each": "agent:implementer"
+    },
+    {
+     "after": "agent:oracle",
+     "before": null,
+     "each": "agent:implementer"
+    },
+    {
+     "after": "controller:baseline",
+     "before": null,
+     "each": "agent:implementer"
+    }
+   ]
+  }
+ }
+}

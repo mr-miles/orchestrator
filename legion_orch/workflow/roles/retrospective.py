@@ -73,7 +73,8 @@ def bundle(e: RoleContext) -> dict[str, str]:
             manifests[r.assets_sha] = e.json_doc(path)["files"] if e.latest(path) else None
         checks[r.id] = {"role": r.role, "soul": r.soul, "assets_sha": r.assets_sha} | \
             e.assets.check_prompt(r.role, r.template_vars, r.prompt_pin,
-                                  manifests.get(r.assets_sha))
+                                  manifests.get(r.assets_sha),
+                                  workflow=e.change.workflow)
     out["prompt-check.json"] = dump(checks)
     out["findings.json"] = dump(review_ledger(e))
     if e.latest("control/metrics.json"):
