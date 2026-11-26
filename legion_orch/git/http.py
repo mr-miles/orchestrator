@@ -1,8 +1,9 @@
 """git smart-HTTP endpoint (``git http-backend`` as CGI) with workload-identity authentication.
 
-The host decides who may do what: ``authorize(request)`` returns a :class:`GitGrant` (identity and
-the one ref it may push, or ``None`` for read-only) or ``None`` to refuse. Push restrictions are
-enforced by the ``pre-receive`` hook via ``LEGION_ALLOWED_REF``.
+The host decides who may do what: ``authorize(request)`` returns a :class:`GitGrant` (identity,
+the one ref it may push, or ``None`` for read-only, and the paths a push may change) or ``None``
+to refuse. Push restrictions are enforced by the ``pre-receive`` hook via ``LEGION_ALLOWED_REF``
+and ``LEGION_SCOPE`` (push_scope.py).
 
 Callers are untrusted, so the transport is bounded:
 
@@ -22,12 +23,14 @@ import contextlib
 import logging
 import os
 import subprocess
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response, StreamingResponse
 
+from .push_scope import PushScope
 from .remote import GitRemote
 
 log = logging.getLogger("legion.git")
@@ -43,6 +46,7 @@ class GitGrant:
     identity: str             # run id / verifier id
     allowed_ref: str | None   # None => read-only
     repo: str                 # the one hub it may reach (its change's workspace)
+    scope: PushScope | None = None   # the paths a push may change (None: any)
 
 
 def _valid_path(path: str, repo_name: str) -> bool:
@@ -267,6 +271,9 @@ class GitEndpoint:
             "REMOTE_ADDR": request.client.host if request.client else "",
             "LEGION_ALLOWED_REF": grant.allowed_ref or "",
         }
+        if grant.scope is not None and grant.allowed_ref is not None:
+            env["LEGION_SCOPE"] = grant.scope.to_json()
+            env["LEGION_PYTHON"] = sys.executable
         if "content-length" in request.headers:
             env["CONTENT_LENGTH"] = request.headers["content-length"]   # absent => read to EOF
         if "content-encoding" in request.headers:

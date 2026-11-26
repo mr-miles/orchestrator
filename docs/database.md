@@ -82,7 +82,7 @@ The JSON in `changes.record` is the `Change` model (`workflow/model.py`). It hol
 - **Identity:** id, goal and workspace.
 - **Status:** status, tier and risk.
 - **Its base:** `base_sha` and `blank_repo`.
-- **Its environment:** `environment` and `setup_pin`.
+- **Its environment:** `environment` and `base_mise` (the base's `mise.toml` blob, for information).
 - **How it ended:** `ended`, `completed`, `cleaned_at` and `pruned_at`.
 - **Open items:** the agents' questions, verifications and the resolver's proposals.
 

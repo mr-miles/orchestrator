@@ -101,8 +101,8 @@ included. A criterion with nothing behind it does not pass.
   clone: history, contents on demand); `branch.sh <branch> <start>` for a role that commits (its
   ticket's branch at its tip on the hub if pushed before, else at its base) or `checkout.sh <sha>`
   – a detached checkout, no branch – for every other role (judges at the commit they judge,
-  others at their base); `mise-setup.sh` when a setup is pinned (§5.3c; roles that work with a
-  commit); then `run-agent.sh` starts the agent. A reused sandbox skips the clone. Verifier
+  others at their base); `mise-setup.sh` when the checked-out commit's `mise.toml` has a setup
+  task (§5.3c; roles that work with a commit); then `run-agent.sh` starts the agent. A reused sandbox skips the clone. Verifier
   sandboxes run the same `clone.sh` and `checkout.sh`.
   **No credential ever enters a sandbox, and nothing is ever downloaded from one.**
 * **Workload identity (SPIFFE/SPIRE).** Set up once per OpenShell workspace
@@ -145,9 +145,13 @@ included. A criterion with nothing behind it does not pass.
   sandbox runs the profile's image and resources.
 * **Agents push; the controller hosts the remote.** The controller serves its bare hub repository
   over git smart-HTTP (`git http-backend`) at `/git/<repo>.git`. Every live run may fetch. A run
-  may push **only** to its ticket's branch `refs/heads/legion/<change>/t/<ticket>` (enforced by a
-  `pre-receive` hook fed by the controller); ref deletion is refused, and judges may not push at
-  all. The change's integration branch (`legion/<change>/integration`, the root's branch) and
+  may push **only** to its ticket's branch `refs/heads/legion/<change>/t/<ticket>`, and only
+  changes inside its scope – a build's G-B3, the oracle's G-O1, counted `base..pushed` from its
+  run's base (both enforced by a `pre-receive` hook fed by the controller, `git/push_scope.py`;
+  the refusal is what the agent's `git push` prints). Ref deletion is refused, and judges may not
+  push at all. Nothing out of scope reaches a verifier, so a pushed `mise.toml` is one a decision
+  owner allowed (§5.3c). Every role that pushes has a scope: the controller does not start
+  otherwise. The change's integration branch (`legion/<change>/integration`, the root's branch) and
   `refs/legion/**` are written only by the controller. When a report with a commit is accepted
   the controller pins it under `refs/legion/evidence/<run>`, so evidence outlives the branches.
 * **Documents** are written by agents directly to the versioned store through MCP `docs_write`.
@@ -569,8 +573,9 @@ there is no hub yet, otherwise fetched, and its base branch fast-forwarded to th
 `legion/*` (every change's integration and ticket branches) is never touched. One sync of a hub
 runs at a time: changes started together wait for each other, and one that waited takes the
 result of the sync before it (no second fetch). The change is then based on the base branch's
-commit: its integration branch, whether the repository is blank (§5.3d) and the base's setup
-(§5.3c), recorded in `control/workspace.json`.
+commit: its integration branch, whether the repository is blank (§5.3d) and the base's
+`mise.toml` blob (§5.3c, for information: `change.base_mise`), recorded in
+`control/workspace.json`.
 
 If the hub cannot follow its source – the clone's origin is not the configured `source`, the
 source's base branch was rewritten (the hub's commit is not an ancestor of it), or the fetch
@@ -649,7 +654,7 @@ rules (§3) – the policy guard refuses a plan without them.
 | G-P4 | Every build has ≥1 `verification` command that is not blank (≥1 acceptance criterion is the schema's). |
 | G-P5 | Every build's `soul` is an implementer soul. |
 | G-P6 | Builds that may run in parallel (one is not in a group before the other) have disjoint `files_modified`; that the paths are non-empty, relative and without `..` is the schema's (G-P1). |
-| G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`, a pinned `mise.toml`). |
+| G-P7 | No `files_modified` entry touches a protected path (`oracle.acceptance_tests`, `oracle.protected_support`, config `protected_paths`, `mise.toml` when the base or the environment has one). |
 | G-P8 | R2+: `oracle` lists ≥1 acceptance test path, ≥1 acceptance command and ≥1 criterion mapped to a `REQ-*`. |
 | G-P10 | R2+: `oracle` declares ≥1 verification surface, with unique ids and commands that are not blank (each surface's id, commands and pinned paths are the schema's, G-P1). |
 | G-P11 | The plan decides about the skeleton's `scaffold` (§5.3d): it gives it its work (`update`) or cancels it – not both, not neither; in a blank repository it gives it its work. The scaffold's work meets G-P1, G-P4, G-P5 and G-P7 like a build's. |
@@ -737,7 +742,7 @@ no verifier sandbox is in use; meanwhile new runs of mapped roles and verificati
 | ID | Rule |
 | --- | --- |
 | G-PV1 | Every image a mapped profile needs is built or found. Otherwise a fault: retried with backoff, then the ticket waits (`system`; retry provisions again). |
-| G-PV3 | With a pinned `mise.toml` that has a `setup` task: `mise run setup` succeeds at the change's head in a fresh verifier sandbox from this build. Otherwise the ticket waits with the output. |
+| G-PV3 | When the `mise.toml` at the change's head (the approved one, committed) has a `setup` task: `mise run setup` succeeds there in a fresh verifier sandbox from this build. Otherwise the ticket waits with the output. |
 | G-E5 | (dispatch of a mapped role, and every verifier sandbox) the build was made from the `environment` the pointer names. |
 
 From then on every sandbox of a mapped role is created from its profile's image, with its
@@ -755,19 +760,24 @@ and once after the clone in the sandbox of every role that works with a commit (
 implementer, reviewers, integration; a failure is logged and the agent may still work). Read-only
 roles (intake, planner, critic) skip it. No `setup` task: nothing runs.
 
-**Which version runs (G-MS1).** Only a pinned `mise.toml` (`change.setup_pin`, its git blob): the
-version signed at H-E1, else the base branch's when the change started. The setup script checks
-the checkout's file against the pin before `mise trust` and `mise run setup`; any other version is
-not run. `mise.toml` is a protected path while a setup is pinned (G-P7, G-B3, G-INT2).
+**Which version runs: the checkout's own.** A sandbox runs the setup of the `mise.toml` at the
+commit it checks out (`mise trust`, then `mise run setup` when the file has the task; the
+controller adds the step only then). That file is trusted because of how it got there:
+`mise.toml` is a protected path once the base or the environment has one (G-P7, G-B3, G-INT2),
+and the hub refuses a push that changes it unless a decision owner approved it for that build
+(`request_scope`, §5.6) – so a build's approved edit is what its own verification sets up from.
+The base's blob is recorded for information (`change.base_mise`). A `[tools]` change on a branch
+is not provisioned: the images are built once, at provisioning.
 
 **With an environment configured** the planner proposes the file in the spec (`"mise": {"content":
 …}`, with the network its setup needs in `"setup_network"`): unchanged, edited or new. H-E1 shows
-it; on its pass the controller commits it to the integration branch (before any build) and pins
-it; provisioning checks its setup runs in the verifier (G-PV3). **Without it** the operator's
+it; on its pass the controller commits it to the integration branch (before any build);
+provisioning checks its setup runs in the verifier (G-PV3). **Without it** the operator's
 images are assumed to have `mise`, and the base branch's setup task (if any) runs.
 
-**In a blank repository** (§5.3d) the base's setup task is never pinned: what it needs – a
-manifest, a lockfile – is what the scaffold creates.
+**In a blank repository** (§5.3d) no agent's sandbox runs the setup until the scaffold has
+passed: what it needs – a manifest, a lockfile – is what the scaffold creates (its own
+verification runs it, at its commit). Without an approved `mise.toml` the scaffold may create one.
 
 ### 5.3d `scaffolder` – the project's layout and tooling (`plan` ▸ `scaffold`)
 
@@ -801,7 +811,7 @@ yet); its own verification does, at its commit.
 
 | ID | Rule |
 | --- | --- |
-| G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`. |
+| G-O1 | Changed paths `base..commit` ⊆ `oracle.acceptance_tests` ∪ `oracle.protected_support`, none of config `protected_paths` – at each push (the hub refuses it) and at report. |
 | G-O2 | Every acceptance test path exists at the commit. |
 | H-2 | After preflight, a decision owner signs the oracle's `tests`; the pass merges its commit into delivery's branch before any build. A rejection reworks the oracle. |
 
@@ -888,10 +898,12 @@ contract cannot be met without another file asks the change's orchestrator over 
 (`/request_scope <paths>: <reason>`, `workflow/scope.py`), and goes on with the rest meanwhile:
 
 * the request is a blocking attention item: the paths, the reason, the build's `files_modified`
-  now and as it would be, and what to know – a protected path (a pinned `mise.toml`'s edits never
-  change the setup the checks run), one the plan forbids, a file a build still open owns;
+  now and as it would be, and what to know – a protected path (`mise.toml`: every verifier runs
+  its setup task, so approving lets the build change what the checks install), one the plan
+  forbids, a file a build still open owns;
 * **approved**, the paths join the build's `files_modified` (and lift `files_forbidden` and a
-  protected path for them: `scope_added`), and the agent's task is answered so; **denied**, with
+  protected path for them: `scope_added`) – from its next push on – and the agent's task is
+  answered so; **denied**, with
   the reason, it works within its scope or reports BLOCKED;
 * paths already in its scope are answered at once; the oracle's tests are refused at once (only
   the oracle changes them, §5.4).
@@ -903,7 +915,7 @@ shared wiring it touches).
 | ID | Rule |
 | --- | --- |
 | G-B2 | The attested commit is the current tip of the ticket's branch in the controller's git remote (i.e. the agent pushed it) and descends from the run's base sha. |
-| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected – except the paths a decision owner approved for it (`request_scope`); never the oracle's tests. A refusal says how to ask. |
+| G-B3 | Changed paths `base..commit` ⊆ `files_modified`; none in `files_forbidden`; none protected – except the paths a decision owner approved for it (`request_scope`); never the oracle's tests. Checked at each push (the hub refuses it: `base..pushed`, so a push that reverts an earlier stray change passes) and again at report. A refusal says how to ask. |
 | G-B4 | The evidence document names every `verification` command of the build with its exit code. |
 
 Its criteria, in order, by the tier's policy: `controller:verify` (§5.7), the review panel's
@@ -934,13 +946,17 @@ is not part of the key's meaning.)
   `limits.max_parallel`, served by priority – a criterion's verification, then pushes, then
   agents.
 * Runs are recorded on the change and in full at `control/verifications/<id>/record.json`.
+* Each command runs on its own (`bash -lc`) at the root of the checkout: nothing the setup or an
+  earlier command did to the shell – an activated virtualenv, a `PATH` change, a `cd` – carries
+  over, so a command brings its environment itself (`uv run pytest …`, `bun run …`; the stack
+  skills). A tool only the project installed (`.venv`, `node_modules`) is otherwise not found,
+  and fails as G-V2.
 
 | ID | Rule |
 | --- | --- |
 | G-V1 | Every command exits 0. Otherwise the criterion fails, each failing command's output a BLOCKER finding. The verifier sandbox is deleted as soon as the result is recorded. |
 | G-V2 | A command that exits 127 (not found in the verifier image) is not the agent's to fix: the ticket waits (`system`) at once, without retries. **Retry** verifies again, e.g. after the image is fixed. |
-| G-V3 | With a pinned setup (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs and the verification fails like any other (the commit may have caused it). |
-| G-MS1 | The setup runs only from the pinned `mise.toml`: a checkout whose file differs from the pin is not trusted and its setup is not run (the verification fails). |
+| G-V3 | When the commit's `mise.toml` has a `setup` task (§5.3c), `mise run setup` runs first in every verifier sandbox (results mark it `setup`); if it fails, no other command runs and the verification fails like any other (the commit may have caused it). |
 
 ### 5.8 The review panel (criteria)
 

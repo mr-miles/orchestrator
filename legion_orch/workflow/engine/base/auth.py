@@ -5,7 +5,8 @@ task-scoped access token at ``/oauth/token``). This module decides what that ide
 
 * :meth:`WorkloadAuth.sandbox_binding` – the one task a live sandbox serves (token issuance),
 * :meth:`WorkloadAuth.live_run` – the live run a bearer token acts for (MCP calls),
-* :meth:`WorkloadAuth.git_grant` – what a bearer may do on the git endpoint,
+* :meth:`WorkloadAuth.git_grant` – what a bearer may do on the git endpoint (the ref, and the
+  paths a push may change),
 * :meth:`WorkloadAuth.a2a_caller` – the agent an A2A request comes from.
 
 Verifier sandboxes have no run record; the engine registers them for their lifetime.
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 import httpx
 
 from ....config import Config
-from ....git import GitGrant
+from ....git import GitGrant, PushScope
 from ....identity import (
     JWT_SPIFFE,
     AccessTokens,
@@ -39,6 +40,8 @@ def in_turn(r: Run) -> bool:
 
 # Every run of every change, as (change id, run).
 RunSource = Callable[[], Iterable[tuple[str, Run]]]
+# The paths a change's run may push (None: any).
+ScopeSource = Callable[[str, Run], PushScope | None]
 
 
 @dataclass(frozen=True)
@@ -51,9 +54,11 @@ class VerifierGrant:
 
 class WorkloadAuth:
     def __init__(self, cfg: Config, runs: RunSource,
-                 workspace_of: Callable[[str], str | None]):
+                 workspace_of: Callable[[str], str | None],
+                 push_scope: ScopeSource = lambda cid, run: None):
         self.cfg = cfg
         self._runs = runs
+        self._push_scope = push_scope
         self._workspace_of = workspace_of      # a change id -> its workspace (its hub's name)
         self._verifiers: dict[str, VerifierGrant] = {}     # sandbox ref -> grant
         ic = cfg.identity
@@ -127,8 +132,10 @@ class WorkloadAuth:
         found = self.live_run(token)
         if found is None:
             return None
-        run = found[1]
-        return GitGrant(run.id, f"refs/heads/{run.branch}" if run.branch else None, repo)
+        cid, run = found
+        if not run.branch:
+            return GitGrant(run.id, None, repo)
+        return GitGrant(run.id, f"refs/heads/{run.branch}", repo, self._push_scope(cid, run))
 
     # ---- local runner only
     async def dev_gateway(self, sandbox_ref: str) -> str:

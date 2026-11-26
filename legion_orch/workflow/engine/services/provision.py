@@ -138,11 +138,10 @@ class Provisioner:
             if isinstance(plan, str):
                 return plan
             at = tw.base or c.change.base_sha     # where the setup is checked: what follows uses
-            if plan.mise is not None:          # the approved mise.toml: committed, pinned (§5.3c)
+            if plan.mise is not None:          # the approved mise.toml: committed (§5.3c)
                 head = await Branches(c.git).commit_file(
                     integration_branch(c.cid), setup.MISE_TOML, plan.mise,
                     f"legion {c.cid}: the approved mise.toml")
-                c.change.setup_pin = setup.pin_for(plan.mise, "H-E1")
                 at = head                          # the commit with the approved mise.toml
                 c.event("provision", f"committed the approved mise.toml at {head[:12]}",
                         ticket.id)
@@ -167,6 +166,7 @@ class Provisioner:
                 log.append(f"## {role}: network policy {key} (sandbox policy): "
                            f"binaries {[b['path'] for b in entry['binaries']]}")
         images = await self.build_images(recipes, log)
+        check = await setup.runs_setup_at(c.git, at) if at else False     # G-PV3
         if isinstance(images, str):
             async with c.lock:
                 if log:
@@ -193,7 +193,7 @@ class Provisioner:
                 t.sandbox = None
                 c.event("provision", f"released sandbox {sb}: not from this build", ticket.id)
                 self.lifecycle.sandboxes.delete_later(sb)
-            if c.change.setup_pin is None:
+            if not check:
                 c.event("provision", f"environment ready for {', '.join(sorted(roles)) or 'no roles'}",
                         ticket.id)
                 return None
@@ -201,11 +201,11 @@ class Provisioner:
 
     async def _check_setup(self, ticket: Ticket, at: str | None, roles: list[str],
                            wanted) -> str | None:
-        """G-PV3: the approved mise.toml's setup task succeeds at ``at`` – the commit that has
-        it (provisioning's own commit of an approved mise.toml; else the ticket's base) – in a
+        """G-PV3: the setup task of the mise.toml at ``at`` succeeds – the commit that has it
+        (provisioning's own commit of an approved mise.toml; else the ticket's base) – in a
         fresh verifier sandbox from this build, before any sandbox relies on it."""
         c = self.c
-        work = self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
+        work = await self.sandboxes.verifier_work(c.host.new_sandbox_name(VERIFIER_PREFIX), "provision",
                                             at or c.change.base_sha, (), in_new_build=True)
         outcome = await self.dispatcher.run(work)
         async with c.lock:

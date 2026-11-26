@@ -1,10 +1,13 @@
 """The repository's setup through mise.toml (WORKFLOW.md §5.3c): its `setup` task runs after every
-checkout, only from the pinned version (G-MS1) – the base branch's, or the one approved at H-E1
-(committed by the controller, checked at provision, G-PV3) – with its tools and network checked
-against the environment's profiles (G-E8), and mise.toml protected for the rest of the change."""
+checkout, from the mise.toml of the commit checked out – the base branch's, the one approved at
+H-E1 (committed by the controller, checked at provision, G-PV3), or a build's approved edit –
+with its tools and network checked against the environment's profiles (G-E8), and mise.toml
+protected for the rest of the change (G-B3, at push and at report)."""
 from __future__ import annotations
 
 import copy
+import os
+import shutil
 import subprocess
 
 import pytest
@@ -13,6 +16,7 @@ from engine_harness import ENVIRONMENT, REPO, Flow, make_source_repo
 from legion_orch.workflow import setup
 from legion_orch.workflow.environment import EnvironmentSpec, Library
 from legion_orch.workflow.guards.environment import mise_setup
+from legion_orch.workflow.roles.base import guarded
 
 SETUP = '[tools]\npython = "3.12"\nuv = "0.9"\n\n[tasks.setup]\nrun = "uv sync --frozen"\n'
 TOOLS_ONLY = '[tools]\npython = "3.12"\n'
@@ -36,19 +40,19 @@ async def test_a_base_setup_task_runs_first_in_every_verifier_and_agent_sandbox(
     make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
     f = await Flow.create(tmp_path)
     try:
-        pin = f.ce.change.setup_pin
-        assert pin and pin.source == "base" and pin.blob == setup.blob_sha(SETUP)
-        assert pin.blob == subprocess.run(["git", "rev-parse", "HEAD:mise.toml"],
-                                          cwd=tmp_path / "src-repo", capture_output=True,
-                                          text=True).stdout.strip()
+        blob = f.ce.change.base_mise                       # recorded, for information
+        assert blob == setup.blob_sha(SETUP) == subprocess.run(
+            ["git", "rev-parse", "HEAD:mise.toml"], cwd=tmp_path / "src-repo",
+            capture_output=True, text=True).stdout.strip()
+        assert f.ce.json_doc("control/workspace.json")["mise_toml"] == blob
         [intake] = f.runs("intake")
-        assert ["mise-setup.sh", pin.blob] not in f.steps(intake)   # intake only reads the tree
+        assert ["mise-setup.sh"] not in f.steps(intake)    # intake only reads the tree
         await f.to_build()
         await f.implement()
         r = verified(f, "verify:T1").results[0]
         assert (r.command, r.setup, r.exit_code) == ("mise run setup", True, 0)
         [impl], [rev] = f.runs("T1", "implementer"), f.runs("review:T1", "reviewer")
-        assert f.steps(impl)[-1] == f.steps(rev)[-1] == ["mise-setup.sh", pin.blob]
+        assert f.steps(impl)[-1] == f.steps(rev)[-1] == ["mise-setup.sh"]
     finally:
         await f.stop()
 
@@ -58,7 +62,7 @@ async def test_no_setup_task_means_no_setup(tmp_path):
     make_source_repo(tmp_path / "src-repo", {"mise.toml": TOOLS_ONLY})
     f = await Flow.create(tmp_path)
     try:
-        assert f.ce.change.setup_pin is None
+        assert f.ce.change.base_mise == setup.blob_sha(TOOLS_ONLY)
         await f.to_build()
         await f.implement()
         assert not verified(f, "verify:T1").results[0].setup
@@ -73,7 +77,7 @@ async def test_a_failing_setup_stops_a_build_verification_as_a_failure(tmp_path)
     make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
     f = await Flow.create(tmp_path)
     try:
-        f.runner.commands[f.ce.change.setup_pin.blob] = (1, "lockfile out of date\n")
+        f.runner.commands["mise-setup.sh"] = (1, "lockfile out of date\n")
         await f.to_build()
         await f.implement()
         assert [r.command for r in verified(f, "verify:T1").results] == ["mise run setup"]
@@ -84,14 +88,39 @@ async def test_a_failing_setup_stops_a_build_verification_as_a_failure(tmp_path)
 
 
 @pytest.mark.anyio
-async def test_a_task_may_not_change_the_pinned_mise_toml(tmp_path):
+async def test_a_build_changes_mise_toml_only_with_approval_and_then_its_setup_runs(tmp_path):
+    """Protected (the hub refuses the push too: test_push_scope.py). Approved, the build's own
+    mise.toml is what its verification sets up from – no pin keeps the old one running."""
     make_source_repo(tmp_path / "src-repo", {"mise.toml": SETUP})
     f = await Flow.create(tmp_path)
     try:
         await f.to_build()
-        out = await f.implement(files={"src/greet.txt": "hello\n", "mise.toml": SETUP + "#\n"})
-        assert not out.accepted and any("mise.toml" in v and "protected" in v
-                                        for v in out.violations), out
+        edited = SETUP.replace("uv sync --frozen", "uv sync --frozen --extra test")
+        out = await f.implement(files={"src/greet.txt": "hello\n", "mise.toml": edited})
+        assert not out.accepted and "G-B3: mise.toml is a protected path" in out.violations, out
+        run = f.run("T1", "implementer")
+        async with f.ce.lock:
+            q = f.ce.request_scope("q-1", "T1", "implementer", run.id, ["mise.toml"],
+                                   "the tests need the test extra installed")
+        assert any("every verifier runs this file's setup task" in w for w in q.warnings)
+        await f.ce.answer_question(q.id, "", "miles", "approve")
+        out = await f.implement(files={"src/greet.txt": "hello\n", "mise.toml": edited})
+        assert out.accepted, out.violations
+        v = verified(f, "verify:T1")
+        assert (v.results[0].command, v.results[0].setup, v.results[0].exit_code) == \
+            ("mise run setup", True, 0)
+        assert await f.git.blob(v.sha, "mise.toml") == setup.blob_sha(edited)   # its own
+    finally:
+        await f.stop()
+
+
+@pytest.mark.anyio
+async def test_a_repository_without_mise_toml_has_no_setup_and_mise_toml_is_not_guarded(tmp_path):
+    f = await Flow.create(tmp_path)
+    try:
+        assert f.ce.change.base_mise is None
+        await f.to_build()
+        assert "mise.toml" not in guarded(f.ce)
     finally:
         await f.stop()
 
@@ -110,7 +139,7 @@ async def _planned_with_mise(tmp_path) -> Flow:
     f.ctl.svc.tmp.mkdir(parents=True, exist_ok=True)
     f.ce = await f.ctl.start_change("Say hello", REPO)
     await f.settle()
-    assert f.ce.change.setup_pin is None                   # nothing on the base branch
+    assert f.ce.change.base_mise is None                   # nothing on the base branch
     await f.intake()
     await f.signoff("H-1")
     await f.plan(environment=env_spec())
@@ -119,7 +148,7 @@ async def _planned_with_mise(tmp_path) -> Flow:
 
 
 @pytest.mark.anyio
-async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provision(tmp_path):
+async def test_the_approved_mise_toml_is_committed_guarded_and_checked_at_provision(tmp_path):
     f = await _planned_with_mise(tmp_path)
     try:
         branch = f"legion/{f.ce.cid}/integration"
@@ -127,12 +156,11 @@ async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provisi
         await f.signoff("H-E1")
         head = await f.git.rev_parse(f"refs/heads/{branch}")
         assert head != before and await f.git.blob(head, "mise.toml") == setup.blob_sha(SETUP)
-        ch = f.ce.change
-        assert ch.setup_pin.source == "H-E1" and ch.setup_pin.blob == setup.blob_sha(SETUP)
+        assert "mise.toml" in guarded(f.ce)                 # the environment approved one
         assert f.status("provision") == "passed"
         assert any("setup ran in the verifier" in e["message"] for e in f.ce.timeline_events())
         # the setup was checked at the commit that has the approved mise.toml – not at the
-        # provision ticket's base, the base branch's mise.toml, which the pin does not match
+        # provision ticket's base, which has no mise.toml
         checked = [argv[2] for sb, argv in f.runner.execs
                    if sb.startswith("lgv-") and argv[1].endswith("checkout.sh")]
         assert checked == [head], (checked, head, before)
@@ -144,7 +172,7 @@ async def test_the_approved_mise_toml_is_committed_pinned_and_checked_at_provisi
 async def test_a_setup_that_fails_at_provision_makes_it_wait(tmp_path):
     f = await _planned_with_mise(tmp_path)
     try:
-        f.runner.commands[setup.blob_sha(SETUP)] = (1, "uv: lockfile missing\n")
+        f.runner.commands["mise-setup.sh"] = (1, "uv: lockfile missing\n")
         await f.signoff("H-E1")
         t = f.ticket("provision")
         assert t.status == "waiting" and t.waiting == "system"
@@ -255,6 +283,28 @@ def test_mise_toml_helpers():
     assert setup.tools(SETUP) == {"python": "3.12", "uv": "0.9"}
     assert setup.tools('[tools]\nnode = { version = "22" }\nbun = ["1.4", "1.3"]\n') == \
         {"node": "22", "bun": "1.4"}
-    assert setup.pin_for(TOOLS_ONLY, "base") is None and setup.pin_for(None, "base") is None
     with pytest.raises(setup.MiseError):
         setup.has_setup("[tasks\n")
+
+
+# ====================================================================== the script itself
+@pytest.mark.skipif(shutil.which("mise") is None, reason="needs mise")
+@pytest.mark.parametrize(("toml", "rc", "says"), [
+    (None, 0, "no mise.toml: no setup"),
+    (TOOLS_ONLY.replace('python = "3.12"', ""), 0, "mise.toml has no setup task: no setup"),
+    ('[tasks.setup]\nrun = "echo set up"\n', 0, "set up"),
+    ('[tasks.setup]\nrun = "exit 4"\n', 4, ""),
+])
+def test_the_setup_script_runs_the_checkouts_own_setup_task(tmp_path, toml, rc, says):
+    from legion_orch.sandbox import MISE_SETUP_SH
+    script = tmp_path / "mise-setup.sh"
+    script.write_text(MISE_SETUP_SH)
+    work = tmp_path / "work"
+    work.mkdir()
+    if toml is not None:
+        (work / "mise.toml").write_text(toml)
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path),
+           "MISE_TRUSTED_CONFIG_PATHS": "", "MISE_DATA_DIR": str(tmp_path / "mise-data")}
+    r = subprocess.run(["bash", str(script)], cwd=work, env=env, capture_output=True, text=True)
+    assert r.returncode == rc, r.stderr
+    assert says in r.stdout

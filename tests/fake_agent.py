@@ -7,7 +7,8 @@ the guards and rework loops:
 * critic: REWORK on the plan's attempt 1, PASS on attempt 2
 * T1 reviewer: FAIL on T1's attempt 1 (HIGH finding), PASS afterwards
 * T2 implementer: wrong content on attempt 1 -> its verification fails -> rework
-* T3 implementer: first report touches an out-of-scope file -> G-B3 rejection -> fixes + re-reports
+* T3 implementer: first push touches an out-of-scope file -> the hub refuses it (G-B3 at push)
+  -> puts it back, pushes again and reports
 Each role writes in its ticket's directory and reports the outputs its role names.
 """
 import json
@@ -206,23 +207,23 @@ def main():
         else:
             wfile("docs/README.md", "# Docs\nhello and goodbye\n")
             if a["attempts_left"] == 3 and attempt == 1:
-                wfile("src/greet.txt", "hello world\n")   # out of scope -> G-B3
+                wfile("src/greet.txt", "hello world\n")   # out of scope: the hub refuses it
+                git("add", "-A")
+                git("commit", "-q", "-m", f"{tid}: implement")
+                r = subprocess.run(["git", "push", "-q", "--force", "origin",
+                                    f"HEAD:refs/heads/{a['git']['branch']}"],
+                                   capture_output=True, text=True)
+                assert r.returncode != 0, "a push outside the scope should have been refused"
+                assert "G-B3: src/greet.txt is outside the allowed paths" in r.stderr, r.stderr
+                assert "/request_scope" in r.stderr, r.stderr          # and says how to ask
+                git("checkout", "HEAD~1", "--", "src/greet.txt")       # put it back
+                git("commit", "-q", "--amend", "--no-edit", "-a")
         sha = commit_push(f"{tid}: implement", a["git"]["branch"])
         cmds = a["work"]["verification"]
         ev = write(f"{me}/evidence.md", "\n".join(f"- `{c}` -> exit 0" for c in cmds))
         res = call("report", status="DONE", summary=f"{tid} done",
                    attestations=[f"git:{REPO}@{sha}", ev], outputs={"evidence": ev})
         print(res)
-        if not res["accepted"]:
-            assert any(v.startswith("G-B3") for v in res["violations"]), res
-            git("checkout", "HEAD~1", "--", "src/greet.txt")
-            git("commit", "-q", "--amend", "--no-edit", "-a")
-            git("push", "-q", "--force", "origin", f"HEAD:refs/heads/{a['git']['branch']}")
-            sha = git("rev-parse", "HEAD")
-            ev = write(f"{me}/evidence.md",
-                       "\n".join(f"- `{c}` -> exit 0" for c in cmds) + "\n(fixed scope)")
-            print(call("report", status="DONE", summary=f"{tid} fixed scope",
-                       attestations=[f"git:{REPO}@{sha}", ev], outputs={"evidence": ev}))
     elif role in ("reviewer", "security", "architecture"):
         tid = a["ticket_id"].split(":", 1)[1]                # the build it judges
         cand = a["judged_sha"]

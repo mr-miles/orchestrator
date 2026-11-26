@@ -1,5 +1,6 @@
 """A build's file scope (G-B3, WORKFLOW.md §5.6): its plan's ``files_modified``, minus its
-``files_forbidden`` and the protected paths – grown only by a decision owner's approval.
+``files_forbidden`` and the protected paths – grown only by a decision owner's approval. The hub
+refuses a push outside it (:func:`push_scope`, the same rules), and the report is checked again.
 
 A build that needs a file outside its scope asks for it (A2A ``request_scope`` to the change's
 orchestrator, with a reason); :func:`request` checks the request and says what a decision owner
@@ -9,7 +10,7 @@ reach: only the oracle changes them (§5.4).
 """
 from __future__ import annotations
 
-from ..git import path_matches
+from ..git import PushScope, Rule
 from .guards.plan import files_clash
 from .roles.base import MISE_TOML, guarded, oracle_paths
 from .tickets import Status, Ticket
@@ -22,46 +23,36 @@ HOW = ("to change a file outside your scope, ask for it: a2a send to the orchest
        "denies it")
 
 
-def _approved(t: Ticket, p: str) -> bool:
-    return any(path_matches(p, a) for a in t.scope_added)
+ORACLE = ("{path} is one of the oracle's protected tests: only the oracle changes them – "
+          "revert it, and ask oracle@oracle if you think it is wrong")
+
+
+def push_scope(e: RoleContext, t: Ticket, base: str = "") -> PushScope:
+    """The build's scope as rules, first match deciding: the oracle's tests (never), what a
+    decision owner approved, the guarded paths, the plan's forbidden files, its files."""
+    work = t.work
+    return PushScope("G-B3", base, (
+        Rule("oracle", tuple(oracle_paths(e)), why=ORACLE, hint=False),
+        Rule("approved", tuple(t.scope_added), allow=True),
+        Rule("protected", tuple(guarded(e)), why="{path} is a protected path"),
+        Rule("forbidden", tuple(work.get("files_forbidden", [])),
+             why="{path} is forbidden for this task"),
+        Rule("files", tuple(work.get("files_modified", [])), allow=True),
+    ), hint=f"revert those changes, or – {HOW}")
 
 
 def outside(e: RoleContext, t: Ticket, p: str) -> str | None:
     """Why ``p`` is outside the build's scope (None: it is inside): the oracle's, protected,
     forbidden, or not in its files."""
-    work = t.work
-    if any(path_matches(p, o) for o in oracle_paths(e)):
-        return "oracle"
-    if _approved(t, p):
-        return None
-    if any(path_matches(p, g) for g in guarded(e)):
-        return "protected"
-    if any(path_matches(p, f) for f in work.get("files_forbidden", [])):
-        return "forbidden"
-    if not any(path_matches(p, a) for a in work.get("files_modified", [])):
-        return "outside"
-    return None
+    r = push_scope(e, t).rule_for(p)
+    return None if r.allow else r.kind
 
 
 def guard(e: RoleContext, t: Ticket, changed: list[str]) -> list[str]:
     """G-B3: the commit changes something, and only paths in the build's scope."""
     if not changed:
         return ["G-B3: commit changes no files"]
-    v = []
-    for p in changed:
-        match outside(e, t, p):
-            case "oracle":
-                v.append(f"G-B3: {p} is one of the oracle's protected tests: only the oracle "
-                         "changes them – revert it, and ask oracle@oracle if you think it is wrong")
-            case "protected":
-                v.append(f"G-B3: {p} is a protected path")
-            case "forbidden":
-                v.append(f"G-B3: {p} is forbidden for this task")
-            case "outside":
-                v.append(f"G-B3: {p} is outside the allowed paths")
-    if any(not x.startswith(("G-B3: commit", )) and "oracle's protected" not in x for x in v):
-        v.append(f"G-B3: revert those changes, or – {HOW}")
-    return v
+    return push_scope(e, t).violations(changed)
 
 
 def request(e: RoleContext, t: Ticket, paths: list[str], reason: str) -> tuple[list[str], list[str]]:
@@ -87,8 +78,8 @@ def request(e: RoleContext, t: Ticket, paths: list[str], reason: str) -> tuple[l
     for p in new:
         if kinds[p] == "protected":
             warnings.append(f"{p} is a protected path"
-                            + (" – the setup always runs the pinned mise.toml, so editing it does "
-                               "not change the setup the checks run" if p == MISE_TOML else ""))
+                            + (" – every verifier runs this file's setup task: approving lets this "
+                               "build change what the checks install" if p == MISE_TOML else ""))
         elif kinds[p] == "forbidden":
             warnings.append(f"{p} is forbidden for this build by the plan (files_forbidden: "
                             f"{', '.join(t.work.get('files_forbidden', []))})")

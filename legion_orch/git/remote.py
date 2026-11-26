@@ -16,11 +16,13 @@ from pathlib import Path
 from ..util import run_command
 
 PRE_RECEIVE = r"""#!/bin/sh
-# legion-orch: a run token may only update its own branch; never delete refs.
+# legion-orch: a run token may only update its own branch, never delete refs, and – when the
+# run has a scope (LEGION_SCOPE, JSON) – only change the paths in it (push_scope.py, push_hook.py).
 z=0000000000000000000000000000000000000000
 if [ -z "$LEGION_ALLOWED_REF" ]; then
   echo "legion: this credential is read-only" >&2; exit 1
 fi
+updates=""
 while read old new ref; do
   if [ "$ref" != "$LEGION_ALLOWED_REF" ]; then
     echo "legion: push to $ref denied; you may only push to $LEGION_ALLOWED_REF" >&2; exit 1
@@ -28,7 +30,12 @@ while read old new ref; do
   if [ "$new" = "$z" ]; then
     echo "legion: deleting refs is not allowed" >&2; exit 1
   fi
+  updates="$updates$old $new $ref
+"
 done
+if [ -n "$LEGION_SCOPE" ]; then
+  printf '%s' "$updates" | "$LEGION_PYTHON" -I -m legion_orch.git.push_hook || exit 1
+fi
 exit 0
 """
 
